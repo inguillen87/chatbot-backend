@@ -192,6 +192,7 @@ class LazyApplication:
                 "contract_version": "chatboc.bootstrap.v1",
                 "ok": False,
                 "status_code": 503,
+                "request_dispatched": False,
                 "reason_code": reason_code,
                 "retryable": not failed,
                 "action_hint": "retry_after" if not failed else "inspect_runtime_logs",
