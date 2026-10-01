@@ -18,7 +18,7 @@ from models import (
     EncRespuesta,
     LlmInteractionLog,
 )
-from utils.auth_helpers import bump_auth_session_version, token_requerido
+from utils.auth_helpers import auth_sin_escrituras_implicitas, bump_auth_session_version, token_requerido
 from services.operational_scoring import build_lead_portfolio_score
 from services.survey_response_provenance import (
     build_survey_response_provenance,
@@ -30,6 +30,10 @@ from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
 from services.user_service import assign_whatsapp_numbers
+from services.native_admin_membership import (
+    NativeAdminMembershipError, list_native_admin_memberships,
+    normalize_native_admin_membership, read_native_admin_membership,
+)
 from utils.roles import (
     canonical_role,
     normalize_tenant_type,
@@ -1771,6 +1775,63 @@ def reset_tenant_password(current_user, slug):
     _log_admin_action(current_user.id, "reset_password", slug, {"target_user_id": owner.id})
     db.session.commit()
     return jsonify({"message": "Contraseña actualizada correctamente"})
+
+
+def _native_admin_membership_response(payload, status=200):
+    response = jsonify(payload)
+    response.status_code = status
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Authorization, Cookie, Origin'
+    return response
+
+
+def _native_admin_membership_scope_matches(slug):
+    selectors = [*request.args.getlist('tenant'), *request.args.getlist('tenant_slug'),
+        request.headers.get('X-Tenant'), request.headers.get('X-Tenant-Slug')]
+    if not all(value is None or value == slug for value in selectors):
+        return False
+    id_selectors = [*request.args.getlist('tenant_id'), request.headers.get('X-Tenant-Id')]
+    if any(value is not None for value in id_selectors):
+        tenant = TenantProfile.query.filter_by(slug=slug).one_or_none()
+        if tenant is None or not all(value is None or value == str(tenant.id) for value in id_selectors):
+            return False
+    return True
+
+
+@super_admin_bp.route('/tenants/<string:slug>/native-admin-users/legacy-membership', methods=['GET'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+@super_admin_required
+def native_admin_legacy_membership_list(current_user, slug):
+    if not _native_admin_membership_scope_matches(slug):
+        return _native_admin_membership_response({'reason_code': 'tenant_selector_conflict'}, 400)
+    try:
+        return _native_admin_membership_response(list_native_admin_memberships(
+            db.session, actor=current_user, slug=slug))
+    except NativeAdminMembershipError as error:
+        return _native_admin_membership_response({'reason_code': error.code}, error.status)
+
+
+@super_admin_bp.route('/tenants/<string:slug>/native-admin-users/<int:user_id>/legacy-membership', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+@super_admin_required
+def native_admin_legacy_membership(current_user, slug, user_id):
+    if not _native_admin_membership_scope_matches(slug):
+        return _native_admin_membership_response({'reason_code': 'tenant_selector_conflict'}, 400)
+    try:
+        if request.method == 'GET':
+            result = read_native_admin_membership(db.session, actor=current_user, slug=slug, user_id=user_id)
+        else:
+            if request.content_length is None or request.content_length > 2048:
+                return _native_admin_membership_response({'reason_code': 'legacy_membership_action_too_large'}, 413)
+            result = normalize_native_admin_membership(db.session, actor=current_user,
+                actor_session_version=(getattr(g, 'token_payload', None) or {}).get('sv'),
+                slug=slug, user_id=user_id, data=request.get_json(silent=True))
+        return _native_admin_membership_response(result)
+    except NativeAdminMembershipError as error:
+        return _native_admin_membership_response({'reason_code': error.code}, error.status)
+
 
 @super_admin_bp.route('/tenants/<string:slug>/whatsapp', methods=['PUT'])
 @token_requerido

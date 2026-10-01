@@ -28,11 +28,19 @@ name: Survey and organization evidence
       - services/organization_setup_journey.py
       - services/channel_activation.py
       - routes/admin_tenant.py
+      - routes/super_admin.py
       - routes/auth.py
       - routes/v2/saas.py
       - services/analytics/rbac.py
       - services/twilio_tech_provider.py
       - tests/v2_tenant_membership_http.py
+      - services/native_admin_membership.py
+      - tests/native_admin_membership_http.py
+      - tests/native_admin_membership_postgres.py
+      - tests/test_territorial_boundary_packaging.py
+      - data/municipios/junin/geo.json
+      - data/municipios/junin/official_department_boundary.geojson
+      - .gitattributes
       - tests/twilio_provisioning_without_render_regression.py
       - data/conversation_guides/**
       - tests/private_conversation_guide_http.py
@@ -93,6 +101,15 @@ jobs:
       - run: python -m tests.organization_access_regression
       - name: Consistent tenant membership on real application routes
         run: python -m tests.v2_tenant_membership_http
+      - name: Native administrator membership and PostgreSQL audit transactions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/native-admin-membership
+          python -m tests.native_admin_membership_http -v 2>&1 | tee .qa-artifacts/native-admin-membership/http.log
+          python -m tests.native_admin_membership_postgres -v 2>&1 | tee .qa-artifacts/native-admin-membership/postgres.log
+      - name: Official territorial boundary packaging
+        run: python -m pytest tests/test_territorial_boundary_packaging.py -q
       - name: Provider provisioning requires durable credentials without Render
         run: python -m tests.twilio_provisioning_without_render_regression
       - run: python -m tests.private_conversation_guide_http
@@ -111,6 +128,15 @@ jobs:
         with:
           name: private-guide-control-evidence
           path: .qa-artifacts/private-guide-control/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Native administrator membership evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-admin-membership-evidence
+          path: .qa-artifacts/native-admin-membership/*.log
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
