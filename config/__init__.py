@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
+from utils.postgres_tls import normalize_postgres_tls_uri
 
 from cutover_writer_fence import cutover_writer_fence_enabled
 from global_writer_authority import (
@@ -286,7 +287,7 @@ def resolve_database_uri(
     if configured:
         if render_standby_required:
             _validate_render_standby_database_uri(configured)
-        return configured
+        return normalize_postgres_tls_uri(configured)
     if is_vercel_runtime(runtime_env):
         raise RuntimeError(
             "DATABASE_URL es obligatoria en Vercel; SQLite efimero no es un almacenamiento valido."
