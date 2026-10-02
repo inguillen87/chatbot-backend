@@ -1,6 +1,10 @@
 """Real application routes/models on a disposable database; no customer credentials."""
 from tests.profile_acceptance_runtime import prepare_process
-if __name__ == '__main__': prepare_process()
+if __name__ == '__main__':
+    prepare_process()
+    import os
+    # load_tests may import config before setUpClass; prepare its synthetic origin first.
+    os.environ['CORS_ALLOWED_ORIGINS']='https://panel.example.invalid'
 from copy import deepcopy
 import tempfile
 import unittest
