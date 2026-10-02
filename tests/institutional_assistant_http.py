@@ -529,6 +529,7 @@ def load_tests(loader, suite, pattern):
     # The existing full-app CI runner also exercises regular public chat/demo
     # classification. Keep the original cases and add the complete new suite.
     suite.addTests(loader.loadTestsFromName('tests.regular_tenant_demo_classification_http'))
+    suite.addTests(loader.loadTestsFromName('tests.public_lead_capture_scope_http'))
     return suite
 
 
