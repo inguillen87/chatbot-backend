@@ -34,6 +34,7 @@ from services.native_admin_membership import (
     NativeAdminMembershipError, list_native_admin_memberships,
     normalize_native_admin_membership, read_native_admin_membership,
 )
+from utils.tenant_admin_access import resolve_consistent_user_tenant
 from utils.roles import (
     canonical_role,
     normalize_tenant_type,
@@ -1511,30 +1512,19 @@ def update_tenant_full(current_user, slug):
 
         _log_admin_action(current_user.id, "change_plan", slug, {"old": old_plan, "new": normalized_plan})
 
+        # Legacy organization references identify the owner USER, never the
+        # TenantProfile primary key. Check the same consistent membership used
+        # by /me so a direct association cannot override a foreign owner/slug.
+        owner_ids = [value for value in (tenant.municipio_id, tenant.pyme_id) if value is not None]
+        filters = [User.tenant_id == tenant.id]
+        if owner_ids:
+            filters.extend((User.id.in_(owner_ids), User.empresa_id.in_(owner_ids),
+                            User.municipio_id.in_(owner_ids), User.pyme_id.in_(owner_ids)))
+        candidates = User.query.filter(or_(*filters)).populate_existing().all()
         users_to_update = set()
-
-        # Method 1: Find the owner via TenantProfile's FK and their employees
-        owner = tenant.municipio or tenant.pyme
-        if owner:
-            users_to_update.add(owner)
-            if owner.id: # safety check
-                employees = User.query.filter(User.empresa_id == owner.id).all()
-                for emp in employees:
-                    users_to_update.add(emp)
-
-        # Method 2: Find all users directly linked via User.tenant_id
-        direct_members = User.query.filter(User.tenant_id == tenant.id).all()
-        for member in direct_members:
-            users_to_update.add(member)
-
-        # Method 3 (Fallback for demo/legacy tenants): Find users whose pyme_id/municipio_id points to this tenant's ID
-        if tenant.tipo == 'pyme':
-            fallback_members = User.query.filter(User.pyme_id == tenant.id).all()
-            for member in fallback_members:
-                users_to_update.add(member)
-        elif tenant.tipo == 'municipio':
-            fallback_members = User.query.filter(User.municipio_id == tenant.id).all()
-            for member in fallback_members:
+        for member in candidates:
+            resolved = resolve_consistent_user_tenant(member)
+            if resolved is not None and resolved.id == tenant.id:
                 users_to_update.add(member)
 
         if not users_to_update:

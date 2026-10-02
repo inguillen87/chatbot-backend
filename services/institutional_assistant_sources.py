@@ -33,6 +33,12 @@ def _source(tenant, source_id, revision, *, public=False):
     source = state['bundle']['sources'].get(source_id)
     if source is None:
         raise ContentError('knowledge_source_not_available', 404)
+    # Publication of answers does not grant access to explicitly private
+    # original documents. Legacy bundles retain their existing contract.
+    if 'document_visibility' in source and source['document_visibility'] not in ('private', 'public'):
+        raise ContentError('knowledge_state_invalid', 503)
+    if public and source.get('document_visibility') == 'private':
+        raise ContentError('knowledge_source_not_available', 404)
     return source
 
 

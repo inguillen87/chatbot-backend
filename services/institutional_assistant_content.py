@@ -67,6 +67,11 @@ def source_delivery(source):
               'sha256': source['sha256']}
     if 'byte_size' in source:
         result['byte_size'] = source['byte_size']
+    if 'document_visibility' in source:
+        visibility = source['document_visibility']
+        _require(visibility in ('private', 'public'), 'knowledge_source_metadata_invalid')
+        result['document_visibility'] = visibility
+        result['publicly_accessible'] = visibility == 'public'
     return result
 
 def _normalize_source(key, value):
@@ -80,6 +85,10 @@ def _normalize_source(key, value):
                  and not host.endswith('.googleusercontent.com'), 'knowledge_link_invalid')
     source = {'id': key, 'title': _text(value.get('title') or value.get('label'), 250),
               'sha256': value['sha256'], 'page_count': pages, 'url': url}
+    if 'document_visibility' in value:
+        _require(value['document_visibility'] in ('private', 'public'),
+                 'knowledge_source_metadata_invalid')
+        source['document_visibility'] = value['document_visibility']
     for name, allowed in SOURCE_ENUMS.items():
         if name in value:
             _require(isinstance(value[name], str) and value[name] in allowed,
@@ -229,6 +238,8 @@ def _source_projection(source, *, public=False):
     value = {**deepcopy(source), 'delivery': source_delivery(source)}
     if public:
         value.pop('origin_url', None)
+        if value.get('document_visibility') == 'private':
+            value.pop('url', None)
     return value
 
 def overview(bundle, *, public=False):
@@ -250,7 +261,8 @@ La respuesta se construirá con los textos canónicos y fuentes, no con redacci�
 '''
 
 def _selection_request(bundle, question, current_node):
-    candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text']} for n in bundle['nodes'].values()]
+    candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text'],
+                   'actions': deepcopy(n['actions'])} for n in bundle['nodes'].values()]
     return json.dumps({'question': question, 'current_node': current_node, 'knowledge': candidates}, ensure_ascii=False)
 
 def select_nodes(bundle, question, current_node, selector):

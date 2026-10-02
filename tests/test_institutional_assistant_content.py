@@ -11,6 +11,39 @@ def sample(tenant_id=701, slug='qa-knowledge'):
         'policy':{key:False for key in ['accepts_personal_data','creates_real_cases','queries_official_records','sends_notifications','stores_feedback']}}
 
 class InstitutionalContentTests(unittest.TestCase):
+    def test_document_visibility_is_explicit_and_does_not_publish_private_links(self):
+        data = sample()
+        data['sources']['a'].update(document_visibility='private',
+            official_url='https://example.org/source.pdf',
+            origin_url='https://drive.google.com/file/d/private-source/view')
+        bundle = normalize_bundle(data, 701, 'qa-knowledge')
+        before = deepcopy(bundle)
+        for source in (overview(bundle, public=True)['sources'][0],
+                       materialize_node(bundle['nodes']['start'], public=True)['sources'][0]):
+            self.assertEqual(source['document_visibility'], 'private')
+            self.assertEqual(source['delivery']['document_visibility'], 'private')
+            self.assertFalse(source['delivery']['publicly_accessible'])
+            self.assertNotIn('url', source)
+            self.assertNotIn('origin_url', source)
+        private_source = overview(bundle)['sources'][0]
+        self.assertEqual(private_source['url'], 'https://example.org/source.pdf')
+        self.assertIn('origin_url', private_source)
+        self.assertEqual(bundle, before)
+        data['sources']['a']['document_visibility'] = 'public'
+        public_source = overview(normalize_bundle(data, 701, 'qa-knowledge'), public=True)['sources'][0]
+        self.assertTrue(public_source['delivery']['publicly_accessible'])
+        self.assertEqual(public_source['url'], 'https://example.org/source.pdf')
+
+    def test_document_visibility_rejects_unknown_values_and_legacy_is_unchanged(self):
+        for invalid in (None, True, False, 'PUBLIC', '', 'internal', {}, []):
+            data = sample(); data['sources']['a']['document_visibility'] = invalid
+            with self.subTest(value=invalid), self.assertRaises(ContentError):
+                normalize_bundle(data, 701, 'qa-knowledge')
+        legacy = normalize_bundle(sample(), 701, 'qa-knowledge')['sources']['a']
+        self.assertNotIn('document_visibility', legacy)
+        self.assertNotIn('document_visibility', legacy['delivery'])
+        self.assertNotIn('publicly_accessible', legacy['delivery'])
+
     def test_editorial_metadata_survives_without_import_approval_or_drive_link(self):
         data = sample()
         metadata = {'source_authority': 'project', 'format': 'pdf', 'mime_type': 'application/pdf',
@@ -123,6 +156,20 @@ class InstitutionalContentTests(unittest.TestCase):
         result=normalize_bundle(sample(),701,'qa-knowledge')
         selected=select_nodes(result,'¿Qué hace falta?','start',lambda *args:{'node_ids':['requirements']})
         self.assertEqual(selected,[result['nodes']['requirements']])
+    def test_selector_receives_persisted_action_labels_without_interpreting_them_in_python(self):
+        import json
+        data = sample(); data['nodes']['start']['actions'][0]['label'] = '♿ Requisitos y orientación'
+        bundle = normalize_bundle(data, 701, 'qa-knowledge')
+        def selector(instructions, request):
+            payload = json.loads(request)
+            self.assertEqual(payload['question'], '♿')
+            start = next(node for node in payload['knowledge'] if node['id'] == 'start')
+            self.assertEqual(start['actions'], bundle['nodes']['start']['actions'])
+            self.assertNotIn('sources', start)
+            self.assertNotIn('sha256', request)
+            return {'node_ids': ['requirements']}
+        selected = select_nodes(bundle, '♿', 'start', selector)
+        self.assertEqual(selected, [bundle['nodes']['requirements']])
     def test_no_model_for_menu_and_no_fake_answer_for_unknown(self):
         result=normalize_bundle(sample(),701,'qa-knowledge')
         self.assertEqual(overview(result)['node_count'],2)

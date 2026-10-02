@@ -338,6 +338,47 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
             owner=db.session.get(User,tenant.municipio_id or tenant.pyme_id)
             answer=responder_chatboc('knowledge:'+published['revision'][:16]+':requirements',owner_user=owner,tipo_chat='municipio',channel='web')
             self.assertEqual(answer['fuente'],'institutional_knowledge');self.assertIn('Respuesta institucional de prueba.',answer['message_body'])
+    def test_real_widget_empty_bootstrap_uses_published_tenant_start_without_selector(self):
+        from database import db
+        from models import TenantProfile, User
+        from routes.chat import _parse_request
+        from services.logic import responder_chatboc
+        client = self.login(); state = self.seed(client)
+        published = self.put(client, 'publish', state['revision']).get_json()
+        for payload in ({}, {'pregunta': ''}, {'pregunta': '   '}):
+            with self.subTest(payload=payload), self.app.test_request_context('/api/ask/municipio', json=payload), \
+                 patch('services.llm_utils.llamar_llm_para_json_estructurado',
+                       side_effect=AssertionError('published bootstrap must not query selector')) as selector:
+                parsed = _parse_request('municipio')
+                self.assertIsNone(parsed[-1])
+                self.assertEqual(parsed[0], '__INIT__')
+                tenant = db.session.get(TenantProfile, self.accounts['acceptance-a']['tenant_id'])
+                owner = db.session.get(User, tenant.municipio_id or tenant.pyme_id)
+                response = responder_chatboc(parsed[0], owner_user=owner, tipo_chat='municipio', channel='web')
+                self.assertEqual(response['fuente'], 'institutional_knowledge')
+                self.assertIn('Elegí una consulta.', response['message_body'])
+                self.assertEqual(response['context_revision'], published['revision'])
+                self.assertEqual(response['knowledge_tenant'], {'id': tenant.id, 'slug': tenant.slug})
+                self.assertEqual(response['knowledge_nodes'][0]['id'], 'start')
+                self.assertEqual(response['knowledge_nodes'][0]['sources'], response['knowledge_sources'])
+                self.assertEqual(response['messages'][0]['content'], response['message_body'])
+                self.assertTrue(response['botones'][0]['action_id'].startswith('knowledge:' + published['revision'][:16] + ':'))
+                selector.assert_not_called()
+
+    def test_widget_bootstrap_does_not_use_private_or_foreign_tenant_bundle(self):
+        from database import db
+        from models import TenantProfile, User
+        from services.institutional_assistant import maybe_handle_institutional_question
+        client = self.login(); state = self.seed(client)
+        with self.app.app_context():
+            tenant = db.session.get(TenantProfile, self.accounts['acceptance-a']['tenant_id'])
+            owner = db.session.get(User, tenant.municipio_id or tenant.pyme_id)
+            self.assertIsNone(maybe_handle_institutional_question('__INIT__', owner))
+        self.put(client, 'publish', state['revision'])
+        with self.app.app_context():
+            foreign = db.session.get(TenantProfile, self.accounts['acceptance-b']['tenant_id'])
+            foreign_owner = db.session.get(User, foreign.municipio_id or foreign.pyme_id)
+            self.assertIsNone(maybe_handle_institutional_question('__INIT__', foreign_owner))
     def test_answer_revoked_during_interpretation_is_not_returned(self):
         from database import db
         from models import TenantConfig

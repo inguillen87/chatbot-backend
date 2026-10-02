@@ -202,7 +202,7 @@ def maybe_handle_institutional_question(question, owner, session=None):
         if len(parts) != 3 or parts[1] != state['revision'][:16] or parts[2] not in state['bundle']['nodes']:
             return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_stale'}
         command['node_id'] = parts[2]
-    elif text.strip().lower() not in ('', 'menu', 'menú', 'inicio'):
+    elif text.strip().lower() not in ('', 'menu', 'menú', 'inicio', '__init__'):
         # Text-only WhatsApp menus carry an explicit reply code. Resolve it
         # solely against the displayed node and current persisted revision;
         # free-form language still goes through the existing LLM selector.
@@ -251,4 +251,5 @@ def maybe_handle_institutional_question(question, owner, session=None):
         'botones': [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target'],
             **({'reply_code': c['code']} if c['code'] in reply_choices else {})} for c in choices],
         'knowledge_sources': [s for n in nodes for s in n['sources']],
+        'knowledge_tenant': deepcopy(result['tenant']), 'knowledge_nodes': deepcopy(nodes),
         'fuente': 'institutional_knowledge', 'context_revision': state['revision']}

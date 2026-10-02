@@ -2313,6 +2313,7 @@ def get_tenant_config_bundle(current_user, slug):
     integration_access = integration_access_payload(tenant)
     response = {
         "tenant": {
+            "id": tenant.id,
             "slug": tenant.slug,
             "nombre": tenant.nombre,
             "tipo": tenant.tipo,

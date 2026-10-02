@@ -69,6 +69,90 @@ class KnowledgeSourceHTTPTests(unittest.TestCase):
     def source_url(self, state, *, public=False, source_id='a'):
         return self.url(public) + '/sources/' + source_id + '?revision=' + state['revision']
 
+    def test_published_answers_keep_explicitly_private_originals_private_before_storage(self):
+        client = self.login()
+        state = self.seed(client, metadata={'document_visibility': 'private',
+            'official_url': 'https://example.org/private-original.pdf',
+            'origin_url': 'https://drive.google.com/file/d/private-source/view',
+            'evaluation_only': True, 'review_status': 'needs_review'})
+        published = self.put(client, 'publish', state['revision']).get_json()
+        public = self.app.test_client()
+        with patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                   side_effect=AssertionError('private originals must not fetch')) as fetch:
+            self.assertEqual(public.get(self.source_url(published, public=True)).status_code, 404)
+            self.assertEqual(self.login('acceptance-b').get(self.source_url(published)).status_code, 403)
+            self.assertEqual(client.get(self.source_url(published).replace(published['revision'], '0' * 64)).status_code, 412)
+            for path in (self.url(True), self.url(True) + '/nodes/requirements?revision=' + published['revision']):
+                answer_response = public.get(path)
+                self.assertEqual(answer_response.status_code, 200, answer_response.get_json())
+                self.assertNotIn('https://example.org/private-original.pdf', answer_response.get_data(as_text=True))
+                self.assertNotIn('origin_url', answer_response.get_data(as_text=True))
+            fetch.assert_not_called()
+        answer = answer_response.get_json()
+        self.assertEqual(answer['nodes'][0]['text'], 'Respuesta institucional de prueba.')
+        source = answer['nodes'][0]['sources'][0]
+        self.assertTrue(source['evaluation_only'])
+        self.assertEqual(source['review_status'], 'needs_review')
+        self.assertFalse(source['delivery']['publicly_accessible'])
+        with self.storage():
+            own_original = client.get(self.source_url(published))
+        self.assertEqual(own_original.status_code, 200)
+        self.assertEqual(own_original.data, PDF)
+
+    def test_explicit_public_original_preserves_verified_delivery(self):
+        client = self.login(); state = self.seed(client, metadata={'document_visibility': 'public'})
+        published = self.put(client, 'publish', state['revision']).get_json()
+        with self.storage():
+            original = self.app.test_client().get(self.source_url(published, public=True))
+        self.assertEqual(original.status_code, 200)
+        self.assertEqual(original.data, PDF)
+        self.assertEqual(published['knowledge']['sources'][0]['delivery']['document_visibility'], 'public')
+
+    def test_public_original_policy_changed_during_io_releases_no_bytes(self):
+        from copy import deepcopy
+        from database import db
+        from models import TenantConfig
+        from services.institutional_assistant_content import digest
+        client = self.login(); state = self.seed(client, metadata={'document_visibility': 'public'})
+        published = self.put(client, 'publish', state['revision']).get_json()
+
+        def make_original_private():
+            row = TenantConfig.query.filter_by(tenant_id=self.accounts['acceptance-a']['tenant_id'], key='institutional_assistant').one()
+            value = deepcopy(row.json_value)
+            sources = [value['bundle']['sources']['a']] + [node['sources'][0] for node in value['bundle']['nodes'].values()]
+            for source in sources:
+                source['document_visibility'] = 'private'
+                source['delivery'].update(document_visibility='private', publicly_accessible=False)
+            value['bundle_hash'] = digest(value['bundle']); value['generation'] += 1
+            value['revision'] = digest({key: value[key] for key in ('bundle_hash', 'generation', 'visibility')})
+            row.json_value = value; db.session.commit()
+
+        with self.storage(on_read=make_original_private):
+            original = self.app.test_client().get(self.source_url(published, public=True))
+        self.assertEqual(original.status_code, 412)
+        self.assertEqual(original.get_json(), {'reason_code': 'knowledge_revision_conflict'})
+        self.assertNotEqual(original.data, PDF)
+        fresh = client.get(self.url()).get_json()
+        with patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                   side_effect=AssertionError('private policy must not fetch')) as fetch:
+            self.assertEqual(self.app.test_client().get(self.source_url(fresh, public=True)).status_code, 404)
+            fetch.assert_not_called()
+
+    def test_pdf_helper_cannot_bypass_private_original_policy(self):
+        from models import TenantProfile
+        from database import db
+        from services.institutional_assistant_content import ContentError
+        from services.institutional_assistant_sources import source_pdf
+        client = self.login(); state = self.seed(client, metadata={'document_visibility': 'private'})
+        published = self.put(client, 'publish', state['revision']).get_json()
+        with self.app.app_context(), patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                                          side_effect=AssertionError('helper must not fetch')) as fetch:
+            tenant = db.session.get(TenantProfile, self.accounts['acceptance-a']['tenant_id'])
+            with self.assertRaises(ContentError) as denied:
+                source_pdf(tenant, 'a', published['revision'], public=True)
+            self.assertEqual((denied.exception.code, denied.exception.status), ('knowledge_source_not_available', 404))
+            fetch.assert_not_called()
+
     def test_jpeg_and_utf8_text_are_hash_bound_and_safe_private_originals(self):
         client = self.login()
         revision = None
