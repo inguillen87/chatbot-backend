@@ -411,6 +411,28 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
                 user=db.session.get(User,self.accounts['acceptance-a']['id'])
                 user.accesibilidad=original;db.session.commit()
 
+    def test_exact_auth_session_retirement_during_selection_releases_no_answer(self):
+        from database import db
+        from models import User
+        from services.auth_session_lifecycle import retire_session
+        from utils.auth_helpers import auth_session_version
+        from uuid import uuid4
+        client=self.login();state=self.seed(client)
+        descriptor=client.get('/auth/me').get_json()['session_retirement']
+        with self.app.app_context():
+            before=auth_session_version(db.session.get(User,self.accounts['acceptance-a']['id']))
+        def retire_exact_session(*args):
+            receipt=retire_session(descriptor['proof'],uuid4().hex)
+            self.assertTrue(receipt['local_revoked'])
+            self.assertEqual(auth_session_version(db.session.get(User,self.accounts['acceptance-a']['id'])),before)
+            return {'node_ids':['requirements']}
+        with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=retire_exact_session):
+            response=client.post(self.url()+'/answer',json={'revision':state['revision'],'question':'consulta'})
+        self.assertEqual(response.status_code,403,response.get_json())
+        self.assertEqual(response.get_json(),{'reason_code':'knowledge_forbidden'})
+        self.assertNotIn('nodes',response.get_json())
+        self.assertNotIn('Respuesta institucional',response.get_data(as_text=True))
+
     def test_chat_navigation_uses_the_existing_interactive_contract(self):
         from database import db
         from models import TenantProfile,User

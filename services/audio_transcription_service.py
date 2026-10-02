@@ -468,6 +468,13 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
 
     try:
         mime_type = _canonical_mime_type(mime_type)
+        from services.attachment_delivery import _sensitive_reference, read_authorized_attachment_bytes
+        if _sensitive_reference(url):
+            # Authorize even when an earlier request populated a transcript
+            # cache. Private storage references never reach HTTP/provider logs.
+            data = read_authorized_attachment_bytes(url, mime_type,
+                                                    max_bytes=min(_stt_max_audio_bytes(), 15 * 1024 * 1024))
+            return transcribe_audio_bytes(data, mime_type)
         url_cache_key = _stt_url_cache_key(url, mime_type)
         cached_text = _stt_cache_get(url_cache_key)
         if cached_text:

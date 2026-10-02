@@ -18,6 +18,8 @@ from tests.test_institutional_assistant_content import sample
 
 PDF = b'%PDF-1.4\n% Local regression source\n1 0 obj <<>> endobj\n%%EOF\n'
 PREFIX = 'knowledge-private/' + 'c' * 32
+PRIVATE_BUCKET = 'private-regression-bucket'
+GENERAL_BUCKET = 'public-regression-assets'
 
 
 def jpeg_fixture():
@@ -37,6 +39,11 @@ class KnowledgeSourceHTTPTests(unittest.TestCase):
     def setUp(self):
         knowledge_http.KnowledgeHTTPTests.setUp(self)
         self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_PREFIX'] = PREFIX
+        self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME'] = PRIVATE_BUCKET
+        self.app.config['R2_BUCKET_NAME'] = GENERAL_BUCKET
+        self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_ACCESS_KEY_ID'] = secrets.token_hex(12)
+        self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_SECRET_ACCESS_KEY'] = secrets.token_hex(24)
+        self.app.config['R2_ACCESS_KEY_ID'] = 'public-fixture-access'
         # Each case has an independent disposable rate-limit window.
         from extensions import limiter
         with self.app.app_context():
@@ -233,19 +240,19 @@ class KnowledgeSourceHTTPTests(unittest.TestCase):
 
         service = R2Service()
         service.endpoint_url = 'https://storage.example.invalid'
-        service.access_key_id = secrets.token_hex(12)
-        service.secret_access_key = secrets.token_hex(24)
-        service.bucket_name = 'private-regression-bucket'
+        service.access_key_id = 'public-fixture-access'
+        service.secret_access_key = 'public-fixture-secret'
+        service.bucket_name = GENERAL_BUCKET
         # A public asset URL exists, and must never be a private fallback.
         service.public_base_url = 'https://public.example.invalid'
         client = boto3.client('s3', endpoint_url=service.endpoint_url,
-                              aws_access_key_id=service.access_key_id,
-                              aws_secret_access_key=service.secret_access_key,
+                              aws_access_key_id=self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_ACCESS_KEY_ID'],
+                              aws_secret_access_key=self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_SECRET_ACCESS_KEY'],
                               region_name='auto')
         stubber = Stubber(client)
         key = (PREFIX + '/tenants/' + str(self.accounts['acceptance-a']['tenant_id'])
                + '/sources/' + (sha256 or hashlib.sha256(PDF).hexdigest()) + '.' + extension)
-        params = {'Bucket': service.bucket_name, 'Key': key}
+        params = {'Bucket': PRIVATE_BUCKET, 'Key': key}
         if error:
             stubber.add_client_error('get_object', service_error_code=error,
                                      service_message='provider details must not escape',
@@ -269,7 +276,9 @@ class KnowledgeSourceHTTPTests(unittest.TestCase):
             response = client.get(self.source_url(state))
             self.assertEqual(response.status_code, 200, response.get_json())
             self.assertEqual(response.data, PDF)
-        create.assert_called_once_with(timeout_seconds=5)
+        create.assert_called_once_with(timeout_seconds=5,
+            access_key_id=self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_ACCESS_KEY_ID'],
+            secret_access_key=self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_SECRET_ACCESS_KEY'])
         self.assertEqual(response.headers['Content-Type'], 'application/pdf')
         self.assertEqual(int(response.headers['Content-Length']), len(PDF))
         self.assertEqual(response.headers['Cache-Control'], 'private, no-store')
@@ -345,6 +354,79 @@ class KnowledgeSourceHTTPTests(unittest.TestCase):
                 response = client.get(self.source_url(state))
                 self.assertEqual(response.status_code, status)
                 self.assertEqual(response.get_json(), {'reason_code': reason})
+
+    def test_private_bucket_is_required_distinct_and_not_caller_selected(self):
+        client = self.login(); state = self.seed(client)
+        bad_buckets = (None, '', GENERAL_BUCKET, 'Private-Bucket', 'private/bucket',
+                       '-private-bucket', 'private-bucket-', 'ab', 'x' * 64, ' private-bucket ')
+        try:
+            for bucket in bad_buckets:
+                self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME'] = bucket
+                with self.subTest(bucket=bucket), patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                                                       side_effect=AssertionError('invalid private bucket must not fetch')):
+                    response = client.get(self.source_url(state))
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.get_json(), {'reason_code': 'knowledge_source_storage_unavailable'})
+            # Missing setting cannot inherit either the general bucket or an
+            # incoming query string. Configuration is the sole bucket authority.
+            self.app.config.pop('INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME')
+            with patch.dict('os.environ', {'INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME': ''}), \
+                 patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                       side_effect=AssertionError('missing private bucket must not fetch')):
+                self.assertEqual(client.get(self.source_url(state)).status_code, 503)
+            self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME'] = PRIVATE_BUCKET
+            with patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                       side_effect=AssertionError('caller bucket must not be accepted')):
+                self.assertEqual(client.get(self.source_url(state) + '&bucket_name=' + GENERAL_BUCKET).status_code, 400)
+        finally:
+            self.app.config['INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME'] = PRIVATE_BUCKET
+
+    def test_exact_auth_session_retirement_during_source_io_releases_no_bytes(self):
+        from database import db
+        from models import User
+        from services.auth_session_lifecycle import retire_session
+        from utils.auth_helpers import auth_session_version
+        from uuid import uuid4
+        client = self.login(); state = self.seed(client)
+        descriptor = client.get('/auth/me').get_json()['session_retirement']
+        with self.app.app_context():
+            before = auth_session_version(db.session.get(User, self.accounts['acceptance-a']['id']))
+
+        def retire_exact_session():
+            receipt = retire_session(descriptor['proof'], uuid4().hex)
+            self.assertTrue(receipt['local_revoked'])
+            self.assertEqual(auth_session_version(db.session.get(User, self.accounts['acceptance-a']['id'])), before)
+
+        with self.storage(on_read=retire_exact_session):
+            response = client.get(self.source_url(state))
+            self.assertEqual(response.status_code, 403, response.get_json())
+            self.assertEqual(response.get_json(), {'reason_code': 'knowledge_forbidden'})
+            self.assertNotEqual(response.data, PDF)
+
+    def test_private_credentials_are_required_and_never_inherit_general_r2_credentials(self):
+        client = self.login(); state = self.seed(client)
+        access_setting = 'INSTITUTIONAL_KNOWLEDGE_R2_ACCESS_KEY_ID'
+        secret_setting = 'INSTITUTIONAL_KNOWLEDGE_R2_SECRET_ACCESS_KEY'
+        private_access, private_secret = self.app.config[access_setting], self.app.config[secret_setting]
+        cases = ((None, private_secret), ('', private_secret), ('   ', private_secret),
+                 (private_access, None), (private_access, ''), (private_access, '   '),
+                 (self.app.config['R2_ACCESS_KEY_ID'], 'public-fixture-secret'))
+        try:
+            for access, secret in cases:
+                self.app.config[access_setting], self.app.config[secret_setting] = access, secret
+                with self.subTest(private_access_present=bool(access), private_secret_present=bool(secret)), \
+                     patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                           side_effect=AssertionError('missing or general credentials must not fetch')):
+                    response = client.get(self.source_url(state))
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.get_json(), {'reason_code': 'knowledge_source_storage_unavailable'})
+            self.app.config.pop(access_setting); self.app.config.pop(secret_setting)
+            with patch.dict('os.environ', {access_setting: '', secret_setting: ''}), \
+                 patch('services.institutional_assistant_sources.r2_service.read_object_bytes',
+                       side_effect=AssertionError('absent private credentials must not use general keys')):
+                self.assertEqual(client.get(self.source_url(state)).status_code, 503)
+        finally:
+            self.app.config[access_setting], self.app.config[secret_setting] = private_access, private_secret
 
     def test_retirement_and_session_revocation_during_download_release_no_bytes(self):
         from database import db

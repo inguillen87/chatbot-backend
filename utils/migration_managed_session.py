@@ -10,6 +10,7 @@ session interface to the already-managed model.
 from __future__ import annotations
 
 from typing import Optional
+import secrets
 
 from flask import Flask
 from flask_session import Session
@@ -20,6 +21,34 @@ from flask_session.sqlalchemy.sqlalchemy import (
     create_session_model,
 )
 from flask_sqlalchemy import SQLAlchemy
+from flask.sessions import SessionInterface
+
+
+class RetirementIsolatedSessionInterface(SessionInterface):
+    """Never open/save an ambient Flask session on proof-only retirement."""
+    def __init__(self, wrapped):
+        self.wrapped = wrapped
+
+    def __getattr__(self, name):
+        return getattr(self.wrapped, name)
+
+    def open_session(self, app, request):
+        from services.auth_session_lifecycle import is_retirement_request
+        if is_retirement_request(request):
+            return self.wrapped.session_class(sid=secrets.token_urlsafe(32), permanent=False)
+        return self.wrapped.open_session(app, request)
+
+    def save_session(self, app, session, response):
+        from services.auth_session_lifecycle import is_retirement_request
+        if is_retirement_request():
+            while 'Set-Cookie' in response.headers:
+                del response.headers['Set-Cookie']
+            return
+        return self.wrapped.save_session(app, session, response)
+
+
+def isolate_retirement_session(app):
+    app.session_interface = RetirementIsolatedSessionInterface(app.session_interface)
 
 
 class MigrationManagedSqlAlchemySessionInterface(SqlAlchemySessionInterface):

@@ -134,8 +134,12 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     db.session.expire_all()
     latest = read_state(tenant, public=public)
     if actor_id:
+        from services.auth_session_lifecycle import request_auth_session_active
         refreshed_actor = db.session.get(User, actor_id, populate_existing=True)
-        if refreshed_actor is None or is_user_auth_disabled(refreshed_actor) or not can_manage_tenant_control_plane(refreshed_actor, tenant) or auth_session_version(refreshed_actor) != session_version:
+        if (refreshed_actor is None or is_user_auth_disabled(refreshed_actor)
+            or not can_manage_tenant_control_plane(refreshed_actor, tenant)
+            or auth_session_version(refreshed_actor) != session_version
+            or not request_auth_session_active(actor_id)):
             raise ContentError('knowledge_forbidden', 403)
     if latest is None or latest['revision'] != state['revision']:
         raise ContentError('knowledge_revision_conflict', 412)

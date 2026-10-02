@@ -6,7 +6,7 @@ import unicodedata
 import uuid
 from pathlib import PurePath
 from botocore.exceptions import BotoCoreError, ClientError
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit
 
 from services.media_cache_policy import cache_control_for_key
 from services.outbox_execution_budget import (
@@ -19,6 +19,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_R2_SIGNED_URL_TTL_SECONDS = 900
 DEFAULT_R2_UPLOAD_URL_TTL_SECONDS = 600
+
+
+def is_valid_r2_bucket_name(value):
+    return isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", value) is not None
+
+
+def is_valid_private_r2_endpoint(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlsplit(value)
+        return (parsed.scheme == 'https' and parsed.netloc == parsed.hostname
+                and re.fullmatch(r'[a-f0-9]{32}\.r2\.cloudflarestorage\.com', parsed.hostname or '') is not None
+                and parsed.path in ('', '/') and not parsed.query and not parsed.fragment)
+    except ValueError:
+        return False
 
 
 class R2SourceObjectChangedError(RuntimeError):
@@ -180,11 +196,17 @@ class R2Service:
         self._client_initialization_attempted = False
         self._client_lock = threading.Lock()
 
-    def _create_client(self, *, timeout_seconds=None):
+    def _create_client(self, *, timeout_seconds=None, access_key_id=None, secret_access_key=None, endpoint_url=None):
         """Import boto3 and build the client only for the first object operation."""
 
         import boto3
         from botocore.config import Config
+
+        if access_key_id is not None or secret_access_key is not None:
+            if not all(isinstance(value, str) and value.strip() for value in (access_key_id, secret_access_key)):
+                raise R2ObjectStorageUnavailableError("private_object_storage_unavailable")
+        else:
+            access_key_id, secret_access_key = self.access_key_id, self.secret_access_key
 
         config_kwargs = {"signature_version": "s3v4"}
         if timeout_seconds is not None:
@@ -196,9 +218,9 @@ class R2Service:
 
         return boto3.client(
             "s3",
-            endpoint_url=self.endpoint_url,
-            aws_access_key_id=self.access_key_id,
-            aws_secret_access_key=self.secret_access_key,
+            endpoint_url=endpoint_url if endpoint_url is not None else self.endpoint_url,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
             region_name=self.region_name,
             config=Config(**config_kwargs),
         )
@@ -275,24 +297,30 @@ class R2Service:
 
         return "/".join((*context_segments, tenant_segment, filename_segment))
 
-    def read_object_bytes(self, key, *, max_bytes, content_type):
+    def read_object_bytes(self, key, *, max_bytes, content_type, bucket_name, access_key_id, secret_access_key, endpoint_url=None):
         """Read a bounded object without generating any public or signed URL.
 
         None means a definitive missing object. Provider errors and invalid
         object metadata have separate, value-free errors for private callers.
+        The bucket is a trusted backend setting, never an incoming object
+        parameter. Private reads cannot use the general/public asset bucket.
         """
         safe_key = normalise_r2_object_key(key)
         if (safe_key != key or type(max_bytes) is not int or max_bytes <= 0
-            or not all((self.endpoint_url, self.access_key_id,
-                        self.secret_access_key, self.bucket_name))):
+            or not is_valid_r2_bucket_name(bucket_name) or bucket_name == self.bucket_name
+            or access_key_id == self.access_key_id
+            or not all(isinstance(value, str) and value.strip() for value in (access_key_id, secret_access_key))
+            or (endpoint_url is not None and not is_valid_private_r2_endpoint(endpoint_url))
+            or not (endpoint_url if endpoint_url is not None else self.endpoint_url)):
             raise R2ObjectStorageUnavailableError("private_object_storage_unavailable")
         client = None
         body = None
         try:
             # This download has a fixed I/O budget, independent of a cached
             # upload client's default timeouts and retries.
-            client = self._create_client(timeout_seconds=5)
-            result = client.get_object(Bucket=self.bucket_name, Key=safe_key)
+            explicit_endpoint = {'endpoint_url': endpoint_url} if endpoint_url is not None else {}
+            client = self._create_client(timeout_seconds=5, access_key_id=access_key_id, secret_access_key=secret_access_key, **explicit_endpoint)
+            result = client.get_object(Bucket=bucket_name, Key=safe_key)
             body = result.get("Body")
             size = result.get("ContentLength")
             actual_type = str(result.get("ContentType") or "").split(";", 1)[0].strip().lower()

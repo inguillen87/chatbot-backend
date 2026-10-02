@@ -341,19 +341,73 @@ def _socket_request_token(payload: Any = None) -> Optional[str]:
 
 def _clerk_identity_rooms(user: Optional[User], token: str) -> list[str]:
     claims = _decode_chatboc_socket_token(token)
+    lineage_rooms = [f"auth_session:{claims['asid']}"] if claims.get('asid') else []
     if str(claims.get("auth_provider") or "").strip().lower() != "clerk":
-        return []
+        return lineage_rooms
     if str(claims.get("session_kind") or "").strip().lower() != "clerk":
         return []
 
     sid = str(claims.get("clerk_sid") or claims.get("sid") or "").strip()
     clerk_user_id = str(claims.get("clerk_user_id") or "").strip() or _clerk_user_id_for_user(user)
-    rooms: list[str] = []
+    rooms: list[str] = list(lineage_rooms)
     if sid:
         rooms.append(f"clerk_session:{sid}")
     if clerk_user_id:
         rooms.append(f"clerk_user:{clerk_user_id}")
     return rooms
+
+
+def disconnect_auth_session_sockets(lineage_id: str) -> int:
+    manager = socketio.server.manager
+    getter = getattr(manager, '_auth_original_get_participants', manager.get_participants)
+    participants = list(getter('/', f'auth_session:{lineage_id}'))
+    for participant in participants:
+        socket_sid = participant[0] if isinstance(participant, (tuple, list)) else participant
+        socketio.server.disconnect(str(socket_sid), namespace='/')
+    return len(participants)
+
+
+def install_auth_session_socket_guard(app) -> None:
+    """Filter recipients against PostgreSQL on this worker and Redis delivery."""
+    manager = socketio.server.manager
+    original = manager.get_participants
+    if getattr(manager, '_auth_session_guard_installed', False):
+        return
+    def participants(namespace, room):
+        from models import AuthSession
+        from services.auth_session_lifecycle import lineage_for_claims
+        from utils.auth_helpers import is_user_auth_disabled, user_tenant_auth_allowed
+        from flask import has_app_context
+        candidates = list(original(namespace, room))
+        namespace_rooms = manager.rooms.get(namespace, {})
+        for participant in candidates:
+            sid = participant[0]
+            lineages = [key.split(':', 1)[1] for key, members in list(namespace_rooms.items())
+                        if isinstance(key, str) and key.startswith('auth_session:') and sid in members]
+            if not lineages:
+                yield participant
+                continue
+            try:
+                with app.app_context():
+                    valid = True
+                    for lineage_id in lineages:
+                        row = db.session.get(AuthSession, lineage_id, populate_existing=True)
+                        if row is None:
+                            valid = False; break
+                        lineage_for_claims({'asid': row.id, 'user_id': row.actor_id,
+                            'auth_provider': row.provider, 'auth_audience': row.audience,
+                            'jti': 'socket_authority', 'sid': row.provider_session_id})
+                        actor = db.session.get(User, row.actor_id, populate_existing=True)
+                        if actor is None or is_user_auth_disabled(actor) or not user_tenant_auth_allowed(actor):
+                            valid = False; break
+                if valid:
+                    yield participant
+            except Exception:
+                # A worker without fresh authority must not deliver private data.
+                continue
+    manager.get_participants = participants
+    manager._auth_original_get_participants = original
+    manager._auth_session_guard_installed = True
 
 
 def disconnect_clerk_session_sockets(
@@ -370,8 +424,9 @@ def disconnect_clerk_session_sockets(
         identity_rooms.append(f"clerk_user:{str(clerk_user_id).strip()}")
 
     socket_sids: set[str] = set()
+    getter = getattr(socketio.server.manager, '_auth_original_get_participants', socketio.server.manager.get_participants)
     for room in identity_rooms:
-        for participant in socketio.server.manager.get_participants("/", room):
+        for participant in getter("/", room):
             socket_sid = participant[0] if isinstance(participant, (tuple, list)) else participant
             if socket_sid:
                 socket_sids.add(str(socket_sid))
@@ -554,11 +609,21 @@ def _merge_rooms_for_subscription(user: User, tenant_slug: Optional[str]) -> lis
 
 
 def _merge_authenticated_socket_rooms(user: User, tenant_slug: Optional[str], token: str) -> list[str]:
+    if not _panel_socket_credential(token):
+        return []
     rooms = _merge_rooms_for_subscription(user, tenant_slug)
     for room in _clerk_identity_rooms(user, token):
         if room not in rooms:
             rooms.append(room)
     return rooms
+
+
+def _panel_socket_credential(token: str) -> bool:
+    # user_from_token has already verified the signature and durable family.
+    # Public widget/demo capabilities never convey operator room authority.
+    claims = _decode_chatboc_socket_token(token)
+    return bool(claims.get('asid') and claims.get('auth_provider') in {'native', 'clerk'}
+        and claims.get('session_kind') not in {'widget', 'demo'} and not claims.get('demo_mode'))
 
 def _resolve_tenant_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
@@ -1252,6 +1317,9 @@ def on_subscribe_ticket_updates(data):
         current_app.logger.warning("Socket subscribe rejected for sid %s: invalid or revoked token", request.sid)
         emit('subscription_error', {'error': 'invalid_token'})
         return
+    if not _panel_socket_credential(str(token)):
+        emit('subscription_error', {'error': 'operator_session_required'})
+        return
 
     if tenant_slug and not _user_can_access_tenant_slug(user, tenant_slug):
         current_app.logger.warning(
@@ -1357,6 +1425,9 @@ def handle_send_chat_message(data):
     if not current_user:
         current_app.logger.warning("Token invalido o revocado en 'send_chat_message'")
         emit('chat_error', {'error': 'invalid_token'})
+        return
+    if not _panel_socket_credential(str(token)):
+        emit('chat_error', {'error': 'operator_session_required'})
         return
     for identity_room in _clerk_identity_rooms(current_user, str(token)):
         join_room(identity_room)

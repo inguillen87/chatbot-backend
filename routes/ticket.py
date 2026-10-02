@@ -77,7 +77,7 @@ from services.gcs_service import (
     upload_to_gcs,
     validate_upload_size,
 )
-from services.attachment_delivery import serialize_attachment_for_delivery
+from services.attachment_delivery import serialize_attachment_for_delivery, resolve_attachment_delivery_url
 from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido, _explicit_admin_request_tenant, auth_sin_escrituras_implicitas
 from utils.permissions import require_role
@@ -5439,7 +5439,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
                 )
                 adjunto = {
                     "nombre": nombre_adjunto,
-                    "url": comentario.archivo_adjunto.url,
+                    "url": resolve_attachment_delivery_url(comentario.archivo_adjunto.url, comentario.archivo_adjunto.mime, attachment=comentario.archivo_adjunto).get('url'),
                 }
 
             comentarios_info.append({

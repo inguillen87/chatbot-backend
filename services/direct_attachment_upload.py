@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import base64
+import json
 import math
 import os
 import time
@@ -12,6 +14,7 @@ from typing import Any, NoReturn
 
 from flask import current_app, g, request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from cryptography.fernet import Fernet, InvalidToken
 from limits import parse
 from sqlalchemy import text
 from werkzeug.utils import secure_filename
@@ -19,6 +22,7 @@ from werkzeug.utils import secure_filename
 from extensions import db, limiter
 from models import ArchivoAdjunto, TenantProfile, User
 from services.attachment_delivery import serialize_attachment_for_delivery
+from services.private_attachment_storage import private_attachment_storage
 from services.r2_service import (
     R2ObjectStorageUnavailableError,
     R2Service,
@@ -251,6 +255,16 @@ def _serializer() -> URLSafeTimedSerializer:
     )
 
 
+def _intent_cipher():
+    key = hashlib.sha256(b'chatboc-private-attachment-intent-v2\x00' + _signing_secret()).digest()
+    return Fernet(base64.urlsafe_b64encode(key))
+
+
+def _seal_intent(claims):
+    encrypted = _intent_cipher().encrypt(json.dumps(claims, separators=(',', ':')).encode('utf-8')).decode('ascii')
+    return _serializer().dumps({'v': 2, 'sealed': encrypted})
+
+
 def _fingerprint(label: str, value: object) -> str:
     return hmac.new(
         _signing_secret(),
@@ -411,12 +425,18 @@ def _token_claims(token: object) -> dict[str, Any]:
             "La intencion de carga no es valida.",
             400,
         ) from exc
-    if not isinstance(payload, dict) or payload.get("v") != 1:
+    if not isinstance(payload, dict) or payload.get("v") != 2 or not isinstance(payload.get('sealed'), str):
         raise DirectAttachmentUploadError(
             "invalid_upload_intent",
             "La intencion de carga no es valida.",
             400,
         )
+    try:
+        payload = json.loads(_intent_cipher().decrypt(payload['sealed'].encode('ascii'), ttl=MAX_DIRECT_UPLOAD_TTL_SECONDS))
+    except (InvalidToken, ValueError, UnicodeError, TypeError):
+        raise DirectAttachmentUploadError('invalid_upload_intent', 'Inicia una nueva carga privada.', 400) from None
+    if not isinstance(payload, dict) or payload.get('v') != 2:
+        raise DirectAttachmentUploadError('invalid_upload_intent', 'Inicia una nueva carga privada.', 400)
     if int(payload.get("expires_at") or 0) < int(time.time()):
         raise DirectAttachmentUploadError(
             "upload_intent_expired",
@@ -443,6 +463,27 @@ def _assert_scope_matches(scope: DirectUploadScope, claims: dict[str, Any]) -> N
         )
 
 
+def _private_storage(storage=None):
+    try:
+        resolved = storage or private_attachment_storage()
+        if getattr(resolved, 'private_storage_contract', None) != 'private.attachment.storage.v1':
+            raise ValueError('private_storage_contract_required')
+        return resolved
+    except Exception:
+        raise DirectAttachmentUploadError('object_storage_unavailable',
+                                         'El almacenamiento privado de adjuntos no está disponible.', 503) from None
+
+
+def _assert_private_storage_matches(storage, scope, claims):
+    if (storage.object_key_from_url(claims.get('final_reference')) != claims.get('final_key')
+        or storage.tenant_for_key(claims.get('final_key')) != scope.tenant_slug
+        or storage.tenant_for_key(claims.get('temporary_key')) != scope.tenant_slug
+        or '/temporary/' not in str(claims.get('temporary_key'))
+        or '/attachments/' not in str(claims.get('final_key'))):
+        raise DirectAttachmentUploadError('private_upload_scope_changed',
+                                         'Inicia una nueva carga en el almacenamiento privado.', 409)
+
+
 def prepare_direct_attachment_upload(
     payload: dict[str, Any],
     *,
@@ -451,7 +492,7 @@ def prepare_direct_attachment_upload(
     max_file_bytes: int,
     storage: R2Service | None = None,
 ) -> dict[str, Any]:
-    storage = storage or r2_service
+    storage = _private_storage(storage)
     if not storage.is_configured:
         raise DirectAttachmentUploadError(
             "object_storage_unavailable",
@@ -476,8 +517,7 @@ def prepare_direct_attachment_upload(
     enforce_prepare_rate_limits(scope)
 
     upload_id = uuid.uuid4().hex
-    extension = PurePath(filename).suffix.lower()
-    temporary_key = f"uploads/{scope.tenant_slug}/chat-attachments/{upload_id}{extension}"
+    temporary_key = storage.temporary_key(filename, scope.tenant_slug, upload_id)
     final_key = storage.generate_key(
         filename,
         scope.tenant_slug,
@@ -499,10 +539,11 @@ def prepare_direct_attachment_upload(
         )
 
     claims = {
-        "v": 1,
+        "v": 2,
         "upload_id": upload_id,
         "temporary_key": temporary_key,
         "final_key": final_key,
+        "final_reference": storage.public_url_for_key(final_key),
         "filename": filename,
         "mime_type": mime_type,
         "size_bytes": size_bytes,
@@ -519,7 +560,7 @@ def prepare_direct_attachment_upload(
         "contract_version": DIRECT_UPLOAD_CONTRACT_VERSION,
         "operation": "prepare_direct_upload",
         "upload_id": upload_id,
-        "intent_token": _serializer().dumps(claims),
+        "intent_token": _seal_intent(claims),
         "upload": {
             "method": "PUT",
             "url": upload_url,
@@ -540,7 +581,7 @@ def _existing_attachment(
     scope: DirectUploadScope,
 ) -> ArchivoAdjunto | None:
     return ArchivoAdjunto.query.filter_by(
-        url=claims["final_key"],
+        url=claims["final_reference"],
         tipo="chat_adjunto",
         user_id=scope.attachment_user_id,
         session_id=scope.session_id,
@@ -555,7 +596,7 @@ def _locked_discard_attachment(
     """Lock the one attachment row that this signed upload intent can own."""
 
     query = ArchivoAdjunto.query.filter_by(
-        url=claims["final_key"],
+        url=claims["final_reference"],
         tipo="chat_adjunto",
         user_id=scope.attachment_user_id,
         session_id=scope.session_id,
@@ -697,7 +738,7 @@ def discard_direct_attachment_upload(
     row, so an inconclusive storage failure leaves a retryable durable record.
     """
 
-    storage = storage or r2_service
+    storage = _private_storage(storage)
     if not storage.is_configured:
         raise DirectAttachmentUploadError(
             "object_storage_unavailable",
@@ -707,6 +748,7 @@ def discard_direct_attachment_upload(
 
     claims = _token_claims(payload.get("intent_token"))
     _assert_scope_matches(scope, claims)
+    _assert_private_storage_matches(storage, scope, claims)
     _acquire_completion_lock(claims.get("upload_id"))
     attachment = _locked_discard_attachment(claims=claims, scope=scope)
     if attachment is not None and (
@@ -785,7 +827,7 @@ def complete_direct_attachment_upload(
     scope: DirectUploadScope,
     storage: R2Service | None = None,
 ) -> dict[str, Any]:
-    storage = storage or r2_service
+    storage = _private_storage(storage)
     if not storage.is_configured:
         raise DirectAttachmentUploadError(
             "object_storage_unavailable",
@@ -795,6 +837,7 @@ def complete_direct_attachment_upload(
 
     claims = _token_claims(payload.get("intent_token"))
     _assert_scope_matches(scope, claims)
+    _assert_private_storage_matches(storage, scope, claims)
     _acquire_completion_lock(claims.get("upload_id"))
     existing = _existing_attachment(claims=claims, scope=scope)
     if existing is not None:
@@ -912,7 +955,7 @@ def complete_direct_attachment_upload(
         mime=claims["mime_type"],
         tamano=int(claims["size_bytes"]),
         tipo="chat_adjunto",
-        url=claims["final_key"],
+        url=claims["final_reference"],
     )
     try:
         db.session.add(attachment)

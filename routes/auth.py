@@ -139,6 +139,18 @@ from utils.auth_helpers import (
     _safe_user_query,
 )
 from flask_login import current_user
+
+
+def _issue_native_panel_token(payload, *, bind_cookie=True, audience='panel'):
+    from services.auth_session_lifecycle import issue_token
+    claims = {**payload, 'audience': audience}
+    token = issue_token(claims, bind_cookie=bind_cookie)
+    if bind_cookie:
+        from flask_login import login_user
+        actor = db.session.get(User, payload['user_id'])
+        if not login_user(actor):
+            raise ValueError('auth_session_not_established')
+    return token
 from utils.roles import canonical_role, is_super_admin_role, is_authorized_superadmin_user
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
@@ -803,11 +815,7 @@ def clerk_webhook():
                         if event_type.startswith("session.")
                         else None
                     ),
-                    clerk_user_id=(
-                        event_data.get("user_id")
-                        if event_type.startswith("session.")
-                        else event_data.get("id")
-                    ),
+                    clerk_user_id=event_data.get("id") if event_type == 'user.deleted' else None,
                 )
             except Exception as disconnect_exc:  # pragma: no cover - defensive guard
                 current_app.logger.error(
@@ -2433,7 +2441,7 @@ def login():
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     token_sign_started = time.perf_counter()
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    jwt_token = _issue_native_panel_token(jwt_payload)
     stage_timings["token_sign_ms"] = round((time.perf_counter() - token_sign_started) * 1000.0, 2)
 
     # Reuse already resolved tenant to avoid extra DB round-trips on login.
@@ -2637,7 +2645,7 @@ def google_login():
                 'user_id': user.id,
                 'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
             }
-            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+            jwt_token = _issue_native_panel_token(jwt_payload)
             response_payload = {
                 "status": "falta_rubro",
                 "token": jwt_token,
@@ -2673,7 +2681,7 @@ def google_login():
             'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload)
 
         # Determine tenant_slug for response
         tenant_slug_out = getattr(user, "tenant_slug", None)
@@ -2827,7 +2835,7 @@ def register():
                 'municipio_id': nuevo.municipio_id,
                 'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
             }
-            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+            jwt_token = _issue_native_panel_token(jwt_payload)
 
             return jsonify({
                 "token": jwt_token,
@@ -2988,7 +2996,7 @@ def register():
             'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload)
 
         owner_token = _resolve_owner_token(user)
         response_payload = {
@@ -3135,7 +3143,7 @@ def register_from_widget(user):
             'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
         _send_verification_email(nuevo)
         _apply_welcome_points_if_configured(nuevo)
@@ -3233,7 +3241,7 @@ def login_from_widget(owner_user):
         'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
     owner_token = _resolve_owner_token(owner_user)
     response_payload = {
@@ -3427,7 +3435,7 @@ def chatuser_register_panel():
             'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
         _send_verification_email(nuevo)
         _apply_welcome_points_if_configured(nuevo)
@@ -3535,7 +3543,7 @@ def chatuser_login_panel():
         'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
     resp = jsonify({
         "id": user.id,
@@ -4072,18 +4080,11 @@ def refresh_token_endpoint():
             if tenant:
                 tenant_slug = tenant.slug
 
-        jwt_payload = {
-            'user_id': user.id,
-            'rol': user.rol,
-            'tipo_chat': user.tipo_chat,
-            'empresa_id': user.empresa_id,
-            'municipio_id': user.municipio_id,
-            'tenant_slug': tenant_slug,
-            'exp': datetime.now(timezone.utc) + timedelta(days=7)
-        }
-        new_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        from services.auth_session_lifecycle import refresh_native_token
+        new_token, retirement = refresh_native_token(token, expires_at=datetime.now(timezone.utc) + timedelta(days=7))
 
-        resp = jsonify({"token": new_token, "expires_in": 7 * 86400})
+        resp = jsonify({"token": new_token, "expires_in": 7 * 86400, "session_retirement": retirement})
+        resp.headers['Cache-Control'] = 'no-store'
         return resp
     except jwt.ExpiredSignatureError:
         return jsonify({"error": "Token expirado, por favor inicia sesión nuevamente"}), 401
@@ -4173,7 +4174,7 @@ def admin_login():
         'tenant_slug': tenant_slug,
         'exp': datetime.now(timezone.utc) + timedelta(days=7)
     }
-    token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    token = _issue_native_panel_token(jwt_payload)
     profile_capabilities = _profile_capabilities_for_user(user, owned_tenant)
 
     return jsonify({

@@ -30,7 +30,7 @@ from services.clerk_auth_service import (
     verify_active_clerk_session,
     verify_clerk_session_token,
 )
-from utils.auth_helpers import generar_token, user_from_token
+from utils.auth_helpers import auth_session_version, generar_token, user_from_token
 
 
 def _claims(sub="user_clerk_123", email="owner@chatboc.test"):
@@ -1095,8 +1095,8 @@ def test_terminal_clerk_session_event_revokes_chatboc_jwt(client, monkeypatch):
             }
         )
 
-        assert result["status"] == "sessions_revoked"
-        assert result["session_version"] == 2
+        assert result["status"] == "session_revoked"
+        assert auth_session_version(user) == 1
         assert result["clerk_session_id"] == "sess_terminal_webhook"
         assert is_clerk_session_revoked("sess_terminal_webhook") is True
         monkeypatch.setattr(

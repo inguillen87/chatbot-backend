@@ -572,10 +572,10 @@ def _log_r2_required_failure(original_filename: str, detail: str) -> None:
     target_logger.error(message, original_filename, detail)
 
 
-def _cleanup_partial_r2_uploads(*keys: str | None) -> None:
+def _cleanup_partial_r2_uploads(*keys: str | None, storage=None) -> None:
     """Best-effort cleanup when a multi-object R2 upload cannot complete."""
 
-    delete_object = getattr(r2_service, "delete_object", None)
+    delete_object = getattr(storage or r2_service, "delete_object", None)
     if not callable(delete_object):
         return
     for key in keys:
@@ -924,7 +924,8 @@ def upload_to_gcs(
 ) -> dict | None:
     """Upload a file to the configured storage backend.
 
-    Order of preference:
+    Sensitive attachments require the dedicated private R2 configuration.
+    Public assets retain this order of preference:
     1. Cloudflare R2 (Primary)
     2. Cloudinary (Fallback)
     3. GCS (Legacy/Secondary)
@@ -950,7 +951,9 @@ def upload_to_gcs(
         file_storage,
         max_bytes=max_file_size,
     )
-    require_r2 = _vercel_durable_uploads_require_r2() or bool(require_r2)
+    from services.private_attachment_storage import private_attachment_storage, public_asset_context
+    private_required = not public_asset_context(kind)
+    require_r2 = _vercel_durable_uploads_require_r2() or bool(require_r2) or private_required
 
     # 1. R2 Upload Strategy
     try:
@@ -960,10 +963,11 @@ def upload_to_gcs(
             owner = g.viewer
 
         tenant_slug = _resolve_r2_tenant_slug(owner) or "anonymous"
-        r2_key = r2_service.generate_key(unique_name, tenant_slug, context_type=kind)
+        attachment_storage = private_attachment_storage() if private_required else r2_service
+        r2_key = attachment_storage.generate_key(unique_name, tenant_slug, context_type=kind)
 
         file_stream_r2 = io.BytesIO(file_bytes)
-        r2_url = r2_service.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
+        r2_url = attachment_storage.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
 
         if r2_url:
             return {
@@ -1149,7 +1153,8 @@ def guardar_adjunto_y_thumbnail(
 ) -> dict | None:
     """Upload a file and its generated thumbnail to storage.
 
-    Order of preference:
+    Sensitive attachments require the dedicated private R2 configuration.
+    Public assets retain this order of preference:
     1. Cloudflare R2 (Primary)
     2. Cloudinary (Fallback)
     3. GCS (Legacy/Secondary)
@@ -1172,7 +1177,9 @@ def guardar_adjunto_y_thumbnail(
         file_storage,
         max_bytes=max_file_size,
     )
-    require_r2 = _vercel_durable_uploads_require_r2()
+    from services.private_attachment_storage import private_attachment_storage, public_asset_context
+    private_required = not public_asset_context(kind)
+    require_r2 = _vercel_durable_uploads_require_r2() or private_required
 
     # Create a new stream for thumbnail generation
     file_stream_for_thumb = io.BytesIO(file_bytes)
@@ -1183,6 +1190,7 @@ def guardar_adjunto_y_thumbnail(
     # 1. R2 Upload Strategy
     r2_key: str | None = None
     r2_thumb_key: str | None = None
+    attachment_storage = None
     try:
         # Determine context/owner
         owner = getattr(g, 'current_user', None) or getattr(g, 'owner_user', None)
@@ -1191,19 +1199,20 @@ def guardar_adjunto_y_thumbnail(
             owner = g.viewer
 
         tenant_slug = _resolve_r2_tenant_slug(owner) or "anonymous"
-        r2_key = r2_service.generate_key(unique_name, tenant_slug, context_type=kind)
+        attachment_storage = private_attachment_storage() if private_required else r2_service
+        r2_key = attachment_storage.generate_key(unique_name, tenant_slug, context_type=kind)
 
         # Reset stream for R2
         file_stream_r2 = io.BytesIO(file_bytes)
-        r2_url = r2_service.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
+        r2_url = attachment_storage.upload_file_with_key(file_stream_r2, r2_key, file_storage.mimetype)
 
         if r2_url:
             # Upload thumbnail to R2 if exists
             thumb_url = None
             if thumbnail_bytes and thumb_meta:
                 thumb_filename = get_thumb_filename(unique_name)
-                r2_thumb_key = r2_service.generate_key(thumb_filename, tenant_slug, context_type=kind)
-                thumb_url = r2_service.upload_file_with_key(
+                r2_thumb_key = attachment_storage.generate_key(thumb_filename, tenant_slug, context_type=kind)
+                thumb_url = attachment_storage.upload_file_with_key(
                     io.BytesIO(thumbnail_bytes),
                     r2_thumb_key,
                     "image/webp"
@@ -1211,7 +1220,7 @@ def guardar_adjunto_y_thumbnail(
                 if thumb_url:
                     thumb_meta["url"] = thumb_url
                 elif require_r2:
-                    _cleanup_partial_r2_uploads(r2_key, r2_thumb_key)
+                    _cleanup_partial_r2_uploads(r2_key, r2_thumb_key, storage=attachment_storage)
                     _log_r2_required_failure(
                         original_filename,
                         "thumbnail upload returned no URL",
@@ -1236,7 +1245,7 @@ def guardar_adjunto_y_thumbnail(
     except Exception as e:
         logger.error(f"R2 Upload Exception: {e}", exc_info=True)
         if require_r2:
-            _cleanup_partial_r2_uploads(r2_key, r2_thumb_key)
+            _cleanup_partial_r2_uploads(r2_key, r2_thumb_key, storage=attachment_storage)
             _log_r2_required_failure(original_filename, "upload raised an exception")
             return None
         # Continue to fallbacks

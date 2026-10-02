@@ -113,7 +113,8 @@ class WhiteLabelPhaseZeroSecurityTests(unittest.TestCase):
                     "iat": now,
                 }
             )
-        return jwt.encode(payload, self.app.config["SECRET_KEY"], algorithm="HS256")
+        from services.auth_session_lifecycle import issue_token
+        return issue_token(payload)
 
     def _headers(self, user: User, tenant: TenantProfile) -> dict[str, str]:
         return {

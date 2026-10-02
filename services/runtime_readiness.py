@@ -360,6 +360,43 @@ def _schema_contract_failure_reason(
     return None
 
 
+def _auth_session_schema_probe(*, timeout_seconds: float):
+    """Bounded catalog/permission check using the application's current role."""
+    return text("""
+        SELECT
+            bool_and(relation.oid IS NOT NULL) AS auth_tables_present,
+            bool_and(COALESCE(relation.relkind IN ('r', 'p'), FALSE)
+                AND required.column_names <@ COALESCE((
+                    SELECT array_agg(CAST(attribute.attname AS text))
+                    FROM pg_catalog.pg_attribute AS attribute
+                    WHERE attribute.attrelid = relation.oid
+                      AND attribute.attnum > 0 AND NOT attribute.attisdropped
+                ), ARRAY[]::text[])) AS auth_columns_valid,
+            bool_and(COALESCE(pg_catalog.has_schema_privilege(relation.relnamespace, 'USAGE'), FALSE)
+                AND COALESCE(pg_catalog.has_table_privilege(relation.oid, 'SELECT'), FALSE)
+                AND COALESCE(pg_catalog.has_table_privilege(relation.oid, 'INSERT'), FALSE)
+                AND (NOT required.needs_update OR COALESCE(pg_catalog.has_table_privilege(relation.oid, 'UPDATE'), FALSE))) AS auth_privileges_valid
+        FROM (VALUES
+            ('auth_provider_session', ARRAY['provider','provider_session_id','revoked_at','reason','revision','remote_status']::text[], TRUE),
+            ('auth_session', ARRAY['id','actor_id','actor_version','provider','audience','provider_session_id','flask_sid_hash','retirement_nonce','created_at','expires_at','revoked_at','revision']::text[], TRUE),
+            ('auth_session_audit', ARRAY['id','lineage_id','actor_id','event_type','request_id','created_at']::text[], FALSE),
+            ('auth_session_retirement', ARRAY['request_id','lineage_id','actor_id','receipt','created_at']::text[], TRUE)
+        ) AS required(table_name, column_names, needs_update)
+        LEFT JOIN pg_catalog.pg_class AS relation
+          ON relation.oid = pg_catalog.to_regclass('public.' || required.table_name)
+    """).execution_options(timeout=timeout_seconds)
+
+
+def _auth_session_contract_failure_reason(state):
+    if state.get('auth_tables_present') is not True:
+        return 'required_auth_session_schema_missing'
+    if state.get('auth_columns_valid') is not True:
+        return 'required_auth_session_schema_incompatible'
+    if state.get('auth_privileges_valid') is not True:
+        return 'required_auth_session_privilege_missing'
+    return None
+
+
 def _database_status(
     engine: Engine,
     *,
@@ -399,6 +436,11 @@ def _database_status(
                         "required": True,
                         "reason_code": failure_reason,
                     }
+                auth_state = connection.execute(_auth_session_schema_probe(
+                    timeout_seconds=timeout_seconds)).mappings().one()
+                failure_reason = _auth_session_contract_failure_reason(auth_state)
+                if failure_reason is not None:
+                    return {'status': 'error', 'required': True, 'reason_code': failure_reason}
             else:
                 result = connection.execute(
                     text("SELECT 1").execution_options(

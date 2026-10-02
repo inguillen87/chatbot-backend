@@ -1673,10 +1673,18 @@ def update_tenant_status(current_user, slug):
 @super_admin_required
 def impersonate_tenant(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    if not tenant.is_active:
+        return jsonify({"reason_code": "impersonation_tenant_inactive"}), 403
     owner = tenant.municipio or tenant.pyme
 
     if not owner:
         return jsonify({"error": "Tenant sin owner"}), 400
+    from utils.auth_helpers import is_clerk_managed_user, is_user_auth_disabled, user_tenant_auth_allowed
+    if is_clerk_managed_user(owner):
+        return jsonify({"reason_code": "impersonation_provider_unsupported",
+                        "error": "Este titular debe ingresar con su identidad de Clerk."}), 403
+    if is_user_auth_disabled(owner) or not user_tenant_auth_allowed(owner):
+        return jsonify({"reason_code": "impersonation_actor_unavailable"}), 403
 
     # Generate short-lived token for owner
     payload = {
@@ -1689,12 +1697,16 @@ def impersonate_tenant(current_user, slug):
         'impersonated_by': current_user.id,
         'exp': datetime.now(timezone.utc) + timedelta(minutes=60)
     }
-    token = jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    from services.auth_session_lifecycle import issue_token, descriptor_for_token
+    payload['audience'] = 'panel'
+    token = issue_token(payload, commit=False)
 
     _log_admin_action(current_user.id, "impersonate_tenant", slug, {"target_user_id": owner.id})
+    db.session.commit()
 
     redirect_url = f"/perfil?tenant_slug={tenant.slug}&tenant={tenant.slug}"
-    return jsonify({"token": token, "redirect_url": redirect_url})
+    return jsonify({"token": token, "redirect_url": redirect_url,
+                    "session_retirement": descriptor_for_token(token)})
 
 @super_admin_bp.route('/tenants/<string:slug>/admin-user', methods=['POST'])
 @token_requerido

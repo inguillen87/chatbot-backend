@@ -13,13 +13,17 @@ from services.institutional_assistant_content import (
     ContentError, MAX_SOURCE_BYTES, SOURCE_FORMATS, source_delivery,
 )
 from services.r2_service import (
-    r2_service, R2ObjectContentInvalidError, R2ObjectStorageUnavailableError,
+    r2_service, is_valid_r2_bucket_name, is_valid_private_r2_endpoint, R2ObjectContentInvalidError, R2ObjectStorageUnavailableError,
 )
 from utils.auth_helpers import auth_session_version, is_user_auth_disabled
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 
 MAX_PDF_BYTES = MAX_SOURCE_BYTES  # Compatibility for existing PDF consumers.
 PREFIX_ENV = 'INSTITUTIONAL_KNOWLEDGE_R2_PREFIX'
+BUCKET_ENV = 'INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME'
+ACCESS_KEY_ENV = 'INSTITUTIONAL_KNOWLEDGE_R2_ACCESS_KEY_ID'
+SECRET_KEY_ENV = 'INSTITUTIONAL_KNOWLEDGE_R2_SECRET_ACCESS_KEY'
+ENDPOINT_ENV = 'INSTITUTIONAL_KNOWLEDGE_R2_ENDPOINT_URL'
 
 
 def _source(tenant, source_id, revision, *, public=False):
@@ -64,6 +68,19 @@ def source_document(tenant, source_id, revision, *, public=False, actor=None):
     prefix = current_app.config.get(PREFIX_ENV, os.environ.get(PREFIX_ENV))
     if not isinstance(prefix, str) or not re.fullmatch(r'knowledge-private/[a-f0-9]{32}', prefix):
         raise ContentError('knowledge_source_storage_unavailable', 503)
+    bucket_name = current_app.config.get(BUCKET_ENV, os.environ.get(BUCKET_ENV))
+    general_buckets = (current_app.config.get('R2_BUCKET_NAME'), os.environ.get('R2_BUCKET_NAME'), r2_service.bucket_name)
+    if not is_valid_r2_bucket_name(bucket_name) or bucket_name in general_buckets:
+        raise ContentError('knowledge_source_storage_unavailable', 503)
+    access_key_id = current_app.config.get(ACCESS_KEY_ENV, os.environ.get(ACCESS_KEY_ENV))
+    secret_access_key = current_app.config.get(SECRET_KEY_ENV, os.environ.get(SECRET_KEY_ENV))
+    general_access_keys = (current_app.config.get('R2_ACCESS_KEY_ID'), os.environ.get('R2_ACCESS_KEY_ID'), r2_service.access_key_id)
+    if (not all(isinstance(value, str) and value.strip() for value in (access_key_id, secret_access_key))
+        or access_key_id in general_access_keys):
+        raise ContentError('knowledge_source_storage_unavailable', 503)
+    private_endpoint = current_app.config.get(ENDPOINT_ENV, os.environ.get(ENDPOINT_ENV))
+    if private_endpoint is not None and not is_valid_private_r2_endpoint(private_endpoint):
+        raise ContentError('knowledge_source_storage_unavailable', 503)
     sha256 = source.get('sha256')
     if not isinstance(sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', sha256):
         raise ContentError('knowledge_state_invalid', 503)
@@ -79,7 +96,10 @@ def source_document(tenant, source_id, revision, *, public=False, actor=None):
     # No caller URL, object key or source URL participates in storage lookup.
     key = f'{prefix}/tenants/{tenant.id}/sources/{sha256}.{extension}'
     try:
-        data = r2_service.read_object_bytes(key, max_bytes=MAX_SOURCE_BYTES, content_type=mime)
+        endpoint_option = {'endpoint_url': private_endpoint} if private_endpoint is not None else {}
+        data = r2_service.read_object_bytes(key, max_bytes=MAX_SOURCE_BYTES, content_type=mime,
+                                           bucket_name=bucket_name, access_key_id=access_key_id, secret_access_key=secret_access_key,
+                                           **endpoint_option)
     except R2ObjectContentInvalidError:
         raise ContentError('knowledge_source_integrity_failed', 503) from None
     except R2ObjectStorageUnavailableError:
@@ -96,10 +116,12 @@ def source_document(tenant, source_id, revision, *, public=False, actor=None):
     if fresh_tenant is None or not fresh_tenant.is_active:
         raise ContentError('knowledge_not_available', 404)
     if actor_id:
+        from services.auth_session_lifecycle import request_auth_session_active
         fresh_actor = db.session.get(User, actor_id, populate_existing=True)
         if (fresh_actor is None or is_user_auth_disabled(fresh_actor)
             or not can_manage_tenant_control_plane(fresh_actor, fresh_tenant)
-            or auth_session_version(fresh_actor) != session_version):
+            or auth_session_version(fresh_actor) != session_version
+            or not request_auth_session_active(actor_id)):
             raise ContentError('knowledge_forbidden', 403)
     latest_source = _source(fresh_tenant, source_id, revision, public=public)
     if (latest_source['sha256'] != sha256 or source_delivery(latest_source) != delivery):
