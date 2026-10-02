@@ -457,6 +457,106 @@ class RegularTenantChatTests(unittest.TestCase):
         self.assertEqual(request['current_node'], 'requirements')
         self.assertEqual(self.stored()[1].get(CONTEXTO_MUNICIPIO), {})
 
+    def test_idempotent_knowledge_menu_metadata_does_not_start_an_operation(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        published, _ = self.published_knowledge_for_public_chat()
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('menu must not select')):
+            response = self.post(question='__INIT__', headers={'Idempotency-Key': 'institutional-menu-init'})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['fuente'], 'institutional_knowledge')
+        municipal = self.stored()[1][CONTEXTO_MUNICIPIO]
+        self.assertEqual(set(municipal), {'idempotency_key'})
+        self.assertTrue(municipal['idempotency_key'].startswith('chat:'))
+        empty_form = {field: None for field in ('categoria', 'descripcion', 'ubicacion',
+            'nombre', 'telefono', 'email', 'dni')}
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': ['requirements']}) as selector, \
+             patch('services.municipio_responder.responder_municipio', return_value={
+                'message_body': 'Respuesta genérica controlada', 'fuente': 'llm_respuesta_directa'}) as operational:
+            response = self.post(question='¿Cómo pido requisitos de CUD en Río Grande?',
+                body={'button_source': 'input', 'contexto_previo': {'estado_conversacion': 'inicio',
+                    'datos_reclamo': empty_form, 'historial_conversacion': [], 'id_ticket_creado': None}},
+                headers={'Idempotency-Key': 'institutional-cud-question'})
+        self.assert_public_knowledge_answer(response, published)
+        selector.assert_called_once(); operational.assert_not_called()
+        self.assertNotEqual(self.stored()[1][CONTEXTO_MUNICIPIO]['idempotency_key'], municipal['idempotency_key'])
+
+    def test_general_history_with_empty_known_partials_keeps_published_selector(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        published, _ = self.published_knowledge_for_public_chat()
+        partial = {field: None for field in ('categoria', 'descripcion', 'ubicacion',
+            'nombre_ciudadano', 'telefono_ciudadano', 'email_ciudadano', 'dni_ciudadano')}
+        general = {'estado_conversacion': 'CONVERSACION_GENERAL_LLM',
+            'datos_parciales_llm_reclamo': partial,
+            'historial_conversacion_general_llm': [{'user': 'Consulta anterior de prueba'}]}
+        self.context({CONTEXTO_MUNICIPIO: general})
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': ['requirements']}) as selector, \
+             patch('services.municipio_responder.responder_municipio', return_value={
+                'message_body': 'Respuesta genérica controlada', 'fuente': 'llm_respuesta_directa'}) as operational:
+            response = self.post(question='¿Cómo pido requisitos de CUD en Río Grande?')
+        self.assert_public_knowledge_answer(response, published)
+        selector.assert_called_once(); operational.assert_not_called()
+        self.assertEqual(self.stored()[1][CONTEXTO_MUNICIPIO], general)
+
+    def test_known_empty_initial_context_keeps_published_selector_without_erasing_form(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        published, _ = self.published_knowledge_for_public_chat()
+        form = {field: None for field in ('categoria', 'descripcion', 'ubicacion',
+            'nombre', 'telefono', 'email', 'dni')}
+        initial = {'estado_conversacion': 'inicio', 'datos_reclamo': form,
+            'historial_conversacion': [], 'id_ticket_creado': None}
+        for index, key in enumerate((CONTEXTO_MUNICIPIO, 'contexto_municipio')):
+            session = 'empty-initial-' + str(index)
+            self.context({key: initial}, session=session)
+            with self.subTest(scope=key), patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+                 patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': ['requirements']}) as selector, \
+                 patch('services.municipio_responder.responder_municipio', side_effect=AssertionError('empty initial form is not an operation')):
+                response = self.post(session=session, question='¿Cómo pido requisitos de CUD en Río Grande?')
+            self.assert_public_knowledge_answer(response, published)
+            selector.assert_called_once()
+            self.assertEqual(self.stored(session)[1][key], initial)
+
+    def test_routing_metadata_exception_preserves_unknown_waiting_and_meaningful_operations(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        self.published_knowledge_for_public_chat()
+        operations = (
+            {'estado_conversacion': 'ESPERANDO_INFO_RECLAMO_LLM', 'idempotency_key': 'chat:known-turn'},
+            {'estado_conversacion': 'legacy-unknown', 'idempotency_key': 'chat:known-turn'},
+            {'idempotency_key': 'chat:known-turn', 'unknown_field': None},
+            {'idempotency_key': ['malformed']},
+            {'durable_turn_id': True},
+            {'estado_conversacion': 'inicio', 'datos_reclamo': {'descripcion': 'Reclamo de prueba'}},
+            {'estado_conversacion': 'inicio', 'datos_reclamo': {'unknown_field': None}},
+            {'estado_conversacion': 'inicio', 'id_ticket_creado': []},
+            {'estado_conversacion': 'CONVERSACION_GENERAL_LLM', 'datos_parciales_llm_reclamo': {'descripcion': 'Reclamo de prueba'}},
+            {'estado_conversacion': 'CONVERSACION_GENERAL_LLM', 'datos_parciales_llm_reclamo': {'unknown_field': None}},
+            {'estado_conversacion': 'CONVERSACION_GENERAL_LLM', 'datos_parciales_llm_sugerencia': {'descripcion': 'Sugerencia de prueba'}},
+            {'estado_conversacion': 'CONVERSACION_GENERAL_LLM', 'datos_parciales_llm_reclamo': {'descripcion': False}},
+            {'estado_conversacion': 'CONVERSACION_GENERAL_LLM', 'expected_fields_llm_reclamo': ['email']},
+        )
+        for index, operation in enumerate(operations):
+            session = 'routing-priority-' + str(index)
+            self.context({CONTEXTO_MUNICIPIO: operation}, session=session)
+            with self.subTest(case=index), patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+                 patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('operation must keep priority')) as selector, \
+                 patch('services.municipio_responder.responder_municipio', return_value={
+                    'message_body': 'Respuesta operacional de prueba', 'fuente': 'operational'}) as operational:
+                response = self.post(session=session, question='¿Cómo pido requisitos de CUD en Río Grande?')
+            self.assertEqual(response.status_code, 200, response.get_json())
+            self.assertEqual(response.get_json()['fuente'], 'operational')
+            selector.assert_not_called(); operational.assert_called_once()
+            stored = self.stored(session)[1]
+            for key, expected in operation.items():
+                if key not in ('source_event_id', 'durable_turn_id', 'idempotency_key'):
+                    self.assertEqual(stored[CONTEXTO_MUNICIPIO][key], expected)
+            self.assertNotIn('institutional_knowledge', stored)
+
     def test_empty_institutional_selection_keeps_unknown_answer_and_published_choices(self):
         from services.logic import responder_chatboc
         from services.constants import CONTEXTO_MUNICIPIO

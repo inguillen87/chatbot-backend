@@ -5,6 +5,7 @@ from flask import current_app
 from models import db, TenantProfile, TenantConfig, AuditEvent, User
 from cutover_writer_fence import cutover_writer_fence_enabled
 from services.constants import CONTEXTO_MUNICIPIO, ConversationState
+from services.source_event_context import SOURCE_EVENT_CONTEXT_FIELDS, normalize_source_event_context
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
@@ -165,6 +166,34 @@ def _channel_source_label(source):
     return label
 
 
+_EMPTY_MUNICIPAL_FORM_FIELDS = frozenset((
+    'categoria', 'descripcion', 'ubicacion', 'nombre_ciudadano',
+    'telefono_ciudadano', 'email_ciudadano', 'dni_ciudadano',
+    'nombre', 'telefono', 'email', 'dni',
+))
+
+
+def _empty_known_municipal_form(value):
+    # Unknown fields and malformed values remain operational, even when falsy.
+    return (isinstance(value, dict) and set(value) <= _EMPTY_MUNICIPAL_FORM_FIELDS
+        and all(item is None or (isinstance(item, str) and not item.strip())
+            for item in value.values()))
+
+
+def _inert_initial_municipal_context(value):
+    """Only the known empty form and normalized routing identifiers are inert."""
+    allowed = set(SOURCE_EVENT_CONTEXT_FIELDS) | {
+        'estado_conversacion', 'datos_reclamo', 'historial_conversacion', 'id_ticket_creado'}
+    if not set(value) <= allowed or value.get('estado_conversacion') not in (None, 'inicio'):
+        return False
+    source = {key: value[key] for key in SOURCE_EVENT_CONTEXT_FIELDS if key in value}
+    if source != normalize_source_event_context(source):
+        return False
+    return (value.get('id_ticket_creado') is None
+        and ('datos_reclamo' not in value or _empty_known_municipal_form(value['datos_reclamo']))
+        and ('historial_conversacion' not in value or isinstance(value['historial_conversacion'], list)))
+
+
 def _active_operational_context(context):
     """General municipal history is not an unfinished operation."""
     if not isinstance(context, dict): return False
@@ -177,19 +206,26 @@ def _active_operational_context(context):
     for key in (CONTEXTO_MUNICIPIO, 'contexto_municipio'):
         value = context.get(key)
         if not value: continue
-        # Preserve unknown/legacy states and every waiting flow. Only the
-        # responder's explicit general-conversation state permits selection.
-        if not isinstance(value, dict) or value.get('estado_conversacion') != ConversationState.CONVERSACION_GENERAL_LLM.name:
+        if not isinstance(value, dict):
+            return True
+        # Idempotent institutional turns also bind routing identifiers here.
+        # Their presence does not create an operation or a conversation state.
+        if _inert_initial_municipal_context(value):
+            continue
+        # Preserve unknown/legacy states and every waiting flow.
+        if value.get('estado_conversacion') != ConversationState.CONVERSACION_GENERAL_LLM.name:
             return True
         if any(value.get(field) for field in (
             'active_ticket_id', 'ticket_id', 'id_ticket_creado', 'reclamo_flow_v2',
-            'datos_parciales_llm_reclamo', 'datos_parciales_llm_sugerencia',
             'expected_fields_llm_reclamo', 'expected_fields_llm_sugerencia',
             'esperando_info_llm', 'esperando_info_llm_reclamo', 'esperando_info_llm_sugerencia',
             'human_chat_in_progress', 'live_chat_ticket_id', 'live_chat_estado',
             'live_chat_socket_room', 'live_chat_status',
         )):
             return True
+        for field in ('datos_parciales_llm_reclamo', 'datos_parciales_llm_sugerencia'):
+            if value.get(field) and not _empty_known_municipal_form(value[field]):
+                return True
     return False
 
 
