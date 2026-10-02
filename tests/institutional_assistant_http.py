@@ -525,4 +525,11 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
         self.assertEqual(response.status_code,200,response.get_json())
         self.assertNotEqual(response.headers.get('Access-Control-Allow-Credentials'),'true')
 
+def load_tests(loader, suite, pattern):
+    # The existing full-app CI runner also exercises regular public chat/demo
+    # classification. Keep the original cases and add the complete new suite.
+    suite.addTests(loader.loadTestsFromName('tests.regular_tenant_demo_classification_http'))
+    return suite
+
+
 if __name__ == '__main__': unittest.main(verbosity=2)

@@ -438,6 +438,110 @@ def _owner_for_tenant_profile(tenant: TenantProfile | None) -> User | None:
     return tenant.municipio or tenant.pyme
 
 
+def _request_has_demo_evidence(owner_user, context_data) -> bool:
+    """Session/rubro/tenant selectors identify a chat, not a sandbox demo."""
+    payload = request.get_json(silent=True) if request.is_json else request.form
+    payload = payload if isinstance(payload, dict) else request.form
+    if (
+        payload.get("demo_mode")
+        or payload.get("demo_session_id")
+        or request.args.get("demo_session_id")
+        or request.headers.get("X-Demo-Session-Id")
+        or request.headers.get("X-Demo-Session")
+        or _demo_session_token_from_request()
+        or (getattr(g, "owner_resolution_source", None) != "default_municipio_owner"
+            and demo_rubro_for_token(getattr(owner_user, "token", None)))
+    ):
+        return True
+    data = context_data if isinstance(context_data, dict) else {}
+    if decode_demo_session_token(data.get("demo_session_id")):
+        return True
+    # These fields are persisted by _activate_demo_session after a registry
+    # selection. Do not erase a real selection just because a slug also arrived.
+    key = data.get("demo_key")
+    selected_owner_id = data.get("demo_owner_user_id")
+    if _owner_context_is_trusted(owner_user, getattr(g, "owner_resolution_source", None)) and selected_owner_id != owner_user.id:
+        # A validated entity context deliberately replaced the old selection.
+        return False
+    return bool(key and selected_owner_id and any(
+        option.get("key") == key and option.get("owner_user_id") == selected_owner_id
+        for option in _load_demo_rubros()
+    ))
+
+
+def _resolve_regular_chat_tenant(*, owner_user, current_user, anon_id, chat_context):
+    """Resolve an explicit public workspace without demo/first-row fallbacks.
+
+    This binds public chat context only; it grants no admin or private-source
+    access. Existing authenticated/entity owners must still match the tenant.
+    """
+    from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
+    from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+    payload = request.get_json(silent=True) if request.is_json else request.form
+    payload = payload if isinstance(payload, dict) else request.form
+    bootstrap = payload.get("chat_bootstrap")
+    bootstrap = bootstrap if isinstance(bootstrap, dict) else {}
+    inner = bootstrap.get("payload")
+    inner = inner if isinstance(inner, dict) else {}
+    selectors = [str(value).strip().lower() for value in (
+        request.headers.get("X-Tenant-Slug"),
+        *request.args.getlist("tenant_slug"), *request.args.getlist("tenant"),
+        payload.get("tenant_slug"), payload.get("tenant"),
+        bootstrap.get("tenant_slug"), inner.get("tenant_slug"),
+    ) if value not in (None, "")]
+    if not selectors:
+        return None
+    if len(set(selectors)) != 1:
+        raise IdempotencyScopeConflict("El contexto de organización no coincide.")
+    if selectors[0] in {"municipio", "pyme"}:
+        return None
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=selectors[0], require_explicit_slug=True,
+            allow_fallback=False, allow_lazy_demo_creation=False,
+            allow_context_fallback=False, register_widget_token=False,
+        )
+    except TenantResolutionError as exc:
+        raise IdempotencyScopeConflict("La organización no está disponible.") from exc
+    # Generic aliases are discovery selectors, never evidence for clearing a
+    # stored demo. The productive path requires the exact canonical slug.
+    if tenant.slug.lower() != selectors[0]:
+        return None
+    owner = tenant.municipio if tenant.tipo == "municipio" else tenant.pyme
+    if owner is None or getattr(owner, "tenant_id", None) not in (None, tenant.id):
+        raise IdempotencyScopeConflict("El contexto de organización no coincide.")
+    source = getattr(g, "owner_resolution_source", None)
+    if owner_user is not None and (
+        _owner_context_is_trusted(owner_user, source) or source == "jwt_widget_owner"
+    ) and owner_user.id != owner.id:
+        raise IdempotencyScopeConflict("El contexto de organización no coincide.")
+    _assert_municipio_session_context_scope(
+        chat_context, tenant_id=tenant.id if chat_context.tenant_id is not None else None,
+        current_user=current_user, anon_id=anon_id,
+        allow_authenticated_transition=False, bind_authenticated_transition=False,
+    )
+    # A new/unbound row was selected through the same actor/anonymous identity.
+    # Binding it prevents subsequent requests from reusing it for another tenant.
+    chat_context.tenant_id = tenant.id
+    return tenant
+
+
+def _owner_plan_limit_for_tenant(owner_user, tenant):
+    from services.plan_access import normalize_plan
+    from services.plan_config import get_plan_metadata
+    from utils.plan_limits import limite_para_usuario
+    if tenant is None:
+        return limite_para_usuario(owner_user)
+    plan = normalize_plan(tenant.plan)
+    metadata = get_plan_metadata("gratis" if plan == "free" else plan)
+    if metadata is not None:
+        return metadata.message_limit
+    # An unsupported tenant plan cannot inherit unlimited legacy User.plan.
+    legacy_limit = limite_para_usuario(owner_user)
+    return legacy_limit if legacy_limit is not None else get_plan_metadata("gratis").message_limit
+
+
 def _extract_text_value(payload) -> str:
     if payload is None:
         return ""
@@ -888,6 +992,7 @@ def _owner_context_is_trusted(owner_user: Optional[User], resolution_source: Opt
         "explicit_entity_token",
         "session_owner_context",
         "demo_session_tenant",
+        "public_tenant_context",
     }
 
 
@@ -3836,10 +3941,56 @@ def _procesar_chat(
         is_init_request = _is_init_payload(original_user_payload)
         message_count_this_session = 0
 
+        demo_evidence = _request_has_demo_evidence(owner_user, chat_context_obj.context_data)
+        regular_tenant = None
+        if not demo_evidence:
+            from services.plan_access import tenant_is_demo_context
+            from services.municipio_chat_idempotency import IdempotencyScopeConflict
+            try:
+                resolved_tenant = _resolve_regular_chat_tenant(
+                    owner_user=owner_user, current_user=current_user, anon_id=anon_id,
+                    chat_context=chat_context_obj,
+                )
+                if resolved_tenant is not None and tenant_is_demo_context(resolved_tenant):
+                    demo_evidence = True
+                    owner_user = _owner_for_tenant_profile(resolved_tenant)
+                    owner_resolution_source = "public_tenant_context"
+                else:
+                    regular_tenant = resolved_tenant
+            except IdempotencyScopeConflict:
+                return _demo_session_error_response(
+                    "chat_tenant_scope_conflict",
+                    "No pudimos confirmar la organización de esta conversación. Iniciá un chat nuevo.",
+                    403,
+                )
+        if regular_tenant is not None:
+            owner_user = _owner_for_tenant_profile(regular_tenant)
+            owner_resolution_source = "public_tenant_context"
+            rubro_id = getattr(owner_user, "rubro_id", None)
+            rubro_clave = getattr(getattr(owner_user, "rubro", None), "clave", None)
+            data = chat_context_obj.context_data
+            # Old ordinary requests were marked v2_demo merely for carrying a
+            # tenant/session selector. Clear only that proven contamination;
+            # preserve all quotas, including the historical demo counter.
+            if (
+                isinstance(data, dict)
+                and data.get("demo_session_source") == "v2_demo"
+                and isinstance(data.get("demo_key"), str)
+                and data["demo_key"] in {regular_tenant.slug, rubro_clave}
+            ):
+                for key in (
+                    "demo_session", "demo_session_source", "demo_key",
+                    "demo_rubro_clave", "demo_sector", "demo_tipo_chat",
+                    "demo_resolved_tenant_slug", "demo_metadata",
+                ):
+                    data.pop(key, None)
+                flag_modified(chat_context_obj, "context_data")
+
         if is_anonymous:
             # Lógica para usuarios anónimos
             public_trial_active = bool(
-                _is_public_landing_request()
+                demo_evidence
+                or (_is_public_landing_request() and regular_tenant is None)
                 or request.args.get("demo_session_id")
                 or request.headers.get("X-Demo-Session-Id")
             )
@@ -4060,7 +4211,7 @@ def _procesar_chat(
             or demo_session_payload
         )
         suppress_legacy_demo_selector = bool(has_demo_context_marker or has_chat_session_marker)
-        demo_request_active = has_demo_context_marker
+        demo_request_active = demo_evidence
         demo_tenant_slug = str(
             demo_session_payload.get("tenant_slug")
             or request_payload.get("tenant_slug")
@@ -4072,17 +4223,18 @@ def _procesar_chat(
         ).strip().lower()
         tenant_for_demo = None
 
-        if demo_request_active:
-            contexto_chat["demo_session"] = True
-            contexto_chat["demo_session_source"] = "v2_demo"
-            if demo_session_payload:
-                contexto_chat["demo_sector"] = demo_session_payload.get("sector")
-                contexto_chat["demo_rubro_clave"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
-                contexto_chat["demo_key"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
-            elif effective_rubro_marker or demo_tenant_slug:
-                contexto_chat["demo_rubro_clave"] = effective_rubro_marker or demo_tenant_slug
-                contexto_chat["demo_key"] = effective_rubro_marker or demo_tenant_slug
-            if demo_metadata_from_payload:
+        if has_demo_context_marker or demo_request_active:
+            if demo_request_active:
+                contexto_chat["demo_session"] = True
+                contexto_chat["demo_session_source"] = "v2_demo"
+                if demo_session_payload:
+                    contexto_chat["demo_sector"] = demo_session_payload.get("sector")
+                    contexto_chat["demo_rubro_clave"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
+                    contexto_chat["demo_key"] = demo_session_payload.get("rubro") or demo_session_payload.get("tenant_slug")
+                elif not contexto_chat.get("demo_key") and (effective_rubro_marker or demo_tenant_slug):
+                    contexto_chat["demo_rubro_clave"] = effective_rubro_marker or demo_tenant_slug
+                    contexto_chat["demo_key"] = effective_rubro_marker or demo_tenant_slug
+            if demo_request_active and demo_metadata_from_payload:
                 contexto_chat["demo_metadata"] = demo_metadata_from_payload
                 if demo_metadata_from_payload.get("key"):
                     contexto_chat["demo_key"] = demo_metadata_from_payload.get("key")
@@ -4101,7 +4253,7 @@ def _procesar_chat(
             if default_menu_from_payload:
                 contexto_chat["default_menu"] = default_menu_from_payload
 
-            if demo_tenant_slug:
+            if demo_request_active and demo_tenant_slug:
                 demo_sector_marker = (
                     demo_session_payload.get("sector")
                     or request_payload.get("sector")
@@ -4168,7 +4320,7 @@ def _procesar_chat(
                     data["demo_session_id"] = raw_demo_session_token
                 if demo_session_payload:
                     data["demo_session_payload"] = demo_session_payload
-                if demo_metadata_from_payload:
+                if demo_request_active and demo_metadata_from_payload:
                     data["demo_metadata"] = demo_metadata_from_payload
                 if rubro_context_from_payload:
                     data["rubro_context"] = rubro_context_from_payload
@@ -4313,7 +4465,7 @@ def _procesar_chat(
             and (is_init_request or message_count_this_session == 0)
         )
 
-        if is_municipal_request and not demo_request_active and not force_demo_selector_flow and isinstance(contexto_chat, dict):
+        if regular_tenant is None and is_municipal_request and not demo_request_active and not force_demo_selector_flow and isinstance(contexto_chat, dict):
             demo_keys_to_clear = (
                 "demo_session",
                 "demo_owner_user_id",
@@ -4331,7 +4483,6 @@ def _procesar_chat(
                 "demo_capabilities",
                 "demo_keywords",
                 "demo_intro_sent",
-                "demo_message_count",
             )
             cleared_demo_state = False
             for key in demo_keys_to_clear:
@@ -4818,12 +4969,11 @@ def _procesar_chat(
         if owner_del_bot and _should_enforce_owner_plan_limit(
             demo_flow_active=demo_flow_active,
             is_init_request=is_init_request,
-            is_public_landing=is_public_landing,
+            is_public_landing=is_public_landing and regular_tenant is None,
             is_anonymous=is_anonymous,
             has_entity_token=has_entity_token,
         ):
-            from utils.plan_limits import limite_para_usuario
-            limite = limite_para_usuario(owner_del_bot)
+            limite = _owner_plan_limit_for_tenant(owner_del_bot, regular_tenant)
             if limite is not None and owner_del_bot.preguntas_usadas >= limite:
                 request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
                 g.request_id = request_id
@@ -5085,7 +5235,7 @@ def _procesar_chat(
                 )
 
         # --- Core Chat Logic Execution ---
-        demo_metadata_for_responder = _demo_metadata_from_context(contexto_chat)
+        demo_metadata_for_responder = _demo_metadata_from_context(contexto_chat) if demo_flow_active else {}
         if demo_runtime_result is not None:
             resultado = demo_runtime_result
         else:
@@ -5146,9 +5296,8 @@ def _procesar_chat(
 
         resultado["es_publico"] = es_publico
         if owner_del_bot:
-            from utils.plan_limits import limite_para_usuario
             resultado["preguntas_usadas"] = owner_del_bot.preguntas_usadas
-            resultado["limite_preguntas"] = limite_para_usuario(owner_del_bot)
+            resultado["limite_preguntas"] = _owner_plan_limit_for_tenant(owner_del_bot, regular_tenant)
 
         if not resultado.get("messages") and resultado.get("message_body"):
              resultado["messages"] = [{
