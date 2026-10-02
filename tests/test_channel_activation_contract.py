@@ -1,23 +1,19 @@
 from datetime import datetime, timedelta
 
-import jwt
-
 from database import db
 from models import CatalogoItem, CategoriaTicket, MessageTemplateRegistry, TenantProfile, User
 from services.channel_activation import build_channel_activation_payload
 
 
 def _auth_headers(app, user: User, tenant: TenantProfile) -> dict[str, str]:
-    token = jwt.encode(
-        {
+    from services.auth_session_lifecycle import issue_token
+    with app.app_context():
+        token = issue_token({
             "user_id": user.id,
             "rol": user.rol,
             "tenant_slug": tenant.slug,
             "exp": datetime.utcnow() + timedelta(hours=1),
-        },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
-    )
+        })
     return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": tenant.slug}
 
 
