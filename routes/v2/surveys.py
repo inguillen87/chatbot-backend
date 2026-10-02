@@ -1315,6 +1315,8 @@ def _attach_public_contract(
     tenant_slug: str | None = None,
     responses_count: int | None = None,
 ) -> dict[str, Any]:
+    from routes.encuestas_public import _attach_comment_social_config
+    _attach_comment_social_config(payload)
     title = payload.get("titulo") or payload.get("title") or getattr(encuesta, "titulo", None)
     public_state = _survey_public_state(encuesta)
     live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
@@ -3506,8 +3508,7 @@ def survey_live_results_v2(token: str):
             require_tenant_match=preferred_tenant_id is not None,
             allow_closed_for_read=True,
         )
-        is_tenant_owner = preferred_tenant_id is not None and getattr(encuesta, "tenant_id", None) == preferred_tenant_id
-        if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)) and not is_tenant_owner:
+        if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
             return _error_response(
                 "Los resultados en vivo no estan publicados para esta encuesta.",
                 403,

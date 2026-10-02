@@ -30,6 +30,7 @@ from models import (
     TicketSatisfaccion,
     Conversacion,
     ArchivoAdjunto,
+    CategoriaTicket,
     db,
 )
 from datetime import datetime, timedelta
@@ -82,7 +83,7 @@ from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido, _explicit_admin_request_tenant, auth_sin_escrituras_implicitas
 from utils.permissions import require_role
 from collections import defaultdict
-from sqlalchemy import or_, func, exists, false, literal_column
+from sqlalchemy import case, or_, func, exists, false, literal_column, select
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from utils.upload_limits import set_upload_request_limit
@@ -805,12 +806,42 @@ def _ticket_request_filter_payload() -> dict:
 
 def _apply_ticket_category_filter(query, TicketModel, category: Any = None, category_id: Any = None):
     if category_id is not None and hasattr(TicketModel, "categoria_id"):
+        if TicketModel is MunicipioTicket:
+            # An ID is a catalog filter only when this ticket proves ownership
+            # of that entry. A foreign ID cannot become tenant authority.
+            catalog_entry = exists().where(
+                CategoriaTicket.id == TicketModel.categoria_id,
+                CategoriaTicket.tenant_id == TicketModel.tenant_id,
+                func.trim(CategoriaTicket.nombre) != "",
+            )
+            return query.filter(TicketModel.categoria_id == category_id, catalog_entry)
         return query.filter(TicketModel.categoria_id == category_id)
 
     if not _ticket_filter_value_active(category):
         return query
 
     category_value = str(category).strip()
+    if TicketModel is MunicipioTicket:
+        from services.territorial_evidence import canonicalize_territorial_category
+
+        canonical = canonicalize_territorial_category(category_value)["category"]
+        aliases = (
+            ("alumbrado", "alumbrado publico", "alumbrado público", "luminaria", "luminarias")
+            if canonical == "luminarias"
+            else (category_value.lower(),)
+        )
+        catalog_entry = exists().where(
+            CategoriaTicket.id == TicketModel.categoria_id,
+            CategoriaTicket.tenant_id == TicketModel.tenant_id,
+            func.trim(CategoriaTicket.nombre) != "",
+        )
+        catalog_match = exists().where(
+            CategoriaTicket.id == TicketModel.categoria_id,
+            CategoriaTicket.tenant_id == TicketModel.tenant_id,
+            func.lower(func.trim(CategoriaTicket.nombre)).in_(aliases),
+        )
+        persisted_match = func.lower(func.trim(TicketModel.categoria)).in_(aliases)
+        return query.filter(or_(catalog_match, (~catalog_entry) & persisted_match))
     if category_value.lower() == "luminarias":
         return query.filter(TicketModel.categoria.ilike("%lumin%"))
     return query.filter(TicketModel.categoria == category_value)
@@ -933,14 +964,26 @@ def _ticket_grouped_facet(query, TicketModel, column, *, label_map=None, fallbac
 def _ticket_category_facet(query, TicketModel):
     if not hasattr(TicketModel, "categoria"):
         return []
-    columns = [TicketModel.categoria, func.count(TicketModel.id)]
-    if hasattr(TicketModel, "categoria_id"):
+    if TicketModel is MunicipioTicket:
+        catalog_name = select(CategoriaTicket.nombre).where(
+            CategoriaTicket.id == TicketModel.categoria_id,
+            CategoriaTicket.tenant_id == TicketModel.tenant_id,
+            func.trim(CategoriaTicket.nombre) != "",
+        ).scalar_subquery()
+        category_label = func.coalesce(catalog_name, TicketModel.categoria)
+        verified_category_id = case((catalog_name.isnot(None), TicketModel.categoria_id), else_=None)
+        rows = query.with_entities(
+            verified_category_id, category_label, func.count(TicketModel.id),
+        ).group_by(verified_category_id, category_label).all()
+    elif hasattr(TicketModel, "categoria_id"):
+        columns = [TicketModel.categoria, func.count(TicketModel.id)]
         columns.insert(0, TicketModel.categoria_id)
         rows = query.with_entities(*columns).group_by(TicketModel.categoria_id, TicketModel.categoria).all()
     else:
+        columns = [TicketModel.categoria, func.count(TicketModel.id)]
         rows = query.with_entities(*columns).group_by(TicketModel.categoria).all()
 
-    items = []
+    items_by_key = {}
     for row in rows:
         if hasattr(TicketModel, "categoria_id"):
             category_id, category, count = row
@@ -950,6 +993,15 @@ def _ticket_category_facet(query, TicketModel):
         label = str(category or "").strip()
         if not label:
             continue
+        if TicketModel is MunicipioTicket and category_id is None:
+            from services.territorial_evidence import canonicalize_territorial_category
+
+            if canonicalize_territorial_category(label)["category"] == "luminarias":
+                label = "Luminarias"
+        key = (category_id, label)
+        if key in items_by_key:
+            items_by_key[key]["count"] += int(count or 0)
+            continue
         item = {
             "value": label,
             "label": label,
@@ -957,8 +1009,8 @@ def _ticket_category_facet(query, TicketModel):
         }
         if category_id is not None:
             item["category_id"] = category_id
-        items.append(item)
-    return sorted(items, key=lambda item: (-item["count"], item["label"]))
+        items_by_key[key] = item
+    return sorted(items_by_key.values(), key=lambda item: (-item["count"], item["label"]))
 
 
 def _ticket_agent_facet(query, TicketModel):
@@ -1046,6 +1098,7 @@ def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: M
     ]
     sla_facets = _ticket_condition_facet(sla_query, TicketModel, sla_specs,
         lambda model, value: _ticket_sla_filter_condition(model, value, sla_evidence_ids))
+    category_facets = _ticket_category_facet(category_query, TicketModel)
 
     return {
         "contract_version": "tickets.facets.v1",
@@ -1054,8 +1107,8 @@ def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: M
         "total_scoped": int(scoped_query.count()),
         "total_filtered": int(filtered_total or 0),
         "statuses": _ticket_grouped_facet(status_query, TicketModel, TicketModel.estado),
-        "categories": _ticket_category_facet(category_query, TicketModel),
-        "areas": _ticket_category_facet(category_query, TicketModel),
+        "categories": category_facets,
+        "areas": category_facets,
         "channels": _ticket_grouped_facet(channel_query, TicketModel, _ticket_channel_column(TicketModel)),
         "agents": _ticket_agent_facet(agent_query, TicketModel),
         "priorities": _ticket_condition_facet(priority_query, TicketModel, priority_specs, _ticket_priority_filter_condition),
@@ -2161,7 +2214,11 @@ def serialize_ticket_to_json(
     categoria_normalizada = (
         category_authority.get("authoritative_category")
         if category_authority and category_authority.get("verified")
-        else normalize_category(categoria_ticket) or categoria_ticket
+        else (
+            categoria_ticket
+            if category_authority is not None
+            else normalize_category(categoria_ticket) or categoria_ticket
+        )
     )
     location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
     priority_payload = _ticket_priority_payload(ticket)

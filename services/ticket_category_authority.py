@@ -6,7 +6,6 @@ from typing import Any, Iterable
 
 from models import CategoriaTicket
 from services.territorial_evidence import canonicalize_territorial_category
-from utils.ticket_utils import normalize_category
 
 
 CONTRACT_VERSION = "ticket.category_authority.v1"
@@ -51,18 +50,21 @@ def build_municipio_category_authorities(
         category_id = getattr(ticket, "categoria_id", None)
         same_tenant = tenant_id is not None and getattr(ticket, "tenant_id", None) == tenant_id
         category = categories.get(category_id) if same_tenant else None
-        authoritative = normalize_category(_text(getattr(category, "nombre", None))) if category else None
+        # A tenant catalog entry is the authority itself. Global keyword or
+        # substring normalization must never rename a verified catalog label.
+        authoritative = _text(getattr(category, "nombre", None)) if category else None
         alias_evidence = canonicalize_territorial_category(persisted)
         alias_category = alias_evidence["category"]
         alias_verified = alias_category == "luminarias" and bool(persisted)
         if not authoritative and alias_verified:
-            authoritative = normalize_category(alias_category) or alias_category
+            authoritative = "Luminarias"
         verified = bool(authoritative)
-        persisted_normalized = normalize_category(persisted)
+        persisted_normalized = canonicalize_territorial_category(persisted)["category"] if persisted else None
+        authoritative_normalized = canonicalize_territorial_category(authoritative)["category"] if authoritative else None
         conflict = bool(
             verified
             and persisted_normalized
-            and persisted_normalized.casefold() != authoritative.casefold()
+            and persisted_normalized != authoritative_normalized
         )
         if category and verified:
             reason_code = "verified_tenant_category"

@@ -43,6 +43,7 @@ from services.survey_response_provenance import (
     build_survey_response_provenance,
 )
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.ticket_category_authority import build_municipio_category_authorities
 from services.territorial_evidence import (
     build_territorial_facets,
     canonicalize_territorial_category,
@@ -729,28 +730,36 @@ def _heatmap_source_quality(
             "records": ticket_total,
             "points": int(ticket_points),
             "pending_geocode": len(geocoding_candidates),
-            "coordinate_coverage_pct": round((ticket_points / ticket_total) * 100, 2) if ticket_total else 0.0,
+            "coordinate_coverage_pct": round((ticket_points / ticket_total) * 100, 2) if ticket_total else None,
+            "coverage_basis": "visible_points_over_filtered_ticket_records",
+            "records_scope": "tickets_created_in_period_after_filters",
         },
         "survey": {
             "label": "Encuestas y votaciones",
             "records": int(source_counts.get("survey", 0)),
             "points": int(source_counts.get("survey", 0)),
             "pending_geocode": 0,
-            "coordinate_coverage_pct": 100.0 if source_counts.get("survey", 0) else 0.0,
+            "coordinate_coverage_pct": None,
+            "coverage_reason_code": "full_source_population_not_measured",
+            "records_scope": "visible_geo_points_only",
         },
         "analytics_event": {
             "label": "Eventos digitales",
             "records": int(source_counts.get("analytics_event", 0)),
             "points": int(source_counts.get("analytics_event", 0)),
             "pending_geocode": 0,
-            "coordinate_coverage_pct": 100.0 if source_counts.get("analytics_event", 0) else 0.0,
+            "coordinate_coverage_pct": None,
+            "coverage_reason_code": "full_source_population_not_measured",
+            "records_scope": "visible_geo_points_only",
         },
         "commerce": {
             "label": "Pedidos y ventas",
             "records": commerce_total,
             "points": commerce_points,
             "pending_geocode": 0,
-            "coordinate_coverage_pct": round((commerce_points / commerce_total) * 100, 2) if commerce_total else 0.0,
+            "coordinate_coverage_pct": round((commerce_points / commerce_total) * 100, 2) if commerce_total else None,
+            "coverage_basis": "visible_points_over_period_commerce_records",
+            "records_scope": "commerce_records_in_period",
             "privacy_mode": "coordinates_without_customer_pii",
         },
     }
@@ -763,8 +772,12 @@ def _heatmap_source_quality(
             "points": len(points),
             "pending_geocode": len(geocoding_candidates),
             "weakest_source": min(
-                sources.items(),
+                (
+                    item for item in sources.items()
+                    if item[1]["coordinate_coverage_pct"] is not None
+                ),
                 key=lambda item: (item[1]["coordinate_coverage_pct"], -item[1]["pending_geocode"]),
+                default=(None, None),
             )[0],
         },
     }
@@ -1020,7 +1033,12 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
     }
 
 
-def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
+def _municipio_ticket_record(
+    ticket: MunicipioTicket,
+    *,
+    as_of: datetime | None = None,
+    category_authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     channel = _norm(getattr(ticket, "canal_ingreso", None), "web")
     details = _json_object(getattr(ticket, "detalles", None))
@@ -1034,7 +1052,19 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         metadata=metadata,
     )
     sla = observe_legacy_ticket_sla(ticket, as_of=as_of)
-    category = canonicalize_territorial_category(ticket.categoria)
+    authoritative_category = (
+        category_authority.get("authoritative_category")
+        if category_authority and category_authority.get("verified")
+        else None
+    )
+    category = canonicalize_territorial_category(authoritative_category or ticket.categoria)
+    raw_category = str(ticket.categoria or "").strip() or None
+    if authoritative_category:
+        category["provenance"] = {
+            **category["provenance"],
+            "source": category_authority["source"],
+            "persisted_input": raw_category,
+        }
     return {
         "source": "municipio_ticket",
         "source_model": "MunicipioTicket",
@@ -1044,8 +1074,11 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         "priority": "normal",
         "channel": channel,
         "category": category["category"],
-        "raw_category": category["raw_category"],
+        # Authorization continues to use the persisted label/ID. The catalog
+        # projection changes grouping only and never recategorizes the record.
+        "raw_category": raw_category,
         "category_provenance": category["provenance"],
+        "category_authority": category_authority,
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
         "zone": _norm(location.get("zone"), "sin_zona"),
@@ -1061,6 +1094,23 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         "sla_state": sla["state"],
         "overdue": sla["breached"],
     }
+
+
+def _municipio_ticket_records(
+    tenant: TenantProfile,
+    tickets: list[MunicipioTicket],
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
+    authorities = build_municipio_category_authorities(tickets, tenant_id=tenant.id)
+    return [
+        _municipio_ticket_record(
+            ticket,
+            as_of=as_of,
+            category_authority=authorities.get(ticket.id),
+        )
+        for ticket in tickets
+    ]
 
 
 def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
@@ -1125,7 +1175,7 @@ def _collect_ticket_records(
     municipio_ticket_query = _between(_municipio_ticket_query(tenant), MunicipioTicket.fecha, start_date, end_date)
     municipio_ticket_query = apply_employee_ticket_category_scope(municipio_ticket_query, viewer, MunicipioTicket)
     municipio_tickets = municipio_ticket_query.all()
-    records.extend(_municipio_ticket_record(ticket, as_of=as_of) for ticket in municipio_tickets)
+    records.extend(_municipio_ticket_records(tenant, municipio_tickets, as_of=as_of))
 
     pyme_ticket_query = _between(
         PymeTicket.query.filter_by(tenant_id=tenant.id),
@@ -1180,7 +1230,7 @@ def _collect_open_ticket_records(
         as_of=as_of,
     )
     municipio_ticket_query = apply_employee_ticket_category_scope(municipio_ticket_query, viewer, MunicipioTicket)
-    records.extend(_municipio_ticket_record(ticket, as_of=as_of) for ticket in municipio_ticket_query.all())
+    records.extend(_municipio_ticket_records(tenant, municipio_ticket_query.all(), as_of=as_of))
 
     pyme_ticket_query = _created_at_membership_query(
         _open_status_query(
@@ -2962,7 +3012,7 @@ def _location_quality(
         if not _record_has_coordinates(record) and not record.get("address")
     ]
     total = len(ticket_records)
-    coverage_pct = round((len(with_coordinates) / total) * 100, 2) if total else 0.0
+    coverage_pct = round((len(with_coordinates) / total) * 100, 2) if total else None
     coordinate_sources = Counter(
         _location_provenance_source(record, "coordinate") for record in with_coordinates
     )
@@ -3036,9 +3086,10 @@ def _heatmap_quality_contract(
 ) -> dict[str, Any]:
     total_ticket_records = int(location_quality.get("total_ticket_records") or 0)
     ticket_records_with_coordinates = int(location_quality.get("ticket_records_with_coordinates") or 0)
+    persisted_coordinate_records = int(location_quality.get("ticket_records_with_persisted_coordinates") or 0)
     pending_geocode = len(geocoding_candidates or [])
     visible_points = len(points or [])
-    ticket_coverage_rate = round(ticket_records_with_coordinates / total_ticket_records, 4) if total_ticket_records else 0.0
+    ticket_coverage_rate = round(ticket_records_with_coordinates / total_ticket_records, 4) if total_ticket_records else None
     has_survey_or_event_points = any(
         point.get("source") in {"survey", "analytics_event", "commerce"}
         for point in points or []
@@ -3061,6 +3112,10 @@ def _heatmap_quality_contract(
         state = "pending_geocode"
         reason_code = "addresses_need_geocoding"
         label = "Direcciones pendientes de geocodificar"
+    elif int(location_quality.get("ticket_records_outside_jurisdiction") or 0):
+        state = "blocked"
+        reason_code = "coordinates_outside_jurisdiction"
+        label = "Coordenadas fuera de la jurisdicción"
     elif records:
         state = "blocked"
         reason_code = "missing_coordinates"
@@ -3076,11 +3131,17 @@ def _heatmap_quality_contract(
         "label": label,
         "reason_code": reason_code,
         "coverage_rate": ticket_coverage_rate,
-        "coverage_percent": round(ticket_coverage_rate * 100, 1),
+        "coverage_percent": round(ticket_coverage_rate * 100, 1) if ticket_coverage_rate is not None else None,
         "visible_points": visible_points,
         "total_ticket_records": total_ticket_records,
         "ticket_records_with_coordinates": ticket_records_with_coordinates,
-        "ticket_records_without_coordinates": max(0, total_ticket_records - ticket_records_with_coordinates),
+        "ticket_records_with_persisted_coordinates": persisted_coordinate_records,
+        "ticket_records_outside_jurisdiction": int(location_quality.get("ticket_records_outside_jurisdiction") or 0),
+        "ticket_records_unverified_jurisdiction": int(location_quality.get("ticket_records_unverified_jurisdiction") or 0),
+        "ticket_records_without_coordinates": max(0, total_ticket_records - persisted_coordinate_records),
+        "ticket_records_without_validated_coordinates": max(0, total_ticket_records - ticket_records_with_coordinates),
+        "coverage_denominator": "tickets_created_in_period_after_filters",
+        "coverage_numerator": "tickets_with_validated_coordinates",
         "pending_geocode": pending_geocode,
         "max_points": max_points,
         "can_render_heatmap": bool(visible_points),
@@ -3243,9 +3304,14 @@ def _heatmap_narrative_contract(
 
     if points:
         headline = f"{points} puntos territoriales listos para decision"
+        coverage_percent = quality.get("coverage_percent")
+        coverage_text = (
+            f"cobertura GPS de reclamos del {coverage_percent}%"
+            if coverage_percent is not None
+            else "sin reclamos en el período para calcular su cobertura GPS"
+        )
         body = (
-            f"El mapa consolida {cells} zonas activas con cobertura "
-            f"{quality.get('coverage_percent', 0)}% y senales AI en modo {ai_summary.get('risk_level') or 'normal'}."
+            f"El mapa consolida {cells} zonas activas, {coverage_text}."
         )
     elif quality.get("reason_code") == "official_jurisdiction_boundary_unavailable":
         headline = "Alcance territorial pendiente de validación oficial"
@@ -3255,7 +3321,16 @@ def _heatmap_narrative_contract(
         )
     elif pending_geocode:
         headline = f"{pending_geocode} direcciones listas para geocodificar"
-        body = "La UI puede mostrar la cola territorial y pedir coordenadas antes de pintar calor real."
+        body = f"Hay {pending_geocode} reclamos con dirección y sin coordenadas guardadas."
+        outside_records = int(quality.get("ticket_records_outside_jurisdiction") or 0)
+        if outside_records:
+            body += f" Además, {outside_records} ubicaciones guardadas quedan fuera de la jurisdicción."
+    elif quality.get("reason_code") == "coordinates_outside_jurisdiction":
+        headline = "Ubicaciones fuera de la jurisdicción"
+        body = (
+            "Hay coordenadas guardadas, pero quedan fuera del territorio del tenant. "
+            "Revisar las ubicaciones de origen permite corregir cada caso sin reubicar puntos automáticamente."
+        )
     elif state == "blocked":
         headline = "Sin coordenadas reales para pintar el territorio"
         body = "Hay actividad operativa, pero falta latitud/longitud o direcciones utiles para construir hotspots."
@@ -3978,6 +4053,7 @@ def build_operational_heatmap(
             "category": record["category"],
             "raw_category": record.get("raw_category"),
             "category_provenance": record.get("category_provenance"),
+            "category_authority": record.get("category_authority"),
             "channel": record["channel"],
             "status": record["status"],
             "sla_state": record.get("sla_state") or "normal",
@@ -4507,11 +4583,7 @@ def build_operational_heatmap(
             "empty_reason": (
                 None
                 if points
-                else (
-                    "official_jurisdiction_boundary_unavailable"
-                    if boundary_unavailable
-                    else "no_real_geo_points"
-                )
+                else quality.get("reason_code") or "no_real_geo_points"
             ),
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events", "commerce_activity", "ai_risk", "whatsapp_activity"],
@@ -5625,6 +5697,14 @@ def build_operational_dashboard(
         "employees": employee_metrics,
         "maps": {
             "heatmap": {
+                "period": heatmap["period"],
+                "population": {
+                    "contract_version": "operations.heatmap_population.v1",
+                    "ticket_membership": "created_in_period",
+                    "ticket_status_scope": "all_states",
+                    "current_open_queue": False,
+                    "privacy_mode": (heatmap.get("privacy") or {}).get("mode"),
+                },
                 "summary": heatmap["summary"],
                 "bounds": heatmap["bounds"],
                 "hotspots": heatmap.get("hotspots") or [],
@@ -5634,6 +5714,8 @@ def build_operational_dashboard(
                 "ai_layers": heatmap.get("ai_layers"),
                 "map_experience": heatmap.get("map_experience"),
                 "location_quality": heatmap.get("location_quality"),
+                "quality": heatmap.get("quality"),
+                "jurisdiction": heatmap.get("jurisdiction"),
                 "geocoding": {
                     "candidate_count": ((heatmap.get("geocoding") or {}).get("candidate_count") or 0),
                     "reason_code": ((heatmap.get("geocoding") or {}).get("reason_code") or "no_pending_addresses"),

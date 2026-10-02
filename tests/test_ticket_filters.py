@@ -327,7 +327,7 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(statuses['cerrado'], 1)
 
             categories = {item['value']: item['count'] for item in data['facets']['categories']}
-            self.assertEqual(categories['Luminaria'], 1)
+            self.assertEqual(categories['Luminarias'], 1)
             self.assertEqual(categories['Arbolado'], 1)
 
             agents = {item['value']: item['count'] for item in data['facets']['agents']}

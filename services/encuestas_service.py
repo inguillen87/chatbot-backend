@@ -8885,6 +8885,7 @@ def _build_admin_lifecycle_contract(
     governed_release: bool,
     jurisdiction_scope: Optional[Mapping[str, Any]] = None,
     survey_evidence_gate: Optional[Mapping[str, Any]] = None,
+    public_access: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Describe the persisted lifecycle without deriving unavailable KPIs."""
 
@@ -8967,6 +8968,7 @@ def _build_admin_lifecycle_contract(
     accepts_responses = (
         phase in {"collecting", "live_voting"}
         and not jurisdiction_conflict
+        and (public_access is None or public_access.get("allowed") is True)
     )
 
     publish_reason = None
@@ -9036,6 +9038,7 @@ def _build_admin_lifecycle_contract(
             "can_share": (
                 persisted_state == "publicada"
                 and not jurisdiction_conflict
+                and (public_access is None or public_access.get("allowed") is True)
                 and bool(_resolve_public_slug(encuesta))
             ),
             "can_view_results": response_count > 0,
@@ -9128,6 +9131,7 @@ def build_admin_list_payload(
     }
     from services.survey_jurisdiction import (
         jurisdiction_contract,
+        survey_is_publicly_visible,
         tenant_requires_government_survey_evidence,
     )
 
@@ -9181,10 +9185,45 @@ def build_admin_list_payload(
         data["jurisdiction"] = jurisdiction_summary
         tenant_profile = tenant_profiles_by_id.get(int(encuesta.tenant_id))
         survey_evidence_gate = None
+        evaluated_jurisdiction = None
         if tenant_requires_government_survey_evidence(tenant_profile):
-            survey_evidence_gate = jurisdiction_contract(encuesta).get(
+            evaluated_jurisdiction = jurisdiction_contract(encuesta)
+            survey_evidence_gate = evaluated_jurisdiction.get(
                 "government_evidence_gate"
             )
+        if evaluated_jurisdiction is not None:
+            publicly_visible = bool(
+                not evaluated_jurisdiction["visibility_enforced"]
+                or (
+                    evaluated_jurisdiction["configuration_valid"]
+                    and evaluated_jurisdiction["ready"]
+                )
+            )
+        else:
+            publicly_visible = survey_is_publicly_visible(encuesta)
+        public_reason = None
+        public_next_action = None
+        if not publicly_visible:
+            evaluated_jurisdiction = evaluated_jurisdiction or jurisdiction_contract(encuesta)
+            public_reason = (
+                evaluated_jurisdiction.get("reason_code")
+                if evaluated_jurisdiction.get("configuration_valid")
+                else "survey_jurisdiction_gate_configuration_invalid"
+            ) or "survey_jurisdiction_guard_blocked"
+            public_next_action = evaluated_jurisdiction.get("next_action") or "review_survey_jurisdiction"
+        elif str(encuesta.estado or "").strip().lower() != "publicada":
+            public_reason = "survey_not_published"
+        elif not data["esta_activa"]:
+            public_reason = "survey_outside_active_window"
+        elif not data["slug_publico"]:
+            public_reason = "survey_public_link_missing"
+        public_access = {
+            "contract_version": "surveys.public_access.v1",
+            "allowed": public_reason is None,
+            "reason_code": public_reason,
+            "next_action": public_next_action,
+        }
+        data["public_access"] = public_access
         lifecycle = _build_admin_lifecycle_contract(
             encuesta,
             metricas,
@@ -9194,8 +9233,10 @@ def build_admin_list_payload(
             ),
             jurisdiction_scope=admin_scope,
             survey_evidence_gate=survey_evidence_gate,
+            public_access=public_access,
         )
         data["admin_lifecycle"] = lifecycle
+        data["esta_activa"] = bool(lifecycle["accepts_responses"])
         if bool(
             isinstance(data.get("governance"), Mapping)
             and data["governance"].get("release_required") is True
@@ -10181,17 +10222,51 @@ def _compute_live_results(encuesta: EncEncuesta) -> Dict[str, Any]:
     return results
 
 
+def normalize_survey_comment_mode(payload: Mapping[str, Any]) -> str:
+    mode = str(payload.get("mode") or payload.get("comment_mode") or payload.get("modo") or "anon").strip().lower()
+    if mode in {"anon", "anonimo", "anonymous"}:
+        return "anon"
+    if mode in {"social", "facebook", "google", "instagram"}:
+        return "social"
+    raise EncuestaError("Modo de comentario inválido", status_code=400, payload={"reason_code": "invalid_comment_mode"})
+
+
 def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[User]) -> EncComentario:
     encuesta = db.session.get(EncEncuesta, encuesta_id)
     if not encuesta or not encuesta.permitir_comentarios:
         raise EncuestaError("Comentarios no habilitados para esta encuesta", status_code=403)
 
-    texto = (payload.get("texto") or "").strip()
+    raw_text = payload.get("texto")
+    texto = raw_text.strip() if isinstance(raw_text, str) else ""
     if not texto:
         raise EncuestaError("El comentario no puede estar vacío")
+    if len(texto) > 500:
+        raise EncuestaError("El comentario no puede superar 500 caracteres", status_code=400, payload={"reason_code": "comment_too_long"})
 
-    comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
-    comment_mode = "social" if comment_mode == "social" else "anon"
+    comment_mode = normalize_survey_comment_mode(payload)
+    payload = dict(payload)
+    if comment_mode == "social":
+        token = payload.get("social_token") or payload.get("auth_token")
+        if not token and has_request_context():
+            token = request.headers.get("X-Survey-Social-Token")
+        if not token:
+            raise EncuestaError("Se requiere token social válido para comentar", status_code=400, payload={"reason_code": "social_token_required"})
+        claims = verify_social_comment_token(str(token))
+        if not claims:
+            raise EncuestaError("Token social inválido o expirado", status_code=400, payload={"reason_code": "invalid_social_token"})
+        for claim_key, payload_key in (("provider", "auth_provider"), ("auth_user_id", "auth_user_id"), ("auth_email", "auth_email"), ("auth_first_name", "auth_first_name"), ("auth_last_name", "auth_last_name")):
+            claimed = str(claims.get(claim_key) or "").strip()
+            incoming = str(payload.get(payload_key) or "").strip()
+            if incoming and incoming.lower() != claimed.lower():
+                raise EncuestaError("Los datos sociales no coinciden con el token", status_code=400, payload={"reason_code": "social_identity_mismatch"})
+            payload[payload_key] = claimed
+        # Public display names must come from the signed profile, never a free field.
+        payload.pop("nombre", None)
+        payload.pop("nombre_autor", None)
+    else:
+        # An explicit anonymous choice never retains a session, name or social identifier.
+        user = None
+        payload = {"texto": texto, "mode": "anon", "channel": payload.get("channel")}
 
     auth_provider = (
         payload.get("auth_provider")
@@ -10221,7 +10296,7 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
     if not display_name:
         display_name = (payload.get("nombre") or payload.get("nombre_autor") or "").strip()
     if not display_name and comment_mode == "social":
-        display_name = auth_email or (f"Usuario {auth_provider.title()}" if auth_provider else "")
+        display_name = f"Usuario {auth_provider.title()}" if auth_provider else ""
 
     anon_id = payload.get("anon_id")
     if comment_mode == "social":
@@ -10344,6 +10419,8 @@ def serialize_public_comment(comentario: EncComentario) -> Dict[str, Any]:
 
 
 def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 50), 100))
+    offset = max(0, int(offset or 0))
     base_query = (
         EncComentario.query.filter_by(encuesta_id=encuesta_id, estado="publicado")
         .order_by(EncComentario.created_at.desc())
@@ -10424,9 +10501,9 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
     return results
 
 
-def reportar_comentario(comentario_id: int) -> EncComentario:
+def reportar_comentario(comentario_id: int, *, encuesta_id: int) -> EncComentario:
     comentario = db.session.get(EncComentario, comentario_id)
-    if not comentario:
+    if not comentario or comentario.encuesta_id != encuesta_id:
         raise EncuestaError("Comentario no encontrado", status_code=404)
 
     comentario.report_count += 1
