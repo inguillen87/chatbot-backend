@@ -332,6 +332,157 @@ class RegularTenantChatTests(unittest.TestCase):
         self.assertEqual(response.get_json()['context_revision'], published.get_json()['revision'])
         self.assertEqual(self.stored()[1]['demo_message_count'], 2)
 
+    def published_knowledge_for_public_chat(self):
+        from tests.test_institutional_assistant_content import sample
+        from database import db
+        from models import Rubro, TenantProfile, User
+        with self.app.app_context():
+            tenant = db.session.get(TenantProfile, self.accounts['acceptance-a']['tenant_id'])
+            owner = db.session.get(User, tenant.municipio_id)
+            # The real TDF request reaches the municipal responder. Its
+            # persisted sector key, rather than the unrelated "regular-chat-a"
+            # fixture key, is the routing authority exercised here.
+            rubro = Rubro.query.filter_by(clave='municipio').first()
+            if rubro is None:
+                rubro = Rubro(clave='municipio', nombre='Municipio', es_publico=True)
+                db.session.add(rubro); db.session.flush()
+            owner.rubro_id = rubro.id
+            db.session.commit()
+        login = self.client.post('/auth/login', json={
+            'email': self.accounts['acceptance-a']['email'], 'password': self.password})
+        self.assertEqual(login.status_code, 200, login.get_json())
+        bundle = sample(self.accounts['acceptance-a']['tenant_id'], 'acceptance-a')
+        bundle['nodes']['start']['actions'][0]['label'] = '🪪 Certificados: CUD y CMO'
+        bundle['sources']['a'].update(document_visibility='private',
+            origin_url='https://drive.google.com/file/d/private-fixture-original/view')
+        url = '/api/admin/tenants/acceptance-a/institutional-assistant'
+        imported = self.client.put(url, json={'operation': 'import', 'expected_revision': None,
+            'bundle': bundle}, headers={'X-Chatboc-Knowledge': '1'})
+        self.assertEqual(imported.status_code, 200, imported.get_json())
+        published = self.client.put(url, json={'operation': 'publish',
+            'expected_revision': imported.get_json()['revision']}, headers={'X-Chatboc-Knowledge': '1'})
+        self.assertEqual(published.status_code, 200, published.get_json())
+        # The embed's chat POST is anonymous even when an admin published it.
+        self.client = self.app.test_client()
+        return published.get_json(), url
+
+    def assert_public_knowledge_answer(self, response, published):
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload['fuente'], 'institutional_knowledge')
+        self.assertEqual(payload['knowledge_tenant'], {
+            'id': self.accounts['acceptance-a']['tenant_id'], 'slug': 'acceptance-a'})
+        self.assertEqual(payload['context_revision'], published['revision'])
+        self.assertEqual(payload['knowledge_nodes'][0]['id'], 'requirements')
+        self.assertIn('Respuesta institucional de prueba.', payload['message_body'])
+        self.assertTrue(payload['ux_context']['trusted_owner'])
+        self.assertFalse(payload['ux_context']['demo_session'])
+        self.assertFalse(payload['ux_context']['should_render_demo_shell'])
+        for source in payload['knowledge_sources']:
+            self.assertEqual(source['document_visibility'], 'private')
+            self.assertFalse(source['delivery']['publicly_accessible'])
+            self.assertNotIn('url', source); self.assertNotIn('origin_url', source)
+        self.assertNotIn('private-fixture-original', str(payload))
+        return payload
+
+    def test_real_widget_knowledge_button_label_and_action_avoid_complaint_dispatch(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        published, _ = self.published_knowledge_for_public_chat()
+        operation = {'estado_conversacion': 'ESPERANDO_INFO_RECLAMO_LLM',
+            'expected_fields_llm_reclamo': ['descripcion', 'email']}
+        self.context({CONTEXTO_MUNICIPIO: operation})
+        action = 'knowledge:' + published['revision'][:16] + ':requirements'
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('exact menu must not use model')), \
+             patch('services.municipio_responder.responder_municipio', side_effect=AssertionError('knowledge action must not start complaint')):
+            response = self.post(question='🪪 Certificados: CUD y CMO', body={
+                'action': action, 'action_id': action, 'button_source': 'button',
+                'contexto_previo': {'estado_conversacion': 'inicio', 'id_ticket_creado': None}})
+        self.assert_public_knowledge_answer(response, published)
+        self.assertEqual(self.stored()[1][CONTEXTO_MUNICIPIO], operation)
+
+    def test_regular_question_after_general_history_uses_published_source_selector(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        published, _ = self.published_knowledge_for_public_chat()
+        general = {'estado_conversacion': 'CONVERSACION_GENERAL_LLM',
+            'historial_conversacion_general_llm': [{'user': 'Consulta anterior de prueba'}]}
+        self.context({CONTEXTO_MUNICIPIO: general})
+        question = '¿Qué documentación puedo consultar sobre el CUD?'
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': ['requirements']}) as selector, \
+             patch('services.municipio_responder.responder_municipio', side_effect=AssertionError('matched source must not use free-form complaint handler')):
+            response = self.post(question=question)
+        self.assert_public_knowledge_answer(response, published)
+        selector.assert_called_once()
+        self.assertEqual(__import__('json').loads(selector.call_args.args[1])['question'], question)
+        self.assertEqual(self.stored()[1][CONTEXTO_MUNICIPIO], general)
+
+    def test_invalid_knowledge_action_never_falls_through_to_complaint(self):
+        from services.logic import responder_chatboc
+        published, _ = self.published_knowledge_for_public_chat()
+        actions = ('knowledge:' + '0' * 16 + ':requirements',
+            'knowledge:' + published['revision'][:16] + ':unknown-node')
+        for index, action in enumerate(actions):
+            with self.subTest(action=index), patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+                 patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('invalid explicit menu must not query model')), \
+                 patch('services.municipio_responder.responder_municipio', side_effect=AssertionError('invalid explicit menu must not start complaint')):
+                response = self.post(session='invalid-knowledge-' + str(index), question='🪪 Certificados: CUD y CMO',
+                    body={'action': action, 'action_id': action, 'button_source': 'button'})
+            self.assertEqual(response.status_code, 200, response.get_json())
+            self.assertEqual(response.get_json()['fuente'], 'institutional_knowledge_stale')
+
+    def test_active_or_unknown_operation_and_explicit_business_action_keep_priority(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        self.published_knowledge_for_public_chat()
+        operations = ({'estado_conversacion': 'ESPERANDO_INFO_RECLAMO_LLM'},
+            {'stage': 'location'}, {'estado_conversacion': 'CONVERSACION_GENERAL_LLM',
+                'expected_fields_llm_reclamo': ['email']},
+            {'estado_conversacion': 'CONVERSACION_GENERAL_LLM'})
+        for index, operation in enumerate(operations):
+            session = 'active-operation-' + str(index)
+            self.context({CONTEXTO_MUNICIPIO: operation}, session=session)
+            action = {'action': 'iniciar_reclamo', 'action_id': 'iniciar_reclamo'} if index == 3 else {}
+            with self.subTest(operation=index), patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+                 patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('active operation must keep control')), \
+                 patch('services.municipio_responder.responder_municipio', return_value={
+                    'message_body': 'Respuesta operacional de prueba', 'fuente': 'operational'}) as operational:
+                response = self.post(session=session, question='¿Qué documentación puedo consultar sobre el CUD?', body=action)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            self.assertEqual(response.get_json()['fuente'], 'operational')
+            operational.assert_called_once()
+            self.assertEqual(self.stored(session)[1][CONTEXTO_MUNICIPIO], operation)
+
+    def test_legacy_human_handoff_without_top_level_ticket_keeps_priority(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        self.published_knowledge_for_public_chat()
+        markers = {'human_chat_in_progress': True, 'live_chat_ticket_id': 928,
+            'live_chat_estado': 'waiting_agent', 'live_chat_socket_room': 'fixture-human-room',
+            'live_chat_status': 'waiting_agent'}
+        for scope in ('municipal', 'session'):
+            for index, (marker, value) in enumerate(markers.items()):
+                session = 'legacy-human-' + scope + '-' + str(index)
+                general = {'estado_conversacion': 'CONVERSACION_GENERAL_LLM'}
+                context = {CONTEXTO_MUNICIPIO: general}
+                (general if scope == 'municipal' else context)[marker] = value
+                self.context(context, session=session)
+                with self.subTest(scope=scope, marker=marker), \
+                     patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+                     patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('human handoff must keep control')), \
+                     patch('services.municipio_responder.responder_municipio', return_value={
+                        'message_body': 'Atención humana de prueba', 'fuente': 'operational'}) as operational:
+                    response = self.post(session=session, question='¿Qué documentación puedo consultar sobre el CUD?')
+                self.assertEqual(response.status_code, 200, response.get_json())
+                self.assertEqual(response.get_json()['fuente'], 'operational')
+                operational.assert_called_once()
+                stored = self.stored(session)[1]
+                for key, expected in context.items():
+                    self.assertEqual(stored[key], expected)
+                self.assertNotIn('institutional_knowledge', stored)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

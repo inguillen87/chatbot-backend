@@ -4,7 +4,7 @@ from sqlalchemy import select
 from flask import current_app
 from models import db, TenantProfile, TenantConfig, AuditEvent, User
 from cutover_writer_fence import cutover_writer_fence_enabled
-from services.constants import CONTEXTO_MUNICIPIO
+from services.constants import CONTEXTO_MUNICIPIO, ConversationState
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
@@ -165,6 +165,34 @@ def _channel_source_label(source):
     return label
 
 
+def _active_operational_context(context):
+    """General municipal history is not an unfinished operation."""
+    if not isinstance(context, dict): return False
+    if any(context.get(key) for key in (
+        'active_ticket_id', 'ticket_id', 'contexto_pyme_v2',
+        'human_chat_in_progress', 'live_chat_ticket_id', 'live_chat_estado',
+        'live_chat_socket_room', 'live_chat_status',
+    )):
+        return True
+    for key in (CONTEXTO_MUNICIPIO, 'contexto_municipio'):
+        value = context.get(key)
+        if not value: continue
+        # Preserve unknown/legacy states and every waiting flow. Only the
+        # responder's explicit general-conversation state permits selection.
+        if not isinstance(value, dict) or value.get('estado_conversacion') != ConversationState.CONVERSACION_GENERAL_LLM.name:
+            return True
+        if any(value.get(field) for field in (
+            'active_ticket_id', 'ticket_id', 'id_ticket_creado', 'reclamo_flow_v2',
+            'datos_parciales_llm_reclamo', 'datos_parciales_llm_sugerencia',
+            'expected_fields_llm_reclamo', 'expected_fields_llm_sugerencia',
+            'esperando_info_llm', 'esperando_info_llm_reclamo', 'esperando_info_llm_sugerencia',
+            'human_chat_in_progress', 'live_chat_ticket_id', 'live_chat_estado',
+            'live_chat_socket_room', 'live_chat_status',
+        )):
+            return True
+    return False
+
+
 def maybe_handle_institutional_question(question, owner, session=None):
     """Existing responder integration. Tenant comes from the resolved owner, not text."""
     if not isinstance(question, (str, dict)): return None
@@ -192,7 +220,7 @@ def maybe_handle_institutional_question(question, owner, session=None):
         text = question.get('action_id') or question.get('action')
         if not isinstance(text, str) or not text.startswith('knowledge:'): return None
     context = getattr(session, 'context_data', None) or {}
-    if isinstance(context, dict) and any(context.get(key) for key in (CONTEXTO_MUNICIPIO,'contexto_municipio','contexto_pyme_v2','active_ticket_id','ticket_id')) and not text.startswith('knowledge:'):
+    if _active_operational_context(context) and not text.startswith('knowledge:'):
         return None
     command = {'revision': state['revision'], 'node_id': state['bundle']['start']}
     previous = context.get('institutional_knowledge', {}) if isinstance(context, dict) else {}
