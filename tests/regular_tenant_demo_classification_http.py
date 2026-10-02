@@ -419,6 +419,78 @@ class RegularTenantChatTests(unittest.TestCase):
         self.assertEqual(__import__('json').loads(selector.call_args.args[1])['question'], question)
         self.assertEqual(self.stored()[1][CONTEXTO_MUNICIPIO], general)
 
+    def test_fresh_knowledge_navigation_then_freeform_uses_published_source_selector(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        published, _ = self.published_knowledge_for_public_chat()
+        revision = published['revision']
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('navigation must not query model')), \
+             patch('services.municipio_responder.responder_municipio', side_effect=AssertionError('navigation must not start operation')):
+            for index, node_id in enumerate(('requirements', 'start', 'requirements')):
+                action = 'knowledge:' + revision[:16] + ':' + node_id
+                response = self.post(question='Opción institucional de prueba ' + str(index), body={
+                    'action': action, 'action_id': action, 'button_source': 'button',
+                    'contexto_previo': {'estado_conversacion': 'inicio', 'datos_reclamo': {
+                        'categoria': None, 'descripcion': None, 'ubicacion': None},
+                        'historial_conversacion': [], 'id_ticket_creado': None}})
+                self.assertEqual(response.status_code, 200, response.get_json())
+                self.assertEqual(response.get_json()['fuente'], 'institutional_knowledge')
+                self.assertEqual(response.get_json()['context_revision'], revision)
+        before = self.stored()[1]
+        self.assertEqual(before.get(CONTEXTO_MUNICIPIO), {})
+        self.assertEqual(before['institutional_knowledge']['revision'], revision)
+        self.assertEqual(before['institutional_knowledge']['node_id'], 'requirements')
+        question = '¿Cómo pido requisitos de CUD en Río Grande?'
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': ['requirements']}) as selector, \
+             patch('services.municipio_responder.responder_municipio', side_effect=AssertionError('matched institutional question must not reach direct LLM')):
+            response = self.post(question=question, body={'button_source': 'input',
+                'contexto_previo': {'estado_conversacion': 'inicio', 'datos_reclamo': {
+                    'categoria': None, 'descripcion': None, 'ubicacion': None},
+                    'historial_conversacion': [{'role': 'assistant', 'text': 'Menú de prueba'}],
+                    'id_ticket_creado': None}})
+        self.assert_public_knowledge_answer(response, published)
+        selector.assert_called_once()
+        request = __import__('json').loads(selector.call_args.args[1])
+        self.assertEqual(request['question'], question)
+        self.assertEqual(request['current_node'], 'requirements')
+        self.assertEqual(self.stored()[1].get(CONTEXTO_MUNICIPIO), {})
+
+    def test_empty_institutional_selection_keeps_unknown_answer_and_published_choices(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        from services.institutional_assistant import UI
+        published, _ = self.published_knowledge_for_public_chat()
+        revision = published['revision']
+        self.context({'institutional_knowledge': {'revision': revision, 'node_id': 'requirements'},
+            CONTEXTO_MUNICIPIO: {}})
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': []}) as selector, \
+             patch('services.municipio_responder.responder_municipio', return_value={
+                 'message_body': 'Unfunded generic answer fixture', 'fuente': 'llm_respuesta_directa'}) as direct:
+            response = self.post(question='¿Cómo pido requisitos de CUD en Río Grande?',
+                body={'button_source': 'input', 'contexto_previo': {
+                    'estado_conversacion': 'inicio', 'datos_reclamo': {'descripcion': None},
+                    'id_ticket_creado': None}})
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload['fuente'], 'institutional_knowledge_unknown_question')
+        self.assertEqual(payload['message_body'], UI['unknown'])
+        self.assertNotIn('Unfunded generic answer fixture', str(payload))
+        self.assertEqual(payload['ux_context']['tenant_slug'], 'acceptance-a')
+        self.assertEqual(payload['ux_context']['owner_user_id'], self.accounts['acceptance-a']['id'])
+        self.assertTrue(payload['ux_context']['trusted_owner'])
+        self.assertEqual(payload['context_revision'], revision)
+        self.assertEqual([(b['texto'], b['action_id']) for b in payload['botones']], [
+            ('🪪 Certificados: CUD y CMO', 'knowledge:' + revision[:16] + ':requirements')])
+        self.assertNotIn('knowledge_nodes', payload)
+        self.assertNotIn('private-fixture-original', str(payload))
+        selector.assert_called_once(); direct.assert_not_called()
+        stored = self.stored()[1]
+        self.assertEqual(stored[CONTEXTO_MUNICIPIO], {})
+        self.assertEqual(stored['institutional_knowledge']['node_id'], 'start')
+
     def test_invalid_knowledge_action_never_falls_through_to_complaint(self):
         from services.logic import responder_chatboc
         published, _ = self.published_knowledge_for_public_chat()
@@ -432,6 +504,34 @@ class RegularTenantChatTests(unittest.TestCase):
                     body={'action': action, 'action_id': action, 'button_source': 'button'})
             self.assertEqual(response.status_code, 200, response.get_json())
             self.assertEqual(response.get_json()['fuente'], 'institutional_knowledge_stale')
+
+    def test_exact_municipal_command_keeps_operational_route_but_negations_and_questions_keep_corpus(self):
+        from services.logic import responder_chatboc
+        from services.constants import CONTEXTO_MUNICIPIO
+        published, _ = self.published_knowledge_for_public_chat()
+        with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+             patch('services.llm_utils.llamar_llm_para_json_estructurado', side_effect=AssertionError('exact command must keep operational route')) as selector, \
+             patch('services.municipio_responder.responder_municipio', return_value={
+                 'message_body': 'Menú operacional de prueba', 'fuente': 'operational'}) as operational:
+            response = self.post(session='exact-operational-command', question='iniciar un reclamo')
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()['fuente'], 'operational')
+        selector.assert_not_called(); operational.assert_called_once()
+        for index, question in enumerate(('No quiero iniciar un reclamo',
+            '¿Cómo iniciar un reclamo?', '¿Cómo pido requisitos de CUD en Río Grande?')):
+            session = 'informational-or-negated-' + str(index)
+            with self.subTest(question=index), \
+                 patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
+                 patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': []}) as selector, \
+                 patch('services.municipio_responder.responder_municipio', side_effect=AssertionError('question or negation must not start operation')) as operational:
+                response = self.post(session=session, question=question)
+            self.assertEqual(response.status_code, 200, response.get_json())
+            payload = response.get_json()
+            self.assertEqual(payload['fuente'], 'institutional_knowledge_unknown_question')
+            self.assertEqual(payload['context_revision'], published['revision'])
+            self.assertTrue(payload['botones'])
+            selector.assert_called_once(); operational.assert_not_called()
+            self.assertEqual(self.stored(session)[1][CONTEXTO_MUNICIPIO], {})
 
     def test_active_or_unknown_operation_and_explicit_business_action_keep_priority(self):
         from services.logic import responder_chatboc

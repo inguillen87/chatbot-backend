@@ -178,8 +178,29 @@ class ExistingResponderCases:
         with self.app.app_context():
             tenant,owner,state=self.prepare_published_owner()
             expected={'message_body':'Operational handler response','fuente':'operational'}
-            with patch('services.logic.maybe_handle_catalog_share',return_value=None),patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value={'node_ids':[]}),patch('services.municipio_responder.responder_municipio',return_value=expected) as operational:
+            with patch('services.logic.maybe_handle_catalog_share',return_value=None),patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('exact operational command must not select knowledge')) as selector,patch('services.municipio_responder.responder_municipio',return_value=expected) as operational:
                 result=responder_chatboc('iniciar un reclamo',owner_user=owner,tipo_chat='municipio')
+            selector.assert_not_called();operational.assert_called_once()
+            self.assertEqual(result['fuente'],'operational')
+
+    def test_unmatched_published_question_keeps_corpus_and_retired_corpus_keeps_legacy_handler(self):
+        from services.logic import responder_chatboc
+        from services.institutional_assistant import UI
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            expected={'message_body':'Operational handler response','fuente':'operational'}
+            with patch('services.logic.maybe_handle_catalog_share',return_value=None),patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value={'node_ids':[]}) as selector,patch('services.municipio_responder.responder_municipio',return_value=expected) as operational:
+                result=responder_chatboc('pregunta sin información en las fuentes',owner_user=owner,tipo_chat='municipio')
+            selector.assert_called_once();operational.assert_not_called()
+            self.assertEqual(result['fuente'],'institutional_knowledge_unknown_question')
+            self.assertEqual(result['message_body'],UI['unknown'])
+            self.assertEqual(result['context_revision'],state['revision'])
+            self.assertEqual([(b['texto'],b['action_id']) for b in result['botones']],
+                [('Requisitos','knowledge:'+state['revision'][:16]+':requirements')])
+            self.assertEqual(self.put(self.login(),'retire',state['revision']).status_code,200)
+            with patch('services.logic.maybe_handle_catalog_share',return_value=None),patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('retired knowledge must not select')) as selector,patch('services.municipio_responder.responder_municipio',return_value=expected) as operational:
+                result=responder_chatboc('pregunta sin información en las fuentes',owner_user=owner,tipo_chat='municipio')
+            selector.assert_not_called()
             operational.assert_called_once();self.assertEqual(result['fuente'],'operational')
 
     def test_operational_context_and_explicit_action_do_not_call_knowledge_model(self):

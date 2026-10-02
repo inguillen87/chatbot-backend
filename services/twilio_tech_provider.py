@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import base64
 import logging
 import os
@@ -316,6 +316,62 @@ def _backend_base_url(config: Mapping[str, Any]) -> str:
         or _clean(config.get("BACKEND_URL"))
         or "https://www.chatboc.ar"
     ).rstrip("/")
+
+
+def _canonical_voice_url(
+    value: Any, *, base_url: str, tenant_slug: str, path: str, default_url: str,
+) -> str:
+    """Project known historical callbacks without writing provider or tenant state."""
+    current = _clean(value) or default_url
+    try:
+        old = urlsplit(current)
+        if (
+            old.scheme not in {"http", "https"}
+            or old.hostname != "chatbot-backend-2e14.onrender.com"
+            or old.username is not None or old.password is not None
+            or old.port not in {None, 80 if old.scheme == "http" else 443}
+            or old.path != path
+        ):
+            return current
+        canonical = urlsplit(base_url)
+        if (
+            canonical.scheme not in {"http", "https"} or not canonical.hostname
+            or canonical.username is not None or canonical.password is not None
+            or canonical.query or canonical.fragment
+        ):
+            return current
+        # Reject malformed ports before using the trusted application's origin.
+        canonical.port
+    except ValueError:
+        return current
+    try:
+        pairs = parse_qsl(old.query, keep_blank_values=True, max_num_fields=64)
+    except ValueError:
+        return default_url
+
+    selectors = {
+        key: [value for candidate, value in pairs if candidate == key]
+        for key in ("tenant", "tenant_slug", "vertical", "sector", "intent")
+    }
+    tenant_values = selectors["tenant"] + selectors["tenant_slug"]
+    valid_scope = (
+        bool(tenant_slug)
+        and not old.fragment
+        and all(key in selectors for key, _value in pairs)
+        and (bool(tenant_values) or path == "/voice/status")
+        and all(len(values) <= 1 for values in selectors.values())
+        and all(value == tenant_slug for value in tenant_values)
+        and all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)
+                for key in ("vertical", "sector", "intent") for value in selectors[key])
+        and (not selectors["vertical"] or not selectors["sector"]
+             or selectors["vertical"] == selectors["sector"])
+    )
+    if not valid_scope:
+        return default_url
+    return urlunsplit((
+        canonical.scheme, canonical.netloc, canonical.path.rstrip("/") + path,
+        old.query, "",
+    ))
 
 
 def _frontend_base_url(config: Mapping[str, Any]) -> str:
@@ -996,9 +1052,21 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
         "voice": {
             "status": state.get("voice_status") or ("ready" if state.get("voice_twiml_app_sid") else "pending"),
             "twiml_app_sid": state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"),
-            "voice_url": state.get("voice_url") or cfg.get("voice_url") or f"{base_url}/twilio/voice?tenant={tenant_slug}",
-            "fallback_url": state.get("voice_fallback_url") or cfg.get("voice_fallback_url") or f"{base_url}/voice/fallback?tenant={tenant_slug}",
-            "status_callback_url": state.get("voice_status_callback_url") or cfg.get("voice_status_callback_url") or f"{base_url}/voice/status",
+            "voice_url": _canonical_voice_url(
+                state.get("voice_url") or cfg.get("voice_url"), base_url=base_url,
+                tenant_slug=_clean(tenant_slug), path="/twilio/voice",
+                default_url=f"{base_url}/twilio/voice?{urlencode({'tenant': tenant_slug})}",
+            ),
+            "fallback_url": _canonical_voice_url(
+                state.get("voice_fallback_url") or cfg.get("voice_fallback_url"), base_url=base_url,
+                tenant_slug=_clean(tenant_slug), path="/voice/fallback",
+                default_url=f"{base_url}/voice/fallback?{urlencode({'tenant': tenant_slug})}",
+            ),
+            "status_callback_url": _canonical_voice_url(
+                state.get("voice_status_callback_url") or cfg.get("voice_status_callback_url"),
+                base_url=base_url, tenant_slug=_clean(tenant_slug), path="/voice/status",
+                default_url=f"{base_url}/voice/status",
+            ),
             "vertical": state.get("voice_vertical") or cfg.get("voice_vertical"),
             "intent": state.get("voice_intent") or cfg.get("voice_intent"),
             "completion_endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/voice-app",
@@ -1195,14 +1263,24 @@ def build_voice_application_request(tenant, payload: Mapping[str, Any], app_conf
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     base_url = _backend_base_url(app_config)
-    tenant_slug = _clean(payload.get("tenant_slug") or getattr(tenant, "slug", None))
+    tenant_slug = _clean(getattr(tenant, "slug", None))
     vertical = _voice_vertical_for_tenant(tenant, payload)
     intent = _voice_intent_for_vertical(vertical, payload)
     app_sid = _clean(payload.get("voice_twiml_app_sid") or state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"))
     friendly_name = _clean(payload.get("friendly_name")) or f"Chatboc Voice - {tenant_slug or getattr(tenant, 'id', 'tenant')}"
-    voice_url = _clean(payload.get("voice_url")) or f"{base_url}/twilio/voice?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
-    fallback_url = _clean(payload.get("voice_fallback_url")) or f"{base_url}/voice/fallback?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
-    status_callback_url = _clean(payload.get("voice_status_callback_url")) or f"{base_url}/voice/status"
+    query = urlencode({"tenant": tenant_slug, "vertical": vertical, "intent": intent})
+    voice_url = _canonical_voice_url(
+        payload.get("voice_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/twilio/voice", default_url=f"{base_url}/twilio/voice?{query}",
+    )
+    fallback_url = _canonical_voice_url(
+        payload.get("voice_fallback_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/voice/fallback", default_url=f"{base_url}/voice/fallback?{query}",
+    )
+    status_callback_url = _canonical_voice_url(
+        payload.get("voice_status_callback_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/voice/status", default_url=f"{base_url}/voice/status",
+    )
     sender_sid = _clean(payload.get("sender_sid") or state.get("sender_sid"))
     sender_id = _normalize_whatsapp_sender_id(payload.get("sender_id") or state.get("sender_id") or getattr(tenant, "whatsapp_sender_id", None))
     return {

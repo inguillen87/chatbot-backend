@@ -219,6 +219,11 @@ def maybe_handle_institutional_question(question, owner, session=None):
     if isinstance(question, dict) and (question.get('action_id') or question.get('action')):
         text = question.get('action_id') or question.get('action')
         if not isinstance(text, str) or not text.startswith('knowledge:'): return None
+    # Preserve the existing municipal alias for iniciar_reclamo. Match the
+    # complete command only; questions and negations remain corpus questions.
+    if (tenant.tipo == 'municipio' and tenant.municipio_id == owner_id
+        and text.strip().casefold() == 'iniciar un reclamo'):
+        return None
     context = getattr(session, 'context_data', None) or {}
     if _active_operational_context(context) and not text.startswith('knowledge:'):
         return None
@@ -255,9 +260,17 @@ def maybe_handle_institutional_question(question, owner, session=None):
     except ContentError:
         return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_unavailable'}
     nodes = result['nodes']
-    # No matched institutional answer means the existing operational handlers continue.
-    if not nodes and not text.startswith('knowledge:'):
-        return None
+    unknown_question = not nodes and command.get('question') is not None
+    if unknown_question:
+        # A published corpus remains the authority for informational questions.
+        # Empty selection must not ask another model to invent a free-form answer.
+        # Re-read the canonical start menu with the same revision, without selection.
+        try:
+            result = answer(tenant, {'revision': state['revision'],
+                'node_id': state['bundle']['start']}, public=True)
+        except ContentError:
+            return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_unavailable'}
+        nodes = result['nodes']
     citations, choices, links = [], [], []
     for node in nodes:
         links.extend(node.get('links', []))
@@ -273,11 +286,17 @@ def maybe_handle_institutional_question(question, owner, session=None):
         context['institutional_knowledge'] = {'revision': state['revision'], 'node_id': nodes[-1]['id'],
             'reply_node_id': nodes[0]['id'] if len(nodes) == 1 else None, 'reply_choices': reply_choices}
         session.context_data = context
+    buttons = [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target'],
+        **({'reply_code': c['code']} if c['code'] in reply_choices else {})} for c in choices]
+    if unknown_question:
+        return {'message_body': UI['unknown'], 'botones': buttons,
+            'message_type': 'interactive_buttons' if buttons else 'text',
+            'fuente': 'institutional_knowledge_unknown_question',
+            'context_revision': state['revision']}
     return {'message_body': result['text'] + ''.join('\n\n' + l['label'] + ': ' + l['url'] for l in links)
         + ('\n\n' + UI['sources'] + ':\n' + '\n'.join(citations) if citations else ''),
         'message_type': 'interactive_buttons' if choices else 'text',
-        'botones': [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target'],
-            **({'reply_code': c['code']} if c['code'] in reply_choices else {})} for c in choices],
+        'botones': buttons,
         'knowledge_sources': [s for n in nodes for s in n['sources']],
         'knowledge_tenant': deepcopy(result['tenant']), 'knowledge_nodes': deepcopy(nodes),
         'fuente': 'institutional_knowledge', 'context_revision': state['revision']}
