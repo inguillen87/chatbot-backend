@@ -111,13 +111,29 @@ def main(argv=None):
         verify_empty_fixture(connection)
     from sqlalchemy.engine import URL
     from tests import auth_session_lifecycle_postgres as cases
+    from tests import http_writer_authority_lease_postgres as http_cases
     present = {name for name in unittest.defaultTestLoader.getTestCaseNames(cases.AuthSessionLifecyclePostgresTests)}
     if not REQUIRED_TESTS <= present:
         raise FixtureRefused('required_lifecycle_tests_missing')
     cases.DATABASE_URL = URL.create('postgresql+psycopg', username=configuration['user'],
         password=configuration['password'], host=configuration['host'],
         port=configuration['port'], database=configuration['dbname'])
-    suite = unittest.defaultTestLoader.loadTestsFromModule(cases)
+    http_cases.DATABASE_URL = cases.DATABASE_URL
+    expected_http = {'test_provider_pending_past_old_idle_timeout_blocks_cas_until_request_finishes',
+        'test_stream_close_callback_provider_effect_finishes_before_cas',
+        'test_stream_error_rolls_back_and_releases_before_fence_completes',
+        'test_handler_exception_rolls_back_control_transaction_without_lock_leak',
+        'test_never_consumed_wsgi_iterable_blocks_until_explicit_close',
+        'test_nested_route_lease_reuses_connection_while_cas_is_queued',
+        'test_eight_concurrent_provider_requests_hold_cas_until_all_finish',
+        'test_socket_background_provider_finishes_before_cas_and_queued_welcome_is_denied',
+        'test_expired_sql_cookie_opens_before_http_and_socket_context_without_any_dml',
+        'test_read_only_get_sql_session_commit_owns_lease_and_blocks_cas'}
+    present_http = set(unittest.defaultTestLoader.getTestCaseNames(http_cases.HttpWriterAuthorityLeasePostgresTests))
+    if not expected_http <= present_http:
+        raise FixtureRefused('required_http_authority_tests_missing')
+    suite = unittest.TestSuite((unittest.defaultTestLoader.loadTestsFromModule(cases),
+                               unittest.defaultTestLoader.loadTestsFromModule(http_cases)))
     expected_count = suite.countTestCases()
     result = unittest.TextTestRunner(verbosity=2, resultclass=EvidenceResult).run(suite)
     summary = result_summary(result, expected_count)

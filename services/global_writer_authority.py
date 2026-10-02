@@ -9,6 +9,7 @@ PostgreSQL row may execute mutations.
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from global_writer_authority import (
 
 AUTHORITY_KEY = "primary"
 AUTHORITY_TABLE = "cutover_global_writer_authority"
+HTTP_REQUEST_LEASE_ENVIRON = "chatboc.global_writer_authority.request_lease"
 CONTROL_CONNECT_TIMEOUT_SECONDS = 4
 CONTROL_POOL_TIMEOUT_SECONDS = 2
 CONTROL_STATEMENT_TIMEOUT_MS = 2500
@@ -82,6 +84,32 @@ class GlobalWriterAuthorityTransitionError(RuntimeError):
     def __init__(self, reason_code: str):
         super().__init__(reason_code)
         self.reason_code = reason_code
+
+
+def _control_pool_configuration(config: Mapping[str, Any] | None) -> tuple[int, int]:
+    """Bound direct control connections independently from the app pool."""
+
+    counts = []
+    for key, default, minimum in (
+        ("CUTOVER_GLOBAL_WRITER_AUTHORITY_POOL_SIZE", 2, 1),
+        ("CUTOVER_GLOBAL_WRITER_AUTHORITY_MAX_OVERFLOW", 1, 0),
+    ):
+        raw = config.get(key) if config is not None and key in config else os.getenv(key)
+        if raw is None:
+            count = default
+        else:
+            value = str(raw).strip()
+            if not value.isascii() or not value.isdecimal():
+                raise GlobalWriterAuthorityTransitionError(
+                    "global_writer_authority_control_pool_configuration_invalid"
+                )
+            count = int(value)
+        if not minimum <= count <= 16:
+            raise GlobalWriterAuthorityTransitionError(
+                "global_writer_authority_control_pool_configuration_invalid"
+            )
+        counts.append(count)
+    return counts[0], counts[1]
 
 
 def _executor_dialect_name(executor: Any) -> str:
@@ -145,7 +173,10 @@ def _control_database_engine(config: Mapping[str, Any] | None) -> Engine:
         raise GlobalWriterAuthorityTransitionError(
             "global_writer_authority_control_database_tls_required"
         )
-    fingerprint = hashlib.sha256(database_url.encode("utf-8")).hexdigest()
+    pool_size, max_overflow = _control_pool_configuration(config)
+    fingerprint = hashlib.sha256(
+        f"{database_url}\0{pool_size}\0{max_overflow}".encode("utf-8")
+    ).hexdigest()
     global _CONTROL_ENGINE, _CONTROL_ENGINE_FINGERPRINT
     with _CONTROL_ENGINE_LOCK:
         if _CONTROL_ENGINE is not None and _CONTROL_ENGINE_FINGERPRINT == fingerprint:
@@ -156,8 +187,8 @@ def _control_database_engine(config: Mapping[str, Any] | None) -> Engine:
             _CONTROL_ENGINE = create_engine(
                 parsed.set(drivername="postgresql+psycopg"),
                 pool_pre_ping=True,
-                pool_size=2,
-                max_overflow=1,
+                pool_size=pool_size,
+                max_overflow=max_overflow,
                 pool_recycle=300,
                 pool_timeout=CONTROL_POOL_TIMEOUT_SECONDS,
                 connect_args={
@@ -185,16 +216,25 @@ def _control_database_engine(config: Mapping[str, Any] | None) -> Engine:
 
 
 @contextmanager
-def global_writer_authority_connection(config: Mapping[str, Any] | None = None):
+def global_writer_authority_connection(
+    config: Mapping[str, Any] | None = None, *, preserve_body_errors: bool = False
+):
     """Yield the common control connection, never the application DB session."""
 
     engine = _control_database_engine(config)
+    body_error = None
     try:
         with engine.connect() as connection:
-            yield connection
+            try:
+                yield connection
+            except BaseException as exc:
+                body_error = exc
+                raise
     except GlobalWriterAuthorityTransitionError:
         raise
     except Exception as exc:
+        if preserve_body_errors and exc is body_error:
+            raise
         raise GlobalWriterAuthorityTransitionError(
             "global_writer_authority_control_database_unavailable"
         ) from exc
@@ -325,6 +365,8 @@ def evaluate_global_writer_authority(
 @contextmanager
 def global_writer_authority_lease(
     config: Mapping[str, Any] | None = None,
+    *,
+    request_lifetime: bool = False,
 ):
     """Hold a shared control-row lock across the protected application commit.
 
@@ -365,8 +407,29 @@ def global_writer_authority_lease(
         )
         return
 
-    with global_writer_authority_connection(config) as control_connection:
+    if not request_lifetime:
+        from flask import current_app, has_request_context, request
+        if has_request_context() and config is current_app.config:
+            holder = request.environ.get(HTTP_REQUEST_LEASE_ENVIRON)
+            outer_lease = getattr(holder, "lease", None)
+            if outer_lease is not None and getattr(holder, "manager", None) is not None:
+                # Nested route work uses the already protected connection. It
+                # neither consumes another pool slot nor releases the outer
+                # WSGI owner's lock while an authority UPDATE is queued.
+                yield outer_lease
+                return
+
+    with global_writer_authority_connection(
+        config, preserve_body_errors=request_lifetime
+    ) as control_connection:
         with control_connection.begin():
+            if request_lifetime:
+                # The WSGI owner releases this lease on exhaustion/error/close.
+                # A short idle timeout would drop FOR SHARE during provider I/O
+                # and let a transition overtake an admitted HTTP mutation.
+                control_connection.execute(
+                    text("SET LOCAL idle_in_transaction_session_timeout = 0")
+                )
             load_global_writer_authority_state(
                 control_connection, lock_for_share=True
             )
@@ -568,6 +631,7 @@ def activate_global_writer_owner(
 
 
 __all__ = [
+    "HTTP_REQUEST_LEASE_ENVIRON",
     "AUTHORITY_KEY",
     "AUTHORITY_TABLE",
     "CONTROL_CONNECT_TIMEOUT_SECONDS",

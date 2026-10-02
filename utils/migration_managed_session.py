@@ -10,9 +10,12 @@ session interface to the already-managed model.
 from __future__ import annotations
 
 from typing import Optional
+from contextlib import contextmanager
+from datetime import datetime, timezone
 import secrets
+import sys
 
-from flask import Flask
+from flask import Flask, has_request_context, request
 from flask_session import Session
 from flask_session.base import ServerSideSessionInterface
 from flask_session.defaults import Defaults
@@ -22,6 +25,14 @@ from flask_session.sqlalchemy.sqlalchemy import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from flask.sessions import SessionInterface
+from itsdangerous import want_bytes
+from cutover_writer_fence import cutover_writer_fence_enabled
+from global_writer_authority import global_writer_authority_enabled
+from services.global_writer_authority import (
+    HTTP_REQUEST_LEASE_ENVIRON,
+    GlobalWriterAuthorityTransitionError,
+    global_writer_authority_lease,
+)
 
 
 class RetirementIsolatedSessionInterface(SessionInterface):
@@ -54,9 +65,9 @@ def isolate_retirement_session(app):
 class MigrationManagedSqlAlchemySessionInterface(SqlAlchemySessionInterface):
     """Flask-Session's SQLAlchemy interface with no implicit ``CREATE TABLE``.
 
-    Persistence behavior is inherited unchanged.  Only constructor-time DDL
-    is removed; deployments must apply the ``flask_sessions`` migration before
-    serving traffic.
+    Session reads never delete expired rows while a cutover guard is enabled.
+    Persistence shares the admitted request's lease or acquires its own lease;
+    deployments apply the ``flask_sessions`` migration before serving traffic.
     """
 
     def __init__(
@@ -96,6 +107,67 @@ class MigrationManagedSqlAlchemySessionInterface(SqlAlchemySessionInterface):
             serialization_format,
             cleanup_n_requests,
         )
+
+    def _retrieve_session_data(self, store_id):
+        config = self.app.config
+        if not (global_writer_authority_enabled(config) or cutover_writer_fence_enabled(config)):
+            return super()._retrieve_session_data(store_id)
+        # Flask opens its session before before_request and Socket.IO handlers.
+        # Expiry recognition must therefore have no DELETE/commit side effect.
+        record = self.sql_session_model.query.filter_by(session_id=store_id).first()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if record is None or record.expiry is None or record.expiry <= now:
+            return None
+        return self.serializer.decode(want_bytes(record.data))
+
+    @contextmanager
+    def _storage_writer(self, app):
+        if cutover_writer_fence_enabled(app.config):
+            yield False
+            return
+        if not global_writer_authority_enabled(app.config):
+            yield True
+            return
+        holder = request.environ.get(HTTP_REQUEST_LEASE_ENVIRON) if has_request_context() else None
+        outer_active = (getattr(holder, 'manager', None) is not None
+                        and getattr(holder, 'lease', None) is not None)
+        manager = global_writer_authority_lease(app.config, request_lifetime=not outer_active)
+        try:
+            lease = manager.__enter__()
+        except GlobalWriterAuthorityTransitionError as error:
+            app.logger.warning('Session persistence refused reason=%s', error.reason_code)
+            yield False
+            return
+        try:
+            yield lease.decision.allowed
+        except BaseException:
+            manager.__exit__(*sys.exc_info())
+            raise
+        else:
+            manager.__exit__(None, None, None)
+
+    def save_session(self, app, session, response):
+        # Keep cookie changes coupled to the admitted durable session write.
+        needs_storage = session.modified if not session else self.should_set_storage(app, session)
+        if not needs_storage:
+            return super().save_session(app, session, response)
+        with self._storage_writer(app) as allowed:
+            if allowed:
+                return super().save_session(app, session, response)
+            if session.accessed:
+                response.vary.add('Cookie')
+
+    def regenerate(self, session):
+        with self._storage_writer(self.app) as allowed:
+            if allowed:
+                return super().regenerate(session)
+
+    def _delete_expired_sessions(self):
+        # Flask-Session may register cleanup before the application's gate, or
+        # invoke it from its CLI command; both require their own admitted lease.
+        with self._storage_writer(self.app) as allowed:
+            if allowed:
+                return super()._delete_expired_sessions()
 
 
 def init_migration_managed_session(app: Flask, client: SQLAlchemy) -> None:

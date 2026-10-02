@@ -3,6 +3,8 @@ name: Durable sessions and private attachments
   pull_request:
     paths:
       - app.py
+      - config/**
+      - middleware/cutover_writer_fence.py
       - models.py
       - middleware/tenant_context.py
       - routes/auth.py
@@ -10,6 +12,8 @@ name: Durable sessions and private attachments
       - routes/super_admin.py
       - routes/webauthn.py
       - routes/archivos.py
+      - routes/internal_cron.py
+      - routes/voice_routes.py
       - routes/ticket.py
       - services/auth_session_lifecycle.py
       - services/clerk_auth_service.py
@@ -24,6 +28,7 @@ name: Durable sessions and private attachments
       - services/interpretacion_service.py
       - services/email_service.py
       - services/render_env_sync.py
+      - services/global_writer_authority.py
       - socket_service.py
       - utils/auth_helpers.py
       - utils/migration_managed_session.py
@@ -37,6 +42,10 @@ name: Durable sessions and private attachments
       - tests/test_r2_service.py
       - tests/test_runtime_readiness.py
       - tests/test_render_authority_retired.py
+      - tests/*voice*writer*.py
+      - tests/*socket*writer*.py
+      - tests/test_migration_managed_session.py
+      - tests/test_live_chat_room_access.py
       - tests/profile_acceptance_runtime.py
       - .github/workflows/auth-private-storage.yml
   workflow_dispatch:
@@ -73,6 +82,11 @@ jobs:
         run: |
           set -euo pipefail
           python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_r2_service.py", "tests/test_direct_chat_attachment_upload.py", "tests/test_render_authority_retired.py", "tests/test_auth_session_postgres_runner.py", "-q"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/storage-regression.log
+      - name: HTTP writer admission and WSGI response leases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_http_writer_authority_lease.py", "tests/test_global_writer_authority.py", "tests/test_cutover_writer_fence.py", "tests/test_cutover_background_writer_fence.py", "tests/test_vercel_voice_stream_writer_guard.py", "tests/test_socket_writer_authority_lease.py", "tests/test_migration_managed_session.py", "tests/test_voice_stream_security.py", "tests/test_live_chat_room_access.py", "-q"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/http-writer-lease.log
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -105,7 +119,7 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: Install existing application dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
-      - name: Exercise exact migration, grants and PostgreSQL session concurrency
+      - name: Exercise exact migration, grants, session concurrency and HTTP lease CAS
         shell: bash
         run: |
           set -euo pipefail

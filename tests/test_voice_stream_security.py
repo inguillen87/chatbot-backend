@@ -1,4 +1,5 @@
 import json
+import subprocess
 import time
 import unittest
 import uuid
@@ -151,7 +152,17 @@ class VoiceStreamDeploymentConfigTests(unittest.TestCase):
         cls.repo_root = Path(__file__).resolve().parents[1]
 
     def test_env_example_declares_fail_closed_voice_stream_contract(self):
-        example = (self.repo_root / ".env.example").read_text(encoding="utf-8")
+        example_path = self.repo_root / ".env.example"
+        if example_path.exists():
+            example = example_path.read_text(encoding="utf-8")
+        else:
+            # Sparse/skip-worktree checkouts may omit this tracked fixture.
+            # Inspect the exact committed template without creating an env file.
+            example = subprocess.run(
+                ["git", "show", "HEAD:.env.example"],
+                cwd=self.repo_root, check=True, capture_output=True,
+                text=True, encoding="utf-8",
+            ).stdout
 
         self.assertIn("VOICE_STREAM_SIGNING_SECRET=\n", example)
         self.assertIn("VOICE_STREAM_REPLAY_REDIS_URL=\n", example)

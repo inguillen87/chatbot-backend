@@ -1,4 +1,5 @@
 from cutover_writer_fence import cutover_writer_fence_enabled
+from global_writer_authority import global_writer_authority_enabled
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
@@ -2401,7 +2402,7 @@ def login():
             current_app.config.get("DEFER_ANON_MIGRATION_ON_LOGIN", True)
         ).strip().lower() not in {"0", "false", "no", "off"}
         try:
-            if deferred_migration:
+            if deferred_migration and not global_writer_authority_enabled(current_app.config):
                 app_obj = current_app._get_current_object()
                 tenant_id = getattr(tenant_obj, "id", None)
                 thread = threading.Thread(

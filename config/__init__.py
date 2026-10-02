@@ -1145,6 +1145,11 @@ class Config:
     ENABLE_VOICE_CONSENT_LIFECYCLE_V1 = _env_strict_opt_in(
         "ENABLE_VOICE_CONSENT_LIFECYCLE_V1"
     )
+    # A long-lived Media Stream must be separately admitted on the Vercel
+    # writer runtime. Consent rollout alone must never open this transport.
+    VERCEL_VOICE_STREAM_WRITER_ENABLED = _env_strict_opt_in(
+        "VERCEL_VOICE_STREAM_WRITER_ENABLED"
+    )
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
     WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
