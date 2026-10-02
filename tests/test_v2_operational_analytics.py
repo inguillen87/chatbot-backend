@@ -8,12 +8,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-import jwt
 from sqlalchemy import event
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
+from services.auth_session_lifecycle import issue_token
 from config import Config
 import config.feature_flags as feature_flags
 from models import (
@@ -255,10 +255,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     "sv": 1,
                 }
             )
-        token = jwt.encode(
+        token = issue_token(
             payload,
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         headers = {"Authorization": f"Bearer {token}"}
         if tenant_slug is not None:
@@ -1487,15 +1485,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         db.session.commit()
 
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": broken_admin.id,
                 "rol": broken_admin.rol,
                 "tenant_slug": broken_admin.tenant_slug,
                 "exp": datetime.utcnow() + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1676,15 +1672,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.session.add(ticket)
         db.session.commit()
 
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": owner.id,
                 "rol": owner.rol,
                 "tenant_slug": owner.tenant_slug,
                 "exp": datetime.utcnow() + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         response = self.client.get(
             "/api/v2/analytics/operations/heatmap"
@@ -1743,15 +1737,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         db.session.commit()
 
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": owner.id,
                 "rol": owner.rol,
                 "tenant_slug": owner.tenant_slug,
                 "exp": datetime.utcnow() + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         malformed_boundary = json.dumps([{"type": "FeatureCollection", "features": []}]).encode("utf-8")
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2573,15 +2565,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         db.session.commit()
 
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": empty_admin.id,
                 "rol": empty_admin.rol,
                 "tenant_slug": empty_admin.tenant_slug,
                 "exp": datetime.utcnow() + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         response = self.client.get(
             "/api/v2/analytics/operations/heatmap",

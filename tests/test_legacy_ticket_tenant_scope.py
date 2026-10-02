@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-import jwt
 import pytest
 
 from models import MunicipioTicket, TenantProfile, TicketComentario, User, db
+from services.auth_session_lifecycle import issue_token
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     municipio_ticket_belongs_to_tenant,
@@ -40,15 +40,13 @@ def _tenant(owner: User, slug: str) -> TenantProfile:
 
 
 def _headers(app, owner: User, tenant: TenantProfile) -> dict[str, str]:
-    token = jwt.encode(
+    token = issue_token(
         {
             "user_id": owner.id,
             "rol": owner.rol,
             "tenant_slug": tenant.slug,
             "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
     )
     return {
         "Authorization": f"Bearer {token}",

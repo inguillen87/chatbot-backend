@@ -1,13 +1,12 @@
-import jwt
 import json
 import pytest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from flask import current_app
 from sqlalchemy import event
 
 from extensions import db
+from services.auth_session_lifecycle import issue_token
 from models import (
     EncComentario,
     EncEncuesta,
@@ -30,10 +29,8 @@ from utils.roles import (
 
 
 def _auth_headers(user: User) -> dict[str, str]:
-    token = jwt.encode(
+    token = issue_token(
         {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)},
-        current_app.config["SECRET_KEY"],
-        algorithm="HS256",
     )
     if isinstance(token, bytes):
         token = token.decode("utf-8")
