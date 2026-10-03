@@ -1,7 +1,5 @@
 from datetime import datetime, timedelta, timezone
 
-import jwt
-
 from app import db
 from models import (
     AnalyticsEvent,
@@ -16,13 +14,19 @@ from services.analytics_service import (
     MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT,
     analytics_service,
 )
+from services.auth_session_lifecycle import issue_token
 
 
 def _headers(app, user: User) -> dict[str, str]:
-    token = jwt.encode(
-        {"user_id": user.id, "rol": user.rol, "tipo_chat": user.tipo_chat},
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
+    # Local fixture session only: exercise the current expiration/lineage
+    # contract instead of an obsolete JWT without an expiration claim.
+    token = issue_token(
+        {
+            "user_id": user.id,
+            "rol": user.rol,
+            "tipo_chat": user.tipo_chat,
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        },
     )
     return {"Authorization": f"Bearer {token}"}
 

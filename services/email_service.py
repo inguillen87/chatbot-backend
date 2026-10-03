@@ -97,12 +97,15 @@ def _format_datetime(value: Any) -> Optional[str]:
 
 
 def _serialize_attachment(archivo: ArchivoAdjunto) -> Dict[str, Any]:
+    from services.attachment_delivery import resolve_attachment_delivery_url
     nombre = getattr(archivo, "nombre_original", None) or getattr(archivo, "filename", None)
-    url = getattr(archivo, "url", None)
     mime = getattr(archivo, "mime", None) or ""
+    delivery = resolve_attachment_delivery_url(getattr(archivo, 'url', None), mime, attachment=archivo)
     return {
         "nombre": nombre or "Archivo adjunto",
-        "url": url,
+        "url": delivery.get('url'),
+        "storage_access": delivery.get('storage_access'),
+        "availability_message": delivery.get('availability_message'),
         "mime": mime,
         "size": getattr(archivo, "tamano", None),
         "es_imagen": mime.startswith("image/"),
@@ -159,9 +162,13 @@ def _collect_ticket_attachments(ticket: Any, datos_ticket: Dict[str, Any]) -> Li
 
     foto_url = getattr(ticket, "foto_url_directa", None) or datos_ticket.get("foto_url")
     if foto_url:
+        from services.attachment_delivery import resolve_attachment_delivery_url
+        delivery = resolve_attachment_delivery_url(foto_url)
         adjuntos.insert(0, {
             "nombre": "Imagen del reclamo",
-            "url": foto_url,
+            "url": delivery.get('url'),
+            "storage_access": delivery.get('storage_access'),
+            "availability_message": delivery.get('availability_message'),
             "mime": "image/*",
             "size": None,
             "es_imagen": True,
@@ -991,24 +998,22 @@ def enviar_email_con_multiples_adjuntos(destinos: List[str], asunto: str, cuerpo
 
     for adjunto in adjuntos:
         try:
-            response = requests.get(adjunto.url, timeout=10)
-            response.raise_for_status()
-            contenido_adjunto = response.content
+            from services.attachment_delivery import read_authorized_attachment_bytes
+            contenido_adjunto = read_authorized_attachment_bytes(adjunto.url, adjunto.mime or 'application/octet-stream', attachment=adjunto)
 
             main_type, sub_type = (adjunto.mime or 'application/octet-stream').split('/', 1)
 
             adj = MIMEApplication(contenido_adjunto, _subtype=sub_type)
             adj.add_header("Content-Disposition", "attachment", filename=adjunto.nombre_original)
             msg.attach(adj)
-            logger.info(f"[EMAIL_MULTI_ADJ] Adjuntado archivo {adjunto.nombre_original} ({adjunto.mime}) desde {adjunto.url}")
+            logger.info("[EMAIL_MULTI_ADJ] Verified attachment added")
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"[EMAIL_MULTI_ADJ] No se pudo descargar el adjunto desde {adjunto.url}: {e}")
-            # Continuar sin este adjunto
-            continue
+            logger.error("[EMAIL_MULTI_ADJ] Attachment download unavailable error_type=%s", type(e).__name__)
+            return False
         except Exception as e:
-            logger.error(f"[EMAIL_MULTI_ADJ] Error procesando adjunto {adjunto.id}: {e}")
-            continue
+            logger.error("[EMAIL_MULTI_ADJ] Attachment processing unavailable error_type=%s", type(e).__name__)
+            return False
 
     try:
         logger.info(

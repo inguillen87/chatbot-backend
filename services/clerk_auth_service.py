@@ -4,7 +4,6 @@ import hmac
 import os
 import re
 import secrets
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -62,8 +61,6 @@ DEFAULT_CLERK_AUTHORIZED_PARTIES = (
     "https://www.chatboc.ar",
 )
 DEFAULT_REQUIRED_DASHBOARD_SETUP: tuple[str, ...] = ()
-_REVOKED_CLERK_SESSIONS: dict[str, dict[str, Any]] = {}
-_REVOKED_CLERK_SESSIONS_LOCK = threading.Lock()
 ONBOARDING_STARTER_MODULES = [
     {
         "id": "crm_operativo",
@@ -247,52 +244,44 @@ def _clerk_secret_key() -> Optional[str]:
     return str(value).strip() if value and str(value).strip() else None
 
 
+def revoke_exact_clerk_session(session_id: str) -> str:
+    """Revoke only the captured provider SID; never an actor's other sessions.
+
+    The caller has committed the local tombstone and claimed a single attempt.
+    Network uncertainty is observable and must not cause an automatic retry.
+    """
+    from urllib.parse import quote
+    secret = _clerk_secret_key()
+    if not secret:
+        return 'failed'
+    try:
+        response = requests.post(
+            'https://api.clerk.com/v1/sessions/' + quote(session_id, safe='') + '/revoke',
+            headers={'Authorization': 'Bearer ' + secret}, timeout=(3, 5), allow_redirects=False)
+        if response.status_code != 200:
+            return 'failed' if 400 <= response.status_code < 500 else 'pending'
+        value = response.json()
+        return 'confirmed' if isinstance(value, dict) and value.get('id') == session_id and value.get('status') == 'revoked' else 'pending'
+    except (requests.RequestException, ValueError):
+        return 'pending'
+
+
 def _clerk_webhook_secret() -> Optional[str]:
     value = os.getenv("CLERK_WEBHOOK_SIGNING_SECRET") or os.getenv("CLERK_WEBHOOK_SECRET")
     return str(value).strip() if value and str(value).strip() else None
 
 
-def _clerk_revocation_ttl_seconds() -> int:
-    try:
-        configured = int(os.getenv("CLERK_REVOKED_SESSION_TTL_SECONDS") or "86400")
-    except (TypeError, ValueError):
-        configured = 86400
-    return max(3600, min(configured, 604800))
-
-
 def register_revoked_clerk_session(session_id: str | None, *, reason: str) -> bool:
-    """Remember terminal Clerk sessions for immediate single-worker revocation."""
-
-    sid = str(session_id or "").strip()
-    if not sid:
+    from services.auth_session_lifecycle import revoke_provider_session
+    if not session_id:
         return False
-    now = time.time()
-    expires_at = now + _clerk_revocation_ttl_seconds()
-    with _REVOKED_CLERK_SESSIONS_LOCK:
-        expired = [key for key, value in _REVOKED_CLERK_SESSIONS.items() if value["expires_at"] <= now]
-        for key in expired:
-            _REVOKED_CLERK_SESSIONS.pop(key, None)
-        _REVOKED_CLERK_SESSIONS[sid] = {
-            "reason": str(reason or "session_terminal"),
-            "revoked_at": now,
-            "expires_at": expires_at,
-        }
-    return True
+    return revoke_provider_session(str(session_id).strip(), reason=reason, commit=reason.startswith('backend_api'),
+                                   confirmed=reason.startswith(('session.', 'backend_api')))
 
 
 def is_clerk_session_revoked(session_id: str | None) -> bool:
-    sid = str(session_id or "").strip()
-    if not sid:
-        return False
-    now = time.time()
-    with _REVOKED_CLERK_SESSIONS_LOCK:
-        entry = _REVOKED_CLERK_SESSIONS.get(sid)
-        if not entry:
-            return False
-        if entry["expires_at"] <= now:
-            _REVOKED_CLERK_SESSIONS.pop(sid, None)
-            return False
-        return True
+    from services.auth_session_lifecycle import provider_session_revoked
+    return provider_session_revoked(str(session_id).strip()) if session_id else False
 
 
 def _clerk_authorized_parties() -> list[str]:
@@ -1142,6 +1131,7 @@ def _issue_clerk_chatboc_token(
         None if portal_session else user.municipio_id,
         None if portal_session else user.pyme_id,
         expires_in=timedelta(hours=1),
+        bind_cookie=True,
         extra_claims={
             "auth_provider": "clerk",
             "session_kind": "clerk",
@@ -1212,9 +1202,14 @@ def build_chatboc_session_payload(
     identity = _session_identity_payload(user)
     effective_role = ROLE_CLIENTE if portal_session else user.rol
     effective_chat_type = _portal_chat_type(tenant) if portal_session else user.tipo_chat
+    retirement = None
+    if token:
+        from services.auth_session_lifecycle import descriptor_for_token
+        retirement = descriptor_for_token(token)
     return {
         "contract_version": CLERK_AUTH_CONTRACT_VERSION,
         "token": token,
+        "session_retirement": retirement,
         "auth_provider": "clerk",
         "auth_intent": intent,
         "audience": intent,
@@ -1704,17 +1699,15 @@ def sync_clerk_webhook_event(event: dict, *, commit: bool = True) -> dict:
         clerk_user_id = str(data.get("user_id") or "").strip()
         user = _find_user_by_clerk_id(clerk_user_id) if clerk_user_id else None
         if user:
-            session_version = _revoke_chatboc_sessions_for_clerk_user(user, reason=event_type)
-            db.session.add(user)
             _finish_webhook_db_work(commit=commit)
             return {
-                "status": "sessions_revoked",
+                "status": "session_revoked",
                 "user_id": user.id,
-                "session_version": session_version,
                 "event_type": event_type,
                 "clerk_session_id": clerk_session_id or None,
                 "clerk_user_id": clerk_user_id or None,
             }
+        _finish_webhook_db_work(commit=commit)
         return {
             "status": "session_revoked_unlinked",
             "event_type": event_type,

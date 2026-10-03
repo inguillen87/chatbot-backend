@@ -1,7 +1,7 @@
 from copy import deepcopy
 from types import SimpleNamespace
 import unittest
-from services.organization_workspace import build_organization_workspace, CONTRACT_VERSION
+from services.organization_workspace import build_organization_workspace, build_platform_workspace, CONTRACT_VERSION
 
 
 def tenant(**values):
@@ -10,6 +10,14 @@ def tenant(**values):
 
 
 class OrganizationWorkspaceTests(unittest.TestCase):
+    def test_platform_presentation_requires_explicit_authorization_and_has_no_customer_identity(self):
+        for value in (False, None, 'true', 1):
+            self.assertIsNone(build_platform_workspace(authorized=value))
+        platform = build_platform_workspace(authorized=True)
+        self.assertEqual(platform['organization_action']['href'], '/superadmin?section=organizations')
+        self.assertNotIn('tenant', platform)
+        self.assertNotIn('nombre_empresa', platform)
+
     def test_explicit_verticals_have_distinct_identity(self):
         for kind, label in [('municipio','Municipio'),('gobierno','Gobierno'),
                 ('colegio','Colegio'),('empresa','Empresa'),('pyme','Pyme')]:

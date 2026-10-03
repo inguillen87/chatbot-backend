@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from importlib import import_module
@@ -36,14 +37,17 @@ _TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 # online.
 _DEFAULT_WARMUP_DELAY_SECONDS = 0.1
 _MAX_WARMUP_DELAY_SECONDS = 0.5
-# Vercel includes image provisioning and process boot in its container
-# initialisation budget.  A slow pull can leave less than five seconds after
-# Gunicorn starts listening.  Keep the join window below that remaining budget
-# so the first request receives our explicit, retryable 503 instead of an
-# opaque platform 500.  The canonical import continues on the same single
-# background flight and the retry is dispatched only after it is ready.
+# Keep the established join budget outside Preview. Preview can explicitly
+# opt in to five seconds for safe reads: measured canonical imports take
+# 3.5-4 seconds, and the warmup delay also consumes part of that join window.
+# A timeout still returns the explicit receipt before canonical dispatch.
 _DEFAULT_SAFE_REQUEST_WAIT_SECONDS = 2.0
 _MAX_SAFE_REQUEST_WAIT_SECONDS = 4.0
+_MAX_PREVIEW_SAFE_REQUEST_WAIT_SECONDS = 5.0
+# Mutations retain fail-fast behavior unless Preview explicitly opts into a
+# bounded wait before the first and only canonical application dispatch.
+_DEFAULT_MUTATION_REQUEST_WAIT_SECONDS = 0.0
+_MAX_PREVIEW_MUTATION_REQUEST_WAIT_SECONDS = 5.0
 _BOOTSTRAP_RETRY_AFTER_SECONDS = 2
 _BOOTSTRAP_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -70,6 +74,12 @@ def _warmup_delay_seconds() -> float:
     return min(_MAX_WARMUP_DELAY_SECONDS, max(0.0, parsed))
 
 
+def _max_safe_request_wait_seconds() -> float:
+    if str(os.getenv('VERCEL_ENV') or '').strip().lower() == 'preview':
+        return _MAX_PREVIEW_SAFE_REQUEST_WAIT_SECONDS
+    return _MAX_SAFE_REQUEST_WAIT_SECONDS
+
+
 def _safe_request_wait_seconds() -> float:
     """Return the bounded time requests may join the bootstrap flight."""
 
@@ -80,7 +90,27 @@ def _safe_request_wait_seconds() -> float:
         parsed = float(raw_value.strip())
     except (AttributeError, ValueError):
         return _DEFAULT_SAFE_REQUEST_WAIT_SECONDS
-    return min(_MAX_SAFE_REQUEST_WAIT_SECONDS, max(0.0, parsed))
+    return min(_max_safe_request_wait_seconds(), max(0.0, parsed))
+
+
+def _max_mutation_request_wait_seconds() -> float:
+    return (_MAX_PREVIEW_MUTATION_REQUEST_WAIT_SECONDS
+            if str(os.getenv('VERCEL_ENV') or '').strip().lower() == 'preview'
+            else 0.0)
+
+
+def _mutation_request_wait_seconds() -> float:
+    """Preview-only, explicit, finite pre-dispatch mutation wait."""
+    maximum = _max_mutation_request_wait_seconds()
+    if maximum == 0:
+        return _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS
+    try:
+        parsed = float(os.getenv('VERCEL_WSGI_MUTATION_REQUEST_WAIT_SECONDS', '').strip())
+    except (AttributeError, ValueError):
+        return _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS
+    if not math.isfinite(parsed):
+        return _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS
+    return min(maximum, max(0.0, parsed))
 
 
 class LazyApplication:
@@ -100,6 +130,7 @@ class LazyApplication:
         background_warmup: bool = False,
         warmup_delay_seconds: float = _DEFAULT_WARMUP_DELAY_SECONDS,
         safe_request_wait_seconds: float = _DEFAULT_SAFE_REQUEST_WAIT_SECONDS,
+        mutation_request_wait_seconds: float = _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS,
     ) -> None:
         self._loader = loader or self._load_canonical_application
         self._application: WsgiApplication | None = None
@@ -114,8 +145,13 @@ class LazyApplication:
             max(0.0, float(warmup_delay_seconds)),
         )
         self._safe_request_wait_seconds = min(
-            _MAX_SAFE_REQUEST_WAIT_SECONDS,
+            _max_safe_request_wait_seconds(),
             max(0.0, float(safe_request_wait_seconds)),
+        )
+        mutation_wait = float(mutation_request_wait_seconds)
+        self._mutation_request_wait_seconds = (
+            min(_max_mutation_request_wait_seconds(), max(0.0, mutation_wait))
+            if math.isfinite(mutation_wait) else _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS
         )
 
     @staticmethod
@@ -192,6 +228,7 @@ class LazyApplication:
                 "contract_version": "chatboc.bootstrap.v1",
                 "ok": False,
                 "status_code": 503,
+                "request_dispatched": False,
                 "reason_code": reason_code,
                 "retryable": not failed,
                 "action_hint": "retry_after" if not failed else "inspect_runtime_logs",
@@ -232,14 +269,14 @@ class LazyApplication:
         if not self._background_warmup:
             return self._load_and_cache()(environ, start_response)
 
-        # Every request joins the same background initialization flight before
-        # dispatch. Mutations fail fast whenever this invocation observed a cold
-        # application. Even if loading completes milliseconds later, only the
-        # caller's explicit retry may execute the action; this prevents a
-        # provider timeout from making the first mutation's outcome ambiguous.
+        # A Preview mutation may join the same single-flight initialization
+        # before its first dispatch. No body or middleware is evaluated here;
+        # a timeout leaves this request undispatched permanently. Other runtimes
+        # and Preview without an explicit opt-in retain fail-fast behavior.
         self.start_warmup()
         method = str(environ.get("REQUEST_METHOD") or "GET").strip().upper()
-        if method not in _BOOTSTRAP_SAFE_METHODS:
+        safe_method = method in _BOOTSTRAP_SAFE_METHODS
+        if not safe_method and self._mutation_request_wait_seconds == 0:
             return self._bootstrap_response(
                 environ,
                 start_response,
@@ -249,8 +286,10 @@ class LazyApplication:
         application = self._application
         if application is not None:
             return application(environ, start_response)
-        if self._safe_request_wait_seconds > 0:
-            self._ready.wait(self._safe_request_wait_seconds)
+        wait_seconds = (self._safe_request_wait_seconds if safe_method
+                        else self._mutation_request_wait_seconds)
+        if wait_seconds > 0:
+            self._ready.wait(wait_seconds)
             application = self._application
             if application is not None:
                 return application(environ, start_response)
@@ -265,4 +304,5 @@ application = LazyApplication(
     background_warmup=_is_vercel_runtime(),
     warmup_delay_seconds=_warmup_delay_seconds(),
     safe_request_wait_seconds=_safe_request_wait_seconds(),
+    mutation_request_wait_seconds=_mutation_request_wait_seconds(),
 )

@@ -58,7 +58,7 @@ def test_r2_gate_defaults_off_and_preserves_fallback(
     monkeypatch.setattr(gcs_service, "generar_thumbnail", lambda *_a, **_k: (None, None))
 
     with app.test_request_context("/api/uploads"):
-        result = entrypoint(_file())
+        result = entrypoint(_file(), kind='catalogos')
 
     assert result is not None
     assert result[expected_url_key].startswith("https://fallback.example/")
@@ -95,7 +95,7 @@ def test_r2_gate_fails_closed_without_secondary_fallback(
     )
 
     with app.test_request_context("/api/uploads"):
-        result = entrypoint(_file())
+        result = entrypoint(_file(), kind='catalogos')
 
     assert result is None
     assert fallback_calls == []
@@ -131,7 +131,7 @@ def test_r2_gate_fails_closed_when_r2_raises(
     )
 
     with app.test_request_context("/api/uploads"):
-        result = entrypoint(_file())
+        result = entrypoint(_file(), kind='catalogos')
 
     assert result is None
     assert fallback_calls == []
@@ -167,7 +167,7 @@ def test_r2_gate_fails_closed_and_cleans_up_when_thumbnail_upload_fails(
     )
 
     with app.test_request_context("/api/uploads"):
-        result = gcs_service.guardar_adjunto_y_thumbnail(_file())
+        result = gcs_service.guardar_adjunto_y_thumbnail(_file(), kind='catalogos')
 
     assert result is None
     assert len(deleted_keys) == 2
@@ -196,7 +196,7 @@ def test_r2_gate_returns_successful_r2_upload(
     monkeypatch.setattr(gcs_service, "generar_thumbnail", lambda *_a, **_k: (None, None))
 
     with app.test_request_context("/api/uploads"):
-        result = entrypoint(_file())
+        result = entrypoint(_file(), kind='catalogos')
 
     assert result is not None
     assert result[expected_url_key].startswith("https://cdn.example/")

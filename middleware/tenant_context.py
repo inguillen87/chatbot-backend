@@ -413,6 +413,9 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
 def tenant_middleware(app) -> None:
     @app.before_request
     def attach_tenant_profile() -> None:
+        from services.auth_session_lifecycle import is_retirement_request
+        if is_retirement_request():
+            return
         # Reset every tenant alias at the beginning of each request. This also
         # protects test/worker code that intentionally reuses an app context;
         # a failed resolution must never inherit the previous request's tenant.

@@ -18,7 +18,7 @@ from models import (
     EncRespuesta,
     LlmInteractionLog,
 )
-from utils.auth_helpers import bump_auth_session_version, token_requerido
+from utils.auth_helpers import auth_sin_escrituras_implicitas, bump_auth_session_version, token_requerido
 from services.operational_scoring import build_lead_portfolio_score
 from services.survey_response_provenance import (
     build_survey_response_provenance,
@@ -30,6 +30,11 @@ from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
 from services.user_service import assign_whatsapp_numbers
+from services.native_admin_membership import (
+    NativeAdminMembershipError, list_native_admin_memberships,
+    normalize_native_admin_membership, read_native_admin_membership,
+)
+from utils.tenant_admin_access import resolve_consistent_user_tenant
 from utils.roles import (
     canonical_role,
     normalize_tenant_type,
@@ -1507,30 +1512,19 @@ def update_tenant_full(current_user, slug):
 
         _log_admin_action(current_user.id, "change_plan", slug, {"old": old_plan, "new": normalized_plan})
 
+        # Legacy organization references identify the owner USER, never the
+        # TenantProfile primary key. Check the same consistent membership used
+        # by /me so a direct association cannot override a foreign owner/slug.
+        owner_ids = [value for value in (tenant.municipio_id, tenant.pyme_id) if value is not None]
+        filters = [User.tenant_id == tenant.id]
+        if owner_ids:
+            filters.extend((User.id.in_(owner_ids), User.empresa_id.in_(owner_ids),
+                            User.municipio_id.in_(owner_ids), User.pyme_id.in_(owner_ids)))
+        candidates = User.query.filter(or_(*filters)).populate_existing().all()
         users_to_update = set()
-
-        # Method 1: Find the owner via TenantProfile's FK and their employees
-        owner = tenant.municipio or tenant.pyme
-        if owner:
-            users_to_update.add(owner)
-            if owner.id: # safety check
-                employees = User.query.filter(User.empresa_id == owner.id).all()
-                for emp in employees:
-                    users_to_update.add(emp)
-
-        # Method 2: Find all users directly linked via User.tenant_id
-        direct_members = User.query.filter(User.tenant_id == tenant.id).all()
-        for member in direct_members:
-            users_to_update.add(member)
-
-        # Method 3 (Fallback for demo/legacy tenants): Find users whose pyme_id/municipio_id points to this tenant's ID
-        if tenant.tipo == 'pyme':
-            fallback_members = User.query.filter(User.pyme_id == tenant.id).all()
-            for member in fallback_members:
-                users_to_update.add(member)
-        elif tenant.tipo == 'municipio':
-            fallback_members = User.query.filter(User.municipio_id == tenant.id).all()
-            for member in fallback_members:
+        for member in candidates:
+            resolved = resolve_consistent_user_tenant(member)
+            if resolved is not None and resolved.id == tenant.id:
                 users_to_update.add(member)
 
         if not users_to_update:
@@ -1669,10 +1663,18 @@ def update_tenant_status(current_user, slug):
 @super_admin_required
 def impersonate_tenant(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    if not tenant.is_active:
+        return jsonify({"reason_code": "impersonation_tenant_inactive"}), 403
     owner = tenant.municipio or tenant.pyme
 
     if not owner:
         return jsonify({"error": "Tenant sin owner"}), 400
+    from utils.auth_helpers import is_clerk_managed_user, is_user_auth_disabled, user_tenant_auth_allowed
+    if is_clerk_managed_user(owner):
+        return jsonify({"reason_code": "impersonation_provider_unsupported",
+                        "error": "Este titular debe ingresar con su identidad de Clerk."}), 403
+    if is_user_auth_disabled(owner) or not user_tenant_auth_allowed(owner):
+        return jsonify({"reason_code": "impersonation_actor_unavailable"}), 403
 
     # Generate short-lived token for owner
     payload = {
@@ -1685,12 +1687,16 @@ def impersonate_tenant(current_user, slug):
         'impersonated_by': current_user.id,
         'exp': datetime.now(timezone.utc) + timedelta(minutes=60)
     }
-    token = jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    from services.auth_session_lifecycle import issue_token, descriptor_for_token
+    payload['audience'] = 'panel'
+    token = issue_token(payload, commit=False)
 
     _log_admin_action(current_user.id, "impersonate_tenant", slug, {"target_user_id": owner.id})
+    db.session.commit()
 
     redirect_url = f"/perfil?tenant_slug={tenant.slug}&tenant={tenant.slug}"
-    return jsonify({"token": token, "redirect_url": redirect_url})
+    return jsonify({"token": token, "redirect_url": redirect_url,
+                    "session_retirement": descriptor_for_token(token)})
 
 @super_admin_bp.route('/tenants/<string:slug>/admin-user', methods=['POST'])
 @token_requerido
@@ -1771,6 +1777,63 @@ def reset_tenant_password(current_user, slug):
     _log_admin_action(current_user.id, "reset_password", slug, {"target_user_id": owner.id})
     db.session.commit()
     return jsonify({"message": "Contraseña actualizada correctamente"})
+
+
+def _native_admin_membership_response(payload, status=200):
+    response = jsonify(payload)
+    response.status_code = status
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Authorization, Cookie, Origin'
+    return response
+
+
+def _native_admin_membership_scope_matches(slug):
+    selectors = [*request.args.getlist('tenant'), *request.args.getlist('tenant_slug'),
+        request.headers.get('X-Tenant'), request.headers.get('X-Tenant-Slug')]
+    if not all(value is None or value == slug for value in selectors):
+        return False
+    id_selectors = [*request.args.getlist('tenant_id'), request.headers.get('X-Tenant-Id')]
+    if any(value is not None for value in id_selectors):
+        tenant = TenantProfile.query.filter_by(slug=slug).one_or_none()
+        if tenant is None or not all(value is None or value == str(tenant.id) for value in id_selectors):
+            return False
+    return True
+
+
+@super_admin_bp.route('/tenants/<string:slug>/native-admin-users/legacy-membership', methods=['GET'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+@super_admin_required
+def native_admin_legacy_membership_list(current_user, slug):
+    if not _native_admin_membership_scope_matches(slug):
+        return _native_admin_membership_response({'reason_code': 'tenant_selector_conflict'}, 400)
+    try:
+        return _native_admin_membership_response(list_native_admin_memberships(
+            db.session, actor=current_user, slug=slug))
+    except NativeAdminMembershipError as error:
+        return _native_admin_membership_response({'reason_code': error.code}, error.status)
+
+
+@super_admin_bp.route('/tenants/<string:slug>/native-admin-users/<int:user_id>/legacy-membership', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+@super_admin_required
+def native_admin_legacy_membership(current_user, slug, user_id):
+    if not _native_admin_membership_scope_matches(slug):
+        return _native_admin_membership_response({'reason_code': 'tenant_selector_conflict'}, 400)
+    try:
+        if request.method == 'GET':
+            result = read_native_admin_membership(db.session, actor=current_user, slug=slug, user_id=user_id)
+        else:
+            if request.content_length is None or request.content_length > 2048:
+                return _native_admin_membership_response({'reason_code': 'legacy_membership_action_too_large'}, 413)
+            result = normalize_native_admin_membership(db.session, actor=current_user,
+                actor_session_version=(getattr(g, 'token_payload', None) or {}).get('sv'),
+                slug=slug, user_id=user_id, data=request.get_json(silent=True))
+        return _native_admin_membership_response(result)
+    except NativeAdminMembershipError as error:
+        return _native_admin_membership_response({'reason_code': error.code}, error.status)
+
 
 @super_admin_bp.route('/tenants/<string:slug>/whatsapp', methods=['PUT'])
 @token_requerido

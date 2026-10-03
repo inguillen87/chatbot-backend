@@ -37,6 +37,14 @@ class _RecordingS3Client:
             }
         )
 
+    def put_object(self, **kwargs):
+        self.calls.append({'bucket_name': kwargs['Bucket'], 'key': kwargs['Key'],
+                           'body': kwargs['Body'], 'extra_args': {
+                               'CacheControl': kwargs['CacheControl'], 'ContentType': kwargs['ContentType'],
+                               'Metadata': kwargs.get('Metadata', {}),
+                           }})
+        return {}
+
     def generate_presigned_url(self, operation, Params=None, ExpiresIn=None):
         self.presigned_calls.append(
             {
@@ -300,13 +308,17 @@ def test_r2_upload_file_uses_opaque_names_for_pedido_attachments():
     assert client.calls[0]["extra_args"]["CacheControl"] == "private, no-store"
 
 
-def test_upload_to_gcs_uses_r2_service_key_policy_for_public_intake_pedidos(app, monkeypatch):
+def test_upload_to_gcs_uses_only_private_bucket_for_sensitive_public_intake_pedidos(app, monkeypatch):
+    from services.private_attachment_storage import PrivateAttachmentStorage
     client = _RecordingS3Client()
-    service = _configured_service(client)
-    monkeypatch.setattr(gcs_service, "r2_service", service)
+    service = PrivateAttachmentStorage(endpoint='https://storage.invalid', bucket='private-attachments',
+                                       access='private-fixture-access', secret='private-fixture-secret',
+                                       namespace='private-attachments/' + 'b' * 32)
+    service._create_client = lambda **kwargs: client
+    monkeypatch.setattr('services.private_attachment_storage.private_attachment_storage', lambda: service)
 
     with app.test_request_context("/api/pedidos/from-file"):
-        g.tenant_profile = SimpleNamespace(slug="Ferreteria Central", tipo="pyme")
+        g.tenant_profile = SimpleNamespace(slug="ferreteria-central", tipo="pyme")
         file_storage = FileStorage(
             stream=BytesIO(b"pedido manuscrito"),
             filename="Pedido DNI 32877851 Don Bosco 55.jpg",
@@ -319,7 +331,9 @@ def test_upload_to_gcs_uses_r2_service_key_policy_for_public_intake_pedidos(app,
     assert "DNI" not in result["public_url"]
     assert "Don" not in result["public_url"]
     key = client.calls[0]["key"]
-    assert re.fullmatch(r"pymes/ferreteria-central/pedidos/[a-f0-9]{32}\.jpg", key)
+    assert re.fullmatch(r"private-attachments/[a-f0-9]{32}/tenants/ferreteria-central/attachments/[a-f0-9]{32}\.jpg", key)
+    assert client.calls[0]['bucket_name'] == 'private-attachments'
+    assert result['public_url'].startswith('r2-private://private-attachments/')
     assert client.calls[0]["extra_args"]["CacheControl"] == "private, no-store"
     assert result["original_name"] == "Pedido_DNI_32877851_Don_Bosco_55.jpg"
 
@@ -525,7 +539,7 @@ def test_attachment_delivery_keeps_public_catalog_url(monkeypatch):
     assert client.presigned_calls == []
 
 
-def test_attachment_delivery_signs_private_reclamo_url(monkeypatch):
+def test_attachment_delivery_rejects_unresolved_legacy_public_reclamo_reference(monkeypatch):
     client = _RecordingS3Client()
     service = _configured_service(client)
     monkeypatch.setattr(attachment_delivery, "r2_service", service)
@@ -540,8 +554,114 @@ def test_attachment_delivery_signs_private_reclamo_url(monkeypatch):
         }
     )
 
-    assert payload["url"] == "https://r2-signed.example/municipios/junin/reclamos/secret.jpg?ttl=900"
+    assert payload["url"] is None
     assert payload["downloadUrl"] == payload["url"]
-    assert payload["storage_url"] == original_url
-    assert payload["storage_access"] == "signed"
-    assert payload["is_private"] is True
+    assert 'storage_url' not in payload
+    assert payload["storage_access"] == "unavailable"
+    assert payload["is_private"] is False
+    assert payload['reason_code'] == 'attachment_private_migration_required'
+    assert original_url not in str(payload)
+    assert client.presigned_calls == []
+
+
+def test_private_read_requires_distinct_sane_bucket_before_any_provider_io():
+    service = _configured_service(_RecordingS3Client())
+    service.endpoint_url = 'https://storage.example.invalid'
+    service.access_key_id = 'fixture-access'
+    service.secret_access_key = 'fixture-secret'
+    with patch.object(service, '_create_client', side_effect=AssertionError('invalid private bucket must not connect')):
+        for bucket in (None, '', service.bucket_name, 'Private', 'private/bucket', 'ab', 'x' * 64, '-private', 'private-'):
+            with pytest.raises(R2ObjectStorageUnavailableError):
+                service.read_object_bytes('knowledge-private/source.pdf', max_bytes=20, content_type='application/pdf', bucket_name=bucket,
+                                          access_key_id='private-fixture-access', secret_access_key='private-fixture-secret')
+        with pytest.raises(TypeError):
+            service.read_object_bytes('knowledge-private/source.pdf', max_bytes=20, content_type='application/pdf')
+
+
+def test_private_read_uses_explicit_bucket_and_leaves_public_upload_bucket_unchanged():
+    class DownloadClient(_RecordingS3Client):
+        def __init__(self):
+            super().__init__(); self.download_calls = []; self.closed = False
+        def get_object(self, **kwargs):
+            self.download_calls.append(kwargs)
+            return {'Body': BytesIO(b'%PDF-'), 'ContentLength': 5, 'ContentType': 'application/pdf'}
+        def close(self):
+            self.closed = True
+    client = DownloadClient()
+    service = _configured_service(client)
+    service.endpoint_url = 'https://storage.example.invalid'
+    service.access_key_id = 'fixture-access'
+    service.secret_access_key = 'fixture-secret'
+    with patch.object(service, '_create_client', return_value=client) as create:
+        data = service.read_object_bytes('knowledge-private/source.pdf', max_bytes=20, content_type='application/pdf', bucket_name='knowledge-originals-private',
+                                        access_key_id='private-fixture-access', secret_access_key='private-fixture-secret')
+    assert data == b'%PDF-'
+    assert client.download_calls == [{'Bucket': 'knowledge-originals-private', 'Key': 'knowledge-private/source.pdf'}]
+    create.assert_called_once_with(timeout_seconds=5, access_key_id='private-fixture-access', secret_access_key='private-fixture-secret')
+    assert client.closed is True
+    assert service.bucket_name == 'chatboc-assets'
+    url = service.upload_file_with_key(BytesIO(b'logo'), 'tenants/demo/logos/logo.png', 'image/png')
+    assert client.calls[0]['bucket_name'] == 'chatboc-assets'
+    assert url == 'https://cdn.chatboc.ar/tenants/demo/logos/logo.png'
+
+
+def test_private_read_rejects_missing_or_general_credentials_before_client_creation():
+    service = _configured_service(_RecordingS3Client())
+    service.endpoint_url = 'https://storage.example.invalid'
+    service.access_key_id = 'general-fixture-access'
+    service.secret_access_key = 'general-fixture-secret'
+    with patch.object(service, '_create_client', side_effect=AssertionError('private keys must not fall back')):
+        for access, secret in ((None, 'private-secret'), ('', 'private-secret'), ('   ', 'private-secret'),
+                               ('private-access', None), ('private-access', ''), ('private-access', '   '),
+                               (service.access_key_id, service.secret_access_key)):
+            with pytest.raises(R2ObjectStorageUnavailableError):
+                service.read_object_bytes('knowledge-private/source.pdf', max_bytes=20, content_type='application/pdf',
+                                          bucket_name='knowledge-originals-private', access_key_id=access, secret_access_key=secret)
+
+
+def test_explicit_private_client_credentials_do_not_change_general_client_credentials():
+    client = _RecordingS3Client()
+    service = _configured_service(client)
+    service.endpoint_url = 'https://storage.example.invalid'
+    service.access_key_id = 'general-fixture-access'
+    service.secret_access_key = 'general-fixture-secret'
+    with patch('boto3.client', return_value=object()) as build:
+        service._create_client(timeout_seconds=5, access_key_id='private-fixture-access', secret_access_key='private-fixture-secret')
+    assert build.call_args.kwargs['aws_access_key_id'] == 'private-fixture-access'
+    assert build.call_args.kwargs['aws_secret_access_key'] == 'private-fixture-secret'
+    assert service.access_key_id == 'general-fixture-access'
+    assert service.secret_access_key == 'general-fixture-secret'
+    assert service.client is client
+    with patch('boto3.client', return_value=object()) as build:
+        service._create_client()
+    assert build.call_args.kwargs['aws_access_key_id'] == 'general-fixture-access'
+    assert build.call_args.kwargs['aws_secret_access_key'] == 'general-fixture-secret'
+    with pytest.raises(R2ObjectStorageUnavailableError):
+        service._create_client(access_key_id='private-fixture-access')
+
+
+def test_scoped_private_endpoint_overrides_general_endpoint_without_changing_public_service():
+    service = _configured_service(_RecordingS3Client())
+    service.endpoint_url = 'https://general.example.invalid'
+    service.access_key_id = 'general-access'
+    service.secret_access_key = 'general-secret'
+    endpoint = 'https://' + 'a' * 32 + '.r2.cloudflarestorage.com'
+    with patch('boto3.client', return_value=object()) as build:
+        service._create_client(access_key_id='private-access', secret_access_key='private-secret', endpoint_url=endpoint)
+    assert build.call_args.kwargs['endpoint_url'] == endpoint
+    assert build.call_args.kwargs['aws_access_key_id'] == 'private-access'
+    assert service.endpoint_url == 'https://general.example.invalid'
+    with patch('boto3.client', return_value=object()) as build:
+        service._create_client()
+    assert build.call_args.kwargs['endpoint_url'] == 'https://general.example.invalid'
+
+
+def test_private_read_accepts_only_canonical_explicit_account_endpoint_before_io():
+    service = _configured_service(_RecordingS3Client())
+    service.endpoint_url = None
+    service.access_key_id = 'general-access'
+    service.secret_access_key = 'general-secret'
+    with patch.object(service, '_create_client', side_effect=AssertionError('invalid endpoint cannot create SDK')):
+        for endpoint in ('https://storage.example.invalid', 'http://' + 'a' * 32 + '.r2.cloudflarestorage.com', 'https://' + 'a' * 32 + '.r2.cloudflarestorage.com/path', 'https://' + 'a' * 32 + '.r2.cloudflarestorage.com?query=1'):
+            with pytest.raises(R2ObjectStorageUnavailableError):
+                service.read_object_bytes('knowledge-private/source.pdf', max_bytes=20, content_type='application/pdf', bucket_name='knowledge-originals-private', access_key_id='private-access', secret_access_key='private-secret', endpoint_url=endpoint)

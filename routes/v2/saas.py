@@ -15,6 +15,7 @@ import uuid
 from flask import Blueprint, current_app, g, has_request_context, jsonify, request
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -46,6 +47,7 @@ from models import (
 )
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.education_contracts import build_education_admin_menu, build_education_profile, is_education_tenant
+from services.encuestas_service import build_survey_availability_contract
 from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     employee_ticket_category_access_allows,
@@ -139,6 +141,7 @@ from services.whatsapp_workflow_versioning import (
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 from utils.roles import ROLE_EMPLEADO, canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user
+from utils.tenant_admin_access import resolve_consistent_user_tenant
 
 v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
@@ -382,12 +385,11 @@ def _resolve_tenant_or_error(current_user: User, path_slug: str | None = None):
 def _user_can_access_tenant(user: User, tenant: TenantProfile) -> bool:
     if is_authorized_superadmin_user(user):
         return True
-    if str(getattr(user, "tenant_id", "") or "") == str(tenant.id):
-        return True
-    if (getattr(user, "tenant_slug", "") or "").strip().lower() == (tenant.slug or "").strip().lower():
-        return True
-    owner_ids = {getattr(tenant, "pyme_id", None), getattr(tenant, "municipio_id", None)}
-    return getattr(user, "id", None) in owner_ids
+    # V2 operational reads and actions must use the same organization as /me.
+    # A matching slug or ownership field cannot override conflicting explicit
+    # membership. Valid legacy employees continue through the shared resolver.
+    resolved = resolve_consistent_user_tenant(user)
+    return resolved is not None and resolved.id == tenant.id
 
 
 def _tenant_ref(tenant: TenantProfile) -> dict[str, Any]:
@@ -771,7 +773,13 @@ def _safe_count(query) -> int:
 def _survey_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
     encuestas_query = EncEncuesta.query.filter_by(tenant_id=tenant.id)
     survey_count = _safe_count(encuestas_query)
-    encuestas = encuestas_query.order_by(EncEncuesta.id.asc()).limit(12).all()
+    encuestas = encuestas_query.options(
+        selectinload(EncEncuesta.links), selectinload(EncEncuesta.preguntas)
+    ).order_by(EncEncuesta.id.asc()).all()
+    availability_by_id = {
+        int(encuesta.id): build_survey_availability_contract(encuesta, tenant)
+        for encuesta in encuestas
+    }
     public_survey_count = _safe_count(PublicSurvey.query.filter_by(tenant_id=tenant.id))
     public_responses = _safe_count(
         PublicSurveyResponse.query.join(
@@ -798,26 +806,18 @@ def _survey_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
         )
     )
 
-    live_vote_predicate = or_(
-        EncEncuesta.es_votacion_envivo.is_(True),
-        func.lower(func.coalesce(EncEncuesta.tipo, "")).like("%vot%"),
-        func.lower(func.coalesce(EncEncuesta.titulo, "")).like("%vot%"),
-    )
-    live_vote_count = _safe_count(encuestas_query.filter(live_vote_predicate))
-    active_count = _safe_count(
-        encuestas_query.filter(
-            func.lower(func.coalesce(EncEncuesta.estado, "")).in_(
-                {"publicada", "activa", "active", "published"}
-            )
-        )
-    )
-
     def is_live_vote(encuesta: EncEncuesta) -> bool:
-        return (
-            bool(getattr(encuesta, "es_votacion_envivo", False))
-            or "vot" in str(getattr(encuesta, "tipo", "") or "").lower()
-            or "vot" in str(getattr(encuesta, "titulo", "") or "").lower()
-        )
+        return availability_by_id[int(encuesta.id)]["admin_lifecycle"]["instrument_kind"] == "voting"
+
+    active_count = sum(
+        availability["admin_lifecycle"]["accepts_responses"] is True
+        for availability in availability_by_id.values()
+    )
+    live_vote_count = sum(
+        is_live_vote(encuesta)
+        and availability_by_id[int(encuesta.id)]["admin_lifecycle"]["accepts_responses"] is True
+        for encuesta in encuestas
+    )
 
     return {
         "contract_version": "tenant.surveys_ops.v1",
@@ -825,7 +825,10 @@ def _survey_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
             "surveys": survey_count,
             "public_surveys": public_survey_count,
             "active": active_count,
+            "accepting_responses": active_count,
             "live_votes": live_vote_count,
+            "configured_votations": sum(is_live_vote(encuesta) for encuesta in encuestas),
+            "published": sum(encuesta.estado == "publicada" for encuesta in encuestas),
             "responses": legacy_responses + public_responses,
             "public_responses": public_responses,
         },
@@ -844,9 +847,14 @@ def _survey_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
                 "status": encuesta.estado,
                 "is_live_vote": is_live_vote(encuesta),
                 "show_live_results": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
+                "public_access": availability_by_id[int(encuesta.id)]["public_access"],
+                "accepts_responses": availability_by_id[int(encuesta.id)]["admin_lifecycle"]["accepts_responses"],
+                "can_share": availability_by_id[int(encuesta.id)]["admin_lifecycle"]["capabilities"]["can_share"],
+                "phase": availability_by_id[int(encuesta.id)]["admin_lifecycle"]["phase"],
             }
-            for encuesta in encuestas
+            for encuesta in encuestas[:12]
         ],
+        "availability_scope": {"mode": "tenant_all_instruments", "returned_items": min(12, len(encuestas))},
         "endpoints": {
             "admin": "/api/v2/surveys",
             "analytics": "/api/v2/analytics/operations/dashboard",
@@ -6102,11 +6110,14 @@ def _legacy_claim_inbox_payload(
         ticket,
         tenant,
     )
+    from services.ticket_workflow_policy import build_workflow_instance
+    workflow = build_workflow_instance(ticket, "municipio", actor=actor, tenant=tenant)
     return {
         "id": f"municipio:{ticket.id}",
         "legacy_id": ticket.id,
         "ticket_id": ticket.id,
         "source_model": "MunicipioTicket",
+        "workflow": workflow,
         "legacy_kind": "claim",
         "conversation_id": f"municipio-ticket-{ticket.id}",
         "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=MunicipioTicket",

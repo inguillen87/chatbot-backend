@@ -82,6 +82,60 @@ def _coerce_reference_time(at: Optional[datetime]) -> datetime:
 JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
 
 
+class AuthProviderSession(db.Model):
+    """Durable provider SID authority, including events before local exchange."""
+    __tablename__ = "auth_provider_session"
+    provider = db.Column(db.String(16), primary_key=True)
+    provider_session_id = db.Column(db.String(255), primary_key=True)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    reason = db.Column(db.String(120), nullable=True)
+    revision = db.Column(db.Integer, nullable=False, default=1)
+    remote_status = db.Column(db.String(24), nullable=False, default="pending")
+
+
+class AuthSession(db.Model):
+    """One revocable authentication lineage; never a widget credential."""
+    __tablename__ = "auth_session"
+    id = db.Column(db.String(64), primary_key=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
+    actor_version = db.Column(db.Integer, nullable=False)
+    provider = db.Column(db.String(16), nullable=False)
+    audience = db.Column(db.String(80), nullable=False)
+    provider_session_id = db.Column(db.String(255), nullable=True, index=True)
+    flask_sid_hash = db.Column(db.String(64), nullable=True)
+    retirement_nonce = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    revoked_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    revision = db.Column(db.Integer, nullable=False, default=1)
+    __table_args__ = (
+        db.ForeignKeyConstraint(['provider', 'provider_session_id'],
+            ['auth_provider_session.provider', 'auth_provider_session.provider_session_id'],
+            name='fk_auth_session_provider_sid'),
+        db.CheckConstraint("provider in ('native','clerk')", name='ck_auth_session_provider'),
+        db.CheckConstraint('revision >= 1', name='ck_auth_session_revision'),
+    )
+
+
+class AuthSessionAudit(db.Model):
+    __tablename__ = "auth_session_audit"
+    id = db.Column(db.String(64), primary_key=True)
+    lineage_id = db.Column(db.String(64), db.ForeignKey("auth_session.id"), nullable=False, index=True)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    event_type = db.Column(db.String(32), nullable=False)
+    request_id = db.Column(db.String(128), nullable=True)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False)
+
+
+class AuthSessionRetirement(db.Model):
+    __tablename__ = "auth_session_retirement"
+    request_id = db.Column(db.String(128), primary_key=True)
+    lineage_id = db.Column(db.String(64), db.ForeignKey("auth_session.id"), nullable=False)
+    actor_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    receipt = db.Column(JSONType, nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False)
+
+
 
 class CatalogoModalidad(str, Enum):
     VENTA = "venta"
@@ -223,7 +277,7 @@ class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128), nullable=False)
+    password_hash = db.Column(db.Text, nullable=False)
     token = db.Column(db.String(255), nullable=True)
     entity_token = db.Column(db.String(255), unique=True, index=True, nullable=True)
     tenant_slug = db.Column(db.String(150), index=True, nullable=True)

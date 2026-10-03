@@ -107,7 +107,7 @@ class TicketNotificationFlowTest(unittest.TestCase):
         ):
             response = self.client.put(
                 f"/tickets/municipio/{self.ticket.id}/estado",
-                json={"estado": "en_proceso"},
+                json={"estado": "en_proceso", "expected_estado": "nuevo"},
                 headers=headers,
             )
 

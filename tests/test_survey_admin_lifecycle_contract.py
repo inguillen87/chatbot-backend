@@ -140,6 +140,67 @@ def test_government_draft_lifecycle_requires_evidence_gate(client):
     )
 
 
+def test_existing_government_publication_observe_access_is_not_reclassified(client):
+    owner, tenant = _government_tenant("government-published-readiness")
+    survey = _survey(tenant, slug="government-published-readiness")
+    response = client.get("/api/admin/encuestas", headers=_headers(owner, tenant))
+    assert response.status_code == 200, response.get_json()
+    payload = response.get_json()
+    item = next(row for row in payload["encuestas"] if row["id"] == survey.id)
+    assert item["public_access"] == {
+        "contract_version": "surveys.public_access.v1",
+        "allowed": True,
+        "reason_code": None,
+        "next_action": None,
+    }
+    # Observe mode preserves existing public access. The publication readiness
+    # gate remains independent; the admin contract never changes the policy.
+    public = client.get(f"/api/v2/public/surveys/{survey.slug}?tenant_slug={tenant.slug}")
+    assert public.status_code == 200, public.get_json()
+    assert item["admin_lifecycle"]["government_survey_evidence_gate"]["ready"] is False
+    assert item["admin_lifecycle"]["capabilities"]["can_share"] is True
+    assert item["admin_lifecycle"]["accepts_responses"] is True
+    assert item["esta_activa"] is True
+    assert payload["resumen"]["activas"] == 1
+    assert payload["resumen"]["accepting_responses"] == 1
+
+
+def test_admin_public_access_matches_enforced_visibility_and_public_404(client, monkeypatch):
+    from flask import current_app
+
+    owner, tenant = _tenant("enforced-public-readiness")
+    survey = _survey(tenant, slug="enforced-public-readiness")
+    monkeypatch.setitem(current_app.config, "SURVEY_JURISDICTION_GATE_MODE", "enforce_visibility")
+    monkeypatch.setitem(current_app.config, "SURVEY_JURISDICTION_GATE_TENANT_IDS", str(tenant.id))
+    response = client.get("/api/admin/encuestas", headers=_headers(owner, tenant))
+    assert response.status_code == 200, response.get_json()
+    item = next(row for row in response.get_json()["encuestas"] if row["id"] == survey.id)
+    assert item["public_access"]["allowed"] is False
+    assert item["public_access"]["reason_code"] == "survey_tenant_jurisdiction_unverified"
+    assert item["admin_lifecycle"]["capabilities"]["can_share"] is False
+    assert item["admin_lifecycle"]["accepts_responses"] is False
+    assert item["esta_activa"] is False
+    assert response.get_json()["resumen"]["activas"] == 0
+    public = client.get(f"/api/v2/public/surveys/{survey.slug}?tenant_slug={tenant.slug}")
+    assert public.status_code == 404, public.get_json()
+    assert public.get_json()["reason_code"] == "survey_not_found"
+    assert public.get_json()["retryable"] is False
+
+
+def test_future_publication_is_not_an_active_share_link(client):
+    owner, tenant = _tenant("future-public-readiness")
+    survey = _survey(tenant, slug="future-public-readiness")
+    survey.inicio_at = _public_schedule_now() + timedelta(days=1)
+    db.session.commit()
+    response = client.get("/api/admin/encuestas", headers=_headers(owner, tenant))
+    assert response.status_code == 200, response.get_json()
+    item = next(row for row in response.get_json()["encuestas"] if row["id"] == survey.id)
+    assert item["public_access"]["allowed"] is False
+    assert item["public_access"]["reason_code"] == "survey_outside_active_window"
+    assert item["admin_lifecycle"]["phase"] == "scheduled"
+    assert item["admin_lifecycle"]["capabilities"]["can_share"] is False
+
+
 def _response(survey: EncEncuesta, key: str) -> None:
     db.session.add(
         EncRespuesta(

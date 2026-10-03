@@ -4,11 +4,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import jwt
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
+from services.auth_session_lifecycle import issue_token
 from config import Config
 from models import AuditEvent, MunicipioTicket, TenantProfile, TenantTicket, User
 from services.ticket_service import ServicioTickets
@@ -658,15 +658,13 @@ class SlaTruthPersistenceTest(unittest.TestCase):
         db.session.commit()
 
     def _auth_header(self, user: User) -> dict[str, str]:
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": user.id,
                 "rol": user.rol,
                 "tenant_slug": user.tenant_slug,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         return {
             "Authorization": f"Bearer {token}",

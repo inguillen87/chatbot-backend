@@ -9,6 +9,7 @@ from flask import Blueprint, current_app, jsonify, request
 from cutover_writer_fence import (
     background_writer_fence_report,
     cutover_writer_fence_enabled,
+    cutover_writer_view,
 )
 from services.global_writer_authority import (
     background_global_writer_authority_report,
@@ -277,6 +278,7 @@ def _validate_outbox_reconciliation_report(payload: object) -> dict:
 
 
 @internal_cron_bp.get("/outbox-reconciliation")
+@cutover_writer_view
 def outbox_reconciliation():
     if not _has_valid_cron_authorization():
         response = jsonify(
@@ -331,6 +333,7 @@ def outbox_reconciliation():
 
 
 @internal_cron_bp.get("/whatsapp-payload-retention")
+@cutover_writer_view
 def whatsapp_payload_retention():
     gate_response = _maintenance_gate()
     if gate_response is not None:
@@ -424,6 +427,7 @@ def whatsapp_payload_retention():
 
 
 @internal_cron_bp.get("/survey-privacy-retention")
+@cutover_writer_view
 def survey_privacy_retention():
     gate_response = _maintenance_gate()
     if gate_response is not None:
@@ -478,6 +482,7 @@ def survey_privacy_retention():
 
 
 @internal_cron_bp.get("/weekly-analytics-report")
+@cutover_writer_view
 def weekly_analytics_report():
     gate_response = _weekly_analytics_gate()
     if gate_response is not None:

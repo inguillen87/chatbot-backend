@@ -364,6 +364,16 @@ def test_arbitrary_mutated_evidence_id_fails_signature_authentication(
             {"secret_value_disclosed": True},
             "credential_attestation_secret_value_disclosed",
         ),
+        (
+            {},
+            {"resolved_credential_scope": "unverified"},
+            "credential_attestation_scope_mismatch",
+        ),
+        (
+            {},
+            {"resolved_credential_scope": "parent"},
+            "credential_attestation_scope_mismatch",
+        ),
     ],
 )
 def test_mismatched_or_stale_evidence_blocks_promotion(

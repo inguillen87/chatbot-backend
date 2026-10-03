@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import base64
 import logging
 import os
@@ -16,7 +16,6 @@ from services.llm_provider_network_policy import (
     require_provider_network,
 )
 from services.provider_platform import is_sender_ready_status
-from services.render_env_sync import sync_render_env_var
 
 
 CONTRACT_VERSION = "twilio.tech_provider.v1"
@@ -317,6 +316,62 @@ def _backend_base_url(config: Mapping[str, Any]) -> str:
         or _clean(config.get("BACKEND_URL"))
         or "https://www.chatboc.ar"
     ).rstrip("/")
+
+
+def _canonical_voice_url(
+    value: Any, *, base_url: str, tenant_slug: str, path: str, default_url: str,
+) -> str:
+    """Project known historical callbacks without writing provider or tenant state."""
+    current = _clean(value) or default_url
+    try:
+        old = urlsplit(current)
+        if (
+            old.scheme not in {"http", "https"}
+            or old.hostname != "chatbot-backend-2e14.onrender.com"
+            or old.username is not None or old.password is not None
+            or old.port not in {None, 80 if old.scheme == "http" else 443}
+            or old.path != path
+        ):
+            return current
+        canonical = urlsplit(base_url)
+        if (
+            canonical.scheme not in {"http", "https"} or not canonical.hostname
+            or canonical.username is not None or canonical.password is not None
+            or canonical.query or canonical.fragment
+        ):
+            return current
+        # Reject malformed ports before using the trusted application's origin.
+        canonical.port
+    except ValueError:
+        return current
+    try:
+        pairs = parse_qsl(old.query, keep_blank_values=True, max_num_fields=64)
+    except ValueError:
+        return default_url
+
+    selectors = {
+        key: [value for candidate, value in pairs if candidate == key]
+        for key in ("tenant", "tenant_slug", "vertical", "sector", "intent")
+    }
+    tenant_values = selectors["tenant"] + selectors["tenant_slug"]
+    valid_scope = (
+        bool(tenant_slug)
+        and not old.fragment
+        and all(key in selectors for key, _value in pairs)
+        and (bool(tenant_values) or path == "/voice/status")
+        and all(len(values) <= 1 for values in selectors.values())
+        and all(value == tenant_slug for value in tenant_values)
+        and all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)
+                for key in ("vertical", "sector", "intent") for value in selectors[key])
+        and (not selectors["vertical"] or not selectors["sector"]
+             or selectors["vertical"] == selectors["sector"])
+    )
+    if not valid_scope:
+        return default_url
+    return urlunsplit((
+        canonical.scheme, canonical.netloc, canonical.path.rstrip("/") + path,
+        old.query, "",
+    ))
 
 
 def _frontend_base_url(config: Mapping[str, Any]) -> str:
@@ -965,7 +1020,7 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "live_enabled": _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED"),
             "tenant_auto_bootstrap_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED", True),
             "tenant_auto_provision_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_PROVISION_ENABLED"),
-            "render_env_sync_enabled": _bool_config(app_config, "RENDER_ENV_SYNC_ENABLED"),
+            "credential_storage": _provisioning_credential_storage_contract(),
             "manual_twilio_console_allowed": False,
             "customer_sees_twilio_console": False,
             "env": env,
@@ -997,9 +1052,21 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
         "voice": {
             "status": state.get("voice_status") or ("ready" if state.get("voice_twiml_app_sid") else "pending"),
             "twiml_app_sid": state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"),
-            "voice_url": state.get("voice_url") or cfg.get("voice_url") or f"{base_url}/twilio/voice?tenant={tenant_slug}",
-            "fallback_url": state.get("voice_fallback_url") or cfg.get("voice_fallback_url") or f"{base_url}/voice/fallback?tenant={tenant_slug}",
-            "status_callback_url": state.get("voice_status_callback_url") or cfg.get("voice_status_callback_url") or f"{base_url}/voice/status",
+            "voice_url": _canonical_voice_url(
+                state.get("voice_url") or cfg.get("voice_url"), base_url=base_url,
+                tenant_slug=_clean(tenant_slug), path="/twilio/voice",
+                default_url=f"{base_url}/twilio/voice?{urlencode({'tenant': tenant_slug})}",
+            ),
+            "fallback_url": _canonical_voice_url(
+                state.get("voice_fallback_url") or cfg.get("voice_fallback_url"), base_url=base_url,
+                tenant_slug=_clean(tenant_slug), path="/voice/fallback",
+                default_url=f"{base_url}/voice/fallback?{urlencode({'tenant': tenant_slug})}",
+            ),
+            "status_callback_url": _canonical_voice_url(
+                state.get("voice_status_callback_url") or cfg.get("voice_status_callback_url"),
+                base_url=base_url, tenant_slug=_clean(tenant_slug), path="/voice/status",
+                default_url=f"{base_url}/voice/status",
+            ),
             "vertical": state.get("voice_vertical") or cfg.get("voice_vertical"),
             "intent": state.get("voice_intent") or cfg.get("voice_intent"),
             "completion_endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/voice-app",
@@ -1196,14 +1263,24 @@ def build_voice_application_request(tenant, payload: Mapping[str, Any], app_conf
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     base_url = _backend_base_url(app_config)
-    tenant_slug = _clean(payload.get("tenant_slug") or getattr(tenant, "slug", None))
+    tenant_slug = _clean(getattr(tenant, "slug", None))
     vertical = _voice_vertical_for_tenant(tenant, payload)
     intent = _voice_intent_for_vertical(vertical, payload)
     app_sid = _clean(payload.get("voice_twiml_app_sid") or state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"))
     friendly_name = _clean(payload.get("friendly_name")) or f"Chatboc Voice - {tenant_slug or getattr(tenant, 'id', 'tenant')}"
-    voice_url = _clean(payload.get("voice_url")) or f"{base_url}/twilio/voice?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
-    fallback_url = _clean(payload.get("voice_fallback_url")) or f"{base_url}/voice/fallback?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
-    status_callback_url = _clean(payload.get("voice_status_callback_url")) or f"{base_url}/voice/status"
+    query = urlencode({"tenant": tenant_slug, "vertical": vertical, "intent": intent})
+    voice_url = _canonical_voice_url(
+        payload.get("voice_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/twilio/voice", default_url=f"{base_url}/twilio/voice?{query}",
+    )
+    fallback_url = _canonical_voice_url(
+        payload.get("voice_fallback_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/voice/fallback", default_url=f"{base_url}/voice/fallback?{query}",
+    )
+    status_callback_url = _canonical_voice_url(
+        payload.get("voice_status_callback_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/voice/status", default_url=f"{base_url}/voice/status",
+    )
     sender_sid = _clean(payload.get("sender_sid") or state.get("sender_sid"))
     sender_id = _normalize_whatsapp_sender_id(payload.get("sender_id") or state.get("sender_id") or getattr(tenant, "whatsapp_sender_id", None))
     return {
@@ -1389,17 +1466,25 @@ def provision_twilio_voice_application(tenant, payload: Mapping[str, Any], app_c
     return result
 
 
+def _provisioning_credential_storage_contract() -> dict[str, Any]:
+    # A tenant-bound encrypted store and resolver do not exist yet. An env flag
+    # or a shared token cannot satisfy durable credential ownership for a new
+    # account. Existing connections use their unchanged runtime/status paths.
+    return {
+        "ready": False,
+        "status": "unavailable",
+        "reason_code": "twilio_tenant_credential_store_unavailable",
+        "blocked_operations": ["create_subaccount", "create_messaging_service"],
+    }
+
+
 def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     request_payload = build_provisioning_request(tenant, payload, app_config)
     live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")
-    parent_account_sid = _clean(app_config.get("TWILIO_ACCOUNT_SID"))
-    parent_auth_token = _clean(app_config.get("TWILIO_AUTH_TOKEN"))
     existing_subaccount_sid = _clean(state.get("twilio_account_sid"))
     existing_messaging_service_sid = _clean(state.get("messaging_service_sid"))
-    tenant_slug = getattr(tenant, "slug", None)
-    env = _env_status(app_config)
 
     result = {
         "contract_version": "twilio.tech_provider.provisioning.v1",
@@ -1407,6 +1492,9 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
         "mode": "live" if live_enabled else "dry_run",
         "request": request_payload,
         "steps": [],
+        "credential_storage": _provisioning_credential_storage_contract(),
+        "provider_calls_performed": False,
+        "provider_resources_created": False,
         "state_patch": {
             "status": "provisioning_plan_ready",
             "last_step": "plan_ready",
@@ -1417,6 +1505,8 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
     }
 
     if not live_enabled:
+        # A plan does not change the connection or certify remote readiness.
+        result["state_patch"] = {}
         result["steps"].append({"id": "create_subaccount", "status": "planned"})
         result["steps"].append({"id": "create_messaging_service", "status": "planned"})
         result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
@@ -1435,89 +1525,22 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
                 "sid": existing_messaging_service_sid,
             }
         )
-        result["state_patch"].update({"status": "provisioning_blocked", "last_step": "validate_existing_state"})
+        result["state_patch"] = {}
         return result
 
-    subaccount_sid = existing_subaccount_sid
-    subaccount_token: str | None = None
-    token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
-
-    if subaccount_sid:
+    if existing_subaccount_sid and existing_messaging_service_sid:
+        # This is a read-only replay of existing references. Do not advance
+        # onboarding or rewrite sender/account state based on a provision click.
+        result["idempotent_replay"] = True
+        result["state_patch"] = {}
         result["steps"].append(
             {
                 "id": "create_subaccount",
                 "status": "done",
                 "operation": "reuse",
-                "sid": subaccount_sid,
+                "sid": existing_subaccount_sid,
             }
         )
-        result["state_patch"].update(
-            {
-                "status": "subaccount_reused",
-                "last_step": "reuse_subaccount",
-                "twilio_account_sid": subaccount_sid,
-            }
-        )
-    else:
-        if not (parent_account_sid and parent_auth_token):
-            result["ok"] = False
-            result["mode"] = "blocked"
-            result["reason_code"] = "twilio_credentials_missing"
-            result["missing_env"] = env["missing"]
-            return result
-
-        try:
-            subaccount = _twilio_post_form(
-                url="https://api.twilio.com/2010-04-01/Accounts.json",
-                account_sid=parent_account_sid,
-                auth_token=parent_auth_token,
-                data={"FriendlyName": request_payload["friendly_name"]},
-            )
-        except Exception as exc:
-            result["ok"] = False
-            result["mode"] = "blocked"
-            result["reason_code"] = "twilio_subaccount_creation_failed"
-            result["error"] = str(exc)
-            result["state_patch"].update({"status": "provisioning_failed", "last_step": "create_subaccount"})
-            return result
-
-        subaccount_sid = _clean(subaccount.get("sid"))
-        subaccount_token = _clean(subaccount.get("auth_token"))
-        token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
-        result["steps"].append({"id": "create_subaccount", "status": "done", "sid": subaccount_sid})
-        result["state_patch"].update(
-            {
-                "status": "subaccount_created" if not subaccount_token else "creating_messaging_service",
-                "last_step": "create_subaccount",
-                "twilio_account_sid": subaccount_sid,
-                "twilio_subaccount_token_present": bool(subaccount_token),
-                "twilio_subaccount_token_ref": token_refs[0],
-                "twilio_subaccount_token_ref_aliases": token_refs[1:],
-            }
-        )
-
-        if subaccount_sid and subaccount_token:
-            render_env_sync = sync_render_env_var(token_refs[0], subaccount_token, app_config)
-            result["secure_secret_required"] = {
-                "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
-                "required_env": token_refs,
-                "render_env_sync": render_env_sync,
-                "do_not_store_in_database": True,
-            }
-            result["state_patch"].update(
-                {
-                    "render_subaccount_secret_synced": bool(render_env_sync.get("secret_value_stored")),
-                    "render_subaccount_secret_sync_status": render_env_sync.get("mode"),
-                }
-            )
-
-    if existing_messaging_service_sid:
-        onboarding_already_advanced = bool(
-            state.get("waba_id")
-            or state.get("phone_number_id")
-            or state.get("sender_sid")
-        )
-        result["idempotent_replay"] = True
         result["steps"].append(
             {
                 "id": "create_messaging_service",
@@ -1526,91 +1549,26 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
                 "sid": existing_messaging_service_sid,
             }
         )
-        result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
-        result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
-        result["state_patch"].update(
-            {
-                "status": (
-                    state.get("status")
-                    if onboarding_already_advanced and state.get("status")
-                    else "ready_for_embedded_signup"
-                ),
-                "last_step": (
-                    state.get("last_step")
-                    if onboarding_already_advanced and state.get("last_step")
-                    else "reuse_messaging_service"
-                ),
-                "twilio_account_sid": subaccount_sid,
-                "messaging_service_sid": existing_messaging_service_sid,
-            }
-        )
         return result
 
-    if subaccount_sid and not subaccount_token:
-        subaccount_token, token_refs = _resolve_subaccount_auth_token(
-            state={**state, "twilio_account_sid": subaccount_sid},
-            tenant_slug=tenant_slug,
-            app_config=app_config,
-            allow_global_fallback=False,
-        )
-        result["state_patch"].update(
-            {
-                "twilio_subaccount_token_ref": token_refs[0],
-                "twilio_subaccount_token_ref_aliases": token_refs[1:],
-            }
-        )
-
-    if not (subaccount_sid and subaccount_token):
-        result["ok"] = False
-        result["mode"] = "blocked"
-        result["reason_code"] = "twilio_subaccount_token_missing"
-        result["required_env"] = token_refs
-        result["steps"].append({"id": "create_messaging_service", "status": "blocked_subaccount_token_missing"})
-        result["state_patch"].update({"status": "messaging_service_blocked", "last_step": "resolve_subaccount_token"})
-        return result
-
-    try:
-        messaging_service = _twilio_post_form(
-            url="https://messaging.twilio.com/v1/Services",
-            account_sid=subaccount_sid,
-            auth_token=subaccount_token,
-            data={
-                "FriendlyName": request_payload["friendly_name"][:64],
-                "InboundRequestUrl": request_payload["webhook_url"],
-                "InboundMethod": "POST",
-                "StatusCallback": request_payload["status_callback_url"],
-                "UseInboundWebhookOnNumber": "false",
-                "Usecase": "notifications",
-            },
-        )
-    except Exception as exc:
-        result["ok"] = False
-        result["mode"] = "blocked"
-        result["reason_code"] = "twilio_messaging_service_creation_failed"
-        result["error"] = str(exc)
-        result["steps"].append({"id": "create_messaging_service", "status": "failed"})
-        result["state_patch"].update({"status": "messaging_service_failed", "last_step": "create_messaging_service"})
-        return result
-
-    messaging_service_sid = messaging_service.get("sid")
-    result["steps"].append({"id": "create_messaging_service", "status": "done", "sid": messaging_service_sid})
-    result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
-    result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
-    result.setdefault(
-        "secure_secret_required",
+    # No durable encrypted tenant credential store exists. Stop before creating
+    # remote resources, even when parent, global or Render credentials are set.
+    result.update(
         {
-            "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
-            "required_env": token_refs,
-            "do_not_store_in_database": True,
-        },
-    )
-    result["state_patch"].update(
-        {
-            "status": "ready_for_embedded_signup",
-            "last_step": "create_messaging_service",
-            "messaging_service_sid": messaging_service_sid,
+            "ok": False,
+            "mode": "blocked",
+            "reason_code": "twilio_tenant_credential_store_unavailable",
+            "retryable": False,
+            "message": "La activación de nuevas conexiones de WhatsApp todavía no está habilitada.",
+            "next_action": "configure_tenant_provider_credential_store",
+            "state_patch": {},
         }
     )
+    result["steps"].append({"id": "credential_storage_preflight", "status": "blocked"})
+    result["steps"].append(
+        {"id": "create_subaccount", "status": "blocked" if not existing_subaccount_sid else "existing"}
+    )
+    result["steps"].append({"id": "create_messaging_service", "status": "blocked"})
     return result
 
 

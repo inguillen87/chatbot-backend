@@ -34,7 +34,7 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    def test_upload_chat_attachment_returns_thumbUrl(self):
+    def test_upload_chat_attachment_hides_unmapped_local_original_and_thumbnail(self):
         data = {"file": (BytesIO(b"fake"), "foto.png")}
 
         adjunto_mock = SimpleNamespace(
@@ -61,15 +61,15 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         res_json, status = _response_json_and_status(resp)
         self.assertEqual(status, 200)
         info = res_json["attachmentInfo"]
-        self.assertEqual(info["url"], adjunto_mock.url)
-        self.assertEqual(info["downloadUrl"], adjunto_mock.url)
-        self.assertEqual(info["storage_provider"], "external")
-        self.assertEqual(info["storage_access"], "external")
+        self.assertIsNone(info["url"])
+        self.assertIsNone(info["downloadUrl"])
+        self.assertEqual(info["storage_access"], "unavailable")
+        self.assertEqual(info['reason_code'], 'attachment_private_migration_required')
+        self.assertNotIn(adjunto_mock.url, str(info))
         self.assertFalse(info["is_private"])
-        self.assertIn("thumbUrl", info)
-        self.assertEqual(info["thumbUrl"], "/static/uploads/foto_thumb.webp")
-        self.assertEqual(info["thumbnailUrl"], info["thumbUrl"])
-        self.assertEqual(info["meta"]["url"], info["thumbUrl"])
+        self.assertIsNone(info.get('thumbUrl'))
+        self.assertIsNone(info.get('thumbnailUrl'))
+        self.assertIsNone(info['meta']['url'])
 
     def test_upload_chat_attachment_uses_meta_thumbUrl(self):
         data = {"file": (BytesIO(b"fake"), "foto.png")}
@@ -107,9 +107,10 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         res_json, status = _response_json_and_status(resp)
         self.assertEqual(status, 200)
         info = res_json["attachmentInfo"]
-        self.assertEqual(info["thumbUrl"], "https://cdn.example.com/foto_thumb.webp")
-        self.assertEqual(info["thumbnailUrl"], info["thumbUrl"])
-        self.assertEqual(info["meta"]["url"], info["thumbUrl"])
+        self.assertIsNone(info.get('thumbUrl'))
+        self.assertIsNone(info.get('thumbnailUrl'))
+        self.assertIsNone(info['meta']['url'])
+        self.assertNotIn('https://cdn.example.com/', str(info))
 
     def test_upload_chat_attachment_allows_video_webm(self):
         data = {"file": (BytesIO(b"fake"), "nota.webm", "video/webm;codecs=opus")}
@@ -213,7 +214,7 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         commit_mock.assert_not_called()
 
     def test_ticket_comentario_to_dict_contains_thumbUrl(self):
-        """Ensure model serialization uses local storage path when GCS is disabled."""
+        """Unmapped legacy paths must not be emitted by model serialization."""
         from models import ArchivoAdjunto, TicketComentario
 
         adj = ArchivoAdjunto(
@@ -235,18 +236,10 @@ class ChatAttachmentUploadTests(unittest.TestCase):
 
         data = comentario.to_dict()
         self.assertIn("attachmentInfo", data)
-        self.assertEqual(
-            data["attachmentInfo"]["thumbUrl"],
-            "/static/uploads/foto_thumb.webp",
-        )
-        self.assertEqual(
-            data["attachmentInfo"]["thumbnailUrl"],
-            data["attachmentInfo"]["thumbUrl"],
-        )
-        self.assertEqual(
-            data["attachmentInfo"]["meta"]["url"],
-            data["attachmentInfo"]["thumbUrl"],
-        )
+        self.assertIsNone(data['attachmentInfo']['url'])
+        self.assertIsNone(data['attachmentInfo'].get('thumbUrl'))
+        self.assertIsNone(data['attachmentInfo']['meta']['url'])
+        self.assertNotIn('/static/uploads/', str(data))
 
     def test_ticket_comentario_to_dict_uses_meta_thumbUrl(self):
         from models import ArchivoAdjunto, TicketComentario, AnalisisArchivo
@@ -274,18 +267,9 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         db.session.commit()
 
         data = comentario.to_dict()
-        self.assertEqual(
-            data["attachmentInfo"]["thumbUrl"],
-            "https://cdn.example.com/foto_thumb.webp",
-        )
-        self.assertEqual(
-            data["attachmentInfo"]["thumbnailUrl"],
-            data["attachmentInfo"]["thumbUrl"],
-        )
-        self.assertEqual(
-            data["attachmentInfo"]["meta"]["url"],
-            data["attachmentInfo"]["thumbUrl"],
-        )
+        self.assertIsNone(data['attachmentInfo'].get('thumbUrl'))
+        self.assertIsNone(data['attachmentInfo']['meta']['url'])
+        self.assertNotIn('https://cdn.example.com/', str(data))
 
 
 if __name__ == "__main__":

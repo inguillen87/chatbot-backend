@@ -34,6 +34,7 @@ POST_TERRITORIAL_REVISIONS = [
     "20260905_municipio_reply_v1",
     "20260905_municipio_handoff_v1",
     "20260906_flask_sessions_v1",
+    "20261001_auth_session_v1",
 ]
 
 

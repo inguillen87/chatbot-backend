@@ -394,7 +394,8 @@ def _issue_login_response(
         "user_id": user.id,
         "exp": datetime.now(timezone.utc) + timedelta(days=expiration_days),
     }
-    token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    from services.auth_session_lifecycle import issue_token
+    token = issue_token(jwt_payload, bind_cookie=True)
 
     payload = {
         "mensaje": "Login exitoso",
@@ -452,7 +453,6 @@ def _issue_login_response(
     # Establish the Flask-Login session only after all payload construction and
     # serialization succeeded, so a 500 while building the response cannot
     # leave a partially authenticated browser session behind.
-    _rotate_session_for_login()
     if not login_user(user):
         abort(401, "No se pudo autenticar la cuenta")
     current_app.logger.info("[webauthn] Usuario %s autenticado vía Passkey", user.id)

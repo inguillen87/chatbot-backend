@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, current_app, send_from_directory, make_response
+from flask import Blueprint, request, jsonify, current_app, send_from_directory, make_response, redirect
 from extensions import db
 from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, TenantProfile, User, AnalisisArchivo
 import hmac
@@ -19,7 +19,7 @@ from services.gcs_service import (
     validate_upload_size,
     resolve_attachment_thumb_url,
 )
-from services.attachment_delivery import serialize_attachment_for_delivery
+from services.attachment_delivery import serialize_attachment_for_delivery, resolve_attachment_delivery_url
 from services.attachment_service import create_attachment_with_thumbnail
 from services.direct_attachment_upload import (
     DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
@@ -383,6 +383,7 @@ def _tiene_permiso(user: User, adj: ArchivoAdjunto) -> bool:
 
 
 def _meta_archivo(adj: ArchivoAdjunto) -> dict:
+    delivery = resolve_attachment_delivery_url(adj.url, adj.mime, attachment=adj)
     return {
         "nombre": adj.nombre_original or adj.filename,
         "tipo": adj.mime,
@@ -390,7 +391,11 @@ def _meta_archivo(adj: ArchivoAdjunto) -> dict:
         "fecha": adj.fecha.isoformat() if adj.fecha else None,
         "usuario_id": adj.user_id,
         "session_id": adj.session_id,
-        "url": adj.url,
+        "url": delivery.get('url'),
+        "storage_access": delivery.get('storage_access'),
+        "is_private": delivery.get('is_private', False),
+        "reason_code": delivery.get('reason_code'),
+        "availability_message": delivery.get('availability_message'),
     }
 
 
@@ -774,22 +779,13 @@ def obtener_archivo(current_user: User, filename):
     else:
         return jsonify({'error': 'Permiso denegado.'}), 403
 
-    try:
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(filename)
-
-        if not blob.exists():
-            return jsonify({'error': 'Archivo no encontrado en el almacenamiento.'}), 404
-
-        response = make_response(blob.download_as_bytes())
-        response.headers['Content-Type'] = adj.mime
-        response.headers['Content-Disposition'] = f'attachment; filename="{adj.nombre_original}"'
-        return response
-
-    except Exception as e:
-        current_app.logger.error(f"Error al descargar el archivo {filename} de GCS: {e}", exc_info=True)
-        return jsonify({'error': 'Error al descargar el archivo.'}), 500
+    delivery = resolve_attachment_delivery_url(adj.url, adj.mime, attachment=adj)
+    if not delivery.get('url'):
+        return jsonify({'error': delivery.get('availability_message'),
+                        'reason_code': delivery.get('reason_code', 'attachment_not_available')}), 503
+    response = redirect(delivery['url'], code=302)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
 
 
 @archivos_bp.route('/sesion/<session_id>', methods=['OPTIONS'])

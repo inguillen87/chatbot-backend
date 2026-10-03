@@ -14,6 +14,7 @@ from routes import archivos as archivos_route
 from routes.v2.tenants import create_demo_session_token
 from services import direct_attachment_upload
 from services.r2_service import R2ObjectStorageUnavailableError, R2Service
+from services.private_attachment_storage import PrivateAttachmentStorage
 from utils.demo_session import stable_demo_chat_session_id
 
 
@@ -91,11 +92,10 @@ class _InMemoryR2Client:
 
 
 def _configured_r2() -> tuple[R2Service, _InMemoryR2Client]:
-    service = R2Service()
+    service = PrivateAttachmentStorage(endpoint='https://r2.test', bucket='private-chat-test', access='private-test-access', secret='private-test-secret', namespace='private-attachments/' + 'b' * 32)
     client = _InMemoryR2Client()
     service.client = client
-    service.bucket_name = "chatboc-test"
-    service.public_base_url = "https://cdn.test"
+    service._create_client = lambda **kwargs: client
     return service, client
 
 
@@ -158,8 +158,8 @@ class TestDirectChatAttachmentUpload:
                 active_storage = storage or self.storage
                 stack.enter_context(
                     patch(
-                        "services.direct_attachment_upload.r2_service",
-                        active_storage,
+                        "services.direct_attachment_upload.private_attachment_storage",
+                        return_value=active_storage,
                     )
                 )
                 stack.enter_context(
@@ -184,6 +184,39 @@ class TestDirectChatAttachmentUpload:
         }
         response = self._post(payload)
         return response, response.get_json()
+
+    def test_intent_envelope_hides_private_reference_and_scope_until_server_decryption(self):
+        response, prepared = self._prepare()
+        assert response.status_code == 200
+        outer = direct_attachment_upload._serializer().loads(prepared['intent_token'])
+        assert set(outer) == {'v', 'sealed'}
+        assert outer['v'] == 2
+        assert self.tenant.slug not in str(outer)
+        assert 'r2-private://' not in str(outer)
+        assert self.storage.bucket_name not in str(outer)
+        claims = direct_attachment_upload._token_claims(prepared['intent_token'])
+        assert claims['tenant_slug'] == self.tenant.slug
+        assert claims['final_reference'] == self.storage.public_url_for_key(claims['final_key'])
+        assert '/attachments/' in claims['final_key']
+        assert '/temporary/' in claims['temporary_key']
+
+    def test_old_plaintext_v1_intent_is_rejected_before_storage_or_database_write(self):
+        token = direct_attachment_upload._serializer().dumps({'v': 1, 'final_key': 'legacy-public-key'})
+        with patch.object(self.storage, 'head_object', side_effect=AssertionError('v1 cannot access SDK')), patch.object(self.storage, 'copy_object', side_effect=AssertionError('v1 cannot copy')):
+            response = self._post({'operation': 'complete_direct_upload', 'intent_token': token})
+        assert response.status_code == 400
+        assert response.get_json()['code'] == 'invalid_upload_intent'
+        assert ArchivoAdjunto.query.count() == 0
+
+    def test_prepared_intent_cannot_be_completed_with_different_private_bucket(self):
+        _, prepared = self._prepare()
+        other, client = _configured_r2()
+        other.bucket_name = 'other-private-bucket'
+        with patch.object(other, 'head_object', side_effect=AssertionError('different private scope cannot fetch')):
+            response = self._post({'operation': 'complete_direct_upload', 'intent_token': prepared['intent_token']}, storage=other)
+        assert response.status_code == 409
+        assert ArchivoAdjunto.query.count() == 0
+        assert client.copy_calls == []
 
     def _complete_upload_for_discard(self):
         _, prepared = self._prepare()
@@ -360,7 +393,10 @@ class TestDirectChatAttachmentUpload:
         assert completed["operation"] == "complete_direct_upload"
         assert completed["idempotent"] is False
         assert completed["attachmentInfo"]["storage_provider"] == "cloudflare_r2"
-        assert completed["attachmentInfo"]["storage_access"] == "signed"
+        assert completed["attachmentInfo"]["storage_access"] == "unavailable"
+        assert completed["attachmentInfo"]["is_private"] is False
+        assert completed["attachmentInfo"]["url"] is None
+        assert "storage_url" not in completed["attachmentInfo"]
         assert completed["attachmentInfo"]["name"] == "evidencia.png"
         assert ArchivoAdjunto.query.count() == 1
         attachment = ArchivoAdjunto.query.one()
@@ -390,8 +426,8 @@ class TestDirectChatAttachmentUpload:
             "X-Tenant-Slug": self.tenant.slug,
         }
         with patch(
-            "services.direct_attachment_upload.r2_service",
-            self.storage,
+            "services.direct_attachment_upload.private_attachment_storage",
+            return_value=self.storage,
         ), patch(
             "services.attachment_delivery.r2_service",
             self.storage,
@@ -449,8 +485,8 @@ class TestDirectChatAttachmentUpload:
         if tenant_slug is not None:
             headers["X-Tenant-Slug"] = tenant_slug
         with patch(
-            "services.direct_attachment_upload.r2_service",
-            self.storage,
+            "services.direct_attachment_upload.private_attachment_storage",
+            return_value=self.storage,
         ), patch(
             "services.attachment_delivery.r2_service",
             self.storage,

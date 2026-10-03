@@ -75,5 +75,26 @@ class SelfServiceTests(unittest.TestCase):
     def test_same_input_is_deterministic(self):
         self.assertEqual(build_whatsapp_self_service(self.tenant(), {}), build_whatsapp_self_service(self.tenant(), {}))
 
+    def test_tdf_pack_is_linked_as_draft_without_sender_or_approval_claims(self):
+        tenant = self.tenant(slug='tierra-del-fuego')
+        state = {'sender_sid': 'synthetic-sender', 'sender_status': 'ONLINE', 'waba_id': 'synthetic-waba'}
+        before = deepcopy(state)
+        result = build_whatsapp_self_service(tenant, state)
+        pack = result['template_pack']
+        self.assertEqual(pack['vertical'], 'tdf')
+        self.assertEqual(pack['catalog_endpoint'], '/api/admin/whatsapp/template-packs')
+        self.assertEqual(pack['draft_endpoint'], '/api/admin/whatsapp/template-packs/tdf/drafts')
+        self.assertEqual(pack['provider_status'], 'not_checked')
+        self.assertFalse(pack['activation_performed'])
+        self.assertFalse(pack['send_performed'])
+        self.assertFalse(pack['dispatch_policy']['source_event_validation_implemented'])
+        self.assertFalse(pack['dispatch_policy']['tenant_provider_binding_verified'])
+        self.assertEqual(state, before)
+        self.assertNotIn('synthetic-waba', json.dumps(result))
+
+    def test_state_cannot_select_tdf_pack_for_another_organization(self):
+        result = build_whatsapp_self_service(self.tenant(), {'tenant_slug': 'tierra-del-fuego', 'pack': 'tdf'})
+        self.assertNotIn('template_pack', result)
+
 if __name__ == '__main__':
     unittest.main()

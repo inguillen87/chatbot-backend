@@ -364,7 +364,14 @@ def create_app(config_class=Config):
             from flask_login import current_user
 
             g.viewer = None
+            g.pop('_login_user', None)
+            g.current_user = None
+            g.token_payload = {}
+            g.auth_credential_source = None
             g.explicit_bearer_present = False
+            from services.auth_session_lifecycle import is_retirement_request
+            if is_retirement_request():
+                return
             authorization_header = request.headers.get("Authorization", "").strip()
             has_explicit_bearer = bool(
                 re.match(
@@ -405,6 +412,10 @@ def create_app(config_class=Config):
 
         @app.before_request
         def attach_contact_identity():
+            from services.auth_session_lifecycle import is_retirement_request
+            if is_retirement_request():
+                g.contact_identity = None
+                return
             g.contact_identity = resolve_contact_identity_from_request(
                 request,
                 include_body=request_path_allows_contact_identity_body(request.path),
@@ -447,6 +458,9 @@ def create_app(config_class=Config):
         @login_manager.user_loader
         def load_user(user_id):
             try:
+                from services.auth_session_lifecycle import is_retirement_request, cookie_lineage_for_user
+                if is_retirement_request():
+                    return None
                 from utils.auth_helpers import (
                     is_clerk_managed_user,
                     is_demo_user_account,
@@ -455,6 +469,8 @@ def create_app(config_class=Config):
                 from utils.roles import is_super_admin_role
 
                 user = User.query.get(int(user_id))
+                if cookie_lineage_for_user(user_id) is None:
+                    return None
                 if is_user_auth_disabled(user) or is_demo_user_account(user):
                     return None
                 if user and is_clerk_managed_user(user):
@@ -474,6 +490,12 @@ def create_app(config_class=Config):
             app.config['SESSION_TYPE'] = 'cachelib'
             app.config['SESSION_CACHELIB'] = SimpleCache(default_timeout=300)
         init_migration_managed_session(app, db)
+        from utils.migration_managed_session import isolate_retirement_session
+        isolate_retirement_session(app)
+        from services.auth_session_lifecycle import attach_retirement_descriptor
+        app.after_request(attach_retirement_descriptor)
+        from services.attachment_delivery import register_attachment_delivery_redaction
+        register_attachment_delivery_redaction(app)
 
     # Logging de app
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -547,6 +569,7 @@ def create_app(config_class=Config):
             "Authorization",
             "Origin",
             "X-Chatboc-Token",
+            "X-Chatboc-Knowledge",
             "X-Entity-Token",
             "X-Chat-Session-Id",
             "X-Anon-Id",
@@ -1114,6 +1137,9 @@ def create_app(config_class=Config):
             None if process_role == "survey-effect-worker" else app,
             **socket_init_kwargs,
         )
+        if process_role != "survey-effect-worker":
+            from socket_service import install_auth_session_socket_guard
+            install_auth_session_socket_guard(app)
         if process_role == "survey-effect-worker":
             app.extensions["socketio_external_emitter"] = socketio
 

@@ -116,8 +116,8 @@ def test_local_graph_is_exactly_the_reviewed_chain_through_repository_head():
     assert plan.script.get_heads() == [cutover.FINAL_MIGRATION_REVISION]
 
 
-def test_flask_session_head_has_a_pinned_source_and_schema_contract():
-    assert cutover.FINAL_MIGRATION_REVISION == cutover.FLASK_SESSIONS_REVISION
+def test_flask_session_revision_keeps_its_pinned_source_and_schema_contract():
+    assert cutover.FLASK_SESSIONS_REVISION in cutover.MIGRATION_STEPS
     assert (
         cutover.EXPECTED_MIGRATION_SOURCE_SHA256[cutover.FLASK_SESSIONS_REVISION]
         == "b8e4e5bcc2b7c75686e344a7d66fad9161e8d41739e106ddd3868199ca1f3ced"
@@ -783,7 +783,7 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
 
 
 def test_incremental_apply_from_penultimate_revision_runs_only_exact_head(monkeypatch):
-    current = {"revision": cutover.MUNICIPIO_HANDOFF_REVISION}
+    current = {"revision": cutover.FLASK_SESSIONS_REVISION}
     calls = []
 
     class ScalarResult:
@@ -822,8 +822,8 @@ def test_incremental_apply_from_penultimate_revision_runs_only_exact_head(monkey
         target_revision,
     ):
         assert plan is migration_plan
-        assert expected_current_revision == cutover.MUNICIPIO_HANDOFF_REVISION
-        assert target_revision == cutover.FLASK_SESSIONS_REVISION
+        assert expected_current_revision == cutover.FLASK_SESSIONS_REVISION
+        assert target_revision == cutover.AUTH_SESSION_REVISION
         calls.append(target_revision)
         current["revision"] = target_revision
 
@@ -852,8 +852,8 @@ def test_incremental_apply_from_penultimate_revision_runs_only_exact_head(monkey
         expected_branch_fingerprint_sha256=BRANCH_FINGERPRINT,
     )
 
-    assert calls == [cutover.FLASK_SESSIONS_REVISION]
-    assert state["revision_before"] == cutover.MUNICIPIO_HANDOFF_REVISION
+    assert calls == [cutover.AUTH_SESSION_REVISION]
+    assert state["revision_before"] == cutover.FLASK_SESSIONS_REVISION
     assert state["revision_after"] == cutover.FINAL_MIGRATION_REVISION
     assert [item["revision"] for item in state["steps"]] == calls
 

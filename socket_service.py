@@ -1,5 +1,5 @@
 from flask_socketio import SocketIO, join_room, emit
-from flask import current_app, request
+from flask import current_app, has_request_context, request
 from config import SOCKET_CORS_ALLOWED_ORIGINS
 from models import ChatSessionContext, EncEncuesta, EncLink, User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
 from services.tts_orchestrator import generar_audio
@@ -23,6 +23,16 @@ import jwt
 import contextlib
 import os
 import re
+import sys
+from functools import wraps
+from types import SimpleNamespace
+from cutover_writer_fence import cutover_writer_fence_enabled
+from services.global_writer_authority import (
+    HTTP_REQUEST_LEASE_ENVIRON,
+    GlobalWriterAuthorityDecision,
+    GlobalWriterAuthorityTransitionError,
+    global_writer_authority_lease,
+)
 
 # ``config`` is the single validation boundary for Socket.IO origins.  Keeping
 # the runtime list derived exclusively from it prevents a later hard-coded
@@ -68,6 +78,73 @@ class _LazyTicketServiceProxy:
 
 
 servicio_tickets = _LazyTicketServiceProxy()
+
+
+@contextlib.contextmanager
+def _socket_writer_operation():
+    """Hold ownership through all socket effects without sharing it across threads."""
+    config = current_app.config
+    if cutover_writer_fence_enabled(config):
+        yield GlobalWriterAuthorityDecision(
+            allowed=False, enabled=True, reason_code="cutover_writer_fence_enabled",
+        )
+        return
+    manager = global_writer_authority_lease(config, request_lifetime=True)
+    try:
+        lease = manager.__enter__()
+    except GlobalWriterAuthorityTransitionError as error:
+        yield GlobalWriterAuthorityDecision(
+            allowed=False, enabled=True, reason_code=error.reason_code,
+        )
+        return
+
+    socket_request = None
+    original_environ = None
+    try:
+        try:
+            socket_request = request._get_current_object() if has_request_context() else None
+            if lease.decision.allowed and socket_request is not None:
+                # Engine.IO reuses its environ for concurrent events on this SID.
+                # Publish nested reuse only on this event's Flask Request copy.
+                original_environ = socket_request.environ
+                socket_request.environ = dict(original_environ)
+                socket_request.environ[HTTP_REQUEST_LEASE_ENVIRON] = SimpleNamespace(
+                    lease=lease, manager=manager,
+                )
+            yield lease.decision
+        except BaseException:
+            manager.__exit__(*sys.exc_info())
+            raise
+        else:
+            manager.__exit__(None, None, None)
+    finally:
+        if original_environ is not None:
+            socket_request.environ = original_environ
+
+
+def _socket_writer_denial(decision):
+    return {
+        "error": decision.reason_code,
+        "contract_version": "cutover.socket_writer_fence.v1",
+        "status": "maintenance",
+        "reason_code": decision.reason_code,
+        "request_dispatched": False,
+        "retryable": True,
+    }
+
+
+def _socket_writer_handler(error_event):
+    """Guard business mutations before token resolution, DB or provider work."""
+    def decorate(handler):
+        @wraps(handler)
+        def guarded(*args, **kwargs):
+            with _socket_writer_operation() as decision:
+                if not decision.allowed:
+                    emit(error_event, _socket_writer_denial(decision))
+                    return
+                return handler(*args, **kwargs)
+        return guarded
+    return decorate
 
 
 def _user_from_token(token: str):
@@ -341,19 +418,73 @@ def _socket_request_token(payload: Any = None) -> Optional[str]:
 
 def _clerk_identity_rooms(user: Optional[User], token: str) -> list[str]:
     claims = _decode_chatboc_socket_token(token)
+    lineage_rooms = [f"auth_session:{claims['asid']}"] if claims.get('asid') else []
     if str(claims.get("auth_provider") or "").strip().lower() != "clerk":
-        return []
+        return lineage_rooms
     if str(claims.get("session_kind") or "").strip().lower() != "clerk":
         return []
 
     sid = str(claims.get("clerk_sid") or claims.get("sid") or "").strip()
     clerk_user_id = str(claims.get("clerk_user_id") or "").strip() or _clerk_user_id_for_user(user)
-    rooms: list[str] = []
+    rooms: list[str] = list(lineage_rooms)
     if sid:
         rooms.append(f"clerk_session:{sid}")
     if clerk_user_id:
         rooms.append(f"clerk_user:{clerk_user_id}")
     return rooms
+
+
+def disconnect_auth_session_sockets(lineage_id: str) -> int:
+    manager = socketio.server.manager
+    getter = getattr(manager, '_auth_original_get_participants', manager.get_participants)
+    participants = list(getter('/', f'auth_session:{lineage_id}'))
+    for participant in participants:
+        socket_sid = participant[0] if isinstance(participant, (tuple, list)) else participant
+        socketio.server.disconnect(str(socket_sid), namespace='/')
+    return len(participants)
+
+
+def install_auth_session_socket_guard(app) -> None:
+    """Filter recipients against PostgreSQL on this worker and Redis delivery."""
+    manager = socketio.server.manager
+    original = manager.get_participants
+    if getattr(manager, '_auth_session_guard_installed', False):
+        return
+    def participants(namespace, room):
+        from models import AuthSession
+        from services.auth_session_lifecycle import lineage_for_claims
+        from utils.auth_helpers import is_user_auth_disabled, user_tenant_auth_allowed
+        from flask import has_app_context
+        candidates = list(original(namespace, room))
+        namespace_rooms = manager.rooms.get(namespace, {})
+        for participant in candidates:
+            sid = participant[0]
+            lineages = [key.split(':', 1)[1] for key, members in list(namespace_rooms.items())
+                        if isinstance(key, str) and key.startswith('auth_session:') and sid in members]
+            if not lineages:
+                yield participant
+                continue
+            try:
+                with app.app_context():
+                    valid = True
+                    for lineage_id in lineages:
+                        row = db.session.get(AuthSession, lineage_id, populate_existing=True)
+                        if row is None:
+                            valid = False; break
+                        lineage_for_claims({'asid': row.id, 'user_id': row.actor_id,
+                            'auth_provider': row.provider, 'auth_audience': row.audience,
+                            'jti': 'socket_authority', 'sid': row.provider_session_id})
+                        actor = db.session.get(User, row.actor_id, populate_existing=True)
+                        if actor is None or is_user_auth_disabled(actor) or not user_tenant_auth_allowed(actor):
+                            valid = False; break
+                if valid:
+                    yield participant
+            except Exception:
+                # A worker without fresh authority must not deliver private data.
+                continue
+    manager.get_participants = participants
+    manager._auth_original_get_participants = original
+    manager._auth_session_guard_installed = True
 
 
 def disconnect_clerk_session_sockets(
@@ -370,8 +501,9 @@ def disconnect_clerk_session_sockets(
         identity_rooms.append(f"clerk_user:{str(clerk_user_id).strip()}")
 
     socket_sids: set[str] = set()
+    getter = getattr(socketio.server.manager, '_auth_original_get_participants', socketio.server.manager.get_participants)
     for room in identity_rooms:
-        for participant in socketio.server.manager.get_participants("/", room):
+        for participant in getter("/", room):
             socket_sid = participant[0] if isinstance(participant, (tuple, list)) else participant
             if socket_sid:
                 socket_sids.add(str(socket_sid))
@@ -554,11 +686,21 @@ def _merge_rooms_for_subscription(user: User, tenant_slug: Optional[str]) -> lis
 
 
 def _merge_authenticated_socket_rooms(user: User, tenant_slug: Optional[str], token: str) -> list[str]:
+    if not _panel_socket_credential(token):
+        return []
     rooms = _merge_rooms_for_subscription(user, tenant_slug)
     for room in _clerk_identity_rooms(user, token):
         if room not in rooms:
             rooms.append(room)
     return rooms
+
+
+def _panel_socket_credential(token: str) -> bool:
+    # user_from_token has already verified the signature and durable family.
+    # Public widget/demo capabilities never convey operator room authority.
+    claims = _decode_chatboc_socket_token(token)
+    return bool(claims.get('asid') and claims.get('auth_provider') in {'native', 'clerk'}
+        and claims.get('session_kind') not in {'widget', 'demo'} and not claims.get('demo_mode'))
 
 def _resolve_tenant_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
@@ -1136,59 +1278,114 @@ def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = 
 
 def send_welcome_message(app, sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
+    with app.app_context():
+        # The native background thread acquires its own connection. A task
+        # queued before an ownership change must re-enter the gate when it runs.
+        with _socket_writer_operation() as decision:
+            if not decision.allowed:
+                app.logger.warning(
+                    "Socket welcome refused reason=%s", decision.reason_code,
+                )
+                return False
+            return _send_admitted_welcome_message(app, sid, auth)
+
+
+def _socket_welcome_tenant_slug(auth):
+    """Require one explicit canonical identity; never infer a default tenant."""
+    from services.tenant_resolver import RESERVED_TENANT_SLUGS
+
+    payload = auth if isinstance(auth, dict) else {}
+    selectors = [payload[key] for key in ("tenant_slug", "tenantSlug")
+                 if key in payload and payload[key] not in (None, "")]
+    if not selectors:
+        return None, "tenant_context_missing"
+    normalized = []
+    for value in selectors:
+        if not isinstance(value, str):
+            return None, "tenant_context_invalid"
+        slug = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{0,148}[a-z0-9])?", slug):
+            return None, "tenant_context_invalid"
+        if slug in RESERVED_TENANT_SLUGS:
+            return None, "tenant_context_reserved"
+        normalized.append(slug)
+    if len(set(normalized)) != 1:
+        return None, "tenant_context_conflicting"
+    return normalized[0], None
+
+
+def _send_admitted_welcome_message(app, sid, auth):
+    """Run the original welcome flow only while the background lease is held."""
+    tenant_slug, reason = _socket_welcome_tenant_slug(auth)
+    if reason:
+        app.logger.warning("Socket welcome refused reason=%s", reason)
+        return False
+
+    from services.tenant_resolver import _tenant_by_slug
+    tenant = _tenant_by_slug(tenant_slug)
+    if (
+        tenant is None
+        or str(tenant.slug).lower() != tenant_slug
+        or tenant.tipo != "municipio"
+    ):
+        app.logger.warning("Socket welcome refused reason=tenant_context_unavailable")
+        return False
+    owner_user = tenant.municipio
+    if (
+        owner_user is None
+        or owner_user.id != tenant.municipio_id
+        or owner_user.tipo_chat != "municipio"
+        or canonical_role(owner_user.rol) != "admin"
+    ):
+        app.logger.warning("Socket welcome refused reason=tenant_owner_unavailable")
+        return False
+    rubro = owner_user.rubro
+    if not rubro:
+        app.logger.warning("Socket welcome refused reason=tenant_rubro_unavailable")
+        return False
+
     from services.municipio_responder import responder_municipio
-    from models import User, ChatSessionContext, Rubro, db
+    from models import ChatSessionContext, db
     from uuid import uuid4
     from flask import g
 
-    with app.app_context():
-        app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
-        owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-        if not owner_user:
-            app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
-            return
+    app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
+    chat_session_uuid = str(uuid4())
+    chat_db_context = ChatSessionContext(
+        chat_session_id=chat_session_uuid,
+        user_id=owner_user.id,
+        context_data={}
+    )
+    db.session.add(chat_db_context)
+    db.session.commit()
 
-        rubro = owner_user.rubro
-        if not rubro:
-            app.logger.error(f"Rubro not found for user {owner_user.id}")
-            return
+    anon_id = str(uuid4())
+    if 'viewer' in g:
+        del g.viewer
 
-        chat_session_uuid = str(uuid4())
-        chat_db_context = ChatSessionContext(
-            chat_session_id=chat_session_uuid,
-            user_id=owner_user.id,
-            context_data={}
-        )
-        db.session.add(chat_db_context)
-        db.session.commit()
+    respuesta = responder_municipio(
+        pregunta_original="__INIT__",
+        owner_user=owner_user,
+        rubro_obj=rubro,
+        viewer_user=None,
+        chat_db_context=chat_db_context,
+        anon_id=anon_id,
+        channel='web',
+        chat_session_uuid=chat_session_uuid
+    )
 
-        anon_id = str(uuid4())
-        if 'viewer' in g:
-            del g.viewer
+    ensure_buttons_compatibility(respuesta)
 
-        respuesta = responder_municipio(
-            pregunta_original="__INIT__",
-            owner_user=owner_user,
-            rubro_obj=rubro,
-            viewer_user=None,
-            chat_db_context=chat_db_context,
-            anon_id=anon_id,
-            channel='web',
-            chat_session_uuid=chat_session_uuid
-        )
+    if respuesta.get("generar_audio"):
+        try:
+            audio_url = generar_audio(text=respuesta["message_body"])
+            if audio_url:
+                respuesta["audio_url"] = audio_url
+        except Exception as e:
+            app.logger.error(f"Error generating welcome audio: {e}")
 
-        ensure_buttons_compatibility(respuesta)
-
-        if respuesta.get("generar_audio"):
-            try:
-                audio_url = generar_audio(text=respuesta["message_body"])
-                if audio_url:
-                    respuesta["audio_url"] = audio_url
-            except Exception as e:
-                app.logger.error(f"Error generating welcome audio: {e}")
-
-        socketio.emit('message', respuesta, room=sid)
-        app.logger.info(f"Welcome message sent to sid: {sid}")
+    socketio.emit('message', respuesta, room=sid)
+    app.logger.info(f"Welcome message sent to sid: {sid}")
 
 @socketio.on('connect')
 def on_connect(auth):
@@ -1229,13 +1426,28 @@ def on_connect(auth):
             current_app.logger.exception("Socket.IO unexpected connect error for sid %s: %s", request.sid, e)
             return False
     elif channel == 'web':
-        # Defer the welcome message to a separate thread to not block the connection
-        socketio.start_background_task(
-            send_welcome_message,
-            current_app._get_current_object(),
-            request.sid,
-            auth,
-        )
+        tenant_slug, reason = _socket_welcome_tenant_slug(auth_payload)
+        if reason == "tenant_context_missing":
+            # Survey clients use this channel only to subscribe to public
+            # updates. No tenant means no customer welcome or provider effects.
+            return
+        if reason:
+            current_app.logger.warning("Socket web connection refused reason=%s", reason)
+            return False
+        with _socket_writer_operation() as decision:
+            if not decision.allowed:
+                current_app.logger.warning(
+                    "Socket web connection refused reason=%s", decision.reason_code,
+                )
+                return False
+            # Admission covers scheduling, while the thread reacquires its
+            # own lease over the full DB/provider/audio/emit welcome flow.
+            socketio.start_background_task(
+                send_welcome_message,
+                current_app._get_current_object(),
+                request.sid,
+                auth,
+            )
 
 
 @socketio.on('subscribe_ticket_updates')
@@ -1251,6 +1463,9 @@ def on_subscribe_ticket_updates(data):
     if not user:
         current_app.logger.warning("Socket subscribe rejected for sid %s: invalid or revoked token", request.sid)
         emit('subscription_error', {'error': 'invalid_token'})
+        return
+    if not _panel_socket_credential(str(token)):
+        emit('subscription_error', {'error': 'operator_session_required'})
         return
 
     if tenant_slug and not _user_can_access_tenant_slug(user, tenant_slug):
@@ -1337,6 +1552,7 @@ def on_new_chat(data):
     emit('chat_error', {'error': 'event_not_supported'})
 
 @socketio.on('send_chat_message')
+@_socket_writer_handler("chat_error")
 def handle_send_chat_message(data):
     """
     Manejador para cuando un agente envía un mensaje en el chat de un ticket.
@@ -1357,6 +1573,9 @@ def handle_send_chat_message(data):
     if not current_user:
         current_app.logger.warning("Token invalido o revocado en 'send_chat_message'")
         emit('chat_error', {'error': 'invalid_token'})
+        return
+    if not _panel_socket_credential(str(token)):
+        emit('chat_error', {'error': 'operator_session_required'})
         return
     for identity_room in _clerk_identity_rooms(current_user, str(token)):
         join_room(identity_room)
@@ -1492,6 +1711,7 @@ def _resolve_location_response_room(data: Any) -> Optional[str]:
 
 
 @socketio.on('location')
+@_socket_writer_handler("location_error")
 def on_location(data):
     """Geocode location only for sockets already bound to an authorized room."""
 

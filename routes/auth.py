@@ -1,4 +1,5 @@
 from cutover_writer_fence import cutover_writer_fence_enabled
+from global_writer_authority import global_writer_authority_enabled
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
@@ -139,7 +140,19 @@ from utils.auth_helpers import (
     _safe_user_query,
 )
 from flask_login import current_user
-from utils.roles import canonical_role, is_super_admin_role
+
+
+def _issue_native_panel_token(payload, *, bind_cookie=True, audience='panel'):
+    from services.auth_session_lifecycle import issue_token
+    claims = {**payload, 'audience': audience}
+    token = issue_token(claims, bind_cookie=bind_cookie)
+    if bind_cookie:
+        from flask_login import login_user
+        actor = db.session.get(User, payload['user_id'])
+        if not login_user(actor):
+            raise ValueError('auth_session_not_established')
+    return token
+from utils.roles import canonical_role, is_super_admin_role, is_authorized_superadmin_user
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
     get_plan_metadata,
@@ -803,11 +816,7 @@ def clerk_webhook():
                         if event_type.startswith("session.")
                         else None
                     ),
-                    clerk_user_id=(
-                        event_data.get("user_id")
-                        if event_type.startswith("session.")
-                        else event_data.get("id")
-                    ),
+                    clerk_user_id=event_data.get("id") if event_type == 'user.deleted' else None,
                 )
             except Exception as disconnect_exc:  # pragma: no cover - defensive guard
                 current_app.logger.error(
@@ -840,6 +849,15 @@ def _tenant_for_user(user: User):
     return TenantProfile.query.filter(
         (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
     ).first()
+
+
+def _panel_tenant_for_user(user: User) -> Optional[TenantProfile]:
+    """Resolve authenticated organization membership, never public selectors.
+
+    Legacy employees may only have an owner reference. Keep that compatibility
+    when no explicit membership is present, and reject ambiguous references.
+    """
+    return resolve_consistent_user_tenant(user)
 
 def _resolve_tipo_chat(
     user: User,
@@ -986,8 +1004,8 @@ def _normalize_capability_tokens(*raw_values: object) -> list[str]:
     return normalized
 
 
-def _profile_capabilities_for_user(user: User) -> list[str]:
-    """Return frontend-facing capability tokens from role and stored profile scope."""
+def _profile_capabilities_for_user(user: User, tenant: Optional[TenantProfile] = None) -> list[str]:
+    """Expose the same knowledge authority enforced by the private routes."""
 
     role = canonical_role(getattr(user, "rol", None))
     metadata = getattr(user, "accesibilidad", None)
@@ -1010,12 +1028,21 @@ def _profile_capabilities_for_user(user: User) -> list[str]:
         raw_values.append(["tickets.read", "crm.tickets.read", "reclamos.read"])
     if role == "admin":
         raw_values.append(["settings.tenant.write", "market.catalog.write", "market.orders.read"])
-    if role == "super_admin":
+    if is_authorized_superadmin_user(user):
         raw_values.append(["*", "tickets.admin", "settings.tenant.write"])
     if getattr(user, "ticket_categorias", None):
         raw_values.append("tickets.read")
 
-    return _normalize_capability_tokens(*raw_values)
+    # These capabilities represent high-impact control-plane access. Stored
+    # presentation metadata must not advertise authority that the route denies.
+    capabilities = [capability for capability in _normalize_capability_tokens(*raw_values)
+        if capability not in {'knowledge.read', 'knowledge.write', 'settings.tenant.write', '*'}]
+    tenant = tenant if tenant is not None else _panel_tenant_for_user(user)
+    if is_authorized_superadmin_user(user):
+        capabilities.append('*')
+    if is_authorized_superadmin_user(user) or can_manage_tenant_control_plane(user, tenant):
+        capabilities.extend(['settings.tenant.write', 'knowledge.read', 'knowledge.write'])
+    return capabilities
 
 
 @auth_bp.route('/plans', methods=['GET'])
@@ -1026,11 +1053,11 @@ def public_plan_catalog():
     return jsonify({"planes": serialize_plan_catalog()})
 
 
-from services.organization_workspace import build_organization_workspace
+from services.organization_workspace import build_organization_workspace, build_platform_workspace
 from services.organization_profile_settings import build_profile_settings
 from services.organization_branding import build_workspace_appearance
 from services.plan_access import tenant_allows_workspace_branding
-from utils.tenant_admin_access import can_manage_tenant_control_plane
+from utils.tenant_admin_access import can_manage_tenant_control_plane, resolve_consistent_user_tenant
 
 
 def build_profile_payload(user: User) -> Dict[str, Any]:
@@ -1049,18 +1076,18 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     if getattr(user, "empresa_id", None):
         owner_user = _user_query().get(user.empresa_id)
 
-    tenant_profile = getattr(g, "tenant_profile", None) or getattr(g, "current_tenant", None)
-    tenant_profile = _resolve_tenant_for_user(user, tenant_profile)
-    if not tenant_profile and owner_user:
-        tenant_profile = _resolve_tenant_for_user(owner_user)
-    if not tenant_profile:
-        token_payload = getattr(g, "token_payload", {}) or {}
-        tenant_slug_hint = token_payload.get("tenant_slug") or token_payload.get("tenant")
-        if tenant_slug_hint:
-            try:
-                tenant_profile = resolve_tenant_only(tenant_slug=str(tenant_slug_hint))
-            except Exception:
-                tenant_profile = None
+    # /me is the identity contract for normal panel login. The middleware also
+    # resolves anonymous/public widget hints, so its tenant is not authoritative
+    # here. A verified widget session resolves its owner separately.
+    profile_user = getattr(g, 'widget_owner_user', None) if getattr(g, 'widget_session', False) else user
+    tenant_profile = _panel_tenant_for_user(profile_user or user)
+    token_payload = getattr(g, 'token_payload', {}) or {}
+    if token_payload.get('auth_intent') == CLERK_INTENT_TENANT_PORTAL:
+        tenant_id = token_payload.get('tenant_id')
+        tenant_slug = token_payload.get('tenant_slug')
+        candidate = db.session.get(TenantProfile, tenant_id) if tenant_id else None
+        if candidate is not None and candidate.slug == tenant_slug and candidate.is_active:
+            tenant_profile = candidate
 
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
     catalogo_label = (
@@ -1091,7 +1118,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
         "profile_picture_consent": profile_avatar_consent,
         **avatar_policy_contract,
     }
-    profile_capabilities = _profile_capabilities_for_user(user)
+    profile_capabilities = _profile_capabilities_for_user(user, tenant_profile)
 
     profile_data: Dict[str, Any] = {
         "id": user.id,
@@ -1137,6 +1164,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
     profile_data["map_config"] = get_map_config()
     profile_data["organization_workspace"] = build_organization_workspace(tenant_profile)
+    profile_data['platform_workspace'] = build_platform_workspace(authorized=is_authorized_superadmin_user(user))
     profile_data['workspace_appearance'] = build_workspace_appearance(tenant_profile,
         entitled=tenant_allows_workspace_branding(tenant_profile))
     profile_owner = None
@@ -1155,10 +1183,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     profile_data["integrations_locked"] = not bool(integration_access.get("enabled"))
     profile_data["widget_embed_token"] = None
     profile_data["widget_embed_token_kind"] = "plan_required"
-    tenant_slug_value = (
-        getattr(user, "tenant_slug", None)
-        or getattr(tenant_profile, "slug", None)
-    )
+    tenant_slug_value = getattr(tenant_profile, "slug", None)
     profile_data["tenant_slug"] = tenant_slug_value
     profile_data["tenantSlug"] = tenant_slug_value
     profile_data["rubro_id"] = getattr(user, "rubro_id", None)
@@ -2330,24 +2355,10 @@ def login():
         resp, _ = _finalize_auth_response(resp)
         return resp, 401
 
-    # Ensure user is linked to their tenant if missing, to prevent permission errors
+    # Resolve existing membership. Login selectors never grant membership in a
+    # different organization or repair a conflicting stored association.
     tenant_resolve_started = time.perf_counter()
-    tenant_obj = _tenant_for_user(user)
-    if not tenant_obj:
-        if user.municipio_id:
-            tenant_obj = TenantProfile.query.filter_by(municipio_id=user.municipio_id).first()
-        elif user.pyme_id:
-            tenant_obj = TenantProfile.query.filter_by(pyme_id=user.pyme_id).first()
-        else:
-            # Check for tenant_slug in request to link user (e.g. demo flow)
-            req_tenant_slug = data.get("tenant_slug") or data.get("tenantSlug") or request.args.get("tenant_slug")
-            if req_tenant_slug:
-                try:
-                    tenant_obj = resolve_tenant_only(tenant_slug=req_tenant_slug)
-                except Exception:
-                    pass
-
-    tenant_obj = _resolve_tenant_for_user(user, tenant_obj)
+    tenant_obj = _panel_tenant_for_user(user)
     if not _tenant_allows_auth(user, tenant_obj):
         current_app.logger.warning(
             "[auth.login] Resolved tenant rejected authentication for user_id=%s",
@@ -2392,7 +2403,7 @@ def login():
             current_app.config.get("DEFER_ANON_MIGRATION_ON_LOGIN", True)
         ).strip().lower() not in {"0", "false", "no", "off"}
         try:
-            if deferred_migration:
+            if deferred_migration and not global_writer_authority_enabled(current_app.config):
                 app_obj = current_app._get_current_object()
                 tenant_id = getattr(tenant_obj, "id", None)
                 thread = threading.Thread(
@@ -2432,13 +2443,11 @@ def login():
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
     token_sign_started = time.perf_counter()
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    jwt_token = _issue_native_panel_token(jwt_payload)
     stage_timings["token_sign_ms"] = round((time.perf_counter() - token_sign_started) * 1000.0, 2)
 
     # Reuse already resolved tenant to avoid extra DB round-trips on login.
-    response_slug = getattr(user, "tenant_slug", None)
-    if tenant_obj and not response_slug:
-        response_slug = tenant_obj.slug
+    response_slug = getattr(tenant_obj, 'slug', None)
 
     current_app.logger.debug(
         "[AUTH_DEBUG] Login user=%s tenant_slug=%s", user.id, response_slug
@@ -2638,7 +2647,7 @@ def google_login():
                 'user_id': user.id,
                 'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
             }
-            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+            jwt_token = _issue_native_panel_token(jwt_payload)
             response_payload = {
                 "status": "falta_rubro",
                 "token": jwt_token,
@@ -2674,7 +2683,7 @@ def google_login():
             'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload)
 
         # Determine tenant_slug for response
         tenant_slug_out = getattr(user, "tenant_slug", None)
@@ -2828,7 +2837,7 @@ def register():
                 'municipio_id': nuevo.municipio_id,
                 'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
             }
-            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+            jwt_token = _issue_native_panel_token(jwt_payload)
 
             return jsonify({
                 "token": jwt_token,
@@ -2989,7 +2998,7 @@ def register():
             'municipio_id': user.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload)
 
         owner_token = _resolve_owner_token(user)
         response_payload = {
@@ -3136,7 +3145,7 @@ def register_from_widget(user):
             'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
         _send_verification_email(nuevo)
         _apply_welcome_points_if_configured(nuevo)
@@ -3234,7 +3243,7 @@ def login_from_widget(owner_user):
         'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
     owner_token = _resolve_owner_token(owner_user)
     response_payload = {
@@ -3428,7 +3437,7 @@ def chatuser_register_panel():
             'municipio_id': nuevo.municipio_id,
             'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
         }
-        jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
         _send_verification_email(nuevo)
         _apply_welcome_points_if_configured(nuevo)
@@ -3536,7 +3545,7 @@ def chatuser_login_panel():
         'municipio_id': effective_municipio_id,
         'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
     }
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
     resp = jsonify({
         "id": user.id,
@@ -3622,10 +3631,9 @@ def session_bootstrap(user: User):
     rubro = user.rubro
     tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
     panels = _dashboard_panels_for_user(user, tipo_chat)
-    profile_capabilities = _profile_capabilities_for_user(user)
-
-    tenant_obj = _tenant_for_user(user)
-    tenant_slug = getattr(user, "tenant_slug", None) or getattr(tenant_obj, "slug", None)
+    tenant_obj = _panel_tenant_for_user(user)
+    profile_capabilities = _profile_capabilities_for_user(user, tenant_obj)
+    tenant_slug = getattr(tenant_obj, "slug", None)
     channel_activation = build_channel_activation_payload(tenant_obj)
 
     payload = {
@@ -3678,8 +3686,8 @@ def dashboard_info(user: User):
     rubro = user.rubro
     tipo_chat = user.tipo_chat or ("municipio" if es_rubro_publico(rubro) else "pyme")
     final_panels = _dashboard_panels_for_user(user, tipo_chat)
-    profile_capabilities = _profile_capabilities_for_user(user)
-    tenant_obj = _tenant_for_user(user)
+    tenant_obj = _panel_tenant_for_user(user)
+    profile_capabilities = _profile_capabilities_for_user(user, tenant_obj)
 
     return jsonify({
         "id": user.id,
@@ -4074,18 +4082,11 @@ def refresh_token_endpoint():
             if tenant:
                 tenant_slug = tenant.slug
 
-        jwt_payload = {
-            'user_id': user.id,
-            'rol': user.rol,
-            'tipo_chat': user.tipo_chat,
-            'empresa_id': user.empresa_id,
-            'municipio_id': user.municipio_id,
-            'tenant_slug': tenant_slug,
-            'exp': datetime.now(timezone.utc) + timedelta(days=7)
-        }
-        new_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+        from services.auth_session_lifecycle import refresh_native_token
+        new_token, retirement = refresh_native_token(token, expires_at=datetime.now(timezone.utc) + timedelta(days=7))
 
-        resp = jsonify({"token": new_token, "expires_in": 7 * 86400})
+        resp = jsonify({"token": new_token, "expires_in": 7 * 86400, "session_retirement": retirement})
+        resp.headers['Cache-Control'] = 'no-store'
         return resp
     except jwt.ExpiredSignatureError:
         return jsonify({"error": "Token expirado, por favor inicia sesión nuevamente"}), 401
@@ -4150,7 +4151,7 @@ def admin_login():
 
     # Generate Token
     # Prioritize the tenant owned by the user to ensure correct context.
-    owned_tenant = _resolve_tenant_for_user(user)
+    owned_tenant = _panel_tenant_for_user(user)
     if not _tenant_allows_auth(user, owned_tenant):
         current_app.logger.warning(
             "[admin_login] Tenant gate rejected authentication for user_id=%s",
@@ -4175,8 +4176,8 @@ def admin_login():
         'tenant_slug': tenant_slug,
         'exp': datetime.now(timezone.utc) + timedelta(days=7)
     }
-    token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
-    profile_capabilities = _profile_capabilities_for_user(user)
+    token = _issue_native_panel_token(jwt_payload)
+    profile_capabilities = _profile_capabilities_for_user(user, owned_tenant)
 
     return jsonify({
         "token": token,
