@@ -17,7 +17,7 @@ from statistics import mean, median
 from threading import Lock
 from time import monotonic
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import Numeric, String, and_, case, cast, literal, or_
@@ -3237,6 +3237,8 @@ def _build_executive_summary_text(
     forecast: Dict[str, Any],
     alerts: Dict[str, Any],
     heatmap: Dict[str, Any],
+    *,
+    availability: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compose concise executive-ready narrative from analytics signals."""
 
@@ -3245,6 +3247,28 @@ def _build_executive_summary_text(
     projected_total = int(forecast.get("projected_total") or total)
     projected_additional = int(forecast.get("projected_additional") or 0)
     alerts_list = alerts.get("alerts") or []
+    lifecycle = (availability or {}).get("admin_lifecycle") or {}
+    if lifecycle.get("accepts_responses") is not True:
+        phase = lifecycle.get("phase")
+        if phase in {"closed", "archived", "window_ended"}:
+            one_liner = "El instrumento está finalizado. El análisis corresponde al histórico de respuestas registradas."
+            focus = "Revisar resultados históricos y documentar aprendizajes."
+        elif phase == "draft":
+            one_liner = "El instrumento está en borrador y todavía no recibe respuestas."
+            focus = "Revisar el instrumento y su disponibilidad antes de publicar."
+        elif phase == "scheduled":
+            one_liner = "El instrumento está programado y su ventana de participación todavía no comenzó."
+            focus = "Revisar la fecha de apertura y la disponibilidad del instrumento."
+        else:
+            one_liner = "El instrumento no está habilitado para recibir respuestas. El análisis conserva los registros disponibles."
+            focus = "Revisar la disponibilidad y la jurisdicción antes de difundir el enlace."
+        return {
+            "headline": f"{total} respuestas registradas ({completion:.1f}% de completitud).",
+            "one_liner": one_liner,
+            "focus_points": [focus],
+            "alert_count": len(alerts_list),
+            "projected_additional": projected_additional,
+        }
 
     top_barrio = None
     territorio = (summary.get("demografia") or {}).get("territorio_map") or {}
@@ -3960,11 +3984,6 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         base_payload["reason_code"] = "survey_context_unavailable"
         return base_payload
 
-    link = (
-        EncLink.query.filter_by(encuesta_id=encuesta.id)
-        .order_by(EncLink.id.asc())
-        .first()
-    )
     tenant_slug = None
     tenant_id = getattr(encuesta, "tenant_id", None)
     if tenant_id:
@@ -3974,22 +3993,42 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         except Exception:
             tenant_slug = None
 
-    slug_publico = str(getattr(link, "slug_publico", "") or "").strip() if link else ""
+    from services.encuestas_service import build_survey_availability_contract
+
+    availability = build_survey_availability_contract(
+        encuesta, db.session.get(TenantProfile, tenant_id) if tenant_id else None
+    )
+    lifecycle = availability["admin_lifecycle"]
+    can_share = lifecycle["capabilities"]["can_share"]
+
+    slug_publico = availability["public_slug"] or ""
     has_public_link = bool(slug_publico)
     is_published = str(getattr(encuesta, "estado", "") or "").lower() == "publicada" and has_public_link
     live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
-    public_state = "published" if is_published else "closed" if getattr(encuesta, "estado", None) == "cerrada" else "draft"
+    public_state = (
+        "published" if can_share
+        else "closed" if lifecycle["phase"] in {"closed", "archived", "window_ended"}
+        else "draft" if lifecycle["phase"] == "draft"
+        else "scheduled" if lifecycle["phase"] == "scheduled"
+        else "unavailable"
+    )
 
     links: Dict[str, Any] = {}
-    if has_public_link:
+    if can_share:
         tenant_query = {"tenant_slug": tenant_slug}
-        public_page_path = f"/e/{slug_publico}"
+        public_page_path = _append_query(f"/e/{quote(str(slug_publico), safe='')}", tenant_query)
         public_api_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}", tenant_query)
         respond_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}/respond", tenant_query)
-        live_results_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}/live-results", tenant_query)
-        legacy_public_api_endpoint = f"/api/public/encuestas/v1/{slug_publico}"
-        legacy_live_results_endpoint = f"/api/public/encuestas/v1/{slug_publico}/live-results"
-        qr_endpoint = f"/api/public/encuestas/v1/{slug_publico}/qr?size=320"
+        live_results_endpoint = (
+            _append_query(f"/api/v2/public/surveys/{slug_publico}/live-results", tenant_query)
+            if live_results_enabled else None
+        )
+        legacy_public_api_endpoint = _append_query(f"/api/public/encuestas/v1/{slug_publico}", tenant_query)
+        legacy_live_results_endpoint = (
+            _append_query(f"/api/public/encuestas/v1/{slug_publico}/live-results", tenant_query)
+            if live_results_enabled else None
+        )
+        qr_endpoint = _append_query(f"/api/public/encuestas/v1/{slug_publico}/qr?size=320", tenant_query)
         share_text = f"Participa en {getattr(encuesta, 'titulo', None) or 'esta encuesta'}: {public_page_path}"
         links = {
             "public_page_path": public_page_path,
@@ -4009,7 +4048,7 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         }
 
     actions: List[Dict[str, Any]] = []
-    if has_public_link:
+    if can_share:
         actions.extend(
             [
                 {"id": "copy_public_link", "label": "Copiar link", "ui_hint": "copy", "href": links.get("copy_url")},
@@ -4026,7 +4065,7 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
                 "enabled": live_results_enabled,
             }
         )
-    else:
+    elif lifecycle["capabilities"]["can_publish"]:
         actions.append({"id": "publish_survey", "label": "Publicar encuesta", "ui_hint": "publish"})
 
     return {
@@ -4042,6 +4081,11 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         "has_public_link": has_public_link,
         "is_live_vote": bool(getattr(encuesta, "es_votacion_envivo", False)),
         "live_results_enabled": live_results_enabled,
+        "public_access": availability["public_access"],
+        "accepts_responses": lifecycle["accepts_responses"],
+        "can_share": can_share,
+        "phase": lifecycle["phase"],
+        "admin_scope": availability["admin_scope"],
         "requires_identity": bool(getattr(encuesta, "requiere_identidad", False)),
         "anonymous_allowed": bool(getattr(encuesta, "anonimo_permitido", True)),
         "links": links,
@@ -4103,7 +4147,15 @@ def _get_dashboard_bundle_impl(
             segment_b={"canal": "whatsapp"},
         )
 
-    executive_summary = _build_executive_summary_text(summary, forecast, alerts, heatmap)
+    from services.encuestas_service import build_survey_availability_contract
+
+    encuesta = get_encuesta(encuesta_id)
+    availability = build_survey_availability_contract(
+        encuesta, db.session.get(TenantProfile, encuesta.tenant_id)
+    )
+    executive_summary = _build_executive_summary_text(
+        summary, forecast, alerts, heatmap, availability=availability
+    )
     visual_blueprint = _build_visual_blueprint(
         encuesta_id=encuesta_id,
         summary=summary,
@@ -4988,6 +5040,12 @@ def _calculate_live_results_impl(
     results_final = (
         str(getattr(encuesta, "estado", "") or "").strip().lower() == "cerrada"
     )
+    from services.encuestas_service import build_survey_availability_contract
+
+    participation_availability = build_survey_availability_contract(
+        encuesta, db.session.get(TenantProfile, encuesta.tenant_id)
+    )
+    accepts_responses = participation_availability["admin_lifecycle"]["accepts_responses"]
     active_source_anonymous = privacy_mode == "source_anonymous" and not results_final
     if privacy_mode == "source_anonymous" and requested_filters:
         # Arbitrary public ranges/segments can be differenced even when every
@@ -5076,6 +5134,12 @@ def _calculate_live_results_impl(
         "snapshot_version": snapshot_version,
         "updated_at": getattr(encuesta, "updated_at", None),
         "survey_state": str(getattr(encuesta, "estado", "") or "").strip().lower(),
+        "participation_availability": {
+            "public_access": participation_availability["public_access"],
+            "accepts_responses": accepts_responses,
+            "can_share": participation_availability["admin_lifecycle"]["capabilities"]["can_share"],
+            "phase": participation_availability["admin_lifecycle"]["phase"],
+        },
         "range": analytics_range,
         "filters": requested_filters,
         "include_heatmap": bool(include_heatmap),
@@ -5228,16 +5292,19 @@ def _calculate_live_results_impl(
 
     ai_insights: List[str] = []
     if responses_count == 0:
-        ai_insights.append("Todavia no hay respuestas para mostrar: conviene revisar difusion y canales activos.")
+        ai_insights.append(
+            "Todavia no hay respuestas para mostrar: conviene revisar difusion y canales activos."
+            if accepts_responses else "No hay respuestas registradas para este instrumento sin recepción habilitada."
+        )
     elif top_question and top_question.get("lider"):
         ai_insights.append(
             f"La pregunta con mayor tracción es '{top_question['pregunta'][:70]}' y lidera '{top_question['lider']['label']}' con {top_question['lider']['porcentaje']}%."
         )
-    if responses_count > 0 and trend == "subiendo":
+    if accepts_responses and responses_count > 0 and trend == "subiendo":
         ai_insights.append("La curva reciente de participación está acelerando: conviene reforzar distribución del link ahora.")
-    elif responses_count > 0 and trend == "bajando":
+    elif accepts_responses and responses_count > 0 and trend == "bajando":
         ai_insights.append("La curva reciente está desacelerando: conviene activar recordatorios o pauta segmentada.")
-    elif responses_count > 0:
+    elif accepts_responses and responses_count > 0:
         ai_insights.append("La curva reciente se mantiene estable: se sugiere sostener frecuencia de difusión.")
 
     polling_interval_ms = 3000 if trend == "subiendo" else 8000 if trend == "bajando" else 5000
@@ -5246,8 +5313,11 @@ def _calculate_live_results_impl(
     empty_state = {
         "is_empty": responses_count == 0,
         "title": "Todavia no hay respuestas",
-        "message": "Publica el enlace o espera nuevas participaciones para ver metricas en vivo.",
-        "action_hint": "share_survey" if responses_count == 0 else None,
+        "message": (
+            "Publica el enlace o espera nuevas participaciones para ver metricas en vivo."
+            if accepts_responses else "El instrumento no recibe respuestas; consultá los resultados registrados."
+        ),
+        "action_hint": "share_survey" if responses_count == 0 and accepts_responses else None,
     }
     live_telemetry = {
         "has_responses": responses_count > 0,
@@ -5339,7 +5409,10 @@ def _calculate_live_results_impl(
             live_ai_items.append(
                 {
                     "source": "survey_empty_state",
-                    "text": "Encuesta o votacion sin respuestas. Revisar difusion, QR, WhatsApp y canales activos.",
+                    "text": (
+                        "Encuesta o votacion sin respuestas. Revisar difusion, QR, WhatsApp y canales activos."
+                        if accepts_responses else "Instrumento sin recepción habilitada. Revisar sus resultados y disponibilidad."
+                    ),
                     "category": "encuesta o votacion",
                     "channel": "public_link",
                     "status": "empty",
@@ -5372,10 +5445,10 @@ def _calculate_live_results_impl(
             "source": "huggingface_ai_insights",
             "requires_operator_confirmation": True,
         }
-        for index, action in enumerate(raw_recommendations or [])
+        for index, action in enumerate((raw_recommendations or []) if accepts_responses else [])
         if isinstance(action, Mapping)
     ]
-    if responses_count == 0:
+    if responses_count == 0 and accepts_responses:
         operator_recommendations.insert(
             0,
             {

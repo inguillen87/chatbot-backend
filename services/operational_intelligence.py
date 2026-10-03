@@ -4,9 +4,10 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import selectinload
 
 from models import (
     AnalyticsEventV2,
@@ -28,6 +29,7 @@ from models import (
 )
 from services.commerce_unified import dedupe_unified_orders
 from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.encuestas_service import build_survey_availability_contract
 from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
 from services.operational_heatmap_access import (
     build_employee_aggregated_heatmap,
@@ -68,7 +70,6 @@ _SLA_HEALTHY_STATES = {"ok", "normal", "healthy", "on_track", "within_sla"}
 _SLA_PAUSED_STATES = {"paused", "pausado", "on_hold", "waiting_customer", "esperando_cliente"}
 _SLA_AT_RISK_WINDOW_SECONDS = 4 * 60 * 60
 _ACTIVE_PRESENCE = {"active", "online", "typing", "present"}
-_LIVE_SURVEY_STATES = {"publicada", "published", "activa", "active", "en_vivo", "live"}
 _COMMERCE_REQUEST_KINDS = {
     "pedido",
     "order",
@@ -1576,19 +1577,28 @@ def _build_queue_truth(
 
 
 def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
-    encuestas_query = EncEncuesta.query.filter_by(tenant_id=tenant.id)
-    survey_count = encuestas_query.count()
-    live_vote_predicate = or_(
-        EncEncuesta.es_votacion_envivo.is_(True),
-        func.lower(func.coalesce(EncEncuesta.tipo, "")).like("%vot%"),
-        func.lower(func.coalesce(EncEncuesta.titulo, "")).like("%vot%"),
+    encuestas = (
+        EncEncuesta.query.filter_by(tenant_id=tenant.id)
+        .options(selectinload(EncEncuesta.links), selectinload(EncEncuesta.preguntas))
+        .order_by(EncEncuesta.id.asc()).all()
     )
-    live_vote_query = encuestas_query.filter(live_vote_predicate)
-    live_vote_count = live_vote_query.count()
-    live_votaciones = live_vote_query.order_by(EncEncuesta.id.asc()).limit(10).all()
-    active_survey_count = encuestas_query.filter(
-        func.lower(func.coalesce(EncEncuesta.estado, "")).in_(_LIVE_SURVEY_STATES)
-    ).count()
+    availability_by_id = {
+        int(encuesta.id): build_survey_availability_contract(encuesta, tenant)
+        for encuesta in encuestas
+    }
+    live_votaciones = [
+        encuesta for encuesta in encuestas
+        if availability_by_id[int(encuesta.id)]["admin_lifecycle"]["instrument_kind"] == "voting"
+    ]
+    survey_count = len(encuestas)
+    active_survey_count = sum(
+        availability["admin_lifecycle"]["accepts_responses"] is True
+        for availability in availability_by_id.values()
+    )
+    live_vote_count = sum(
+        availability_by_id[int(encuesta.id)]["admin_lifecycle"]["accepts_responses"] is True
+        for encuesta in live_votaciones
+    )
 
     period_response_query = _between(
         EncRespuesta.query.filter_by(tenant_id=tenant.id),
@@ -1626,7 +1636,7 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
     response_by_survey: Counter = Counter()
     geo_by_survey: Counter = Counter()
     channel_by_survey: dict[int, Counter] = {}
-    live_survey_ids = [int(encuesta.id) for encuesta in live_votaciones]
+    live_survey_ids = [int(encuesta.id) for encuesta in live_votaciones[:10]]
     if live_survey_ids:
         geo_condition = and_(
             EncRespuesta.lat.isnot(None),
@@ -1672,6 +1682,7 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
         response_by_survey=response_by_survey,
         geo_by_survey=geo_by_survey,
         channel_by_survey=channel_by_survey,
+        availability_by_id=availability_by_id,
     )
 
     return {
@@ -1679,7 +1690,10 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
             "encuestas": survey_count,
             "public_surveys": public_survey_count,
             "active": active_survey_count,
+            "accepting_responses": active_survey_count,
             "votaciones_live": live_vote_count,
+            "configured_votations": len(live_votaciones),
+            "published": sum(encuesta.estado == "publicada" for encuesta in encuestas),
             "responses": real_response_count + public_response_count,
             "responses_with_geo": response_with_geo_count,
             "public_responses": public_response_count,
@@ -1692,13 +1706,17 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
                 "title": encuesta.titulo,
                 "status": encuesta.estado,
                 "show_live_results": bool(encuesta.mostrar_resultados_envivo),
-                "public_token": _public_survey_token(encuesta),
-                "live_results_endpoint": f"/api/v2/public/surveys/{_public_survey_token(encuesta)}/live-results",
-                "public_url": f"/e/{_public_survey_token(encuesta)}",
+                **_survey_availability_fields(availability_by_id[int(encuesta.id)]),
+                "public_token": availability_by_id[int(encuesta.id)]["public_slug"],
+                **_survey_public_paths(
+                    tenant, availability_by_id[int(encuesta.id)],
+                    show_live_results=bool(encuesta.mostrar_resultados_envivo),
+                ),
             }
             for encuesta in live_votaciones[:10]
         ],
         "live_control_room": live_control_room,
+        "availability_scope": {"mode": "tenant_all_instruments", "configured_votations": len(live_votaciones), "returned_monitors": min(10, len(live_votaciones))},
         "response_provenance": build_survey_response_provenance(
             real_count=real_response_count + public_response_count,
             synthetic_count=synthetic_response_count,
@@ -1708,12 +1726,30 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
     }
 
 
-def _public_survey_token(encuesta: EncEncuesta) -> str:
-    for link in getattr(encuesta, "links", []) or []:
-        slug_publico = str(getattr(link, "slug_publico", "") or "").strip()
-        if slug_publico:
-            return slug_publico
-    return str(getattr(encuesta, "slug", "") or "").strip()
+def _survey_public_paths(
+    tenant: TenantProfile, availability: dict[str, Any], *, show_live_results: bool,
+) -> dict[str, Any]:
+    if availability["admin_lifecycle"]["capabilities"]["can_share"] is not True:
+        return {"public_url": None, "live_results_endpoint": None, "heatmap_endpoint": None}
+    public_token = quote(str(availability["public_slug"]), safe="")
+    query = urlencode({"tenant_slug": tenant.slug})
+    results_path = f"/api/v2/public/surveys/{public_token}/live-results"
+    return {
+        "public_url": f"/e/{public_token}?{query}",
+        "live_results_endpoint": f"{results_path}?{query}" if show_live_results else None,
+        "heatmap_endpoint": f"{results_path}?{query}&include_heatmap=1" if show_live_results else None,
+    }
+
+
+def _survey_availability_fields(availability: dict[str, Any]) -> dict[str, Any]:
+    lifecycle = availability["admin_lifecycle"]
+    return {
+        "public_access": availability["public_access"],
+        "accepts_responses": lifecycle["accepts_responses"],
+        "can_share": lifecycle["capabilities"]["can_share"],
+        "phase": lifecycle["phase"],
+        "admin_scope": availability["admin_scope"],
+    }
 
 
 def _survey_live_control_room(
@@ -1724,15 +1760,19 @@ def _survey_live_control_room(
     response_by_survey: Counter,
     geo_by_survey: Counter,
     channel_by_survey: dict[int, Counter],
+    availability_by_id: dict[int, dict[str, Any]],
 ) -> dict[str, Any]:
     monitors: list[dict[str, Any]] = []
     for encuesta in live_votaciones[:10]:
         survey_id = int(encuesta.id)
-        public_token = _public_survey_token(encuesta)
+        availability = availability_by_id[survey_id]
+        public_token = availability["public_slug"]
+        lifecycle = availability["admin_lifecycle"]
+        accepts_responses = lifecycle["accepts_responses"]
         total = int(response_by_survey.get(survey_id, 0))
         geo = int(geo_by_survey.get(survey_id, 0))
         show_live_results = bool(encuesta.mostrar_resultados_envivo)
-        published = _norm(encuesta.estado, "") in _LIVE_SURVEY_STATES
+        published = lifecycle["persisted_state"] == "publicada"
         monitors.append(
             {
                 "id": survey_id,
@@ -1743,34 +1783,42 @@ def _survey_live_control_room(
                 "type": encuesta.tipo,
                 "live": bool(encuesta.es_votacion_envivo),
                 "published": published,
+                **_survey_availability_fields(availability),
                 "show_live_results": show_live_results,
                 "responses": total,
                 "responses_with_geo": geo,
                 "geo_coverage_rate": round((geo / total) * 100, 2) if total else 0.0,
                 "channels": _counter(channel_by_survey.get(survey_id, Counter())),
-                "public_url": f"/e/{public_token}",
+                **_survey_public_paths(tenant, availability, show_live_results=show_live_results),
                 "admin_url": f"/admin/encuestas/{survey_id}/analytics?focus=live",
-                "live_results_endpoint": f"/api/v2/public/surveys/{public_token}/live-results",
-                "heatmap_endpoint": f"/api/v2/public/surveys/{public_token}/live-results?include_heatmap=1",
                 "whatsapp_template_id": "gov_survey_invite" if getattr(tenant, "tipo", "") == "municipio" else "survey_invite",
                 "state": (
                     "live_collecting"
-                    if published and show_live_results
+                    if accepts_responses and show_live_results
                     else "published_hidden_results"
-                    if published
-                    else "setup_required"
+                    if accepts_responses
+                    else lifecycle["phase"]
+                    if lifecycle["phase"] in {"draft", "closed", "archived", "scheduled", "window_ended"}
+                    else "unavailable"
                 ),
             }
         )
 
     total_responses = sum(int(item["responses"]) for item in monitors)
     total_geo = sum(int(item["responses_with_geo"]) for item in monitors)
+    accepting_count = sum(
+        availability_by_id[int(encuesta.id)]["admin_lifecycle"]["accepts_responses"] is True
+        for encuesta in live_votaciones
+    )
     return {
         "contract_version": "operations.survey_live_control_room.v1",
         "enabled": bool(monitors),
-        "state": "live" if any(item["state"] == "live_collecting" for item in monitors) else "setup_required" if monitors else "empty",
+        "state": "live" if accepting_count else "unavailable" if monitors else "empty",
         "summary": {
-            "live_surveys": len(monitors),
+            "live_surveys": accepting_count,
+            "accepting_responses": accepting_count,
+            "configured_monitors": len(live_votaciones),
+            "returned_monitors": len(monitors),
             "responses": total_responses,
             "responses_with_geo": total_geo,
             "geo_coverage_rate": round((total_geo / total_responses) * 100, 2) if total_responses else 0.0,
@@ -1778,8 +1826,8 @@ def _survey_live_control_room(
         },
         "monitors": monitors,
         "realtime": {
-            "enabled": True,
-            "refresh_seconds": 10 if monitors else 30,
+            "enabled": bool(accepting_count),
+            "refresh_seconds": 10 if accepting_count else 30,
             "socket_events": ["survey.vote.created", "survey.response.created", "analytics.event.created"],
             "fallback_polling": True,
         },
@@ -4866,7 +4914,6 @@ def _summary_from_metrics(
 def _build_trends(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "survey_responses",
-        "live_votes",
         "chat_messages",
         "whatsapp_messages",
         "orders",
@@ -4878,6 +4925,10 @@ def _build_trends(current: dict[str, Any], previous: dict[str, Any]) -> dict[str
         "contract_version": "operations.trends.v1",
         "items": [_trend_item(key, current.get(key, 0), previous.get(key, 0)) for key in keys],
         "unavailable": [
+            {
+                "key": "live_votes",
+                "reason_code": "current_availability_not_historical_snapshot",
+            },
             {
                 "key": "open_tickets",
                 "reason_code": "point_in_time_snapshot_has_no_historical_ledger",
@@ -5390,17 +5441,23 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
         if not isinstance(monitor, dict):
             continue
         reason_codes: list[str] = []
+        receiving = monitor.get("accepts_responses") is True
         responses = int(monitor.get("responses") or 0)
         geo_rate = float(monitor.get("geo_coverage_rate") or 0)
-        if responses == 0:
+        if not receiving:
+            reason_codes.append(
+                (monitor.get("public_access") or {}).get("reason_code")
+                or "survey_not_receiving_responses"
+            )
+        elif responses == 0:
             reason_codes.append("survey_no_responses")
-        if 0 < responses < 10:
+        if receiving and 0 < responses < 10:
             reason_codes.append("low_participation")
         if responses and geo_rate < 50:
             reason_codes.append("low_geo_coverage")
         if not bool(monitor.get("show_live_results")):
             reason_codes.append("live_results_hidden")
-        if not reason_codes and bool(monitor.get("published")):
+        if not reason_codes and receiving:
             reason_codes.append("survey_live_monitoring")
         priority = "medium" if set(reason_codes).intersection({"survey_no_responses", "low_geo_coverage"}) else "low"
         record_id = monitor.get("id")
@@ -5416,7 +5473,7 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
                 "recommended_action": _ai_ops_recommended_action(
                     action_id="open_survey_analytics",
                     label="Ver analitica",
-                    endpoint=f"/api/v2/public/surveys/{monitor.get('public_token')}/live-results",
+                    endpoint=f"/api/v2/surveys/{record_id}/analytics",
                     ui_hint="open_survey_analytics",
                     href=(
                         f"/admin/encuestas/{quote(str(record_id), safe='')}/analytics?focus=live"
@@ -5427,6 +5484,8 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
                 "signals": {
                     "status": monitor.get("status"),
                     "responses": responses,
+                    "accepts_responses": receiving,
+                    "public_access": monitor.get("public_access"),
                     "geo_coverage_rate": geo_rate,
                     "confidence": "deterministic",
                 },

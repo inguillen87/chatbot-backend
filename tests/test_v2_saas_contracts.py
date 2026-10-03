@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote_plus
 from unittest.mock import patch
 
-import jwt
 from sqlalchemy.exc import SQLAlchemyError
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
@@ -14,6 +13,7 @@ os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
 from config import Config
+from services.auth_session_lifecycle import issue_token
 from models import (
     AnalyticsEventV2,
     ArchivoAdjunto,
@@ -338,11 +338,9 @@ class V2SaasContractsTest(unittest.TestCase):
                     "sv": 1,
                 }
             )
-        token = jwt.encode(
-            payload,
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
-        )
+        # Use the real issuer and durable local session; a raw JWT is not an
+        # accepted authentication fixture for private application routes.
+        token = issue_token(payload)
         return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": self.tenant.slug}
 
     def test_reply_delivery_marks_provider_acceptance_only_with_correlatable_id(self):
@@ -2559,11 +2557,12 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(InboxTicketArtifact.query.count(), 0)
 
     def test_artifact_persistence_failure_never_claims_saved_receipt(self):
+        headers = {**self._auth(self.employee), "Idempotency-Key": "artifact-persist-failure"}
         with patch.object(db.session, "commit", side_effect=SQLAlchemyError("forced persistence failure")):
             response = self.client.post(
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
                 json={"source_model": "TenantTicket", "action": "share_location", "lat": -33.1, "lng": -68.5},
-                headers={**self._auth(self.employee), "Idempotency-Key": "artifact-persist-failure"},
+                headers=headers,
             )
         self.assertEqual(response.status_code, 500, response.get_json())
         self.assertEqual(response.get_json()["reason_code"], "artifact_persistence_failed")
@@ -2907,7 +2906,7 @@ class V2SaasContractsTest(unittest.TestCase):
             "Idempotency-Key",
         )
 
-    def test_omnichannel_inbox_reads_source_attachment_as_regular_attachment(self):
+    def test_omnichannel_inbox_preserves_source_attachment_metadata_without_unmapped_external_url(self):
         self.ticket.datos_extra = {
             **self.ticket.datos_extra,
             "attachments": [],
@@ -2926,7 +2925,12 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         item = response.get_json()["items"][0]
         self.assertEqual(item["attachments"][0]["id"], "source-att-1")
-        self.assertEqual(item["attachments"][0]["url"], "https://cdn.example.com/pedido-manuscrito.jpg")
+        # Metadata remains visible; an unregistered external URL has no verified
+        # private-storage mapping and must not be exposed as a downloadable file.
+        self.assertIsNone(item["attachments"][0]["url"])
+        self.assertEqual(item["attachments"][0]["reason_code"], "attachment_private_migration_required")
+        self.assertEqual(item["attachments"][0]["storage_access"], "unavailable")
+        self.assertEqual(item["attachments"][0]["name"], "pedido-manuscrito.jpg")
         self.assertEqual(item["attachments"][0]["source"], "pyme_multimodal")
 
     def test_omnichannel_inbox_includes_legacy_municipio_tracking_chat(self):

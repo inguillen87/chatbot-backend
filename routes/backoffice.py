@@ -10,6 +10,7 @@ from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import selectinload
 
 from extensions import db
 from models import (
@@ -34,6 +35,7 @@ from services.employee_ticket_access import (
     employee_ticket_category_scope,
 )
 from services.operational_intelligence import observe_legacy_ticket_sla
+from services.encuestas_service import build_survey_availability_contract
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
     SURVEY_RESPONSE_ORIGIN_REAL,
@@ -323,7 +325,7 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
     # the contract authoritative while collapsing three database round-trips
     # into one statement; on serverless Postgres each extra round-trip is
     # visible latency before the operator can start working.
-    active_surveys = (
+    published_surveys = (
         db.session.query(func.count(EncEncuesta.id))
         .filter(
             EncEncuesta.tenant_id.in_(tenant_ids),
@@ -401,7 +403,7 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
     )
     aggregate = (
         db.session.query(
-            active_surveys.label("active_surveys"),
+            published_surveys.label("published_surveys"),
             comments_pending_review.label("comments_pending_review"),
             response_aggregate.c.real_count,
             response_aggregate.c.synthetic_count,
@@ -414,9 +416,18 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
     real_count = int(aggregate.real_count or 0)
     synthetic_count = int(aggregate.synthetic_count or 0)
     unverified_count = int(aggregate.unverified_count or 0)
+    encuestas = EncEncuesta.query.filter(EncEncuesta.tenant_id.in_(tenant_ids)).options(
+        selectinload(EncEncuesta.links), selectinload(EncEncuesta.preguntas)
+    ).all()
+    active_count = sum(
+        build_survey_availability_contract(encuesta, tenant)["admin_lifecycle"]["accepts_responses"] is True
+        for encuesta in encuestas
+    )
 
     return {
-        "active_surveys": int(aggregate.active_surveys or 0),
+        "active_surveys": active_count,
+        "accepting_responses": active_count,
+        "published_surveys": int(aggregate.published_surveys or 0),
         "live_votes": real_count,
         "comments_pending_review": int(aggregate.comments_pending_review or 0),
         "heatmap_available": bool(int(aggregate.geo_count or 0)),

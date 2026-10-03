@@ -9068,6 +9068,73 @@ def _build_admin_lifecycle_contract(
     }
 
 
+def build_survey_availability_contract(
+    encuesta: EncEncuesta,
+    tenant: Optional[TenantProfile],
+    *,
+    metricas: Optional[Mapping[str, Any]] = None,
+    governed_release: bool = False,
+    admin_scope: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Read the same public guard and operational veto for every admin surface."""
+    from services.survey_jurisdiction import (
+        jurisdiction_contract,
+        survey_is_publicly_visible,
+        tenant_requires_government_survey_evidence,
+    )
+
+    scope = admin_scope or _build_admin_jurisdiction_scope(encuesta, tenant)
+    public_slug = _resolve_public_slug(encuesta)
+    evaluated = None
+    evidence_gate = None
+    if tenant_requires_government_survey_evidence(tenant):
+        evaluated = jurisdiction_contract(encuesta)
+        evidence_gate = evaluated.get("government_evidence_gate")
+    if evaluated is not None:
+        publicly_visible = bool(
+            not evaluated["visibility_enforced"]
+            or (evaluated["configuration_valid"] and evaluated["ready"])
+        )
+    else:
+        publicly_visible = survey_is_publicly_visible(encuesta)
+    reason = None
+    next_action = None
+    if not publicly_visible:
+        evaluated = evaluated or jurisdiction_contract(encuesta)
+        reason = (
+            evaluated.get("reason_code")
+            if evaluated.get("configuration_valid")
+            else "survey_jurisdiction_gate_configuration_invalid"
+        ) or "survey_jurisdiction_guard_blocked"
+        next_action = evaluated.get("next_action") or "review_survey_jurisdiction"
+    elif str(encuesta.estado or "").strip().lower() != "publicada":
+        reason = "survey_not_published"
+    elif not _is_encuesta_activa(encuesta):
+        reason = "survey_outside_active_window"
+    elif not public_slug:
+        reason = "survey_public_link_missing"
+    public_access = {
+        "contract_version": "surveys.public_access.v1",
+        "allowed": reason is None,
+        "reason_code": reason,
+        "next_action": next_action,
+    }
+    lifecycle = _build_admin_lifecycle_contract(
+        encuesta,
+        metricas or {},
+        governed_release=governed_release,
+        jurisdiction_scope=scope,
+        survey_evidence_gate=evidence_gate,
+        public_access=public_access,
+    )
+    return {
+        "admin_scope": scope,
+        "public_access": public_access,
+        "admin_lifecycle": lifecycle,
+        "public_slug": public_slug,
+    }
+
+
 def build_admin_list_payload(
     encuestas: Sequence[EncEncuesta],
     *,
@@ -9129,12 +9196,6 @@ def build_admin_list_payload(
         )
         for resolved_tenant_id in tenant_ids
     }
-    from services.survey_jurisdiction import (
-        jurisdiction_contract,
-        survey_is_publicly_visible,
-        tenant_requires_government_survey_evidence,
-    )
-
     for encuesta in encuestas:
         metricas = stats_map.get(encuesta.id or -1, _empty_panel_metrics())
         governance = governance_map.get(
@@ -9183,58 +9244,18 @@ def build_admin_list_payload(
             }
         )
         data["jurisdiction"] = jurisdiction_summary
-        tenant_profile = tenant_profiles_by_id.get(int(encuesta.tenant_id))
-        survey_evidence_gate = None
-        evaluated_jurisdiction = None
-        if tenant_requires_government_survey_evidence(tenant_profile):
-            evaluated_jurisdiction = jurisdiction_contract(encuesta)
-            survey_evidence_gate = evaluated_jurisdiction.get(
-                "government_evidence_gate"
-            )
-        if evaluated_jurisdiction is not None:
-            publicly_visible = bool(
-                not evaluated_jurisdiction["visibility_enforced"]
-                or (
-                    evaluated_jurisdiction["configuration_valid"]
-                    and evaluated_jurisdiction["ready"]
-                )
-            )
-        else:
-            publicly_visible = survey_is_publicly_visible(encuesta)
-        public_reason = None
-        public_next_action = None
-        if not publicly_visible:
-            evaluated_jurisdiction = evaluated_jurisdiction or jurisdiction_contract(encuesta)
-            public_reason = (
-                evaluated_jurisdiction.get("reason_code")
-                if evaluated_jurisdiction.get("configuration_valid")
-                else "survey_jurisdiction_gate_configuration_invalid"
-            ) or "survey_jurisdiction_guard_blocked"
-            public_next_action = evaluated_jurisdiction.get("next_action") or "review_survey_jurisdiction"
-        elif str(encuesta.estado or "").strip().lower() != "publicada":
-            public_reason = "survey_not_published"
-        elif not data["esta_activa"]:
-            public_reason = "survey_outside_active_window"
-        elif not data["slug_publico"]:
-            public_reason = "survey_public_link_missing"
-        public_access = {
-            "contract_version": "surveys.public_access.v1",
-            "allowed": public_reason is None,
-            "reason_code": public_reason,
-            "next_action": public_next_action,
-        }
-        data["public_access"] = public_access
-        lifecycle = _build_admin_lifecycle_contract(
+        availability = build_survey_availability_contract(
             encuesta,
-            metricas,
+            tenant_profiles_by_id.get(int(encuesta.tenant_id)),
+            metricas=metricas,
             governed_release=bool(
                 isinstance(data.get("governance"), Mapping)
                 and data["governance"].get("release_required") is True
             ),
-            jurisdiction_scope=admin_scope,
-            survey_evidence_gate=survey_evidence_gate,
-            public_access=public_access,
+            admin_scope=admin_scope,
         )
+        data["public_access"] = availability["public_access"]
+        lifecycle = availability["admin_lifecycle"]
         data["admin_lifecycle"] = lifecycle
         data["esta_activa"] = bool(lifecycle["accepts_responses"])
         if bool(

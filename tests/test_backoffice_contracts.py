@@ -405,7 +405,9 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
         if any(table in statement for table in ("enc_encuesta", "enc_respuesta", "enc_comentario"))
     ]
     ticket_queries = [statement for statement in operational_queries if "municipio_ticket" in statement]
-    assert len(survey_queries) == 1
+    # One response/comment aggregate plus one tenant-bound instrument read.
+    # Persisted publication alone cannot establish current reception authority.
+    assert len(survey_queries) == 2
     assert all(table in survey_queries[0] for table in ("enc_encuesta", "enc_respuesta", "enc_comentario"))
     # One aggregate powers all counters; a second query obtains the top pending
     # category. The old implementation performed four counter queries here.

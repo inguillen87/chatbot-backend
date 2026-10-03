@@ -289,11 +289,11 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         monitor = (live_control.get("monitors") or [])[0]
         self.assertEqual(monitor.get("slug"), "voto-plaza")
         self.assertEqual(monitor.get("public_token"), "voto-plaza-publica")
-        self.assertEqual(monitor.get("public_url"), "/e/voto-plaza-publica")
+        self.assertEqual(monitor.get("public_url"), "/e/voto-plaza-publica?tenant_slug=junin")
         self.assertEqual(monitor.get("admin_url"), "/admin/encuestas/1/analytics?focus=live")
-        self.assertEqual(monitor.get("live_results_endpoint"), "/api/v2/public/surveys/voto-plaza-publica/live-results")
+        self.assertEqual(monitor.get("live_results_endpoint"), "/api/v2/public/surveys/voto-plaza-publica/live-results?tenant_slug=junin")
         self.assertEqual(monitor.get("whatsapp_template_id"), "gov_survey_invite")
-        live_response = self.client.get(f"{monitor.get('live_results_endpoint')}?include_heatmap=0")
+        live_response = self.client.get(f"{monitor.get('live_results_endpoint')}&include_heatmap=0")
 
         self.assertEqual(live_response.status_code, 200)
         self.assertEqual(live_response.get_json().get("contract_version"), "surveys.live_results.v2")
@@ -540,7 +540,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 4)
         self.assertEqual((payload.get("summary") or {}).get("overdue_tickets"), 2)
         unavailable_trends = {item.get("key") for item in (payload.get("trends") or {}).get("unavailable") or []}
-        self.assertEqual(unavailable_trends, {"open_tickets", "overdue_tickets"})
+        self.assertEqual(unavailable_trends, {"open_tickets", "overdue_tickets", "live_votes"})
         self.assertNotIn("foreign queue truth secret", json.dumps(payload).lower())
 
     def test_queue_truth_applies_as_of_membership_and_quarantines_future_dates(self):
