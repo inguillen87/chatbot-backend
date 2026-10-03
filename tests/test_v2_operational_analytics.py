@@ -6,6 +6,7 @@ import unittest
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
 from sqlalchemy import event
@@ -2830,6 +2831,17 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("viewport_presets") or {}).get("default_preset_id"), "tenant_region_empty")
         self.assertEqual((payload.get("ai_status") or {}).get("contract_version"), "operations.heatmap_ai_status.v1")
 
+    def test_operations_heatmap_queue_navigation_stays_disabled_when_there_are_no_pending_addresses(self):
+        response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        action = next(item for item in payload["geocoding"]["guidance"]["recommended_actions"]
+            if item["id"] == "open_geocoding_queue")
+        self.assertFalse(action["enabled"])
+        self.assertFalse(action["writes_enabled"])
+        self.assertEqual(action["tenant_slug"], self.tenant.slug)
+        self.assertNotIn("open_geocoding_queue", {item["id"] for item in payload["hotspot_actions"]["actions"]})
+
     def test_operations_heatmap_surfaces_addresses_pending_geocode(self):
         db.session.add(
             TenantTicket(
@@ -2844,6 +2856,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 datos_extra={
                     "title": "Residuo en vereda",
                     "address": "Av. San Martin 123, Junin",
+                    "zone": "centro",
                     "channel": "web",
                     "genero": "femenino",
                     "edad": 31,
@@ -2853,7 +2866,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.session.commit()
 
         response = self.client.get(
-            "/api/v2/analytics/operations/heatmap?categoria=limpieza&source=tickets",
+            "/api/v2/analytics/operations/heatmap?categoria=limpieza&zona=centro&source=tickets",
             headers=self._auth(),
         )
 
@@ -2882,7 +2895,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((facets.get("summary") or {}).get("pending_geocode_records"), 1)
         self.assertEqual((facets.get("categories") or [])[0].get("key"), "limpieza")
         self.assertEqual((facets.get("addresses") or [])[0].get("label"), "Av. San Martin 123, Junin")
-        self.assertEqual(facets.get("explicit_zones"), [])
+        self.assertEqual((facets.get("explicit_zones") or [])[0]["key"], "centro")
         self.assertEqual((facets.get("truth_boundary") or {}).get("zones"), "explicit_persisted_fields_only")
         self.assertEqual(candidate.get("source_model"), "TenantTicket")
         self.assertEqual(candidate.get("ticket_id"), candidate.get("record_id"))
@@ -2912,6 +2925,24 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         }.get("open_geocoding_queue") or {}
         self.assertIn("/perfil?tab=tickets", guidance_action.get("href") or "")
         self.assertEqual(guidance_action.get("frontend_path"), guidance_action.get("href"))
+        self.assertTrue(guidance_action.get("enabled"))
+        self.assertFalse(guidance_action.get("writes_enabled"))
+        self.assertEqual(guidance_action.get("action_type"), "open_queue")
+        self.assertEqual(guidance_action.get("tenant_slug"), self.tenant.slug)
+        query = parse_qs(urlsplit(guidance_action["href"]).query)
+        self.assertEqual(query, {
+            "tab": ["tickets"], "tenant_slug": [self.tenant.slug],
+            "focus": ["open_geocoding_queue"], "categoria": ["limpieza"], "zona": ["centro"],
+        })
+        self.assertEqual(urlsplit(guidance_action["href"]).path, "/perfil")
+        self.assertIsNone(db.session.get(TenantTicket, candidate["ticket_id"]).latitud)
+        self.assertIsNone(db.session.get(TenantTicket, candidate["ticket_id"]).longitud)
+        labels = payload["ui"]["labels"]
+        self.assertEqual(labels["pending_geocode"], "Ubicaciones pendientes de revisión")
+        self.assertEqual(labels["realtime"], "Actualización por consulta")
+        self.assertIn("20 segundos", labels["realtime_poll_description"])
+        self.assertIn("No indica una conexión en vivo", labels["realtime_poll_description"])
+        self.assertEqual(labels["reason_address_without_coordinates"], "Dirección sin coordenadas guardadas.")
         viewport_ids = {item.get("id") for item in (payload.get("viewport_presets") or {}).get("presets") or []}
         self.assertIn("geocoding_queue", viewport_ids)
         self.assertEqual(((payload.get("map_narrative") or {}).get("empty_state") or {}).get("recommended_view"), "geocoding_queue")
@@ -2922,6 +2953,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         }.get("open_geocoding_queue") or {}
         self.assertIn("/perfil?tab=tickets", open_queue_action.get("href") or "")
         self.assertEqual(open_queue_action.get("frontend_path"), open_queue_action.get("href"))
+        self.assertEqual(open_queue_action.get("href"), guidance_action.get("href"))
         geocode_playbook = {
             item.get("id"): item
             for item in (payload.get("hotspot_actions") or {}).get("playbook") or []

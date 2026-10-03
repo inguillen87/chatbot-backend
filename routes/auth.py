@@ -1053,7 +1053,7 @@ def public_plan_catalog():
     return jsonify({"planes": serialize_plan_catalog()})
 
 
-from services.organization_workspace import build_organization_workspace
+from services.organization_workspace import build_organization_workspace, build_platform_workspace
 from services.organization_profile_settings import build_profile_settings
 from services.organization_branding import build_workspace_appearance
 from services.plan_access import tenant_allows_workspace_branding
@@ -1164,6 +1164,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
     profile_data["map_config"] = get_map_config()
     profile_data["organization_workspace"] = build_organization_workspace(tenant_profile)
+    profile_data['platform_workspace'] = build_platform_workspace(authorized=is_authorized_superadmin_user(user))
     profile_data['workspace_appearance'] = build_workspace_appearance(tenant_profile,
         entitled=tenant_allows_workspace_branding(tenant_profile))
     profile_owner = None

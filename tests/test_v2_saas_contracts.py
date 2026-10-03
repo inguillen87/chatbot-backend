@@ -948,6 +948,189 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn(("PymeTicket", legacy.id), identities)
         self.assertNotIn(("PymeTicket", foreign.id), identities)
 
+    def test_category_inventory_separates_catalog_demand_and_current_coverage_without_writes(self):
+        self.tenant.configuracion = {"employee_routing": {"categorias": ["transporte"]}}
+        categories = [
+            CategoriaTicket(tenant_id=self.tenant.id, nombre="Educacion", tipo="ticket"),
+            CategoriaTicket(tenant_id=self.tenant.id, nombre="Línea 102", tipo="ticket"),
+            CategoriaTicket(tenant_id=self.tenant.id, nombre="contacto@test.com", tipo="ticket"),
+            CategoriaTicket(tenant_id=self.tenant.id, nombre="", tipo="ticket"),
+        ]
+        db.session.add_all(categories)
+        db.session.add_all([
+            TenantTicket(tenant_id=self.tenant.id, user_id=self.owner.id, categoria="educacion", descripcion="Caso actual", estado="nuevo"),
+            TenantTicket(tenant_id=self.tenant.id, user_id=self.owner.id, categoria="residuos", descripcion="Tema actual", estado="nuevo"),
+            TenantTicket(tenant_id=self.tenant.id, user_id=self.owner.id, categoria="residuos", descripcion="Caso histórico", estado="cerrado"),
+        ])
+        db.session.commit()
+        headers = self._auth(self.owner)
+        counts_before = (CategoriaTicket.query.count(), User.query.count(), TenantTicket.query.count())
+        accessibility_before = copy.deepcopy(self.employee.accesibilidad)
+        with patch.object(db.session, "commit") as commit, patch("services.location_service.geocode_address") as geocode:
+            response = self.client.get("/api/v2/employee-routing", headers=headers)
+        self.assertEqual(response.status_code, 200, response.get_json())
+        commit.assert_not_called()
+        geocode.assert_not_called()
+        inventory = response.get_json()["category_inventory"]
+        self.assertEqual(inventory["contract_version"], "employee.category_inventory.v1")
+        self.assertEqual(inventory["tenant"], {"id": self.tenant.id, "slug": self.tenant.slug})
+        self.assertEqual(inventory["summary"], {
+            "persisted_categories": 4, "redacted_persisted_categories": 2,
+            "detected_topics": 1, "open_count": 3, "unassigned_count": 2,
+        })
+        items = {item["key"]: item for item in inventory["items"]}
+        self.assertEqual(items["educacion"]["persisted_category_ids"], [categories[0].id])
+        self.assertEqual(items["educacion"]["source_types"], ["open_tickets", "tenant_category_catalog"])
+        self.assertEqual(items["educacion"]["open_count"], 2)
+        self.assertEqual(items["educacion"]["unassigned_count"], 1)
+        self.assertEqual(items["educacion"]["eligible_employee_count"], 1)
+        self.assertEqual(items["residuos"]["open_count"], 1)
+        self.assertEqual(items["residuos"]["eligible_employee_count"], 0)
+        self.assertEqual(items["residuos"]["source_types"], ["open_tickets"])
+        self.assertEqual(items["línea 102"]["label"], "Línea 102")
+        self.assertEqual(items["línea 102"]["persisted_category_ids"], [categories[1].id])
+        self.assertIsNone(items["línea 102"]["eligible_employee_count"])
+        self.assertEqual(items["línea 102"]["coverage_reason_code"], "no_current_open_ticket_evidence")
+        self.assertEqual(items["transporte"]["source_types"], ["tenant_config"])
+        self.assertNotIn("contacto@test.com", json.dumps(inventory))
+        self.assertTrue(inventory["read_only"])
+        self.assertFalse(inventory["writes_performed"])
+        self.assertEqual(counts_before, (CategoriaTicket.query.count(), User.query.count(), TenantTicket.query.count()))
+        self.assertEqual(self.employee.accesibilidad, accessibility_before)
+
+    def test_routing_category_inventory_does_not_resolve_foreign_category_ids_or_tickets(self):
+        self._set_tenant_as_municipio()
+        foreign_owner = User(name="Foreign owner", email="foreign-inventory-owner@test.com", rol="admin", tenant_slug="foreign-inventory")
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign = TenantProfile(slug="foreign-inventory", nombre="Foreign", tipo="municipio", plan="full", municipio_id=foreign_owner.id)
+        db.session.add(foreign)
+        db.session.flush()
+        category = CategoriaTicket(tenant_id=foreign.id, nombre="categoria foranea", tipo="ticket")
+        db.session.add(category)
+        db.session.flush()
+        other_employee = self._claim_employee(name="Operador categoría ajena", email="foreign-category-operator@test.com", categories=["categoria foranea"])
+        local_ticket = MunicipioTicket(
+            tenant_id=self.tenant.id, municipio_id=self.owner.id, nro_ticket="INV-FOREIGN-FK",
+            consulta_pin="931123", pregunta="Demanda local", categoria="educacion", categoria_id=category.id, estado="nuevo",
+        )
+        db.session.add_all([
+            local_ticket,
+            TenantTicket(tenant_id=foreign.id, categoria="demanda foranea", descripcion="Caso privado ajeno", estado="nuevo"),
+        ])
+        db.session.commit()
+        response = self.client.get("/api/v2/employee-routing", headers=self._auth(self.owner))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        recommendation = next(item for item in payload["recommendations"] if item["ticket"]["source_model"] == "MunicipioTicket" and item["ticket"]["id"] == local_ticket.id)
+        self.assertEqual(recommendation["ticket"]["category"], "educacion")
+        self.assertEqual(recommendation["ticket"]["category_id"], category.id)
+        self.assertEqual(recommendation["ticket"]["authoritative_category"], "educacion")
+        self.assertIn(self.employee.id, recommendation["candidate_ids"])
+        self.assertNotIn(other_employee.id, recommendation["candidate_ids"])
+        inventory = payload["category_inventory"]
+        self.assertEqual(inventory["summary"]["persisted_categories"], 0)
+        self.assertNotIn("categoria foranea", json.dumps(inventory))
+        self.assertNotIn("demanda foranea", json.dumps(inventory))
+        self.assertTrue(all(category.id not in item["persisted_category_ids"] for item in inventory["items"]))
+        denied_headers = {**self._auth(self.owner), "X-Tenant-Slug": foreign.slug}
+        denied = self.client.get(f"/api/v2/tenants/{foreign.slug}/employee-routing", headers=denied_headers)
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+
+    def test_category_inventory_preserves_verified_catalog_name_and_existing_assignee_compatibility(self):
+        self._set_tenant_as_municipio()
+        category = CategoriaTicket(tenant_id=self.tenant.id, nombre="Alumbrado público", tipo="ticket")
+        db.session.add(category)
+        db.session.flush()
+        operator = self._claim_employee(name="Operador alias", email="inventory-alias@test.com", categories=["luminarias"])
+        operator.categorias_ticket.append(category)
+        alias_operator = self._claim_employee(name="Operador sólo alias", email="inventory-alias-only@test.com", categories=["luminarias"])
+        ticket = MunicipioTicket(
+            tenant_id=self.tenant.id, municipio_id=self.owner.id, nro_ticket="INV-CATALOG-ALIAS",
+            consulta_pin="931124", pregunta="Caso catalogado", categoria="General", categoria_id=category.id, estado="nuevo",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        response = self.client.get("/api/v2/employee-routing", headers=self._auth(self.owner))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        recommendation = next(item for item in payload["recommendations"] if item["ticket"]["source_model"] == "MunicipioTicket" and item["ticket"]["id"] == ticket.id)
+        self.assertEqual(recommendation["ticket"]["category"], "general")
+        self.assertEqual(recommendation["ticket"]["authoritative_category"], "alumbrado público")
+        self.assertEqual(recommendation["candidate_ids"], [operator.id, alias_operator.id])
+        alias_candidate = next(item for item in recommendation["eligible_assignees"] if item["employee"]["id"] == alias_operator.id)
+        self.assertIn("category_match", alias_candidate["reasons"])
+        self.assertEqual(alias_candidate["score"], recommendation["eligible_assignees"][0]["score"])
+        item = next(item for item in payload["category_inventory"]["items"] if item["key"] == "alumbrado público")
+        self.assertEqual(item["label"], "Alumbrado público")
+        self.assertEqual(item["persisted_category_ids"], [category.id])
+        self.assertEqual(item["open_count"], 1)
+        self.assertEqual(item["eligible_employee_count"], 2)
+
+    def test_category_inventory_excludes_explicit_foreign_pyme_catalog_despite_matching_owner(self):
+        self.tenant.vertical = "comercio"
+        self.tenant.subvertical = None
+        self.tenant.configuracion = {}
+        foreign_owner = User(name="Foreign catalog owner", email="foreign-inventory-catalog@test.com", rol="admin", tenant_slug="foreign-catalog-inventory")
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign = TenantProfile(slug="foreign-catalog-inventory", nombre="Foreign catalog", tipo="pyme", plan="full", pyme_id=foreign_owner.id)
+        db.session.add(foreign)
+        db.session.flush()
+        db.session.add_all([
+            CatalogoItem(tenant_id=foreign.id, user_id=self.owner.id, nombre="Item ajeno", categoria="catalogo foraneo"),
+            CatalogoItem(tenant_id=None, user_id=self.owner.id, nombre="Item legacy propio", categoria="catalogo legacy propio"),
+        ])
+        db.session.commit()
+        response = self.client.get("/api/v2/employee-routing", headers=self._auth(self.owner))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        # This read-only increment does not change the existing dimensions API.
+        self.assertIn("catalogo foraneo", payload["dimensions"]["categorias"])
+        inventory = payload["category_inventory"]
+        self.assertNotIn("catalogo foraneo", json.dumps(inventory))
+        items = {item["key"]: item for item in inventory["items"]}
+        self.assertEqual(items["indumentaria"]["source_types"], ["catalog_categories"])
+        self.assertEqual(items["catalogo legacy propio"]["source_types"], ["catalog_categories"])
+        self.assertEqual(items["indumentaria"]["persisted_category_ids"], [])
+        self.assertIsNone(items["indumentaria"]["eligible_employee_count"])
+
+    def test_category_inventory_unknown_labels_are_redacted_and_employee_counts_remain_scoped(self):
+        self.tenant.tipo = "municipio"
+        self.tenant.vertical = None
+        self.tenant.subvertical = None
+        self.tenant.configuracion = {}
+        db.session.add_all([
+            TenantTicket(tenant_id=self.tenant.id, categoria=None, descripcion="Sin clasificar", estado="nuevo"),
+            TenantTicket(tenant_id=self.tenant.id, categoria="Av. Libertador 123", descripcion="Dirección en campo incorrecto", estado="nuevo"),
+            TenantTicket(tenant_id=self.tenant.id, categoria="vecino@test.com", descripcion="Contacto en campo incorrecto", estado="nuevo"),
+            TenantTicket(tenant_id=self.tenant.id, categoria="residuos", descripcion="Demanda fuera del alcance del empleado", estado="nuevo", datos_extra={"title": "Nombre privado", "address": "Calle privada 456"}),
+        ])
+        db.session.commit()
+        response = self.client.get("/api/v2/employee-routing", headers=self._auth(self.owner))
+        self.assertEqual(response.status_code, 200, response.get_json())
+        inventory = response.get_json()["category_inventory"]
+        items = {item["key"]: item for item in inventory["items"]}
+        self.assertEqual(items["unclassified"]["label"], "Tema pendiente de clasificación")
+        self.assertEqual(items["unclassified"]["open_count"], 3)
+        self.assertEqual(items["unclassified"]["unassigned_count"], 3)
+        self.assertEqual(items["limpieza"]["source_types"], ["municipio_baseline_taxonomy"])
+        self.assertEqual(items["limpieza"]["persisted_category_ids"], [])
+        self.assertIsNone(items["limpieza"]["eligible_employee_count"])
+        serialized = json.dumps(inventory)
+        for private_text in ("Libertador", "vecino@test.com", "Nombre privado", "Calle privada"):
+            self.assertNotIn(private_text, serialized)
+        employee_response = self.client.get("/api/v2/employee-routing", headers=self._auth(self.employee))
+        self.assertEqual(employee_response.status_code, 200, employee_response.get_json())
+        employee_inventory = employee_response.get_json()["category_inventory"]
+        self.assertEqual(employee_inventory["viewer_scope"], "employee_categories")
+        self.assertEqual(employee_inventory["summary"]["open_count"], 1)
+        self.assertEqual(employee_inventory["summary"]["unassigned_count"], 0)
+        self.assertEqual([item["key"] for item in employee_inventory["items"]], ["educacion"])
+        self.assertEqual(employee_inventory["items"][0]["eligible_employee_count"], 1)
+
     def test_employee_routing_contract_scope_update_and_auto_assign(self):
         unassigned = TenantTicket(
             tenant_id=self.tenant.id,

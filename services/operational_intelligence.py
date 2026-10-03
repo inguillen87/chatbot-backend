@@ -2808,8 +2808,12 @@ def _crm_tickets_href(
     heatmap_cell: Any | None = None,
     sla: Any | None = None,
     assignee: Any | None = None,
+    tenant_slug: str | None = None,
+    zone: Any | None = None,
 ) -> str:
     params: list[tuple[str, Any]] = [("tab", "tickets")]
+    if tenant_slug:
+        params.append(("tenant_slug", tenant_slug))
     if source_model is not None:
         params.append(("source_model", source_model))
     if ticket_id is not None:
@@ -2818,6 +2822,8 @@ def _crm_tickets_href(
         params.append(("focus", focus))
     if category:
         params.append(("categoria", category))
+    if zone:
+        params.append(("zona", zone))
     if channel:
         params.append(("canal", channel))
     if status:
@@ -3159,7 +3165,7 @@ def _heatmap_quality_contract(
     elif pending_geocode:
         state = "pending_geocode"
         reason_code = "addresses_need_geocoding"
-        label = "Direcciones pendientes de geocodificar"
+        label = "Ubicaciones pendientes de revisión"
     elif int(location_quality.get("ticket_records_outside_jurisdiction") or 0):
         state = "blocked"
         reason_code = "coordinates_outside_jurisdiction"
@@ -3368,7 +3374,7 @@ def _heatmap_narrative_contract(
             "su pertenencia mediante el polígono oficial del tenant."
         )
     elif pending_geocode:
-        headline = f"{pending_geocode} direcciones listas para geocodificar"
+        headline = f"{pending_geocode} direcciones para revisar"
         body = f"Hay {pending_geocode} reclamos con dirección y sin coordenadas guardadas."
         outside_records = int(quality.get("ticket_records_outside_jurisdiction") or 0)
         if outside_records:
@@ -3587,7 +3593,10 @@ def _heatmap_hotspot_actions_contract(
     quality: dict[str, Any],
     geocoding_candidates: list[dict[str, Any]],
     ai_summary: dict[str, Any],
+    tenant_slug: str | None = None,
+    segment_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    queue_href = _heatmap_geocoding_queue_href(tenant_slug, segment_filters)
     actions: list[dict[str, Any]] = []
     for index, hotspot in enumerate(hotspots[:5]):
         actions.append(
@@ -3611,8 +3620,10 @@ def _heatmap_hotspot_actions_contract(
                 "action_type": "open_queue",
                 "target": {"type": "geocoding_queue", "candidate_count": len(geocoding_candidates)},
                 "ui_hint": "open_geocoding_queue",
-                "href": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
-                "frontend_path": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
+                "enabled": bool(tenant_slug),
+                "tenant_slug": tenant_slug,
+                "href": queue_href,
+                "frontend_path": queue_href,
                 "writes_enabled": False,
             }
         )
@@ -3667,13 +3678,35 @@ def _heatmap_hotspot_actions_contract(
     }
 
 
+def _heatmap_geocoding_queue_href(
+    tenant_slug: str | None, segment_filters: dict[str, Any] | None
+) -> str:
+    filters = segment_filters or {}
+    def csv_filter(key):
+        value = filters.get(key)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+            return ",".join(value)
+        return None
+    return _crm_tickets_href(
+        focus="open_geocoding_queue",
+        tenant_slug=tenant_slug,
+        category=csv_filter("category"),
+        zone=csv_filter("zone"),
+    )
+
+
 def _heatmap_geocoding_guidance(
     *,
     geocoding_candidates: list[dict[str, Any]],
     location_quality: dict[str, Any],
     quality: dict[str, Any],
+    tenant_slug: str | None = None,
+    segment_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_count = len(geocoding_candidates or [])
+    queue_href = _heatmap_geocoding_queue_href(tenant_slug, segment_filters)
     return {
         "contract_version": "operations.heatmap_geocoding_guidance.v1",
         "state": "pending" if candidate_count else "clear",
@@ -3703,11 +3736,14 @@ def _heatmap_geocoding_guidance(
         "recommended_actions": [
             {
                 "id": "open_geocoding_queue",
-                "label": "Abrir cola de geocodificacion",
-                "enabled": bool(candidate_count),
+                "label": "Revisar cola",
+                "enabled": bool(candidate_count and tenant_slug),
+                "action_type": "open_queue",
+                "writes_enabled": False,
+                "tenant_slug": tenant_slug,
                 "ui_hint": "open_geocoding_queue",
-                "href": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
-                "frontend_path": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
+                "href": queue_href,
+                "frontend_path": queue_href,
             },
             {
                 "id": "request_whatsapp_location",
@@ -4575,12 +4611,16 @@ def build_operational_heatmap(
         geocoding_candidates=geocoding_candidates,
         location_quality=location_quality,
         quality=quality,
+        tenant_slug=tenant.slug,
+        segment_filters=filters,
     )
     hotspot_actions = _heatmap_hotspot_actions_contract(
         hotspots=hotspots,
         quality=quality,
         geocoding_candidates=geocoding_candidates,
         ai_summary=ai_summary,
+        tenant_slug=tenant.slug,
+        segment_filters=filters,
     )
     viewport_presets = _heatmap_viewport_presets(
         bounds=bounds,
@@ -4793,11 +4833,28 @@ def build_operational_heatmap(
                 "map_quality": "Calidad del mapa",
                 "coverage": "Cobertura GPS",
                 "visible_points": "Puntos visibles",
-                "pending_geocode": "Pendientes de geocodificar",
-                "realtime": "Actualizacion en vivo",
+                "pending_geocode": "Ubicaciones pendientes de revisión",
+                "geocoding_queue": "Ubicaciones pendientes",
+                "geocoding_queue_description": "Revisá las direcciones antes de completar o confirmar su ubicación. Abrir la cola no cambia los casos.",
+                "geocoding_queue_empty": "No hay direcciones pendientes para los filtros actuales.",
+                "geocoding_queue_unavailable": "La cola de ubicaciones todavía no está disponible para este mapa.",
+                "geocoding_technical_details": "Detalles de la actualización de ubicación",
+                "realtime": "Actualización por consulta",
+                "realtime_poll_description": "Consulta cada 20 segundos mientras esta vista está activa. No indica una conexión en vivo.",
+                "realtime_polling_status": "Consulta periódica",
+                "realtime_unavailable": "Actualización pendiente",
+                "quality_reason_unavailable": "No se informó un motivo de calidad para este mapa.",
+                "reason_ready": "Las coordenadas disponibles cumplen el alcance territorial revisado.",
+                "reason_low_ticket_coordinate_coverage": "Sólo una parte de los casos tiene coordenadas verificadas.",
+                "reason_official_jurisdiction_boundary_unavailable": "Falta verificar el contorno oficial de esta organización.",
+                "reason_addresses_need_geocoding": "Hay direcciones que requieren revisión y coordenadas.",
+                "reason_address_without_coordinates": "Dirección sin coordenadas guardadas.",
+                "reason_coordinates_outside_jurisdiction": "Las coordenadas guardadas están fuera del alcance territorial.",
+                "reason_missing_coordinates": "Los casos todavía no tienen coordenadas verificadas.",
+                "reason_no_operational_events": "No hay casos o eventos para el período seleccionado.",
                 "quality_ready": "Mapa operativo confiable",
                 "quality_partial": "Cobertura territorial parcial",
-                "quality_pending_geocode": "Direcciones pendientes de geocodificar",
+                "quality_pending_geocode": "Ubicaciones pendientes de revisión",
                 "quality_blocked": "Sin coordenadas reales",
                 "quality_empty": "Sin eventos para el periodo",
             }

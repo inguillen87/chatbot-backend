@@ -114,6 +114,30 @@ class OrganizationProfileSettingsTests(unittest.TestCase):
         self.assertEqual(self.read()['values']['nombre_empresa'],'Nueva organización')
         self.assertEqual(Session.query(Audit).count(),1)
 
+    def test_activity_is_tenant_metadata_and_does_not_reclassify_or_touch_another_client(self):
+        other_before = deepcopy(self.read(2))
+        result = self.save({'actividad': 'Atención y accesibilidad', 'telefono': '+54929015550101'})
+        Session.remove()
+        self.assertEqual(self.read()['values']['actividad'], 'Atención y accesibilidad')
+        self.assertEqual(Session.get(Tenant,1).tipo, 'municipio')
+        self.assertEqual(Session.get(Tenant,1).configuracion['keep'], True)
+        self.assertEqual(self.read(2), other_before)
+        self.assertFalse(hasattr(Session.get(User,1), 'actividad'))
+        self.assertIn('actividad', Session.query(Audit).one().details['changed_fields'])
+        self.assertEqual(result['profile']['values']['telefono'], '+54929015550101')
+
+    def test_activity_limits_and_audit_failure_are_atomic(self):
+        for value in ('x'*101, 'línea\ninvalidada', {'nombre':'no'}):
+            with self.subTest(value=value), self.assertRaises(ProfileSettingsError):
+                self.save({'nombre_empresa':'No guardar', 'actividad':value})
+        self.assertEqual(self.read()['values'], self.initial['values'])
+        with patch.object(Session.session_factory.class_, 'commit', side_effect=sa.exc.SQLAlchemyError('fixture')):
+            with self.assertRaises(ProfileSettingsError):
+                self.save({'actividad':'Cambio no confirmado'})
+        Session.remove()
+        self.assertEqual(self.read()['values'], self.initial['values'])
+        self.assertEqual(Session.query(Audit).count(), 0)
+
     def test_verified_reread_allows_an_explicit_new_save(self):
         self.save();Session.remove();new=self.read();Session.remove()
         self.assertTrue(self.save({'telefono':'12345'},revision=new['revision'])['saved'])
