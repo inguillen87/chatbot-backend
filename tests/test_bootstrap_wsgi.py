@@ -219,11 +219,11 @@ class LazyApplicationTests(unittest.TestCase):
         ):
             self.assertEqual(_safe_request_wait_seconds(), 2.0)
 
-    def test_extended_safe_read_wait_requires_preview_and_explicit_override(self) -> None:
+    def test_extended_safe_read_wait_requires_vercel_environment_and_explicit_override(self) -> None:
         for environment, override, expected in (
             ('preview', None, 2.0), ('preview', '5', 5.0), ('preview', '99', 5.0),
             ('preview', '-1', 0.0), ('preview', 'invalid', 2.0),
-            ('production', None, 2.0), ('production', '5', 4.0),
+            ('production', None, 2.0), ('production', '5', 5.0),
             ('development', '5', 4.0), ('', '5', 4.0),
         ):
             variables = {'VERCEL_ENV': environment}
@@ -232,7 +232,7 @@ class LazyApplicationTests(unittest.TestCase):
             with self.subTest(environment=environment, override=override), patch.dict(os.environ, variables, clear=True):
                 self.assertEqual(_safe_request_wait_seconds(), expected)
                 application = LazyApplication(lambda: None, safe_request_wait_seconds=99)
-                self.assertEqual(application._safe_request_wait_seconds, 5.0 if environment == 'preview' else 4.0)
+                self.assertEqual(application._safe_request_wait_seconds, 5.0 if environment in {'preview', 'production'} else 4.0)
 
     def test_preview_first_get_waits_for_real_slow_loader_while_post_is_undispatched(self) -> None:
         loader_started = threading.Event()

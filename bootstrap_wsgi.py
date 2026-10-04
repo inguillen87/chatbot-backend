@@ -37,19 +37,28 @@ _TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 # online.
 _DEFAULT_WARMUP_DELAY_SECONDS = 0.1
 _MAX_WARMUP_DELAY_SECONDS = 0.5
-# Keep the established join budget outside Preview. Preview can explicitly
-# opt in to five seconds for safe reads: measured canonical imports take
-# 3.5-4 seconds, and the warmup delay also consumes part of that join window.
+# Vercel Production and Preview can explicitly opt in to five seconds:
+# Production logs measured a successful canonical initialization at 4550 ms.
+# The configured default and other runtimes retain their established budgets.
 # A timeout still returns the explicit receipt before canonical dispatch.
 _DEFAULT_SAFE_REQUEST_WAIT_SECONDS = 2.0
 _MAX_SAFE_REQUEST_WAIT_SECONDS = 4.0
 _MAX_PREVIEW_SAFE_REQUEST_WAIT_SECONDS = 5.0
+_MAX_PRODUCTION_SAFE_REQUEST_WAIT_SECONDS = 5.0
 # Mutations retain fail-fast behavior unless Preview explicitly opts into a
 # bounded wait before the first and only canonical application dispatch.
 _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS = 0.0
 _MAX_PREVIEW_MUTATION_REQUEST_WAIT_SECONDS = 5.0
 _BOOTSTRAP_RETRY_AFTER_SECONDS = 2
 _BOOTSTRAP_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# The ordinary Production login must join the same bounded readiness flight as
+# its preceding config GET. This is a wait within the original request, not a
+# retry or an alternate authentication implementation. Business mutations and
+# credential management retain their existing fail-fast policy.
+_PRODUCTION_LOGIN_PATHS = frozenset({
+    "/api/auth/clerk/session", "/auth/clerk/session",
+    "/api/auth/admin/login", "/auth/admin/login",
+})
 
 
 def _is_vercel_runtime() -> bool:
@@ -75,8 +84,11 @@ def _warmup_delay_seconds() -> float:
 
 
 def _max_safe_request_wait_seconds() -> float:
-    if str(os.getenv('VERCEL_ENV') or '').strip().lower() == 'preview':
+    environment = str(os.getenv('VERCEL_ENV') or '').strip().lower()
+    if environment == 'preview':
         return _MAX_PREVIEW_SAFE_REQUEST_WAIT_SECONDS
+    if environment == 'production':
+        return _MAX_PRODUCTION_SAFE_REQUEST_WAIT_SECONDS
     return _MAX_SAFE_REQUEST_WAIT_SECONDS
 
 
@@ -147,6 +159,11 @@ class LazyApplication:
         self._safe_request_wait_seconds = min(
             _max_safe_request_wait_seconds(),
             max(0.0, float(safe_request_wait_seconds)),
+        )
+        self._production_login_wait_seconds = (
+            self._safe_request_wait_seconds
+            if str(os.getenv("VERCEL_ENV") or "").strip().lower() == "production"
+            else 0.0
         )
         mutation_wait = float(mutation_request_wait_seconds)
         self._mutation_request_wait_seconds = (
@@ -269,14 +286,21 @@ class LazyApplication:
         if not self._background_warmup:
             return self._load_and_cache()(environ, start_response)
 
-        # A Preview mutation may join the same single-flight initialization
-        # before its first dispatch. No body or middleware is evaluated here;
-        # a timeout leaves this request undispatched permanently. Other runtimes
-        # and Preview without an explicit opt-in retain fail-fast behavior.
+        # Only the ordinary Production login, or an explicitly opted-in Preview
+        # mutation, joins initialization before its first dispatch. No body,
+        # middleware, credential or tenant lookup is evaluated here. A timeout
+        # leaves this request undispatched permanently, even if loading later
+        # completes. Other mutations retain fail-fast behavior.
         self.start_warmup()
         method = str(environ.get("REQUEST_METHOD") or "GET").strip().upper()
         safe_method = method in _BOOTSTRAP_SAFE_METHODS
-        if not safe_method and self._mutation_request_wait_seconds == 0:
+        login_wait = (
+            self._production_login_wait_seconds
+            if method == "POST" and environ.get("PATH_INFO") in _PRODUCTION_LOGIN_PATHS
+            else 0.0
+        )
+        mutation_wait = max(self._mutation_request_wait_seconds, login_wait)
+        if not safe_method and mutation_wait == 0:
             return self._bootstrap_response(
                 environ,
                 start_response,
@@ -287,7 +311,7 @@ class LazyApplication:
         if application is not None:
             return application(environ, start_response)
         wait_seconds = (self._safe_request_wait_seconds if safe_method
-                        else self._mutation_request_wait_seconds)
+                        else mutation_wait)
         if wait_seconds > 0:
             self._ready.wait(wait_seconds)
             application = self._application
