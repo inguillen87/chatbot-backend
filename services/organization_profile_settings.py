@@ -12,6 +12,7 @@ import re
 from urllib.parse import urlsplit
 from sqlalchemy import text, or_
 from sqlalchemy.exc import SQLAlchemyError
+from services.organization_type_presentation import organization_type_descriptor
 
 CONTRACT = 'organization.profile_settings.v1'
 LIMITS = {'nombre_empresa':150, 'telefono':20, 'direccion':200, 'ciudad':100,
@@ -88,7 +89,8 @@ def build_profile_settings(tenant, owner, *, can_edit=False, writes_blocked=Fals
     return {'contract_version':CONTRACT,'tenant':{'id':tenant.id,'slug':tenant.slug},
         'revision':profile_revision(tenant,owner,values),'values':values,
         'can_edit':access['mode']=='editable','editability':access,'save_endpoint':f'/api/admin/tenants/{tenant.slug}/config',
-        'ui': {'activity_label': 'Rubro o actividad',
+        'ui': {**organization_type_descriptor(getattr(tenant, 'tipo', None)),
+            'activity_label': 'Rubro o actividad',
             'activity_description': 'Describe la actividad de la organización. Las funciones y los permisos se administran por separado.'},
         'concurrency':'expected_revision','provider_calls_performed':False}
 

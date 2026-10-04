@@ -29,6 +29,7 @@ from sqlalchemy import desc, func, or_
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
+from services.organization_type_presentation import organization_type_descriptor
 from services.user_service import assign_whatsapp_numbers
 from services.native_admin_membership import (
     NativeAdminMembershipError, list_native_admin_memberships,
@@ -1155,6 +1156,7 @@ def list_tenants(current_user):
         status = "active" if tenant.is_active else "inactive"
 
         tenants_data.append({
+            **organization_type_descriptor(tenant.tipo),
             "id": tenant.id,
             "slug": tenant.slug,
             "nombre": tenant.nombre,
@@ -1473,6 +1475,7 @@ def get_tenant_detail(current_user, slug):
     owner = tenant.municipio or tenant.pyme
 
     return jsonify({
+        **organization_type_descriptor(tenant.tipo),
         "id": tenant.id,
         "slug": tenant.slug,
         "nombre": tenant.nombre,
@@ -1491,6 +1494,17 @@ def update_tenant_full(current_user, slug):
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
     data = request.get_json() or {}
 
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Enviá un objeto JSON válido.'}), 400
+    # Institutional names have a separate atomic owner/profile update with CAS.
+    # Validate before even a slug change, plan propagation or audit is staged.
+    if 'nombre' in data and (not isinstance(data['nombre'], str) or data['nombre'] != tenant.nombre):
+        return jsonify({
+            'reason_code': 'organization_name_requires_profile_update',
+            'error': 'Para cambiar el nombre, abrí Datos institucionales y guardá el perfil de la organización.',
+            'save_endpoint': f'/api/admin/tenants/{tenant.slug}/config',
+        }), 409
+
     if 'slug' in data:
         desired_slug = _slugify(data.get('slug'))
         if not desired_slug:
@@ -1504,7 +1518,6 @@ def update_tenant_full(current_user, slug):
                 synchronize_session=False,
             )
 
-    if 'nombre' in data: tenant.nombre = data['nombre']
     if 'plan' in data:
         old_plan = tenant.plan
         normalized_plan = _normalize_plan_key(data['plan'])
@@ -2799,6 +2812,7 @@ def super_admin_tenant_profile_360(current_user, slug):
     return jsonify({
         'since_days': since_days,
         'tenant': {
+            **organization_type_descriptor(tenant.tipo),
             'id': tenant.id,
             'slug': tenant.slug,
             'nombre': tenant.nombre,

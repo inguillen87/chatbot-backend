@@ -17,6 +17,7 @@ from utils.roles import is_authorized_superadmin_user
 from services.organization_profile_settings import (
     build_profile_settings, save_profile_settings, ProfileSettingsError,
 )
+from services.organization_type_presentation import organization_type_descriptor
 from utils.tenant_admin_access import can_manage_tenant_control_plane, resolve_consistent_user_tenant
 from middleware.tenant_context import require_tenant
 from models import (
@@ -2313,6 +2314,7 @@ def get_tenant_config_bundle(current_user, slug):
     integration_access = integration_access_payload(tenant)
     response = {
         "tenant": {
+            **organization_type_descriptor(tenant.tipo),
             "id": tenant.id,
             "slug": tenant.slug,
             "nombre": tenant.nombre,
@@ -2675,7 +2677,14 @@ def update_tenant_config_bundle(current_user, slug):
 
     # Update Tenant fields
     tenant_data = data.get('tenant', {})
-    if 'nombre' in tenant_data: tenant.nombre = tenant_data['nombre']
+    if not isinstance(tenant_data, dict):
+        return jsonify({'error': 'Enviá los datos de la organización como un objeto JSON válido.'}), 400
+    if 'nombre' in tenant_data and (not isinstance(tenant_data['nombre'], str) or tenant_data['nombre'] != tenant.nombre):
+        return jsonify({
+            'reason_code': 'organization_name_requires_profile_update',
+            'error': 'Para cambiar el nombre, abrí Datos institucionales y guardá el perfil de la organización.',
+            'save_endpoint': f'/api/admin/tenants/{tenant.slug}/config',
+        }), 409
     if 'logo_url' in tenant_data: tenant.logo_url = tenant_data['logo_url']
     if 'dispatch_email' in tenant_data: tenant.dispatch_email = tenant_data['dispatch_email']
     if 'dispatch_phone' in tenant_data: tenant.dispatch_phone = tenant_data['dispatch_phone']

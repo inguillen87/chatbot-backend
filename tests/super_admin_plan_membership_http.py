@@ -246,6 +246,78 @@ class SuperAdminPlanMembershipTests(unittest.TestCase):
         self.assertEqual(db.session.get(User, self.foreign_owner.id).plan, 'pro')
         self.assertEqual(AdminAuditLog.query.count(), 0)
 
+    def test_legacy_name_change_rejects_every_combined_write_without_audit(self):
+        from database import db
+        from models import AdminAuditLog, TenantProfile, User
+        self.seed_graph('municipio')
+        self.owner.nombre_empresa = 'Owner institutional name'
+        db.session.commit()
+        before_users = {user.id: (user.rol, user.plan, user.tenant_id, user.tenant_slug,
+                                 user.nombre_empresa, user.accesibilidad)
+                        for user in User.query.all()}
+        for requested in ('New name', 'Target ', '', None, True, {'name': 'Target'}):
+            with self.subTest(nombre=requested):
+                payload, status = self.apply(nombre=requested, is_active=False,
+                                             slug='plan-renamed', dominio='new.example.invalid')
+                self.assertEqual(status, 409, payload)
+                self.assertEqual(payload['reason_code'], 'organization_name_requires_profile_update')
+                self.assertEqual(payload['save_endpoint'], '/api/admin/tenants/plan-target/config')
+                # Prove no pending mutation can be committed later either.
+                db.session.commit()
+                db.session.expire_all()
+                tenant = db.session.get(TenantProfile, self.tenant.id)
+                self.assertEqual((tenant.nombre, tenant.slug, tenant.plan, tenant.is_active,
+                                  tenant.dominio), ('Target', 'plan-target', 'pro', True, None))
+                self.assertEqual({user.id: (user.rol, user.plan, user.tenant_id, user.tenant_slug,
+                                          user.nombre_empresa, user.accesibilidad)
+                                 for user in User.query.all()}, before_users)
+                self.assertEqual(AdminAuditLog.query.count(), 0)
+
+    def test_equal_legacy_name_is_not_written_and_plan_remains_compatible(self):
+        from database import db
+        from models import AdminAuditLog, TenantProfile, User
+        from sqlalchemy import event
+        self.seed_graph('pyme')
+        self.owner.nombre_empresa = 'Distinct existing owner name'
+        db.session.commit()
+        writes = []
+        def capture(target, value, oldvalue, initiator):
+            writes.append(value)
+        event.listen(TenantProfile.nombre, 'set', capture)
+        try:
+            payload, status = self.apply(nombre='Target', is_active=True)
+        finally:
+            event.remove(TenantProfile.nombre, 'set', capture)
+        self.assertEqual(status, 200, payload)
+        self.assertEqual(writes, [])
+        db.session.expire_all()
+        self.assertEqual(db.session.get(TenantProfile, self.tenant.id).nombre, 'Target')
+        self.assertEqual(db.session.get(User, self.owner.id).nombre_empresa, 'Distinct existing owner name')
+        self.assertEqual(db.session.get(TenantProfile, self.tenant.id).plan, 'full')
+        self.assertEqual(AdminAuditLog.query.filter_by(action='change_plan').count(), 1)
+
+    def test_name_validation_does_not_disclose_before_auth_or_for_missing_tenant(self):
+        from database import db
+        from models import AdminAuditLog
+        from routes.super_admin import update_tenant_full
+        from werkzeug.exceptions import NotFound
+        self.seed_graph('municipio')
+        self.actor.rol = 'admin'
+        payload, status = self.apply(nombre='New name', is_active=False)
+        self.assertEqual(status, 403, payload)
+        self.assertNotIn('organization_name_requires_profile_update', str(payload))
+        self.actor.rol = 'super_admin'
+        with self.app.test_request_context('/api/admin/tenants/absent', method='PUT',
+                                           json={'nombre': 'New name', 'plan': 'full'}):
+            with self.assertRaises(NotFound):
+                update_tenant_full.__wrapped__(self.actor, 'absent')
+        db.session.rollback()
+        anonymous = self.app.test_client().put('/api/admin/tenants/plan-target',
+                                              json={'nombre': 'New name', 'plan': 'full'})
+        self.assertIn(anonymous.status_code, (401, 403))
+        self.assertNotIn('organization_name_requires_profile_update', str(anonymous.get_json()))
+        self.assertEqual(AdminAuditLog.query.count(), 0)
+
 
 if __name__ == '__main__':
     unittest.main()
