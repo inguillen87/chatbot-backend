@@ -1027,7 +1027,12 @@ class V2SaasContractsTest(unittest.TestCase):
         recommendation = next(item for item in payload["recommendations"] if item["ticket"]["source_model"] == "MunicipioTicket" and item["ticket"]["id"] == local_ticket.id)
         self.assertEqual(recommendation["ticket"]["category"], "educacion")
         self.assertEqual(recommendation["ticket"]["category_id"], category.id)
-        self.assertEqual(recommendation["ticket"]["authoritative_category"], "educacion")
+        self.assertIsNone(recommendation["ticket"]["authoritative_category"])
+        self.assertFalse(recommendation["ticket"]["category_authority"]["verified"])
+        self.assertEqual(
+            recommendation["ticket"]["category_authority"]["reason_code"],
+            "category_not_found_in_tenant_catalog",
+        )
         self.assertIn(self.employee.id, recommendation["candidate_ids"])
         self.assertNotIn(other_employee.id, recommendation["candidate_ids"])
         inventory = payload["category_inventory"]

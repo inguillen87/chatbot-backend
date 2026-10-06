@@ -16,6 +16,32 @@ def _text(value: Any) -> str | None:
     return normalized or None
 
 
+def _guidance(*, verified: bool, conflict: bool, reason_code: str) -> dict[str, str | None]:
+    if reason_code == "ticket_tenant_mismatch":
+        return {
+            "message": "No se pudo verificar la categoría dentro de esta organización.",
+            "recovery_text": "Solicitá a supervisión revisar el ámbito del caso antes de clasificarlo o derivarlo.",
+            "action_hint": "review_ticket_category",
+        }
+    if conflict:
+        message = "La categoría del catálogo y la categoría registrada no coinciden."
+    elif verified:
+        return {
+            "message": "La categoría del caso está verificada.",
+            "recovery_text": None,
+            "action_hint": None,
+        }
+    elif reason_code == "category_not_found_in_tenant_catalog":
+        message = "La referencia de categoría no se encontró en el catálogo de esta organización."
+    else:
+        message = "La categoría registrada no tiene una referencia verificada en el catálogo de esta organización."
+    return {
+        "message": message,
+        "recovery_text": "Solicitá a supervisión revisar la clasificación del caso y el catálogo de la organización antes de derivarlo.",
+        "action_hint": "review_ticket_category",
+    }
+
+
 def build_municipio_category_authorities(
     tickets: Iterable[Any],
     *,
@@ -55,7 +81,7 @@ def build_municipio_category_authorities(
         authoritative = _text(getattr(category, "nombre", None)) if category else None
         alias_evidence = canonicalize_territorial_category(persisted)
         alias_category = alias_evidence["category"]
-        alias_verified = alias_category == "luminarias" and bool(persisted)
+        alias_verified = same_tenant and alias_category == "luminarias" and bool(persisted)
         if not authoritative and alias_verified:
             authoritative = "Luminarias"
         verified = bool(authoritative)
@@ -66,7 +92,10 @@ def build_municipio_category_authorities(
             and persisted_normalized
             and persisted_normalized != authoritative_normalized
         )
-        if category and verified:
+        if not same_tenant:
+            reason_code = "ticket_tenant_mismatch"
+            source = "persisted_category_unverified"
+        elif category and verified:
             reason_code = "verified_tenant_category"
             source = "tenant_category_catalog"
         elif alias_verified:
@@ -74,9 +103,6 @@ def build_municipio_category_authorities(
             source = "persisted_category_exact_alias"
         elif not isinstance(category_id, int) or category_id <= 0:
             reason_code = "category_id_missing_and_alias_unverified"
-            source = "persisted_category_unverified"
-        elif not same_tenant:
-            reason_code = "ticket_tenant_mismatch"
             source = "persisted_category_unverified"
         else:
             reason_code = "category_not_found_in_tenant_catalog"
@@ -91,6 +117,7 @@ def build_municipio_category_authorities(
             "authoritative_category": authoritative,
             "persisted_category": persisted,
             "conflict": conflict,
+            **_guidance(verified=verified, conflict=conflict, reason_code=reason_code),
         }
     return resolved
 

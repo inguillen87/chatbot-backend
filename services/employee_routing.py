@@ -14,6 +14,10 @@ from services.employee_ticket_access import (
     ticket_assignee_category_values_are_compatible,
 )
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.ticket_category_authority import (
+    build_municipio_category_authorities,
+    resolve_municipio_category_authority,
+)
 from services.territorial_evidence import canonicalize_territorial_category
 from utils.roles import ROLE_EMPLEADO, canonical_role
 
@@ -392,6 +396,7 @@ def _ticket_snapshot(
     ticket: Any,
     *,
     category_names_by_id: dict[int, str] | None = None,
+    municipio_category_authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     category_names_by_id = category_names_by_id or {}
     if isinstance(ticket, TenantTicket):
@@ -418,8 +423,11 @@ def _ticket_snapshot(
             "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
         }
     if isinstance(ticket, MunicipioTicket):
-        persisted_category = category_names_by_id.get(getattr(ticket, "categoria_id", None))
-        category = persisted_category or canonicalize_territorial_category(ticket.categoria)["category"]
+        # Routing labels remain useful for the existing eligibility policy;
+        # they must not confer authority that the private detail cannot verify.
+        authority = (municipio_category_authority if municipio_category_authority is not None
+                     else resolve_municipio_category_authority(ticket))
+        category = authority["authoritative_category"] if authority["verified"] else None
         return {
             "source_model": "MunicipioTicket",
             "id": ticket.id,
@@ -427,7 +435,8 @@ def _ticket_snapshot(
             "title": ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket}",
             "status": ticket.estado,
             "category": _norm(ticket.categoria, "sin_categoria"),
-            "authoritative_category": _norm(category, "sin_categoria"),
+            "authoritative_category": _norm(category, "sin_categoria") if category else None,
+            "category_authority": authority,
             "category_id": getattr(ticket, "categoria_id", None),
             "zone": _norm(ticket.distrito, "sin_zona"),
             "channel": _norm(ticket.canal_ingreso, "whatsapp"),
@@ -496,10 +505,16 @@ def _tenant_tickets(tenant: TenantProfile) -> list[Any]:
 
 def tenant_open_ticket_snapshots(tenant: TenantProfile) -> list[dict[str, Any]]:
     tickets = _tenant_tickets(tenant)
+    municipal_authorities = build_municipio_category_authorities(
+        [ticket for ticket in tickets if isinstance(ticket, MunicipioTicket)],
+        tenant_id=tenant.id,
+    )
+    # Municipal catalog references were already resolved in the shared batch.
+    # Preserve the separate Pyme read model without adding a query per ticket.
     category_ids = {
         int(ticket.categoria_id)
         for ticket in tickets
-        if getattr(ticket, "categoria_id", None)
+        if isinstance(ticket, PymeTicket) and getattr(ticket, "categoria_id", None)
     }
     category_names_by_id = {
         int(category.id): str(category.nombre or "").strip().lower()
@@ -513,7 +528,11 @@ def tenant_open_ticket_snapshots(tenant: TenantProfile) -> list[dict[str, Any]]:
         )
     }
     return [
-        _ticket_snapshot(ticket, category_names_by_id=category_names_by_id)
+        _ticket_snapshot(
+            ticket, category_names_by_id=category_names_by_id,
+            municipio_category_authority=municipal_authorities.get(ticket.id)
+            if isinstance(ticket, MunicipioTicket) else None,
+        )
         for ticket in tickets
     ]
 

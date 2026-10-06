@@ -36,6 +36,13 @@ name: Survey and organization evidence
       - routes/ticket.py
       - services/operational_intelligence.py
       - services/ticket_workflow_policy.py
+      - services/ticket_category_authority.py
+      - services/employee_routing.py
+      - tests/test_ticket_category_authority_routing.py
+      - tests/test_ticket_catalog_filter_authority.py
+      - tests/test_ticket_assignment_policy.py
+      - tests/test_crm_detail_category_rbac.py
+      - tests/test_v2_saas_contracts.py
       - tests/ticket_workflow_http.py
       - tests/ticket_workflow_postgres.py
       - tests/test_ticket_state_sync.py
@@ -138,6 +145,13 @@ jobs:
           python -m pytest tests/test_ticket_state_sync.py tests/test_ticket_notifications.py tests/test_ticket_tenant_scope_chat_access.py tests/test_legacy_ticket_tenant_scope.py tests/test_ticket_workflow_metadata_contract.py tests/test_crm_detail_category_rbac.py -q 2>&1 | tee .qa-artifacts/ticket-workflow/regression.log
       - name: Official territorial boundary packaging
         run: python -m pytest tests/test_territorial_boundary_packaging.py -q
+      - name: Tenant-bound category authority and assignment policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/category-authority
+          python -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_ticket_category_authority_routing.py', 'tests/test_ticket_operational_badges.py', 'tests/test_ticket_catalog_filter_authority.py', 'tests/test_ticket_assignment_policy.py', 'tests/test_crm_detail_category_rbac.py']))" 2>&1 | tee .qa-artifacts/category-authority/read-and-policy.log
+          python -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_v2_saas_contracts.py', '-k', 'routing or category_inventory']))" 2>&1 | tee .qa-artifacts/category-authority/routing-contract.log
       - name: Provider provisioning requires durable credentials without Render
         run: python -m tests.twilio_provisioning_without_render_regression
       - run: python -m tests.private_conversation_guide_http
@@ -183,6 +197,15 @@ jobs:
         with:
           name: ticket-workflow-evidence
           path: .qa-artifacts/ticket-workflow/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Category authority evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: category-authority-evidence
+          path: .qa-artifacts/category-authority/*.log
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
