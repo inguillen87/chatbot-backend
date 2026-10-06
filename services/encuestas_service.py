@@ -7186,7 +7186,24 @@ def save_respuesta(
     anon_cookie = request_ctx.get("anon_id")
     ip = request_ctx.get("ip")
 
-    fingerprint = build_unique_fingerprint(
+    from services.survey_participation_assurance import (
+        ACCOUNT_POLICIES,
+        ParticipationAssuranceError,
+        reviewed_grant_fingerprint,
+        strict_participation_enabled,
+    )
+
+    try:
+        strict_participation = strict_participation_enabled(tenant_id)
+    except ParticipationAssuranceError as exc:
+        raise EncuestaError(
+            exc.message, status_code=exc.status_code, payload=exc.to_dict()
+        ) from exc
+    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
+    requires_reviewed_grant = strict_participation and policy not in ACCOUNT_POLICIES
+    # Weak client identifiers are never used as admission authority in strict
+    # mode. The actual grant is validated below before any response is staged.
+    fingerprint = None if requires_reviewed_grant else build_unique_fingerprint(
         encuesta,
         tenant_id,
         dni=dni,
@@ -7195,8 +7212,7 @@ def save_respuesta(
         ip=ip,
         anon_cookie=anon_cookie,
     )
-    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
-    if fingerprint is None and policy != "libre":
+    if fingerprint is None and policy != "libre" and not requires_reviewed_grant:
         required_identifiers = {
             "por_cookie": ["anon_id"],
             "cookie": ["anon_id"],
@@ -7350,6 +7366,24 @@ def save_respuesta(
                 status_code=exc.status_code,
                 payload=exc.to_dict(),
             ) from exc
+
+    if requires_reviewed_grant:
+        try:
+            fingerprint = reviewed_grant_fingerprint(
+                encuesta, governance_release, eligibility_grant
+            )
+        except ParticipationAssuranceError as exc:
+            if commit:
+                db.session.rollback()
+            raise EncuestaError(
+                exc.message, status_code=exc.status_code, payload=exc.to_dict()
+            ) from exc
+        if EncRespuesta.query.filter_by(
+            encuesta_id=encuesta.id,
+            huella_unica=fingerprint,
+            response_origin=SURVEY_RESPONSE_ORIGIN_REAL,
+        ).first():
+            raise _survey_duplicate_response_error()
 
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
@@ -9956,6 +9990,8 @@ def serialize_encuesta(
 
         jurisdiction = jurisdiction_contract(encuesta)
 
+    from services.survey_participation_assurance import participation_assurance_contract
+
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
@@ -10028,6 +10064,7 @@ def serialize_encuesta(
             ),
         },
         "governance": governance,
+        "participation_assurance": participation_assurance_contract(encuesta, governance),
         "jurisdiction": jurisdiction,
         "tags": _collect_encuesta_tags(encuesta),
         "preguntas_count": len(encuesta.preguntas),
@@ -10086,6 +10123,7 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
             "provider": "chatboc_session",
         },
         "privacy": data["privacy"],
+        "participation_assurance": data["participation_assurance"],
         "eligibility": (
             data.get("governance", {}).get("eligibility")
             if isinstance(data.get("governance"), dict)

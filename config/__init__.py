@@ -1490,6 +1490,18 @@ class Config:
         "SURVEY_ELIGIBILITY_SECRET_V1",
         "",
     )
+    # Explicit participation canary. Existing rows and legacy admission remain
+    # unchanged outside this allowlist; a declared phone/cookie is not proof.
+    ENABLE_SURVEY_PARTICIPATION_ASSURANCE_V1 = _env_strict_opt_in(
+        "ENABLE_SURVEY_PARTICIPATION_ASSURANCE_V1"
+    )
+    SURVEY_PARTICIPATION_ASSURANCE_TENANT_IDS = os.getenv(
+        "SURVEY_PARTICIPATION_ASSURANCE_TENANT_IDS", ""
+    )
+    # Require the actual distributed limiter, including on serverless Vercel.
+    ENFORCE_PUBLIC_SURVEY_DISTRIBUTED_RATE_LIMIT = _env_strict_opt_in(
+        "ENFORCE_PUBLIC_SURVEY_DISTRIBUTED_RATE_LIMIT"
+    )
     # Workflow Studio durable writes remain a reviewed control-plane canary.
     # Runtime consumption is intentionally a separate, currently disabled gate.
     ENABLE_WHATSAPP_WORKFLOW_STUDIO_DURABLE_V1 = _env_strict_opt_in(
