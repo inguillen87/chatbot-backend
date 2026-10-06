@@ -224,6 +224,7 @@ class LazyApplicationTests(unittest.TestCase):
             ('preview', None, 2.0), ('preview', '5', 5.0), ('preview', '99', 5.0),
             ('preview', '-1', 0.0), ('preview', 'invalid', 2.0),
             ('production', None, 2.0), ('production', '5', 5.0),
+            ('production', '10', 10.0), ('production', '99', 10.0),
             ('development', '5', 4.0), ('', '5', 4.0),
         ):
             variables = {'VERCEL_ENV': environment}
@@ -232,7 +233,50 @@ class LazyApplicationTests(unittest.TestCase):
             with self.subTest(environment=environment, override=override), patch.dict(os.environ, variables, clear=True):
                 self.assertEqual(_safe_request_wait_seconds(), expected)
                 application = LazyApplication(lambda: None, safe_request_wait_seconds=99)
-                self.assertEqual(application._safe_request_wait_seconds, 5.0 if environment in {'preview', 'production'} else 4.0)
+                self.assertEqual(application._safe_request_wait_seconds,
+                                 10.0 if environment == 'production' else 5.0 if environment == 'preview' else 4.0)
+                self.assertEqual(application._production_login_wait_seconds, 5.0 if environment == 'production' else 0.0)
+
+    def test_production_safe_read_waits_beyond_observed_startup_without_extending_post_budgets(self) -> None:
+        started = threading.Event()
+        loads, dispatched, statuses, read_results = [], [], [], []
+
+        def target(environ, start_response):
+            dispatched.append(environ)
+            start_response('200 OK', [])
+            return [b'ready']
+
+        def loader():
+            loads.append('loaded')
+            started.set()
+            time.sleep(7.917)
+            return target
+
+        with patch.dict(os.environ, {'VERCEL_ENV': 'production', 'VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS': '10'}, clear=True):
+            application = LazyApplication(loader, background_warmup=True, warmup_delay_seconds=0,
+                                          safe_request_wait_seconds=_safe_request_wait_seconds())
+        original_read = {'PATH_INFO': '/api/tickets/workflow/metadata', 'REQUEST_METHOD': 'GET'}
+        reader = threading.Thread(target=lambda: read_results.append(
+            application(original_read, lambda status, headers: statuses.append(status))))
+        reader.start()
+        self.assertTrue(started.wait(.5))
+        for path, maximum in (('/api/v2/orders', .2), ('/api/auth/admin/login', 5.5)):
+            post_body = BytesIO(b'synthetic-body')
+            started_at = time.monotonic()
+            response = application({'PATH_INFO': path, 'REQUEST_METHOD': 'POST', 'wsgi.input': post_body},
+                                   lambda status, headers: None)
+            self.assertLess(time.monotonic() - started_at, maximum)
+            payload = json.loads(b''.join(response))
+            self.assertEqual(payload['reason_code'], 'application_initializing')
+            self.assertFalse(payload['request_dispatched'])
+            self.assertEqual(post_body.tell(), 0)
+        reader.join(10)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(statuses, ['200 OK'])
+        self.assertEqual(read_results, [[b'ready']])
+        self.assertEqual(loads, ['loaded'])
+        self.assertEqual(dispatched, [original_read])
+        self.assertIs(dispatched[0], original_read)
 
     def test_preview_first_get_waits_for_real_slow_loader_while_post_is_undispatched(self) -> None:
         loader_started = threading.Event()

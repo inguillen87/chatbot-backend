@@ -37,14 +37,15 @@ _TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 # online.
 _DEFAULT_WARMUP_DELAY_SECONDS = 0.1
 _MAX_WARMUP_DELAY_SECONDS = 0.5
-# Vercel Production and Preview can explicitly opt in to five seconds:
-# Production logs measured a successful canonical initialization at 4550 ms.
+# Production can explicitly opt in to ten seconds for safe reads; Preview
+# retains five seconds. Successful production initialization reached 7917 ms.
 # The configured default and other runtimes retain their established budgets.
 # A timeout still returns the explicit receipt before canonical dispatch.
 _DEFAULT_SAFE_REQUEST_WAIT_SECONDS = 2.0
 _MAX_SAFE_REQUEST_WAIT_SECONDS = 4.0
 _MAX_PREVIEW_SAFE_REQUEST_WAIT_SECONDS = 5.0
-_MAX_PRODUCTION_SAFE_REQUEST_WAIT_SECONDS = 5.0
+_MAX_PRODUCTION_SAFE_REQUEST_WAIT_SECONDS = 10.0
+_MAX_PRODUCTION_LOGIN_WAIT_SECONDS = 5.0
 # Mutations retain fail-fast behavior unless Preview explicitly opts into a
 # bounded wait before the first and only canonical application dispatch.
 _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS = 0.0
@@ -161,7 +162,7 @@ class LazyApplication:
             max(0.0, float(safe_request_wait_seconds)),
         )
         self._production_login_wait_seconds = (
-            self._safe_request_wait_seconds
+            min(self._safe_request_wait_seconds, _MAX_PRODUCTION_LOGIN_WAIT_SECONDS)
             if str(os.getenv("VERCEL_ENV") or "").strip().lower() == "production"
             else 0.0
         )
