@@ -129,7 +129,7 @@ def _get_or_create_connection(tenant: TenantProfile, config: Mapping[str, Any]) 
         tenant_id=tenant.id,
         provider="twilio",
         channel="whatsapp",
-    ).all()
+    ).execution_options(autoflush=False).populate_existing().all()
     managed_connections = [
         candidate
         for candidate in tenant_connections
@@ -202,8 +202,13 @@ def _get_or_create_connection(tenant: TenantProfile, config: Mapping[str, Any]) 
         provider="twilio",
         channel="whatsapp",
         environment=environment,
-    ).first()
+    ).with_for_update().execution_options(autoflush=False).populate_existing().first()
     if connection:
+        marker = connection.config.get(MANAGED_CONNECTION_MARKER) if isinstance(connection.config, dict) else None
+        if isinstance(marker, dict) and marker.get("enabled") is True:
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_marker_changed_retry_required"
+            )
         return connection
     connection = ProviderConnection(
         tenant_id=tenant.id,
@@ -251,6 +256,16 @@ def sync_twilio_provider_records(
         else None
     )
     is_managed = isinstance(management, dict) and management.get("enabled") is True
+    from services.tenant_provider_credentials import PRIVATE_CONFIG_KEY, VAULT_REF
+    private_config = connection.config if isinstance(connection.config, dict) else {}
+    has_vault = PRIVATE_CONFIG_KEY in private_config or _clean(connection.credentials_ref).startswith("vault:")
+    if has_vault and (
+        is_managed
+        or PRIVATE_CONFIG_KEY not in private_config
+        or connection.credentials_ref != VAULT_REF
+        or _clean(state.get("twilio_account_sid")) != _clean(connection.external_account_id)
+    ):
+        raise ManagedProviderConnectionStateError("provider_credential_binding_drift")
     derived_connection_status = _connection_status(state)
     managed_online = is_managed and is_sender_ready_status(connection.status)
     managed_sender = None
@@ -335,7 +350,7 @@ def sync_twilio_provider_records(
     connection.display_name = state.get("display_name") or getattr(tenant, "nombre", None)
     connection.external_account_id = (
         connection.external_account_id
-        if is_managed
+        if is_managed or has_vault
         else state.get("twilio_account_sid")
     )
     connection.external_business_id = state.get("waba_id")
@@ -344,7 +359,7 @@ def sync_twilio_provider_records(
     connection.partner_solution_id = _clean(app_config.get("TWILIO_PARTNER_SOLUTION_ID")) or None
     connection.credentials_ref = (
         connection.credentials_ref
-        if is_managed
+        if is_managed or has_vault
         else (
             "env:twilio_parent"
             if _clean(app_config.get("TWILIO_ACCOUNT_SID"))
@@ -363,6 +378,8 @@ def sync_twilio_provider_records(
         "status_callback_url": callbacks["status_callback_url"],
         "live_enabled": _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED"),
     }
+    if has_vault:
+        next_connection_config = {**private_config, **next_connection_config}
     connection.config = connection.config if is_managed else next_connection_config
     connection.health = {
         "last_step": state.get("last_step"),
@@ -511,6 +528,7 @@ def record_messaging_event(
 def _serialize_connection(connection: ProviderConnection | None) -> dict[str, Any] | None:
     if not connection:
         return None
+    from services.tenant_provider_credentials import public_provider_config
     return {
         "id": connection.id,
         "provider": connection.provider,
@@ -525,7 +543,7 @@ def _serialize_connection(connection: ProviderConnection | None) -> dict[str, An
         "partner_solution_id": connection.partner_solution_id,
         "capabilities": connection.capabilities or {},
         "health": connection.health or {},
-        "config": connection.config or {},
+        "config": public_provider_config(connection.config or {}),
         "updated_at": connection.updated_at.isoformat() if connection.updated_at else None,
     }
 

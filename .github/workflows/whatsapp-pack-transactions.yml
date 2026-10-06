@@ -32,6 +32,12 @@ name: WhatsApp draft transactions
       - services/whatsapp_pack_transactions.py
       - services/whatsapp_self_service.py
       - services/twilio_tech_provider.py
+      - services/provider_platform.py
+      - services/tenant_provider_credentials.py
+      - services/tenant_whatsapp_onboarding.py
+      - config/__init__.py
+      - tests/test_tenant_provider_credentials.py
+      - tests/twilio_credential_storage_contract.py
       - tests/test_whatsapp_self_service.py
       - services/message_templates.py
       - models.py
@@ -78,6 +84,17 @@ jobs:
   full-app-http:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    services:
+      vault-postgres:
+        image: postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+        env:
+          POSTGRES_DB: vaultcredregression
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - '127.0.0.1:5432:5432'
+        options: >-
+          --health-cmd "pg_isready -U postgres -d vaultcredregression"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -95,3 +112,16 @@ jobs:
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
           import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_organization_type_presentation.py',
           'tests/super_admin_plan_membership_http.py']))"
+      - name: Verify isolated tenant vault, atomic audit and stale writers on SQLite
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import pytest; raise SystemExit(pytest.main(['--noconftest', '-q',
+          'tests/test_tenant_provider_credentials.py']))"
+      - name: Verify the same vault contracts and real concurrent writers on PostgreSQL
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import os; os.environ['CHATBOC_VAULT_TEST_POSTGRES']='1';
+          import pytest; raise SystemExit(pytest.main(['--noconftest', '-q',
+          'tests/test_tenant_provider_credentials.py']))"
+      - name: Verify safe activation contract without provider calls
+        run: python -m tests.twilio_credential_storage_contract
