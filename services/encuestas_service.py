@@ -22,7 +22,7 @@ from urllib.parse import quote_plus, urlsplit
 
 from flask import current_app, g, has_request_context, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from sqlalchemy import func, or_, inspect, text
+from sqlalchemy import func, or_, inspect, text, tuple_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload, load_only, selectinload
 
@@ -51,6 +51,7 @@ from models import (
     TenantProfile,
     User,
 )
+from models_survey_jurisdiction import SurveyContentReceipt
 from services.user_service import get_user_profile_identity
 from services.survey_refs import is_canonical_survey_logical_ref
 from services.survey_response_provenance import (
@@ -9114,6 +9115,7 @@ def build_survey_availability_contract(
     metricas: Optional[Mapping[str, Any]] = None,
     governed_release: bool = False,
     admin_scope: Optional[Mapping[str, Any]] = None,
+    content_receipt_rows: Optional[Sequence[SurveyContentReceipt]] = None,
 ) -> Dict[str, Any]:
     """Read the same public guard and operational veto for every admin surface."""
     from services.survey_jurisdiction import (
@@ -9127,7 +9129,9 @@ def build_survey_availability_contract(
     evaluated = None
     evidence_gate = None
     if tenant_requires_government_survey_evidence(tenant):
-        evaluated = jurisdiction_contract(encuesta)
+        evaluated = jurisdiction_contract(
+            encuesta, receipt_rows=content_receipt_rows
+        )
         evidence_gate = evaluated.get("government_evidence_gate")
     if evaluated is not None:
         publicly_visible = bool(
@@ -9135,11 +9139,15 @@ def build_survey_availability_contract(
             or (evaluated["configuration_valid"] and evaluated["ready"])
         )
     else:
-        publicly_visible = survey_is_publicly_visible(encuesta)
+        publicly_visible = survey_is_publicly_visible(
+            encuesta, receipt_rows=content_receipt_rows
+        )
     reason = None
     next_action = None
     if not publicly_visible:
-        evaluated = evaluated or jurisdiction_contract(encuesta)
+        evaluated = evaluated or jurisdiction_contract(
+            encuesta, receipt_rows=content_receipt_rows
+        )
         reason = (
             evaluated.get("reason_code")
             if evaluated.get("configuration_valid")
@@ -9184,6 +9192,7 @@ def build_admin_list_payload(
     stats_map = _collect_admin_panel_stats(encuestas)
     geo_points = _collect_recent_geo_points(encuestas)
     governance_map = _bulk_survey_governance_contract_map(encuestas)
+    content_receipts_map = _bulk_survey_content_receipt_map(encuestas)
     encuestas_payload: List[Dict[str, Any]] = []
     estados = Counter()
     total_respuestas = 0
@@ -9292,6 +9301,9 @@ def build_admin_list_payload(
                 and data["governance"].get("release_required") is True
             ),
             admin_scope=admin_scope,
+            content_receipt_rows=content_receipts_map[
+                (int(encuesta.tenant_id), int(encuesta.id))
+            ],
         )
         data["public_access"] = availability["public_access"]
         lifecycle = availability["admin_lifecycle"]
@@ -9784,6 +9796,38 @@ def _legacy_survey_governance_contract() -> Dict[str, Any]:
         "regulated_election_certified": False,
         "result_certified": False,
     }
+
+
+def _bulk_survey_content_receipt_map(
+    encuestas: Sequence[EncEncuesta],
+) -> Dict[Tuple[int, int], List[SurveyContentReceipt]]:
+    """Load the exact receipt chains for a bounded page in one scoped query."""
+
+    keys = {
+        (int(encuesta.tenant_id), int(encuesta.id))
+        for encuesta in encuestas
+        if encuesta.id is not None and encuesta.tenant_id is not None
+    }
+    rows_by_key: Dict[Tuple[int, int], List[SurveyContentReceipt]] = {
+        key: [] for key in keys
+    }
+    if not keys:
+        return rows_by_key
+    rows = (
+        SurveyContentReceipt.query.filter(
+            tuple_(SurveyContentReceipt.tenant_id, SurveyContentReceipt.survey_id)
+            .in_(sorted(keys))
+        )
+        .order_by(
+            SurveyContentReceipt.tenant_id.asc(),
+            SurveyContentReceipt.survey_id.asc(),
+            SurveyContentReceipt.id.asc(),
+        )
+        .all()
+    )
+    for row in rows:
+        rows_by_key[(int(row.tenant_id), int(row.survey_id))].append(row)
+    return rows_by_key
 
 
 def _bulk_survey_governance_contract_map(

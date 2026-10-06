@@ -266,6 +266,8 @@ def test_list_query_count_is_constant_and_governance_integrity_is_detail_only(
     assert sum(" from enc_pregunta " in query for query in many_page_queries) == 1
     assert sum(" from enc_opcion " in query for query in many_page_queries) == 1
     assert sum(" from survey_governance_release " in query for query in many_page_queries) == 1
+    assert sum(" from survey_content_receipt " in query for query in one_page_queries) == 1
+    assert sum(" from survey_content_receipt " in query for query in many_page_queries) == 1
     assert all(item["governance"]["summary_only"] is True for item in many_payload["encuestas"])
 
 
