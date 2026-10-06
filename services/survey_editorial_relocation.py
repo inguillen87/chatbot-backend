@@ -295,11 +295,10 @@ def _clone(source, target, actor, operation_id):
 def _lock_tenants(identifiers):
     """Serialize operation keys without blocking a responder's tenant FK.
 
-    A PostgreSQL UPDATE of the tenant primary key takes an exclusive row lock.
-    A responder already holding the survey lock must still insert its receipt
-    (tenant FK KEY SHARE), while archival needs that same survey: that lock
-    inversion can deadlock. Advisory locks serialize our tenant key namespace;
-    FOR SHARE keeps license/tenant state stable and permits the receipt FK.
+    Advisory locks serialize our tenant key namespace. FOR SHARE keeps the
+    license/tenant state stable and permits the responder receipt's FK check.
+    The PostgreSQL comparison also verifies preservation with the previous
+    no-op UPDATE; it does not reproduce a deadlock for that statement.
     SQLite retains its existing real database writer lock.
     """
     dialect = db.session.get_bind().dialect.name
