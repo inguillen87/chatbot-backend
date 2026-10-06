@@ -253,7 +253,7 @@ def test_conflicting_persisted_owner_and_direct_tenant_fail_closed(h):
 def test_no_bearer_forged_cookie_userid_and_retired_session_no_admission(h):
     run = _create(h)["run_id"]
     path = _public(h.tenant.slug, run) + "/respond"
-    anonymous = h.client.post(path, json={"submission_id": "fake-id-0001", "option_id": "yes"}, headers={"Idempotency-Key": "fake-id-0001", "X-Anon-Id": "claimed"})
+    anonymous = h.app.test_client().post(path, json={"submission_id": "fake-id-0001", "option_id": "yes"}, headers={"Idempotency-Key": "fake-id-0001", "X-Anon-Id": "claimed"})
     assert anonymous.status_code == 401
     AuthSession.query.filter_by(actor_id=h.actor.id).update({"revoked_at": service._now()})
     db.session.commit()

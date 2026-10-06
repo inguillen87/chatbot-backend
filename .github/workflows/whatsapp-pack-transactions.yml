@@ -54,6 +54,7 @@ name: WhatsApp draft transactions
       - services/public_survey_intake.py
       - services/operational_intelligence.py
       - tests/test_production_survey_rehearsal.py
+      - tests/test_survey_rehearsal_session_transport.py
       - tests/test_survey_editorial_relocation.py
       - tests/test_survey_participation_assurance.py
       - tests/test_survey_content_receipt_bulk.py
@@ -150,6 +151,7 @@ jobs:
           'tests/test_survey_editorial_relocation.py',
           'tests/test_survey_participation_assurance.py',
           'tests/test_production_survey_rehearsal.py',
+          'tests/test_survey_rehearsal_session_transport.py',
           'tests/test_survey_content_receipt_bulk.py',
           'tests/test_survey_list_pagination_scale.py',
           '--junitxml=.qa-artifacts/survey-r18/new-suites.xml']))"

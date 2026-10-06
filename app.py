@@ -104,7 +104,18 @@ _PUBLIC_CORS_EXACT_PATHS = {
 _PUBLIC_WIDGET_AUTH_PREFIXES = ("/auth/widget", "/api/auth/widget")
 
 
-def _is_public_cross_origin_path(path: str) -> bool:
+def _is_authenticated_rehearsal_path(path: str, method: str | None) -> bool:
+    """Only the two account-authenticated technical rehearsal endpoints."""
+    match = re.fullmatch(
+        r"/api/v2/public/tenants/[a-z0-9][a-z0-9-]{0,99}/survey-rehearsals/"
+        r"rehearsal_[a-f0-9]{32}/respond(?P<status>/status)?", str(path or "")
+    )
+    return bool(match and method in ({"GET", "OPTIONS"} if match.group("status") else {"POST", "OPTIONS"}))
+
+
+def _is_public_cross_origin_path(path: str, method: str | None = None) -> bool:
+    if _is_authenticated_rehearsal_path(path, method):
+        return False
     normalized = str(path or "").rstrip("/") or "/"
     if normalized in _PUBLIC_CORS_EXACT_PATHS:
         return True
@@ -675,7 +686,7 @@ def create_app(config_class=Config):
             if not origin:
                 return resp
 
-            if _is_public_cross_origin_path(request.path):
+            if _is_public_cross_origin_path(request.path, request.method):
                 _clear_cors_headers(resp)
                 resp.headers.setdefault("X-Request-Id", _request_id())
                 _set_single_header(resp, "Access-Control-Allow-Origin", origin)
@@ -685,7 +696,12 @@ def create_app(config_class=Config):
                 _set_cors_vary(resp)
                 return resp
 
-            if not _credentialed_origin_is_allowed(origin):
+            if (not _credentialed_origin_is_allowed(origin)
+                or _is_authenticated_rehearsal_path(request.path, request.method)
+                and not is_same_site_credential_origin(
+                    origin, backend_url=app.config.get("BACKEND_URL"),
+                    public_root_domain=app.config.get("PUBLIC_ROOT_DOMAIN"),
+                )):
                 _clear_cors_headers(resp)
                 return resp
 
