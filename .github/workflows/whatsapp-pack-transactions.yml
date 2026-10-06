@@ -42,6 +42,22 @@ name: WhatsApp draft transactions
       - services/message_templates.py
       - models.py
       - tests/test_whatsapp_pack_transactions.py
+      - routes/v2/survey_rehearsals.py
+      - routes/v2/__init__.py
+      - routes/v2/surveys.py
+      - routes/encuestas_admin.py
+      - services/production_survey_rehearsal.py
+      - services/survey_editorial_relocation.py
+      - services/survey_participation_assurance.py
+      - services/survey_jurisdiction.py
+      - services/encuestas_service.py
+      - services/public_survey_intake.py
+      - services/operational_intelligence.py
+      - tests/test_production_survey_rehearsal.py
+      - tests/test_survey_editorial_relocation.py
+      - tests/test_survey_participation_assurance.py
+      - tests/test_survey_content_receipt_bulk.py
+      - tests/test_survey_list_pagination_scale.py
       - .github/workflows/whatsapp-pack-transactions.yml
 permissions:
   contents: read
@@ -125,3 +141,23 @@ jobs:
           'tests/test_tenant_provider_credentials.py']))"
       - name: Verify safe activation contract without provider calls
         run: python -m tests.twilio_credential_storage_contract
+      - name: Verify survey editorial relocation, participation assurance and production rehearsal
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import os; os.environ['CHATBOC_REHEARSAL_TEST_POSTGRES']='1';
+          from pathlib import Path; Path('.qa-artifacts/survey-r18').mkdir(parents=True, exist_ok=True);
+          import pytest; raise SystemExit(pytest.main(['-q',
+          'tests/test_survey_editorial_relocation.py',
+          'tests/test_survey_participation_assurance.py',
+          'tests/test_production_survey_rehearsal.py',
+          'tests/test_survey_content_receipt_bulk.py',
+          'tests/test_survey_list_pagination_scale.py',
+          '--junitxml=.qa-artifacts/survey-r18/new-suites.xml']))"
+      - name: Preserve the separate survey R18 JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: survey-r18-new-suites-evidence
+          path: .qa-artifacts/survey-r18/new-suites.xml
+          if-no-files-found: error
+          retention-days: 14
