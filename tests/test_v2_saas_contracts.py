@@ -16,6 +16,7 @@ from config import Config
 from services.auth_session_lifecycle import issue_token
 from models import (
     AnalyticsEventV2,
+    AuditEvent,
     ArchivoAdjunto,
     CatalogoItem,
     CategoriaTicket,
@@ -1587,11 +1588,11 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["automation"]["env"]["ready"])
         self.assertEqual(payload["frontend_contract"]["render_as"], "twilio_tech_provider_onboarding")
         self.assertFalse(payload["frontend_contract"]["show_twilio_brand"])
-        self.assertEqual(payload["frontend_contract"]["primary_action"], "prepare_activation")
+        self.assertEqual(payload["frontend_contract"]["primary_action"], "wait_for_platform_activation")
         self.assertIn("operator_checklist", payload["frontend_contract"]["sections"])
         self.assertEqual(payload["setup_health"]["contract_version"], "twilio.tech_provider.setup_health.v1")
         self.assertEqual(payload["setup_health"]["status"], "action_required")
-        self.assertEqual(payload["setup_health"]["recommended_next_action"], "prepare_activation")
+        self.assertEqual(payload["setup_health"]["recommended_next_action"], "wait_for_platform_activation")
         self.assertGreater(payload["setup_health"]["activation_score"], 0)
         self.assertTrue(any(item["id"] == "platform_env" and item["done"] for item in payload["operator_checklist"]))
         self.assertTrue(any(item["id"] == "embedded_signup" for item in payload["operator_checklist"]))
@@ -1602,6 +1603,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(any(item["id"] == "template_registry" and item["execution_mode"] == "dry_run_first" for item in payload["smoke_playbook"]["tests"]))
         self.assertTrue(any(item["id"] == "live_whatsapp_message" and item["confirmation_required"] for item in payload["smoke_playbook"]["tests"]))
         live_smoke = next(item for item in payload["smoke_playbook"]["tests"] if item["id"] == "live_whatsapp_message")
+        self.assertFalse(live_smoke["can_execute"])
+        self.assertEqual(live_smoke["reason_code"], "execution_not_implemented")
         self.assertEqual(
             live_smoke["endpoint"],
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/live_whatsapp_message",
@@ -1733,6 +1736,7 @@ class V2SaasContractsTest(unittest.TestCase):
             db.session.expire_all()
             return {
                 "tenant_config": copy.deepcopy(self.tenant.configuracion),
+                "audit_rows": AuditEvent.query.count(),
                 "tenant_sender": self.tenant.whatsapp_sender_id,
                 "rows": {
                     model.__name__: model.query.filter_by(tenant_id=self.tenant.id).count()
@@ -1776,6 +1780,15 @@ class V2SaasContractsTest(unittest.TestCase):
 
     def test_live_whatsapp_smoke_true_confirmation_remains_unimplemented_without_claiming_send(self):
         self._configure_tenant_whatsapp_sender(suffix="SMOKE_NO_SEND")
+        declared = self.client.get(
+            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(declared.status_code, 200)
+        live_smoke = next(item for item in declared.get_json()["smoke_playbook"]["tests"]
+                          if item["id"] == "live_whatsapp_message")
+        self.assertFalse(live_smoke["can_execute"])
+        self.assertEqual(live_smoke["reason_code"], "execution_not_implemented")
         response = self._post_live_whatsapp_smoke_without_side_effects(
             {"confirm_real_message": True}
         )
@@ -1786,6 +1799,114 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["next_action"], "not_implemented_yet")
         self.assertEqual(payload["danger_level"], "real_message")
         self.assertFalse(payload["sends_real_message"])
+
+    def _production_channel_smoke_fixture(self):
+        sender = self._configure_tenant_whatsapp_sender(suffix="R15_STATUS_GUARD")
+        state = dict(self.tenant.configuracion["twilio_tech_provider"])
+        state.update(messaging_service_sid="MG-synthetic-service", sender_sid="XE-synthetic-sender",
+                     sender_id=sender.sender_id, requested_phone_number=sender.phone_number,
+                     sender_status="ONLINE", status="sender_online", waba_id="123456789",
+                     phone_number_id="987654321", voice_twiml_app_sid="AP-synthetic-voice", templates_ready=True)
+        self.tenant.configuracion = {"twilio_tech_provider": state}
+        self.app.config.update(TWILIO_ACCOUNT_SID="synthetic-parent", TWILIO_AUTH_TOKEN="synthetic-parent-token",
+                               TWILIO_META_APP_ID="synthetic-meta", TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="synthetic-meta-config",
+                               TWILIO_TECH_PROVIDER_LIVE_ENABLED=True)
+        db.session.commit()
+        return state, db.session.get(ProviderConnection, sender.provider_connection_id)
+
+    def _post_production_channel_without_mutations(self, *, result=None):
+        headers = self._auth(self.owner)
+        def snapshot():
+            db.session.expire_all()
+            return {
+                "tenant_config": copy.deepcopy(self.tenant.configuracion),
+                "audit_rows": AuditEvent.query.count(),
+                "rows": {model.__name__: model.query.filter_by(tenant_id=self.tenant.id).count()
+                         for model in (ProviderConnection, ProviderSender, MessagingEventLedger, Notification, DomainEffectOutbox)},
+                "connections": [
+                    (row.id, copy.deepcopy(row.config), row.credentials_ref, row.external_account_id, row.status)
+                    for row in ProviderConnection.query.filter_by(tenant_id=self.tenant.id).order_by(ProviderConnection.id).all()
+                ],
+            }
+        before = snapshot()
+        with patch("routes.v2.saas.poll_whatsapp_sender_status", return_value=result) as poll, patch(
+            "routes.v2.saas.merge_twilio_state"
+        ) as merge, patch("routes.v2.saas.sync_twilio_provider_records") as sync, patch(
+            "routes.v2.saas.refresh_tenant_whatsapp_onboarding"
+        ) as refresh, patch("routes.v2.saas.build_channel_activation_payload") as activation, patch(
+            "routes.v2.saas.db.session.commit"
+        ) as commit, patch("services.twilio_tech_provider.requests.get") as request_get, patch(
+            "services.twilio_tech_provider.requests.post"
+        ) as request_post:
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/production_channel",
+                headers=headers, json={},
+            )
+        for mutation in (merge, sync, refresh, activation, commit, request_get, request_post):
+            mutation.assert_not_called()
+        self.assertEqual(snapshot(), before)
+        return response, poll
+
+    def test_production_channel_smoke_blocks_owned_vault_before_poll_and_mutations(self):
+        state, connection = self._production_channel_smoke_fixture()
+        # A vault reference alone is deliberately fail-closed, including a
+        # malformed/missing envelope; this test never opens a credential.
+        connection.credentials_ref = "vault:twilio:auth_token:v1"
+        db.session.commit()
+        response, poll = self._post_production_channel_without_mutations()
+        poll.assert_not_called()
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["details"]["reason_code"], "twilio_vault_onboarding_integration_required")
+
+    def test_production_channel_smoke_blocks_disabled_live_and_missing_token_before_poll(self):
+        state, _connection = self._production_channel_smoke_fixture()
+        token_ref = state["twilio_subaccount_token_ref"]
+        for unavailable in ("live-disabled", "token-absent"):
+            with self.subTest(unavailable=unavailable):
+                self.app.config["TWILIO_TECH_PROVIDER_LIVE_ENABLED"] = unavailable != "live-disabled"
+                if unavailable == "token-absent":
+                    self.app.config.pop(token_ref)
+                response, poll = self._post_production_channel_without_mutations()
+                poll.assert_not_called()
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.get_json()["status"], "blocked")
+                self.assertFalse(response.get_json()["ok"])
+
+    def test_production_channel_smoke_cannot_pass_from_cached_online_after_executor_failure_or_missing_status(self):
+        self._production_channel_smoke_fixture()
+        for result in (
+            {"ok": False, "mode": "blocked", "reason_code": "twilio_sender_status_failed", "state_patch": {}},
+            {"ok": True, "mode": "dry_run", "state_patch": {}},
+            {"ok": True, "mode": "live", "state_patch": {}},
+            {"ok": "true", "mode": "live", "state_patch": {"sender_status": "ONLINE"}},
+        ):
+            with self.subTest(result=result):
+                response, poll = self._post_production_channel_without_mutations(result=result)
+                poll.assert_called_once()
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.get_json()["status"], "blocked")
+                self.assertFalse(response.get_json()["ok"])
+
+    def test_production_channel_smoke_supported_environment_uses_fresh_status_and_preserves_no_send_claim(self):
+        state, _connection = self._production_channel_smoke_fixture()
+        with patch("services.twilio_tech_provider.requests.get", return_value=_FakeTwilioResponse({
+            "sid": state["sender_sid"], "status": "PENDING", "sender_id": state["sender_id"],
+        })) as provider_get:
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/production_channel",
+                headers=self._auth(self.owner), json={},
+            )
+        provider_get.assert_called_once()
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["status"], "warning")
+        self.assertEqual(payload["details"]["sender_status"], "PENDING")
+        self.assertFalse(payload["sends_real_message"])
+        self.assertEqual(db.session.get(TenantProfile, self.tenant.id).configuracion["twilio_tech_provider"]["sender_status"], "PENDING")
 
     def test_twilio_tech_provider_provision_dry_run_preserves_connection_state_without_live_api(self):
         self.app.config.update(
@@ -1820,11 +1941,11 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(any(step["id"] == "embedded_signup" for step in payload["steps"]))
         self.assertEqual(payload["onboarding"]["contract_version"], "tenant.whatsapp_onboarding.v1")
         self.assertEqual(payload["onboarding"]["provider"], "twilio_tech_provider")
-        self.assertEqual(payload["onboarding"]["status"], "plan_ready")
+        self.assertEqual(payload["onboarding"]["status"], "pending_platform_activation")
         self.assertEqual(payload["channel_activation"]["contract_version"], "tenant.channel_activation.v1")
         refreshed = db.session.get(TenantProfile, self.tenant.id)
         self.assertEqual(refreshed.configuracion.get("twilio_tech_provider", {}), initial_state)
-        self.assertEqual(refreshed.configuracion["whatsapp_onboarding"]["status"], "plan_ready")
+        self.assertEqual(refreshed.configuracion["whatsapp_onboarding"]["status"], "pending_platform_activation")
         post_request.assert_not_called()
         put_request.assert_not_called()
 

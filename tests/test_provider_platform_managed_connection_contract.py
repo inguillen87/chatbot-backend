@@ -142,3 +142,32 @@ def test_managed_online_sender_drift_fails_before_any_authoritative_field_write(
     assert sender.sender_id == f"whatsapp:{PHONE}"
     assert sender.sender_sid == SENDER_SID
     assert sender.messaging_service_sid == SERVICE_SID
+
+
+def test_managed_status_preserves_authority_without_claiming_pilot_or_live_smoke(client, owner_user, monkeypatch):
+    tenant, connection, sender = _seed(owner_user)
+    state = _state(waba_id="123456789", phone_number_id="987654321", requested_phone_number=PHONE,
+                   voice_twiml_app_sid="AP-synthetic", templates_ready=True)
+    tenant.configuracion = {"twilio_tech_provider": state}
+    from models import MessageTemplateRegistry
+    db.session.add(MessageTemplateRegistry(tenant_id=tenant.id, provider="twilio", channel="whatsapp",
+                                          name="synthetic-managed-menu", status="approved"))
+    db.session.commit()
+    before = (copy.deepcopy(connection.config), connection.credentials_ref, connection.external_account_id,
+              connection.status, sender.phone_number, sender.sender_id, sender.sender_sid,
+              sender.messaging_service_sid, sender.status, sender.webhook_url, sender.status_callback_url)
+    # SQLite tests the managed projection and immutable fields. The actual
+    # PostgreSQL SERIALIZABLE lookup is covered separately, never claimed here.
+    monkeypatch.setattr(provider_platform, "_get_or_create_connection", lambda *_args, **_kwargs: connection)
+    config = {**_config(), "TWILIO_ACCOUNT_SID": "synthetic-parent", "TWILIO_AUTH_TOKEN": "synthetic-parent-token",
+              "TWILIO_META_APP_ID": "synthetic-meta", "TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID": "synthetic-config",
+              TOKEN_ENV: "synthetic-managed-token"}
+    status = provider_platform.build_whatsapp_provider_status(tenant, config)
+    assert status["next_action"] == "await_live_test_support"
+    assert status["operational_readiness"]["delivery_accepted"] is False
+    assert status["operation_availability"]["operations"]["poll_sender_status"]["can_execute"] is True
+    assert status["operation_availability"]["operations"]["live_whatsapp_message"]["can_execute"] is False
+    after = (connection.config, connection.credentials_ref, connection.external_account_id,
+             connection.status, sender.phone_number, sender.sender_id, sender.sender_sid,
+             sender.messaging_service_sid, sender.status, sender.webhook_url, sender.status_callback_url)
+    assert after == before

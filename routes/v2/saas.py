@@ -3135,7 +3135,27 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
         )
 
     if normalized_test == "production_channel":
+        def blocked_channel_result(reason_code, *, provider_ok=False):
+            return _json_response(
+                _whatsapp_smoke_execution_result(
+                    test_id=normalized_test, ok=False, label="Canal productivo",
+                    execution_mode="status_poll", danger_level="safe", status="blocked",
+                    next_action="wait_for_platform_activation",
+                    details={"reason_code": reason_code, "provider_ok": provider_ok,
+                             "message": "No se pudo comprobar el canal. La configuración registrada se conserva."},
+                ),
+                409,
+            )
+
+        if playbook_item.get("can_execute") is not True:
+            return blocked_channel_result(playbook_item.get("reason_code") or "sender_status_unavailable")
         result = poll_whatsapp_sender_status(tenant, current_app.config)
+        state_patch = result.get("state_patch") if isinstance(result.get("state_patch"), Mapping) else {}
+        observed_sender_status = state_patch.get("sender_status")
+        if result.get("ok") is not True or result.get("mode") != "live":
+            return blocked_channel_result(result.get("reason_code") or "sender_status_not_verified")
+        if not isinstance(observed_sender_status, str) or not observed_sender_status.strip():
+            return blocked_channel_result("sender_status_response_unverified", provider_ok=True)
         merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
         sync_twilio_provider_records(
             tenant,
@@ -3153,7 +3173,7 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
         channel_activation = build_channel_activation_payload(tenant)
         flag_modified(tenant, "configuracion")
         db.session.commit()
-        sender_status = str(merged_state.get("sender_status") or "").upper()
+        sender_status = observed_sender_status.strip().upper()
         ok = sender_status in {"ONLINE", "APPROVED", "CONNECTED", "ACTIVE"}
         return _json_response(
             _whatsapp_smoke_execution_result(
@@ -3170,7 +3190,7 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
                     "onboarding": onboarding,
                     "channel_activation": channel_activation,
                 },
-                next_action="send_whatsapp_smoke_test" if ok else "wait_for_meta_approval_or_poll_again",
+                next_action="await_live_test_support" if ok else "wait_for_meta_approval_or_poll_again",
                 status="pass" if ok else "warning",
             )
         )

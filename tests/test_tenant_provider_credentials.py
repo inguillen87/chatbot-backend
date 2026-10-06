@@ -26,7 +26,7 @@ from flask import Flask, jsonify
 from sqlalchemy import event, null, select, text, update
 from sqlalchemy.orm import Session
 
-from models import AuditEvent, ProviderConnection, ProviderSender, TenantProfile, User, db
+from models import AuditEvent, MessageTemplateRegistry, ProviderConnection, ProviderSender, TenantProfile, User, db
 from services import provider_platform
 from services import tenant_provider_credentials as vault
 from services import twilio_tech_provider as runtime
@@ -602,6 +602,254 @@ def test_foreign_tenant_vault_does_not_block_unrelated_legacy_onboarding(credent
     assert result.get("reason_code") != "twilio_vault_onboarding_integration_required"
     assert vault.PRIVATE_CONFIG_KEY not in rows.connection.config
     assert ProviderSender.query.count() == 0
+
+
+def _complete_whatsapp_state(rows, *, sender_status="ONLINE"):
+    state = {
+        "twilio_account_sid": ACCOUNT, "messaging_service_sid": "MG-synthetic-service",
+        "sender_sid": "XE-synthetic-sender", "sender_id": "whatsapp:+15555550123",
+        "requested_phone_number": "+15555550123", "sender_status": sender_status,
+        "status": "sender_online", "waba_id": "123456789", "phone_number_id": "987654321",
+        "voice_twiml_app_sid": "AP-synthetic-voice", "templates_ready": True,
+        "twilio_subaccount_token_ref": "R15_SYNTHETIC_TENANT_TOKEN",
+    }
+    rows.tenant.configuracion = {"twilio_tech_provider": state}
+    db.session.add(MessageTemplateRegistry(tenant_id=rows.tenant_id, provider="twilio",
+                                          channel="whatsapp", name="r15-synthetic-menu", status="approved"))
+    db.session.commit()
+    return state
+
+
+def _complete_whatsapp_config(rows, *, store_ready=True, live=True):
+    config = {
+        **rows.app.config, "TWILIO_ACCOUNT_SID": "synthetic-parent",
+        "TWILIO_AUTH_TOKEN": "synthetic-parent-token", "TWILIO_META_APP_ID": "synthetic-meta",
+        "TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID": "synthetic-signup",
+        "TWILIO_TECH_PROVIDER_LIVE_ENABLED": live,
+        "R15_SYNTHETIC_TENANT_TOKEN": "synthetic-tenant-token",
+        "PUBLIC_API_BASE_URL": "https://candidate.example.test",
+    }
+    if not store_ready:
+        config.pop("TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID", None)
+        config.pop("TENANT_PROVIDER_CREDENTIAL_KEYRING", None)
+    return config
+
+
+@pytest.mark.parametrize("store_ready", [False, True], ids=["store-unavailable", "store-configured"])
+def test_complete_owned_vault_contract_matches_blocked_executors_without_pilot_claim(credential_db, monkeypatch, store_ready):
+    rows = credential_db
+    _store(rows); db.session.commit()
+    state = _complete_whatsapp_state(rows)
+    config = _complete_whatsapp_config(rows, store_ready=store_ready)
+    before = copy.deepcopy(tuple(_database_projection(rows.connection_id)))
+    envelope = copy.deepcopy(before[0][vault.PRIVATE_CONFIG_KEY])
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Readiness must not read env fallback or perform provider I/O for owned vault")
+    for name in ("_read_config_or_env", "_resolve_subaccount_auth_token", "_twilio_get_json", "_twilio_post_form", "_twilio_post_json"):
+        monkeypatch.setattr(runtime, name, forbidden)
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, config)
+    # This behavioral assertion is the causal R14 failure, before new-field checks.
+    assert tech["setup_health"]["status"] == "action_required"
+    assert tech["status"] == "needs_secure_activation"
+    assert tech["setup_health"]["recommended_next_action"] == "wait_for_platform_activation"
+    assert tech["frontend_contract"]["primary_action"] == "wait_for_platform_activation"
+    assert tech["automation"]["credential_storage"]["ready"] is store_ready
+    assert tech["automation"]["credential_storage"]["provisioning_ready"] is False
+    assert tech["state"]["twilio_account_sid"] == state["twilio_account_sid"]
+    assert tech["state"]["sender_sid"] == state["sender_sid"]
+    assert all(item["done"] for item in tech["operator_checklist"])
+    tests = {item["id"]: item for item in tech["smoke_playbook"]["tests"]}
+    assert tests["production_channel"]["can_execute"] is False
+    assert tests["live_whatsapp_message"]["can_execute"] is False
+    assert tests["live_whatsapp_message"]["reason_code"] == "execution_not_implemented"
+    assert all(tests[name]["can_execute"] is True for name in ("provider_status", "whatsapp_experience", "sandbox_message"))
+    for name, executor in (
+        ("register_sender", lambda: runtime.register_whatsapp_sender(rows.tenant, {}, config)),
+        ("poll_sender_status", lambda: runtime.poll_whatsapp_sender_status(rows.tenant, config)),
+        ("prepare_voice", lambda: runtime.provision_twilio_voice_application(rows.tenant, {}, config)),
+    ):
+        declared = tech["operation_availability"]["operations"][name]
+        executed = executor()
+        assert declared["can_execute"] is False
+        assert declared["reason_code"] == executed["reason_code"] == "twilio_vault_onboarding_integration_required"
+        assert executed["state_patch"] == {} and executed["provider_calls_performed"] is False
+    assert tuple(_database_projection(rows.connection_id)) == before
+    provider = provider_platform.build_whatsapp_provider_status(rows.tenant, config)
+    assert provider["next_action"] == provider["frontend_contract"]["primary_action"] == "wait_for_platform_activation"
+    assert provider["status"] == "needs_secure_activation"
+    assert provider["operation_availability"] == tech["operation_availability"]
+    assert provider["operational_readiness"]["delivery_accepted"] is False
+    body = json.dumps({"provider": provider, "tech": tech})
+    assert all(private not in body for private in (TOKEN, vault.PRIVATE_CONFIG_KEY, vault.VAULT_REF, envelope["nonce"], envelope["ciphertext"]))
+    assert _database_projection(rows.connection_id).config[vault.PRIVATE_CONFIG_KEY] == envelope
+    assert AuditEvent.query.count() == 1
+
+
+@pytest.mark.parametrize("expired_tenant", [False, True], ids=["loaded-tenant", "expired-tenant"])
+def test_availability_reads_committed_owned_vault_without_flushing_hidden_dirty_identity(credential_db, expired_tenant):
+    rows = credential_db
+    _store(rows); db.session.commit()
+    _complete_whatsapp_state(rows)
+    before = copy.deepcopy(tuple(_database_projection(rows.connection_id)))
+    assert rows.tenant.id == rows.tenant_id
+    if expired_tenant:
+        db.session.expire(rows.tenant)
+    rows.connection.config = {"stale_public_only": True}
+    rows.connection.credentials_ref = "env:stale"
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, _complete_whatsapp_config(rows))
+    assert tech["setup_health"]["status"] == "action_required"
+    assert tech["operation_availability"]["operations"]["poll_sender_status"]["reason_code"] == "twilio_vault_onboarding_integration_required"
+    assert tuple(_database_projection(rows.connection_id)) == before
+    db.session.rollback()
+
+
+@pytest.mark.parametrize("representation", ["json-null", "sql-null", "legacy-env", "managed-env", "foreign-vault"])
+def test_complete_legacy_and_managed_availability_preserves_supported_operations(credential_db, monkeypatch, representation):
+    rows = credential_db
+    state = _complete_whatsapp_state(rows)
+    if representation == "json-null":
+        rows.connection.config = None
+    elif representation == "sql-null":
+        db.session.execute(update(ProviderConnection).where(ProviderConnection.id == rows.connection_id)
+                           .values(config=null()).execution_options(synchronize_session=False, autoflush=False))
+    elif representation == "managed-env":
+        rows.connection.config = {MANAGED_CONNECTION_MARKER: {"enabled": True}}
+    elif representation == "foreign-vault":
+        owner = User(name="Foreign synthetic owner", email="r15-foreign@example.test", rol="admin", password_hash="synthetic")
+        db.session.add(owner); db.session.flush()
+        foreign = TenantProfile(slug="r15-foreign", nombre="Foreign", tipo="municipio", municipio_id=owner.id)
+        db.session.add(foreign); db.session.flush()
+        connection = ProviderConnection(tenant_id=foreign.id, provider="twilio", channel="whatsapp",
+                                        environment="production", external_account_id=OTHER_ACCOUNT, status="needs_setup")
+        db.session.add(connection); db.session.flush(); _install_envelope(connection)
+    db.session.commit()
+    before = copy.deepcopy(tuple(_database_projection(rows.connection_id)))
+    config = _complete_whatsapp_config(rows, store_ready=False)
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, config)
+    assert tech["setup_health"]["status"] == "configuration_complete"
+    assert tech["setup_health"]["recommended_next_action"] == "await_live_test_support"
+    assert tech["setup_health"]["blockers"] == []
+    declared = tech["operation_availability"]["operations"]
+    assert all(declared[name]["can_execute"] is True for name in ("register_sender", "poll_sender_status", "prepare_voice"))
+    assert declared["live_whatsapp_message"]["can_execute"] is False
+    assert declared["live_whatsapp_message"]["reason_code"] == "execution_not_implemented"
+    assert declared["create_subaccount"]["can_execute"] is False
+    # Compare the declared environment path with the existing executors using
+    # synthetic responses; this checks compatibility, never actual delivery.
+    calls = []
+    def response(**kwargs):
+        calls.append(kwargs["url"])
+        if "/Applications" in kwargs["url"]:
+            return {"sid": "AP-synthetic-voice"}
+        return {"sid": state["sender_sid"], "status": "ONLINE", "sender_id": state["sender_id"]}
+    for name in ("_twilio_post_form", "_twilio_post_json", "_twilio_get_json"):
+        monkeypatch.setattr(runtime, name, response)
+    assert runtime.register_whatsapp_sender(rows.tenant, {}, config)["ok"] is True
+    assert runtime.poll_whatsapp_sender_status(rows.tenant, config)["ok"] is True
+    assert runtime.provision_twilio_voice_application(rows.tenant, {}, config)["ok"] is True
+    assert len(calls) == 5
+    assert tuple(_database_projection(rows.connection_id)) == before
+    assert AuditEvent.query.count() == 0
+
+
+@pytest.mark.parametrize("sender_status", ["registered", "ready", "not_ready", "disconnected", "inactive"])
+def test_configuration_sender_presence_never_counts_as_online(credential_db, sender_status):
+    rows = credential_db
+    _complete_whatsapp_state(rows, sender_status=sender_status)
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, _complete_whatsapp_config(rows))
+    online = next(item for item in tech["operator_checklist"] if item["id"] == "sender_online")
+    assert online["done"] is False
+    assert tech["setup_health"]["status"] == "action_required"
+    assert tech["setup_health"]["recommended_next_action"] == "poll_sender_status"
+    assert next(item for item in tech["smoke_playbook"]["tests"] if item["id"] == "live_whatsapp_message")["can_execute"] is False
+
+
+@pytest.mark.parametrize("missing", ["R15_SYNTHETIC_TENANT_TOKEN", "sender_sid", "live-enabled"])
+def test_complete_configuration_does_not_advertise_unavailable_channel_poll(credential_db, missing):
+    rows = credential_db
+    state = _complete_whatsapp_state(rows)
+    config = _complete_whatsapp_config(rows)
+    if missing == "sender_sid":
+        rows.tenant.configuracion = {"twilio_tech_provider": {**state, "sender_sid": None}}
+        db.session.commit()
+    elif missing == "live-enabled":
+        config["TWILIO_TECH_PROVIDER_LIVE_ENABLED"] = False
+    else:
+        config.pop(missing)
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, config)
+    assert tech["setup_health"]["status"] == "action_required"
+    assert tech["operation_availability"]["operations"]["poll_sender_status"]["can_execute"] is False
+    assert next(item for item in tech["smoke_playbook"]["tests"] if item["id"] == "production_channel")["can_execute"] is False
+
+
+def test_complete_legacy_provider_status_requires_real_test_support_instead_of_pilot(credential_db):
+    rows = credential_db
+    _complete_whatsapp_state(rows)
+    status = provider_platform.build_whatsapp_provider_status(rows.tenant, _complete_whatsapp_config(rows))
+    assert all(item["ok"] for item in status["readiness_checks"])
+    assert status["next_action"] == "await_live_test_support"
+    assert status["frontend_contract"]["primary_action"] == "await_live_test_support"
+    assert status["operational_readiness"]["status"] == "configuration_complete"
+    assert status["operational_readiness"]["delivery_accepted"] is False
+    assert status["operation_availability"]["operations"]["live_whatsapp_message"]["can_execute"] is False
+
+
+@pytest.mark.parametrize("reported_ready", ["false", "true", 1])
+def test_template_readiness_requires_exact_true_even_with_complete_ids(credential_db, reported_ready):
+    rows = credential_db
+    state = _complete_whatsapp_state(rows)
+    rows.tenant.configuracion = {"twilio_tech_provider": {**state, "templates_ready": reported_ready}}
+    db.session.commit()
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, _complete_whatsapp_config(rows))
+    item = next(item for item in tech["operator_checklist"] if item["id"] == "templates_webviews")
+    assert item["done"] is False
+    assert tech["setup_health"]["status"] == "in_progress"
+    assert tech["setup_health"]["recommended_next_action"] == "review_templates_and_webviews"
+
+
+@pytest.mark.parametrize("field", ["requested_phone_number", "waba_id", "messaging_service_sid"])
+def test_registration_availability_matches_missing_or_whitespace_executor_prerequisites(credential_db, monkeypatch, field):
+    rows = credential_db
+    state = _complete_whatsapp_state(rows)
+    rows.tenant.configuracion = {"twilio_tech_provider": {**state, field: "   "}}
+    db.session.commit()
+    config = _complete_whatsapp_config(rows)
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, config)
+    assert tech["operation_availability"]["operations"]["register_sender"]["can_execute"] is False
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Missing prerequisite cannot call provider")
+    for name in ("_twilio_get_json", "_twilio_post_form", "_twilio_post_json"):
+        monkeypatch.setattr(runtime, name, forbidden)
+    executed = runtime.register_whatsapp_sender(rows.tenant, {}, config)
+    assert executed["ok"] is False
+    assert executed["reason_code"] == "sender_registration_prerequisites_missing"
+
+
+@pytest.mark.parametrize("sender_case", ["registered", "missing-sender"])
+@pytest.mark.parametrize("unavailable", ["live-disabled", "token-absent"])
+def test_blocked_registration_or_poll_never_recommended_by_either_status_contract(credential_db, sender_case, unavailable):
+    rows = credential_db
+    state = _complete_whatsapp_state(rows, sender_status="registered")
+    if sender_case == "missing-sender":
+        state = {**state, "sender_sid": None, "sender_id": None,
+                 "requested_phone_number": None, "sender_status": None}
+        rows.tenant.configuracion = {"twilio_tech_provider": state}
+        db.session.commit()
+    config = _complete_whatsapp_config(rows)
+    if unavailable == "live-disabled":
+        config["TWILIO_TECH_PROVIDER_LIVE_ENABLED"] = False
+    else:
+        config.pop("R15_SYNTHETIC_TENANT_TOKEN")
+    tech = runtime.build_twilio_tech_provider_contract(rows.tenant, config)
+    provider = provider_platform.build_whatsapp_provider_status(rows.tenant, config)
+    assert tech["setup_health"]["recommended_next_action"] == "wait_for_platform_activation"
+    assert tech["frontend_contract"]["primary_action"] == "wait_for_platform_activation"
+    assert provider["next_action"] == provider["frontend_contract"]["primary_action"] == "wait_for_platform_activation"
+    operation = "register_sender" if sender_case == "missing-sender" else "poll_sender_status"
+    assert tech["operation_availability"] == provider["operation_availability"]
+    assert tech["operation_availability"]["operations"][operation]["can_execute"] is False
+    assert tech["setup_health"]["blockers"][0]["code"] == provider["operational_readiness"]["blockers"][0]["code"]
+    assert tech["setup_health"]["status"] == "action_required"
 
 
 def test_managed_flip_between_inventory_and_locked_lookup_rejects_before_writes(credential_db):

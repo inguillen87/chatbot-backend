@@ -86,6 +86,36 @@ def credential_storage_status(config: Mapping[str, Any]) -> dict[str, Any]:
     return {"ready": True, "status": "configured", "reason_code": None}
 
 
+def tenant_has_internal_provider_credentials(tenant: Any) -> bool:
+    """Read committed columns, without flushing a stale or dirty ORM identity.
+
+    Legacy onboarding cannot use environment credentials for an owned vault.
+    A foreign tenant's marker never affects this tenant. No token is opened.
+    """
+    from flask import has_app_context
+    from sqlalchemy import select
+    from models import ProviderConnection, db
+
+    if not has_app_context():
+        return False
+    with db.session.no_autoflush:
+        tenant_id = getattr(tenant, "id", None)
+    if type(tenant_id) is not int or tenant_id <= 0:
+        raise ValueError("provider_credential_binding_invalid")
+    rows = db.session.execute(
+        select(ProviderConnection.config, ProviderConnection.credentials_ref)
+        .where(ProviderConnection.tenant_id == tenant_id,
+               ProviderConnection.provider == "twilio",
+               ProviderConnection.channel == "whatsapp")
+        .execution_options(autoflush=False)
+    ).all()
+    return any(
+        (isinstance(config, dict) and PRIVATE_CONFIG_KEY in config)
+        or str(reference or "").strip().startswith("vault:")
+        for config, reference in rows
+    )
+
+
 def _binding(connection: Any, tenant_id: int, account_sid: str) -> dict[str, Any]:
     from services.provider_connection_cutover_contract import MANAGED_CONNECTION_MARKER
 
