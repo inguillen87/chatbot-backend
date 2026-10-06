@@ -144,7 +144,7 @@ jobs:
       - name: Verify survey editorial relocation, participation assurance and production rehearsal
         run: >-
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
-          import os; os.environ['CHATBOC_REHEARSAL_TEST_POSTGRES']='1';
+          import os; os.environ['CHATBOC_REHEARSAL_TEST_POSTGRES']='1'; os.environ['CHATBOC_RELOCATION_TEST_POSTGRES']='1';
           from pathlib import Path; Path('.qa-artifacts/survey-r18').mkdir(parents=True, exist_ok=True);
           import pytest; raise SystemExit(pytest.main(['-q',
           'tests/test_survey_editorial_relocation.py',
