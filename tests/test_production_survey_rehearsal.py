@@ -16,7 +16,7 @@ from unittest.mock import Mock
 import uuid
 
 import pytest
-from sqlalchemy import event, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import OperationalError
 
 from app import create_app
@@ -468,52 +468,61 @@ def test_disposable_postgres_advisory_locks_preserve_intent_account_and_both_quo
         "ENABLE_RUNTIME_SCHEMA_SYNC": False, "ENABLE_RUNTIME_TENANT_INIT": False,
         "PUBLIC_ENCUESTAS_RATE_LIMIT": 10000, "ENFORCE_PUBLIC_SURVEY_DISTRIBUTED_RATE_LIMIT": False,
     })
-    app = create_app(config)
-    with app.app_context():
-        assert db.engine.url.host == "127.0.0.1" and db.engine.url.port == 5432
-        assert db.engine.url.database == "vaultcredregression" and db.engine.url.username == "postgres"
-        assert db.engine.url.password is None and re.fullmatch(r"rehearsal_contract_[0-9a-f]{32}", schema)
-        created = False
+    # TESTING create_app creates tables immediately; create its isolated
+    # namespace first and keep cleanup outside the app factory's success path.
+    bootstrap = create_engine(config.SQLALCHEMY_DATABASE_URI, **config.SQLALCHEMY_ENGINE_OPTIONS)
+    created = False
+    try:
+        assert bootstrap.url.host == "127.0.0.1" and bootstrap.url.port == 5432
+        assert bootstrap.url.database == "vaultcredregression" and bootstrap.url.username == "postgres"
+        assert bootstrap.url.password is None and re.fullmatch(r"rehearsal_contract_[0-9a-f]{32}", schema)
+        with bootstrap.begin() as setup:
+            setup.execute(text(f'CREATE SCHEMA "{schema}"'))
+            created = True
+            assert setup.execute(text("SELECT current_schema()")).scalar_one() == schema
+        app = create_app(config)
+        with app.app_context():
+            assert db.engine.url == bootstrap.url
+            try:
+                with _local_harness(app, monkeypatch) as h:
+                    actions = [lambda client: client.post(_admin(h.slug), json={}, headers={**h.headers["sa"], "Idempotency-Key": "pg-create-race-0001"}) for _ in range(2)]
+                    results = _parallel(h, actions)
+                    assert sorted(status for status, _ in results) == [200, 201], results
+                    run = results[0][1]["run_id"]
+                    assert AuditEvent.query.filter_by(event_type=service.CREATED).count() == 1
+                    actions = [lambda client, key=key: _vote(h, run, key, client=client, slug=h.slug) for key in ("pg-account-0001", "pg-account-0002")]
+                    results = _parallel(h, actions)
+                    assert sorted(status for status, _ in results) == [201, 409] and _ledger_counts() == (1, 1), results
+                    for index in range(18):
+                        voter = User(name="Cuenta sintética", email=f"pg-quota-{index}@rehearsal.test.invalid",
+                            rol="usuario", tipo_chat="municipio", tenant_id=h.tenant.id, tenant_slug=h.slug,
+                            password_hash=h.actor.password_hash)
+                        db.session.add(voter); db.session.commit()
+                        key = f"pg-quota-{index:04d}"
+                        response = h.client.post(_public(h.slug, run) + "/respond", json={"submission_id": key, "option_id": "yes"},
+                            headers={**_headers(voter), "Idempotency-Key": key})
+                        assert response.status_code == 201, response.get_json()
+                    actions = [lambda client, actor=actor: _vote(h, run, "pg-last-0001", client=client, slug=h.slug, actor=actor)
+                               for actor in ("second", "owner")]
+                    results = _parallel(h, actions)
+                    assert sorted(status for status, _ in results) == [201, 409] and _ledger_counts() == (20, 20), results
+                    _create(h, "pg-second-run-0001")
+                    actions = [lambda client, key=key: client.post(_admin(h.slug), json={}, headers={**h.headers["sa"], "Idempotency-Key": key})
+                               for key in ("pg-third-run-0001", "pg-fourth-run-0001")]
+                    results = _parallel(h, actions)
+                    assert sorted(status for status, _ in results) == [201, 409], results
+                    assert AuditEvent.query.filter_by(event_type=service.CREATED).count() == 3
+            finally:
+                db.session.rollback(); db.session.remove()
+                db.engine.dispose()
+    finally:
         try:
-            with db.engine.begin() as setup:
-                setup.execute(text(f'CREATE SCHEMA "{schema}"'))
-                created = True
-                assert setup.execute(text("SELECT current_schema()")).scalar_one() == schema
-            with _local_harness(app, monkeypatch) as h:
-                actions = [lambda client: client.post(_admin(h.slug), json={}, headers={**h.headers["sa"], "Idempotency-Key": "pg-create-race-0001"}) for _ in range(2)]
-                results = _parallel(h, actions)
-                assert sorted(status for status, _ in results) == [200, 201], results
-                run = results[0][1]["run_id"]
-                assert AuditEvent.query.filter_by(event_type=service.CREATED).count() == 1
-                actions = [lambda client, key=key: _vote(h, run, key, client=client, slug=h.slug) for key in ("pg-account-0001", "pg-account-0002")]
-                results = _parallel(h, actions)
-                assert sorted(status for status, _ in results) == [201, 409] and _ledger_counts() == (1, 1), results
-                for index in range(18):
-                    voter = User(name="Cuenta sintética", email=f"pg-quota-{index}@rehearsal.test.invalid",
-                        rol="usuario", tipo_chat="municipio", tenant_id=h.tenant.id, tenant_slug=h.slug,
-                        password_hash=h.actor.password_hash)
-                    db.session.add(voter); db.session.commit()
-                    key = f"pg-quota-{index:04d}"
-                    response = h.client.post(_public(h.slug, run) + "/respond", json={"submission_id": key, "option_id": "yes"},
-                        headers={**_headers(voter), "Idempotency-Key": key})
-                    assert response.status_code == 201, response.get_json()
-                actions = [lambda client, actor=actor: _vote(h, run, "pg-last-0001", client=client, slug=h.slug, actor=actor)
-                           for actor in ("second", "owner")]
-                results = _parallel(h, actions)
-                assert sorted(status for status, _ in results) == [201, 409] and _ledger_counts() == (20, 20), results
-                _create(h, "pg-second-run-0001")
-                actions = [lambda client, key=key: client.post(_admin(h.slug), json={}, headers={**h.headers["sa"], "Idempotency-Key": key})
-                           for key in ("pg-third-run-0001", "pg-fourth-run-0001")]
-                results = _parallel(h, actions)
-                assert sorted(status for status, _ in results) == [201, 409], results
-                assert AuditEvent.query.filter_by(event_type=service.CREATED).count() == 3
-        finally:
-            db.session.rollback(); db.session.remove()
             if created:
                 assert re.fullmatch(r"rehearsal_contract_[0-9a-f]{32}", schema)
-                with db.engine.begin() as cleanup:
+                with bootstrap.begin() as cleanup:
                     cleanup.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-            db.engine.dispose()
+        finally:
+            bootstrap.dispose()
 
 
 @pytest.mark.parametrize("case", ["preview", "render", "testing", "memory_db", "tls", "authority_off"])

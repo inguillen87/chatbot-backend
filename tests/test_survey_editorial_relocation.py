@@ -11,7 +11,7 @@ import re
 import threading
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from app import create_app
 from config import TestingConfig
@@ -541,26 +541,35 @@ def relocation_postgres_app(monkeypatch):
         "ENABLE_RUNTIME_SCHEMA_SYNC": False, "ENABLE_RUNTIME_TENANT_INIT": False,
         "CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED": False, "CUTOVER_WRITER_FENCE_ENABLED": False,
     })
-    app = create_app(config)
-    with app.app_context():
-        assert db.engine.url.host == "127.0.0.1" and db.engine.url.port == 5432
-        assert db.engine.url.database == "vaultcredregression" and db.engine.url.username == "postgres"
-        assert db.engine.url.password is None and re.fullmatch(r"relocation_contract_[0-9a-f]{32}", schema)
-        created = False
+    # TESTING create_app creates tables immediately, so its namespace must
+    # already exist. This bootstrap is still the same disposable loopback DB.
+    bootstrap = create_engine(config.SQLALCHEMY_DATABASE_URI, **config.SQLALCHEMY_ENGINE_OPTIONS)
+    created = False
+    try:
+        assert bootstrap.url.host == "127.0.0.1" and bootstrap.url.port == 5432
+        assert bootstrap.url.database == "vaultcredregression" and bootstrap.url.username == "postgres"
+        assert bootstrap.url.password is None and re.fullmatch(r"relocation_contract_[0-9a-f]{32}", schema)
+        with bootstrap.begin() as setup:
+            setup.execute(text(f'CREATE SCHEMA "{schema}"'))
+            created = True
+            assert setup.execute(text("SELECT current_schema()")).scalar_one() == schema
+        app = create_app(config)
+        with app.app_context():
+            assert db.engine.url == bootstrap.url
+            try:
+                db.create_all()
+                yield app
+            finally:
+                db.session.rollback(); db.session.remove()
+                db.engine.dispose()
+    finally:
         try:
-            with db.engine.begin() as setup:
-                setup.execute(text(f'CREATE SCHEMA "{schema}"'))
-                created = True
-                assert setup.execute(text("SELECT current_schema()")).scalar_one() == schema
-            db.create_all()
-            yield app
-        finally:
-            db.session.rollback(); db.session.remove()
             if created:
                 assert re.fullmatch(r"relocation_contract_[0-9a-f]{32}", schema)
-                with db.engine.begin() as cleanup:
+                with bootstrap.begin() as cleanup:
                     cleanup.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-            db.engine.dispose()
+        finally:
+            bootstrap.dispose()
 
 
 @pytest.mark.parametrize("baseline_primary_key_lock", [True, False], ids=["baseline_deadlock", "fixed_no_deadlock"])
