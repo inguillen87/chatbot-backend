@@ -1576,9 +1576,19 @@ def _build_queue_truth(
     }
 
 
+def _operational_survey_response_query(tenant_id: int):
+    """Operational aggregates exclude archives; historical analytics stay intact."""
+    return (
+        EncRespuesta.query.filter(EncRespuesta.tenant_id == tenant_id)
+        .join(EncEncuesta, EncRespuesta.encuesta_id == EncEncuesta.id)
+        .filter(EncEncuesta.tenant_id == tenant_id, EncEncuesta.estado != "archivada")
+    )
+
+
 def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
     encuestas = (
         EncEncuesta.query.filter_by(tenant_id=tenant.id)
+        .filter(EncEncuesta.estado != "archivada")
         .options(selectinload(EncEncuesta.links), selectinload(EncEncuesta.preguntas))
         .order_by(EncEncuesta.id.asc()).all()
     )
@@ -1601,7 +1611,7 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
     )
 
     period_response_query = _between(
-        EncRespuesta.query.filter_by(tenant_id=tenant.id),
+        _operational_survey_response_query(tenant.id),
         EncRespuesta.submitted_at,
         start_date,
         end_date,
@@ -2585,7 +2595,7 @@ def build_operational_freshness(
             "period_count": int(period_count or 0),
         }
         for origin, latest_at, period_count in (
-            EncRespuesta.query.filter_by(tenant_id=tenant.id)
+            _operational_survey_response_query(tenant.id)
             .with_entities(
                 EncRespuesta.response_origin,
                 func.max(EncRespuesta.submitted_at),
@@ -4165,7 +4175,7 @@ def build_operational_heatmap(
     )
     if not employee_view:
         survey_response_query = _between(
-            EncRespuesta.query.filter_by(tenant_id=tenant.id),
+            _operational_survey_response_query(tenant.id),
             EncRespuesta.submitted_at,
             start_date,
             end_date,

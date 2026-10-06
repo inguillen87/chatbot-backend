@@ -5051,6 +5051,7 @@ def list_encuestas_page(
     limit: Any = None,
     cursor: Any = None,
     page: Any = None,
+    include_archived: bool = False,
 ) -> Dict[str, Any]:
     """Return a hard-bounded tenant page using stable descending ids."""
 
@@ -5069,6 +5070,8 @@ def list_encuestas_page(
         )
 
     base_query = EncEncuesta.query.filter(EncEncuesta.tenant_id == int(tenant_id))
+    if include_archived is not True:
+        base_query = base_query.filter(EncEncuesta.estado != "archivada")
     if estado:
         base_query = base_query.filter(EncEncuesta.estado == estado)
 
@@ -5118,6 +5121,7 @@ def list_encuestas(
     limit: Any = None,
     cursor: Any = None,
     page: Any = None,
+    include_archived: bool = False,
 ) -> List[EncEncuesta]:
     """Compatibility wrapper; even direct callers receive a bounded page."""
 
@@ -5127,6 +5131,7 @@ def list_encuestas(
         limit=limit,
         cursor=cursor,
         page=page,
+        include_archived=include_archived,
     )["items"]
 
 
