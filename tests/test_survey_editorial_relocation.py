@@ -1,14 +1,17 @@
 """Synthetic SQLite/Flask acceptance, with network blocked by conftest.
 
 These fixtures reproduce counts and shapes, never import production records.
-Concurrent SQLite checks exercise the real no-op write locks; PostgreSQL locks
-use the same statements but need the separate PostgreSQL CI gate.
+Concurrent SQLite checks exercise real no-op write locks. Opt-in PostgreSQL
+checks exercise advisory/share locks and the causal baseline inversion.
 """
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import os
+import re
 import threading
 
 import pytest
+from sqlalchemy import text
 
 from app import create_app
 from config import TestingConfig
@@ -19,7 +22,7 @@ from models_survey_jurisdiction import SurveyContentReceipt
 from services.auth_session_lifecycle import issue_token
 from utils.auth_helpers import auth_session_version
 from services.encuestas_service import (EncuestaError, _acquire_encuesta_response_guard,
-    _ensure_locked_public_encuesta, get_public_encuesta, list_encuestas_page)
+    _ensure_locked_public_encuesta, get_public_encuesta, list_encuestas_page, save_respuesta)
 from services.operational_intelligence import (_survey_metrics, build_operational_freshness,
     build_operational_heatmap)
 import services.survey_editorial_relocation as relocation
@@ -512,3 +515,187 @@ def test_two_concurrent_same_intentions_produce_one_batch_without_new_migration(
         with app.app_context():
             db.session.remove()
             db.drop_all()
+
+
+def test_tenant_lock_rejects_unknown_dialect_before_sql(context, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(db.session, "get_bind", lambda: SimpleNamespace(dialect=SimpleNamespace(name="unsupported")))
+    with pytest.raises(EncuestaError) as denied:
+        relocation._lock_tenants({context[2].id})
+    assert denied.value.status_code == 503
+    assert denied.value.payload["reason_code"] == "relocation_storage_unsupported"
+
+
+@pytest.fixture
+def relocation_postgres_app(monkeypatch):
+    """Explicit disposable CI PG only; no configurable or provider DSN."""
+    import uuid
+    if os.getenv("CHATBOC_RELOCATION_TEST_POSTGRES") != "1":
+        pytest.skip("Requires explicit disposable localhost PostgreSQL opt-in")
+    schema = "relocation_contract_" + uuid.uuid4().hex
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "relocation-sa@test.local")
+    config = type("EditorialRelocationPostgresConfig", (TestingConfig,), {
+        "SQLALCHEMY_DATABASE_URI": "postgresql+psycopg://postgres@127.0.0.1:5432/vaultcredregression",
+        "SQLALCHEMY_ENGINE_OPTIONS": {"connect_args": {"options":
+            f"-csearch_path={schema} -cstatement_timeout=6000 -clock_timeout=4000 -cdeadlock_timeout=100"}},
+        "ENABLE_RUNTIME_SCHEMA_SYNC": False, "ENABLE_RUNTIME_TENANT_INIT": False,
+        "CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED": False, "CUTOVER_WRITER_FENCE_ENABLED": False,
+    })
+    app = create_app(config)
+    with app.app_context():
+        assert db.engine.url.host == "127.0.0.1" and db.engine.url.port == 5432
+        assert db.engine.url.database == "vaultcredregression" and db.engine.url.username == "postgres"
+        assert db.engine.url.password is None and re.fullmatch(r"relocation_contract_[0-9a-f]{32}", schema)
+        created = False
+        try:
+            with db.engine.begin() as setup:
+                setup.execute(text(f'CREATE SCHEMA "{schema}"'))
+                created = True
+                assert setup.execute(text("SELECT current_schema()")).scalar_one() == schema
+            db.create_all()
+            yield app
+        finally:
+            db.session.rollback(); db.session.remove()
+            if created:
+                assert re.fullmatch(r"relocation_contract_[0-9a-f]{32}", schema)
+                with db.engine.begin() as cleanup:
+                    cleanup.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+            db.engine.dispose()
+
+
+@pytest.mark.parametrize("baseline_primary_key_lock", [True, False], ids=["baseline_deadlock", "fixed_no_deadlock"])
+def test_postgres_archival_vs_real_responder_lock_order_causal(relocation_postgres_app, monkeypatch, baseline_primary_key_lock):
+    """Force both real service transactions into the formerly inverted order.
+
+    Baseline substitutes only the exact 20bed352 tenant-lock SQL sequence;
+    every survey guard, response/receipt, FK, archival/CAS and commit is real.
+    The candidate instead uses the actual new helper. No retries are performed.
+    """
+    import services.encuestas_service as intake
+    from models import SurveyResponseReceipt
+    app = relocation_postgres_app
+    with app.app_context():
+        context = _seed((0, 0, 0, 0, 0))
+        actor, _, source, target, surveys = context
+        # Synthetic private/PYME fixture isolates transaction behavior without
+        # inventing government jurisdiction evidence or relaxing the gov gate.
+        source.tipo = target.tipo = "pyme"
+        survey = surveys[2]
+        survey.structure_locked_at = datetime.now(timezone.utc)
+        db.session.commit()
+        preview = relocation.preview_relocation(actor, source.id, target.id, target.slug, [survey.id])
+        payload = {"source_tenant_id": source.id, "target_tenant_id": target.id,
+            "target_tenant_slug": target.slug, "idempotency_key": "pg-archive-causal-0001",
+            "confirmation": "archive_originals_create_drafts", "surveys": [{
+                "survey_id": preview["items"][0]["survey_id"], "expected_state": preview["items"][0]["state"],
+                "expected_structure_revision": preview["items"][0]["structure_revision"],
+                "expected_editorial_sha256": preview["items"][0]["editorial_sha256"],
+                "expected_response_count_all_time": 0}]}
+        actor_id, source_id, target_id, survey_id = actor.id, source.id, target.id, survey.id
+        public_slug = survey.links[0].slug_publico
+        response_payload = {"submission_id": "pg-response-causal-0001", "respuestas": [{
+            "pregunta_id": survey.preguntas[0].id, "opcion_id": survey.preguntas[0].opciones[0].id}]}
+        db.session.remove()
+    responder_locked, tenant_locked = threading.Event(), threading.Event()
+    outcomes, sqlstates = {}, {}
+    original_response_guard = intake._acquire_encuesta_response_guard
+    candidate_tenant_lock = relocation._lock_tenants
+
+    def response_guard(identifier):
+        row = original_response_guard(identifier)
+        responder_locked.set()
+        assert tenant_locked.wait(timeout=5), "archive never acquired its tenant lock"
+        return row
+
+    def tenant_guard(identifiers):
+        if baseline_primary_key_lock:
+            for identifier in sorted(set(identifiers)):
+                result = db.session.execute(text("UPDATE tenant_profile SET id = id WHERE id = :id"), {"id": identifier})
+                assert result.rowcount == 1
+                db.session.expire(db.session.get(TenantProfile, identifier))
+        else:
+            candidate_tenant_lock(identifiers)
+        tenant_locked.set()
+
+    def state(exc):
+        current = exc
+        for _ in range(5):
+            code = getattr(getattr(current, "orig", None), "sqlstate", None) or getattr(getattr(current, "orig", None), "pgcode", None)
+            if code: return str(code)
+            current = current.__cause__
+            if current is None: break
+        return None
+
+    def responder():
+        with app.app_context():
+            try:
+                row = save_respuesta(public_slug, deepcopy(response_payload),
+                    {"ip": "127.0.0.1", "anon_id": "synthetic-pg-causal", "canal": "web"},
+                    submission_id=response_payload["submission_id"], emit_realtime_update=False, grant_reward=False)
+                outcomes["response"] = ("committed", int(row.id))
+            except Exception as exc:
+                sqlstates["response"] = state(exc)
+                outcomes["response"] = ("rejected", type(exc).__name__)
+                db.session.rollback()
+            finally: db.session.remove()
+
+    def archiver():
+        with app.app_context():
+            try:
+                assert responder_locked.wait(timeout=5), "response never acquired survey lock"
+                receipt, replayed = relocation.apply_relocation(db.session.get(User, actor_id), source_id,
+                    deepcopy(payload), payload["idempotency_key"])
+                outcomes["archive"] = ("committed", receipt["state"])
+            except Exception as exc:
+                sqlstates["archive"] = state(exc)
+                outcomes["archive"] = ("rejected", (getattr(exc, "payload", None) or {}).get("reason_code", type(exc).__name__))
+                db.session.rollback()
+            finally: db.session.remove()
+
+    with monkeypatch.context() as racing:
+        import time
+        racing.setattr(intake, "_acquire_encuesta_response_guard", response_guard)
+        racing.setattr(relocation, "_lock_tenants", tenant_guard)
+        threads = [threading.Thread(target=responder, daemon=True), threading.Thread(target=archiver, daemon=True)]
+        for thread in threads: thread.start()
+        deadline = time.monotonic() + 10
+        for thread in threads: thread.join(timeout=max(0, deadline - time.monotonic()))
+        assert all(not thread.is_alive() for thread in threads), "bounded PG race did not terminate"
+    if baseline_primary_key_lock:
+        assert "40P01" in sqlstates.values(), (outcomes, sqlstates)
+        assert "55P03" not in sqlstates.values() and "57014" not in sqlstates.values(), (outcomes, sqlstates)
+        return
+    assert outcomes["response"][0] == "committed", (outcomes, sqlstates)
+    assert outcomes["archive"] == ("rejected", "relocation_precondition_failed"), (outcomes, sqlstates)
+    assert all(code is None for code in sqlstates.values()), sqlstates
+    with app.app_context():
+        assert EncRespuesta.query.filter_by(encuesta_id=survey_id).count() == 1
+        assert SurveyResponseReceipt.query.filter_by(survey_id=survey_id).count() == 1
+        assert EncEncuesta.query.filter_by(tenant_id=target_id).count() == 0
+        assert AuditEvent.query.filter_by(event_type=relocation.EVENT_TYPE).count() == 0
+        actor = db.session.get(User, actor_id)
+        current_preview = relocation.preview_relocation(actor, source_id, target_id,
+            db.session.get(TenantProfile, target_id).slug, [survey_id])
+        item = current_preview["items"][0]
+        fresh = {**payload, "idempotency_key": "pg-archive-after-vote-0001", "surveys": [{
+            "survey_id": item["survey_id"], "expected_state": item["state"],
+            "expected_structure_revision": item["structure_revision"], "expected_editorial_sha256": item["editorial_sha256"],
+            "expected_response_count_all_time": item["response_count_all_time"]}]}
+        receipt, replayed = relocation.apply_relocation(actor, source_id, fresh, fresh["idempotency_key"])
+        assert replayed is False and receipt["response_count_all_time"] == 1 and receipt["copied_responses"] is False
+        clone_id = receipt["items"][0]["destination_survey_id"]
+        assert db.session.get(EncEncuesta, survey_id).estado == "archivada"
+        assert EncRespuesta.query.filter_by(encuesta_id=clone_id).count() == 0
+        assert SurveyResponseReceipt.query.filter_by(survey_id=survey_id).count() == 1
+        restored_preview = relocation.preview_restore(actor, source_id, fresh["idempotency_key"])
+        item = restored_preview["items"][0]
+        restore = {"source_tenant_id": source_id, "archive_idempotency_key": fresh["idempotency_key"],
+            "idempotency_key": "pg-restore-after-archive-0001", "confirmation": "restore_originals_without_publishing",
+            "surveys": [{"survey_id": item["survey_id"], "expected_state": item["state"],
+                "expected_structure_revision": item["structure_revision"], "expected_editorial_sha256": item["editorial_sha256"],
+                "expected_response_count_all_time": item["response_count_all_time"]}]}
+        result, replayed = relocation.restore_originals(actor, source_id, restore, restore["idempotency_key"])
+        assert result["published"] is False and db.session.get(EncEncuesta, survey_id).estado == "cerrada"
+        assert db.session.get(EncEncuesta, clone_id).estado == "borrador"
+        assert EncRespuesta.query.filter_by(encuesta_id=survey_id).count() == 1
+        assert SurveyResponseReceipt.query.filter_by(survey_id=survey_id).count() == 1

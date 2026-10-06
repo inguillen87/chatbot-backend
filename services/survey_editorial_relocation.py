@@ -292,6 +292,34 @@ def _clone(source, target, actor, operation_id):
     return clone
 
 
+def _lock_tenants(identifiers):
+    """Serialize operation keys without blocking a responder's tenant FK.
+
+    A PostgreSQL UPDATE of the tenant primary key takes an exclusive row lock.
+    A responder already holding the survey lock must still insert its receipt
+    (tenant FK KEY SHARE), while archival needs that same survey: that lock
+    inversion can deadlock. Advisory locks serialize our tenant key namespace;
+    FOR SHARE keeps license/tenant state stable and permits the receipt FK.
+    SQLite retains its existing real database writer lock.
+    """
+    dialect = db.session.get_bind().dialect.name
+    for identifier in sorted(set(identifiers)):
+        if dialect == "postgresql":
+            db.session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+                {"scope": f"surveys.editorial-relocation.tenant.v1:{identifier}"})
+            found = db.session.execute(text("SELECT id FROM tenant_profile WHERE id = :id FOR SHARE"),
+                {"id": identifier}).scalar_one_or_none()
+        elif dialect == "sqlite":
+            result = db.session.execute(text("UPDATE tenant_profile SET id = id WHERE id = :id"),
+                {"id": identifier})
+            found = identifier if result.rowcount == 1 else None
+        else:
+            raise _error("El almacenamiento no admite este bloqueo seguro.", "relocation_storage_unsupported", 503)
+        if found is None:
+            raise _error("La organización no existe.", "relocation_tenant_conflict")
+        db.session.expire(db.session.get(TenantProfile, identifier))
+
+
 def apply_relocation(actor, source_id, payload, header_key):
     actor = require_superadmin(actor)
     source_id = _integer(source_id)
@@ -301,13 +329,7 @@ def apply_relocation(actor, source_id, payload, header_key):
         raise _error("Las claves de operación no coinciden.", "relocation_idempotency_conflict", 400)
     fingerprint = _sha(normalized)
     try:
-        # The common source lock serializes keys even across different targets.
-        # Raw no-op UPDATE also locks SQLite without changing updated_at.
-        for identifier in sorted({source_id, normalized["target_tenant_id"]}):
-            result = db.session.execute(text("UPDATE tenant_profile SET id = id WHERE id = :id"), {"id": identifier})
-            if result.rowcount != 1:
-                raise _error("La organización no existe.", "relocation_tenant_conflict")
-            db.session.expire(db.session.get(TenantProfile, identifier))
+        _lock_tenants({source_id, normalized["target_tenant_id"]})
         source, target = _tenants(source_id, normalized["target_tenant_id"], normalized["target_tenant_slug"])
         actor = require_superadmin(actor)
         previous = _audit(source_id, key)
@@ -438,9 +460,7 @@ def restore_originals(actor, source_id, payload, header_key):
         raise _error("Las claves de archivo y restauración no son válidas.", "relocation_idempotency_conflict", 400)
     fingerprint = _sha(normalized)
     try:
-        result = db.session.execute(text("UPDATE tenant_profile SET id = id WHERE id = :id"), {"id": source_id})
-        if result.rowcount != 1:
-            raise _error("La organización de origen no existe.", "relocation_tenant_conflict")
+        _lock_tenants({source_id})
         source = db.session.get(TenantProfile, source_id)
         db.session.refresh(source)
         if source.is_active is not True:
