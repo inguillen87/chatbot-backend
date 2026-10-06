@@ -2972,7 +2972,10 @@ def _whatsapp_smoke_execution_result(
         "label": label,
         "execution_mode": execution_mode,
         "danger_level": danger_level,
-        "sends_real_message": danger_level == "real_message",
+        # The current executor checks status or returns instructions; the live
+        # message branch is unimplemented. Danger level describes the action,
+        # not a message sent by this request.
+        "sends_real_message": False,
         "details": dict(details or {}),
         "next_action": next_action or ("continue_playbook" if ok else "review_result"),
     }
@@ -3005,7 +3008,7 @@ def whatsapp_tech_provider_smoke_test_v2(current_user, test_id: str, tenant_slug
 
     playbook_item = playbook_tests[normalized_test]
     danger_level = str(playbook_item.get("danger_level") or "safe")
-    if danger_level == "real_message" and not payload.get("confirm_real_message"):
+    if danger_level == "real_message" and payload.get("confirm_real_message") is not True:
         return _json_response(
             _whatsapp_smoke_execution_result(
                 test_id=normalized_test,

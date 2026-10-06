@@ -1720,7 +1720,72 @@ class V2SaasContractsTest(unittest.TestCase):
         real_payload = real_response.get_json()
         self.assertEqual(real_payload["status"], "blocked")
         self.assertEqual(real_payload["next_action"], "confirm_real_message_required")
-        self.assertTrue(real_payload["sends_real_message"])
+        self.assertFalse(real_payload["sends_real_message"])
+
+    def _post_live_whatsapp_smoke_without_side_effects(self, payload):
+        self.app.config.update(
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+            TWILIO_ALLOW_NETWORK_IN_TESTS=False,
+        )
+        headers = self._auth(self.owner)
+
+        def snapshot():
+            db.session.expire_all()
+            return {
+                "tenant_config": copy.deepcopy(self.tenant.configuracion),
+                "tenant_sender": self.tenant.whatsapp_sender_id,
+                "rows": {
+                    model.__name__: model.query.filter_by(tenant_id=self.tenant.id).count()
+                    for model in (
+                        ProviderConnection, ProviderSender, MessagingEventLedger,
+                        Notification, DomainEffectOutbox,
+                    )
+                },
+            }
+
+        before = snapshot()
+        with patch("services.twilio_tech_provider.requests.post") as post_request, patch(
+            "services.twilio_tech_provider.requests.get"
+        ) as get_request, patch(
+            "services.twilio_tech_provider.requests.put"
+        ) as put_request, patch(
+            "services.tenant_twilio_messaging.Client"
+        ) as twilio_client, patch(
+            "services.notification_orchestrator.NotificationOrchestrator.queue_notification"
+        ) as queue_notification:
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/smoke-test/live_whatsapp_message",
+                headers=headers,
+                json=payload,
+            )
+        for operation in (post_request, get_request, put_request, twilio_client, queue_notification):
+            operation.assert_not_called()
+        self.assertEqual(snapshot(), before)
+        return response
+
+    def test_live_whatsapp_smoke_rejects_non_boolean_confirmation_without_side_effects(self):
+        for confirmation in (False, None, "false", "true", 1, 0, [], [True], {}, {"confirmed": True}):
+            with self.subTest(confirmation=confirmation):
+                response = self._post_live_whatsapp_smoke_without_side_effects(
+                    {"confirm_real_message": confirmation}
+                )
+                self.assertEqual(response.status_code, 409, response.get_json())
+                payload = response.get_json()
+                self.assertEqual(payload["status"], "blocked")
+                self.assertEqual(payload["next_action"], "confirm_real_message_required")
+
+    def test_live_whatsapp_smoke_true_confirmation_remains_unimplemented_without_claiming_send(self):
+        self._configure_tenant_whatsapp_sender(suffix="SMOKE_NO_SEND")
+        response = self._post_live_whatsapp_smoke_without_side_effects(
+            {"confirm_real_message": True}
+        )
+        self.assertEqual(response.status_code, 501, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(payload["details"]["reason_code"], "execution_not_implemented")
+        self.assertEqual(payload["next_action"], "not_implemented_yet")
+        self.assertEqual(payload["danger_level"], "real_message")
+        self.assertFalse(payload["sends_real_message"])
 
     def test_twilio_tech_provider_provision_dry_run_preserves_connection_state_without_live_api(self):
         self.app.config.update(
