@@ -2,7 +2,7 @@
 
 These fixtures reproduce counts and shapes, never import production records.
 Concurrent SQLite checks exercise real no-op write locks. Opt-in PostgreSQL
-checks exercise advisory/share locks and the causal baseline inversion.
+checks compare legacy no-op/advisory-share locks for response preservation.
 """
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -34,7 +34,11 @@ def _seed(counts=(101, 0, 200, 100, 100)):
     ordinary = User(id=902, name="Synthetic administrator", email="relocation-admin@test.local", rol="admin", password_hash="synthetic")
     source = TenantProfile(id=71, slug="relocation-source", nombre="Synthetic source", tipo="municipio", municipio_id=ordinary.id, plan="full")
     target = TenantProfile(id=72, slug="relocation-target", nombre="Synthetic target", tipo="municipio", municipio_id=actor.id, plan="full")
-    db.session.add_all([actor, ordinary, source, target])
+    # PostgreSQL checks municipio_id immediately; both owner accounts must
+    # exist before profiles, then the user's tenant FK can point back to them.
+    db.session.add_all([actor, ordinary])
+    db.session.flush()
+    db.session.add_all([source, target])
     db.session.flush()
     ordinary.tenant_id = source.id
     ordinary.tenant_slug = source.slug
@@ -572,13 +576,16 @@ def relocation_postgres_app(monkeypatch):
             bootstrap.dispose()
 
 
-@pytest.mark.parametrize("baseline_primary_key_lock", [True, False], ids=["baseline_deadlock", "fixed_no_deadlock"])
-def test_postgres_archival_vs_real_responder_lock_order_causal(relocation_postgres_app, monkeypatch, baseline_primary_key_lock):
-    """Force both real service transactions into the formerly inverted order.
+@pytest.mark.parametrize("baseline_primary_key_lock", [True, False], ids=["legacy_noop_lock", "advisory_share_lock"])
+def test_postgres_archival_vs_real_responder_preserves_response_and_rejects_stale_archive(relocation_postgres_app, monkeypatch, baseline_primary_key_lock):
+    """Overlap both real transactions and compare response/CAS/history safety.
 
-    Baseline substitutes only the exact 20bed352 tenant-lock SQL sequence;
+    Legacy substitutes only the exact 20bed352 tenant-lock SQL sequence;
     every survey guard, response/receipt, FK, archival/CAS and commit is real.
-    The candidate instead uses the actual new helper. No retries are performed.
+    The candidate uses the actual advisory/share helper. Local PostgreSQL 18.6
+    did not produce a legacy deadlock: this is a preservation comparison, not
+    a causal deadlock reproduction. Both variants run every history assertion.
+    No retries are performed.
     """
     import services.encuestas_service as intake
     from models import SurveyResponseReceipt
@@ -657,7 +664,9 @@ def test_postgres_archival_vs_real_responder_lock_order_causal(relocation_postgr
                 outcomes["archive"] = ("committed", receipt["state"])
             except Exception as exc:
                 sqlstates["archive"] = state(exc)
-                outcomes["archive"] = ("rejected", (getattr(exc, "payload", None) or {}).get("reason_code", type(exc).__name__))
+                outcomes["archive"] = ("rejected",
+                    (getattr(exc, "payload", None) or {}).get("reason_code", type(exc).__name__),
+                    getattr(exc, "status_code", None))
                 db.session.rollback()
             finally: db.session.remove()
 
@@ -670,12 +679,8 @@ def test_postgres_archival_vs_real_responder_lock_order_causal(relocation_postgr
         deadline = time.monotonic() + 10
         for thread in threads: thread.join(timeout=max(0, deadline - time.monotonic()))
         assert all(not thread.is_alive() for thread in threads), "bounded PG race did not terminate"
-    if baseline_primary_key_lock:
-        assert "40P01" in sqlstates.values(), (outcomes, sqlstates)
-        assert "55P03" not in sqlstates.values() and "57014" not in sqlstates.values(), (outcomes, sqlstates)
-        return
     assert outcomes["response"][0] == "committed", (outcomes, sqlstates)
-    assert outcomes["archive"] == ("rejected", "relocation_precondition_failed"), (outcomes, sqlstates)
+    assert outcomes["archive"] == ("rejected", "relocation_precondition_failed", 409), (outcomes, sqlstates)
     assert all(code is None for code in sqlstates.values()), sqlstates
     with app.app_context():
         assert EncRespuesta.query.filter_by(encuesta_id=survey_id).count() == 1
