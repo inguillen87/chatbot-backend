@@ -6,7 +6,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from database import db
 from services import production_survey_rehearsal as rehearsal
-from services.auth_assurance_service import AuthAssuranceError, STRICT_MFA, require_request_auth_assurance
 from services.encuestas_service import EncuestaError, resolve_survey_submission_id
 from services.public_survey_intake import _consume_rate_limit, public_survey_client_ip
 from utils.auth_helpers import auth_sin_escrituras_implicitas, token_requerido
@@ -105,10 +104,6 @@ def create_run(current_user, tenant_slug):
         return _response(exc.to_dict(), exc.status_code)
     if not is_authorized_superadmin_user(current_user):
         return _response(rehearsal.RehearsalError("rehearsal_superadmin_required", 403).to_dict(), 403)
-    try:
-        require_request_auth_assurance(STRICT_MFA)
-    except AuthAssuranceError as exc:
-        return _response(exc.to_payload(), 403)
     def action():
         _scope(tenant_slug)
         _, key = _payload(create=True)

@@ -26,7 +26,6 @@ from global_writer_authority import configured_writer_runtime, global_writer_aut
 from services.global_writer_authority import global_writer_authority_lease
 from services.plan_access import plan_allows_integration_feature
 from services.auth_session_lifecycle import request_auth_session_active
-from services.auth_assurance_service import AuthAssuranceError, STRICT_MFA, require_request_auth_assurance
 from utils.auth_helpers import is_user_auth_disabled
 from utils.roles import is_authorized_superadmin_user
 from utils.tenant_admin_access import can_manage_tenant_control_plane, resolve_consistent_user_tenant
@@ -265,24 +264,16 @@ def list_rehearsals(slug, actor):
     if len(items) > MAX_ACTIVE_RUNS:
         raise RehearsalError("rehearsal_storage_inconsistent", 503)
     is_superadmin = is_authorized_superadmin_user(actor)
-    mfa_ready = False
-    if is_superadmin:
-        try:
-            require_request_auth_assurance(STRICT_MFA)
-            mfa_ready = True
-        except AuthAssuranceError:
-            pass
-    can_create = is_superadmin and mfa_ready and len(items) < MAX_ACTIVE_RUNS
+    can_create = is_superadmin and len(items) < MAX_ACTIVE_RUNS
     blocked = ("rehearsal_superadmin_required" if not is_superadmin else
-               "step_up_required" if not mfa_ready else
                "rehearsal_active_run_limit" if len(items) >= MAX_ACTIVE_RUNS else None)
     return {"contract_version": CONTRACT, "items": items, "max_active_runs": MAX_ACTIVE_RUNS,
             "source_tenant": {"slug": tenant.slug, "display_name": tenant.nombre, "canonical": True},
             "create_action": {"contract_version": "surveys.production_rehearsal.create_action.v1",
-                "can_create": can_create, "requires_strict_mfa": True, "method": "POST",
+                "can_create": can_create, "requires_strict_mfa": False, "method": "POST",
                 "api_path": f"/api/v2/tenants/{tenant.slug}/survey-rehearsals",
                 "blocked_reason_code": blocked,
-                "ui": {"label": "Crear prueba técnica", "description": "Verificá ambos factores para crear una prueba." if blocked == "step_up_required" else "Una pregunta genérica, hasta 20 participaciones y 24 horas de vigencia."}},
+                "ui": {"label": "Crear prueba técnica", "description": "Una pregunta genérica, hasta 20 participaciones y 24 horas de vigencia."}},
             "official": False, "ui": {"title": "Pruebas técnicas", "warning": WARNING,
                 "open_label": "Abrir formulario de prueba", "refresh_label": "Actualizar pruebas",
                 "check_status_label": "Consultar la prueba solicitada",

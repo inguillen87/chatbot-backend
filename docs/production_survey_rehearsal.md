@@ -1,7 +1,7 @@
 # Ensayo persistente separado de consultas oficiales
 
-Una creación explícita de SuperAdmin con sesión Clerk vigente y ambos factores
-recientemente verificados habilita una pregunta fija: «¿Pudiste utilizar este
+Una creación explícita de SuperAdmin allowlisted con sesión Clerk/AuthSession
+vigente habilita una pregunta fija: «¿Pudiste utilizar este
 formulario de prueba?», con «Sí» y «No». Cada ejecución dura 24 horas, admite
 hasta 20 respuestas y comparte un máximo de 3 ejecuciones vigentes por tenant.
 La organización debe ser canónica, estar activa y tener licencia de encuestas.
@@ -20,7 +20,7 @@ Los paths siguientes son relativos al mismo backend Chatboc:
 | Método y path | Contrato y autoridad |
 | --- | --- |
 | GET `/api/v2/tenants/:slug/survey-rehearsals` | `surveys.production_rehearsal.v1`; SA o administrador persistido del mismo tenant. `source_tenant`, `items`, descriptor `create_action` y strings `ui` pertenecen al backend. |
-| POST mismo path, cuerpo `{}` | SA allowlisted, Bearer real y MFA estricto fresco. `Idempotency-Key` obligatorio. 201 creación o 200 repetición exacta; devuelve `submission_id`, `replayed` y metadata. |
+| POST mismo path, cuerpo `{}` | SA allowlisted y Bearer/AuthSession vigente. `Idempotency-Key` obligatorio. 201 creación o 200 repetición exacta; devuelve `submission_id`, `replayed` y metadata. |
 | GET mismo path + `/status?submission_id=:key` | SA actual; reconcilia sólo su propia intención del tenant, sin crear nada. 404 significa intención no observada, sin habilitar reenvío automático. |
 | GET `/api/v2/public/tenants/:slug/survey-rehearsals/:run` | Metadata mínima pública; verifica prueba firmada, tenant/licencia y vigencia. |
 | GET mismo path + `/results` | Mismo contrato y agregado real; `result_version` cambia con el agregado. Polling GET cada **5000 ms**; no acredita sockets. |
@@ -37,8 +37,10 @@ No expone IDs de cuentas, HMAC de identidad/intención, contactos ni IP.
 Metadata usa `branding.{tenant_slug,display_name}`, sólo nombre institucional;
 `links.{metadata_api,respond_api,results_api}` son paths relativos. Los textos
 del formulario, acciones, límites, lectura, incertidumbre y error vienen de `ui`.
-El descriptor `create_action.can_create` comprueba readonly rol, MFA vigente y
-cuota; el POST vuelve a comprobarlos. El frontend conserva una intención estable,
+El descriptor `create_action.can_create` comprueba readonly rol, sesión y
+cuota/licencia; el POST vuelve a comprobarlos. `requires_strict_mfa:false` corresponde
+sólo al nuevo ensayo fijo y acotado. Las guardas y MFA oficiales existentes no se
+modifican. El frontend conserva una intención estable,
 consulta GET tras resultado incierto y no repite automáticamente el POST.
 
 ## Persistencia y límites
@@ -79,7 +81,7 @@ AuthSession real y tokens sintéticos emitidos por el servicio actual de auth.
 Sólo sustituye el límite externo de runtime/lease para ejercitar funcionalidad
 offline; los negativos ejercitan el guard real sin conectarse. Cuenta filas y
 recibos para identidad, repetición, 1000 intenciones, NAT, cuotas, concurrencia,
-rollback, expiración, scopes, MFA y tablas faltantes. No es aceptación de producción.
+rollback, expiración, scopes, sesión SA vigente/retirada y tablas faltantes. No es aceptación de producción.
 
 La prueba PostgreSQL es opt-in con `CHATBOC_REHEARSAL_TEST_POSTGRES=1`: usa únicamente
 `127.0.0.1:5432`, usuario `postgres` sin contraseña y base CI descartable

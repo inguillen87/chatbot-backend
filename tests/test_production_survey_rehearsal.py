@@ -175,16 +175,21 @@ def test_admin_descriptor_and_normal_tenant_read_do_not_grant_create(h):
     assert foreign.status_code == 403
     sa = h.client.get(_admin(h.tenant.slug), headers=h.headers["sa"])
     assert sa.get_json()["create_action"]["can_create"] is True
-    assert sa.get_json()["create_action"]["requires_strict_mfa"] is True
+    assert sa.get_json()["create_action"]["requires_strict_mfa"] is False
 
 
-def test_sa_requires_actual_signed_fresh_mfa(h):
+def test_sa_normal_live_session_creates_without_new_mfa_requirement_retired_session_denied(h):
     headers = _headers(h.sa, mfa=False)
     descriptor = h.client.get(_admin(h.slug), headers=headers).get_json()["create_action"]
-    assert descriptor["can_create"] is False and descriptor["blocked_reason_code"] == "step_up_required"
-    denied = h.client.post(_admin(h.tenant.slug), json={}, headers={**headers, "Idempotency-Key": "no-mfa-key-0001"})
-    assert denied.status_code == 403 and denied.get_json()["reason_code"] == "step_up_required"
-    assert AuditEvent.query.count() == 0
+    assert descriptor["can_create"] is True and descriptor["blocked_reason_code"] is None
+    assert descriptor["requires_strict_mfa"] is False
+    created = h.client.post(_admin(h.slug), json={}, headers={**headers, "Idempotency-Key": "normal-sa-key-0001"})
+    assert created.status_code == 201, created.get_json()
+    AuthSession.query.filter_by(actor_id=h.sa.id).update({"revoked_at": service._now()})
+    db.session.commit()
+    denied = h.client.post(_admin(h.slug), json={}, headers={**headers, "Idempotency-Key": "retired-sa-key-0001"})
+    assert denied.status_code == 401
+    assert AuditEvent.query.filter_by(event_type=service.CREATED).count() == 1
 
 
 def test_same_account_new_browser_receipt_exact_replay_changed_body_and_newkey(h):
