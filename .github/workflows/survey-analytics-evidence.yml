@@ -28,8 +28,41 @@ name: Survey and organization evidence
       - services/organization_setup_journey.py
       - services/channel_activation.py
       - routes/admin_tenant.py
+      - routes/super_admin.py
       - routes/auth.py
       - routes/v2/saas.py
+      - services/analytics/rbac.py
+      - routes/backoffice.py
+      - routes/ticket.py
+      - services/operational_intelligence.py
+      - services/ticket_workflow_policy.py
+      - services/ticket_category_authority.py
+      - services/employee_routing.py
+      - tests/test_ticket_category_authority_routing.py
+      - tests/test_ticket_catalog_filter_authority.py
+      - tests/test_ticket_assignment_policy.py
+      - tests/test_crm_detail_category_rbac.py
+      - tests/test_v2_saas_contracts.py
+      - tests/ticket_workflow_http.py
+      - tests/ticket_workflow_postgres.py
+      - tests/test_ticket_state_sync.py
+      - tests/test_ticket_notifications.py
+      - tests/test_legacy_ticket_tenant_scope.py
+      - tests/test_backoffice_contracts.py
+      - tests/test_ticket_filters.py
+      - tests/test_ticket_operational_badges.py
+      - tests/test_v2_operational_analytics.py
+      - tests/test_v2_sla_truth.py
+      - services/twilio_tech_provider.py
+      - tests/v2_tenant_membership_http.py
+      - services/native_admin_membership.py
+      - tests/native_admin_membership_http.py
+      - tests/native_admin_membership_postgres.py
+      - tests/test_territorial_boundary_packaging.py
+      - data/municipios/junin/geo.json
+      - data/municipios/junin/official_department_boundary.geojson
+      - .gitattributes
+      - tests/twilio_provisioning_without_render_regression.py
       - data/conversation_guides/**
       - tests/private_conversation_guide_http.py
       - tests/organization_access_regression.py
@@ -87,6 +120,40 @@ jobs:
       - run: python -m unittest tests.test_survey_fieldwork_coverage -v
       - run: python -m tests.survey_fieldwork_coverage_http
       - run: python -m tests.organization_access_regression
+      - name: Consistent tenant membership on real application routes
+        run: python -m tests.v2_tenant_membership_http
+      - name: Shared SLA evidence, scoped filters, and pagination
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/sla-evidence
+          python -m pytest tests/test_backoffice_contracts.py tests/test_ticket_filters.py tests/test_ticket_operational_badges.py tests/test_v2_operational_analytics.py tests/test_v2_sla_truth.py -q 2>&1 | tee .qa-artifacts/sla-evidence/tests.log
+      - name: Native administrator membership and PostgreSQL audit transactions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/native-admin-membership
+          python -m tests.native_admin_membership_http -v 2>&1 | tee .qa-artifacts/native-admin-membership/http.log
+          python -m tests.native_admin_membership_postgres -v 2>&1 | tee .qa-artifacts/native-admin-membership/postgres.log
+      - name: Actor-bound ticket workflow and PostgreSQL state compare-and-swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/ticket-workflow
+          python -m tests.ticket_workflow_http -v 2>&1 | tee .qa-artifacts/ticket-workflow/http.log
+          python -m tests.ticket_workflow_postgres -v 2>&1 | tee .qa-artifacts/ticket-workflow/postgres.log
+          python -m pytest tests/test_ticket_state_sync.py tests/test_ticket_notifications.py tests/test_ticket_tenant_scope_chat_access.py tests/test_legacy_ticket_tenant_scope.py tests/test_ticket_workflow_metadata_contract.py tests/test_crm_detail_category_rbac.py -q 2>&1 | tee .qa-artifacts/ticket-workflow/regression.log
+      - name: Official territorial boundary packaging
+        run: python -m pytest tests/test_territorial_boundary_packaging.py -q
+      - name: Tenant-bound category authority and assignment policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/category-authority
+          python -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_ticket_category_authority_routing.py', 'tests/test_ticket_operational_badges.py', 'tests/test_ticket_catalog_filter_authority.py', 'tests/test_ticket_assignment_policy.py', 'tests/test_crm_detail_category_rbac.py']))" 2>&1 | tee .qa-artifacts/category-authority/read-and-policy.log
+          python -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_v2_saas_contracts.py', '-k', 'routing or category_inventory']))" 2>&1 | tee .qa-artifacts/category-authority/routing-contract.log
+      - name: Provider provisioning requires durable credentials without Render
+        run: python -m tests.twilio_provisioning_without_render_regression
       - run: python -m tests.private_conversation_guide_http
       - name: Institutional knowledge evidence
         if: always()
@@ -103,6 +170,42 @@ jobs:
         with:
           name: private-guide-control-evidence
           path: .qa-artifacts/private-guide-control/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Native administrator membership evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-admin-membership-evidence
+          path: .qa-artifacts/native-admin-membership/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Scoped SLA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scoped-sla-evidence
+          path: .qa-artifacts/sla-evidence/tests.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Ticket workflow transaction evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ticket-workflow-evidence
+          path: .qa-artifacts/ticket-workflow/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Category authority evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: category-authority-evidence
+          path: .qa-artifacts/category-authority/*.log
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7

@@ -19,6 +19,7 @@ from services.provider_connection_cutover_contract import (
     MANAGED_CONNECTION_MARKER,
     advisory_lock_keys,
 )
+from services.whatsapp_operation_availability import build_whatsapp_operation_availability, tenant_configuration_snapshot
 
 
 CONTRACT_VERSION = "provider.platform_status.v1"
@@ -85,7 +86,7 @@ def _sender_id_from_phone(phone: str | None) -> str | None:
 
 
 def _twilio_state(tenant: TenantProfile) -> dict[str, Any]:
-    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    cfg = tenant_configuration_snapshot(tenant)
     state = cfg.get("twilio_tech_provider")
     return dict(state) if isinstance(state, dict) else {}
 
@@ -129,7 +130,7 @@ def _get_or_create_connection(tenant: TenantProfile, config: Mapping[str, Any]) 
         tenant_id=tenant.id,
         provider="twilio",
         channel="whatsapp",
-    ).all()
+    ).execution_options(autoflush=False).populate_existing().all()
     managed_connections = [
         candidate
         for candidate in tenant_connections
@@ -202,8 +203,13 @@ def _get_or_create_connection(tenant: TenantProfile, config: Mapping[str, Any]) 
         provider="twilio",
         channel="whatsapp",
         environment=environment,
-    ).first()
+    ).with_for_update().execution_options(autoflush=False).populate_existing().first()
     if connection:
+        marker = connection.config.get(MANAGED_CONNECTION_MARKER) if isinstance(connection.config, dict) else None
+        if isinstance(marker, dict) and marker.get("enabled") is True:
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_marker_changed_retry_required"
+            )
         return connection
     connection = ProviderConnection(
         tenant_id=tenant.id,
@@ -251,6 +257,16 @@ def sync_twilio_provider_records(
         else None
     )
     is_managed = isinstance(management, dict) and management.get("enabled") is True
+    from services.tenant_provider_credentials import PRIVATE_CONFIG_KEY, VAULT_REF
+    private_config = connection.config if isinstance(connection.config, dict) else {}
+    has_vault = PRIVATE_CONFIG_KEY in private_config or _clean(connection.credentials_ref).startswith("vault:")
+    if has_vault and (
+        is_managed
+        or PRIVATE_CONFIG_KEY not in private_config
+        or connection.credentials_ref != VAULT_REF
+        or _clean(state.get("twilio_account_sid")) != _clean(connection.external_account_id)
+    ):
+        raise ManagedProviderConnectionStateError("provider_credential_binding_drift")
     derived_connection_status = _connection_status(state)
     managed_online = is_managed and is_sender_ready_status(connection.status)
     managed_sender = None
@@ -335,7 +351,7 @@ def sync_twilio_provider_records(
     connection.display_name = state.get("display_name") or getattr(tenant, "nombre", None)
     connection.external_account_id = (
         connection.external_account_id
-        if is_managed
+        if is_managed or has_vault
         else state.get("twilio_account_sid")
     )
     connection.external_business_id = state.get("waba_id")
@@ -344,7 +360,7 @@ def sync_twilio_provider_records(
     connection.partner_solution_id = _clean(app_config.get("TWILIO_PARTNER_SOLUTION_ID")) or None
     connection.credentials_ref = (
         connection.credentials_ref
-        if is_managed
+        if is_managed or has_vault
         else (
             "env:twilio_parent"
             if _clean(app_config.get("TWILIO_ACCOUNT_SID"))
@@ -363,6 +379,8 @@ def sync_twilio_provider_records(
         "status_callback_url": callbacks["status_callback_url"],
         "live_enabled": _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED"),
     }
+    if has_vault:
+        next_connection_config = {**private_config, **next_connection_config}
     connection.config = connection.config if is_managed else next_connection_config
     connection.health = {
         "last_step": state.get("last_step"),
@@ -511,6 +529,7 @@ def record_messaging_event(
 def _serialize_connection(connection: ProviderConnection | None) -> dict[str, Any] | None:
     if not connection:
         return None
+    from services.tenant_provider_credentials import public_provider_config
     return {
         "id": connection.id,
         "provider": connection.provider,
@@ -525,7 +544,7 @@ def _serialize_connection(connection: ProviderConnection | None) -> dict[str, An
         "partner_solution_id": connection.partner_solution_id,
         "capabilities": connection.capabilities or {},
         "health": connection.health or {},
-        "config": connection.config or {},
+        "config": public_provider_config(connection.config or {}),
         "updated_at": connection.updated_at.isoformat() if connection.updated_at else None,
     }
 
@@ -572,6 +591,10 @@ def _serialize_event(event: MessagingEventLedger) -> dict[str, Any]:
 
 
 def build_whatsapp_provider_status(tenant: TenantProfile, app_config: Mapping[str, Any]) -> dict[str, Any]:
+    operation_availability = build_whatsapp_operation_availability(tenant, _twilio_state(tenant), app_config)
+    operations = operation_availability["operations"]
+    poll_operation = operations["poll_sender_status"]
+    owned_vault_blocked = poll_operation["reason_code"] == "twilio_vault_onboarding_integration_required"
     connection, sender = sync_twilio_provider_records(tenant, app_config=app_config)
 
     template_count = MessageTemplateRegistry.query.filter_by(tenant_id=tenant.id, channel="whatsapp").count()
@@ -614,18 +637,37 @@ def build_whatsapp_provider_status(tenant: TenantProfile, app_config: Mapping[st
         },
     ]
 
-    if not checks[0]["ok"]:
+    blockers = []
+    if owned_vault_blocked:
+        blockers.append({
+            "code": poll_operation["reason_code"], "label": "Activación segura pendiente",
+            "detail": poll_operation["message"], "action": "wait_for_platform_activation",
+        })
+        next_action = "wait_for_platform_activation"
+    elif not checks[0]["ok"]:
         next_action = "complete_platform_env"
     elif not checks[1]["ok"]:
         next_action = "configure_meta_embedded_signup"
     elif not checks[2]["ok"]:
-        next_action = "provision_twilio_subaccount"
+        next_action = "wait_for_platform_activation"
     elif not checks[3]["ok"]:
-        next_action = "complete_embedded_signup_and_register_sender"
+        next_action = "complete_embedded_signup_and_register_sender" if operations["register_sender"]["can_execute"] else "wait_for_platform_activation"
     elif not checks[4]["ok"]:
         next_action = "sync_or_create_templates"
+    elif not sender or not is_sender_ready_status(sender.status):
+        next_action = "poll_sender_status" if poll_operation["can_execute"] else "wait_for_platform_activation"
+    elif not poll_operation["can_execute"]:
+        next_action = "wait_for_platform_activation"
     else:
-        next_action = "ready_for_pilot"
+        next_action = "await_live_test_support"
+
+    if not blockers and next_action == "wait_for_platform_activation":
+        operation = (operations["create_subaccount"] if not checks[2]["ok"]
+                     else operations["register_sender"] if not checks[3]["ok"] else poll_operation)
+        blockers.append({
+            "code": operation["reason_code"], "label": "Operación pendiente",
+            "detail": operation["message"], "action": next_action,
+        })
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -638,7 +680,12 @@ def build_whatsapp_provider_status(tenant: TenantProfile, app_config: Mapping[st
         },
         "provider": "twilio",
         "channel": "whatsapp",
-        "status": connection.status,
+        "status": "needs_secure_activation" if owned_vault_blocked else connection.status,
+        "operation_availability": operation_availability,
+        "operational_readiness": {
+            "status": "action_required" if blockers else "configuration_complete" if next_action == "await_live_test_support" else "in_progress",
+            "blockers": blockers, "delivery_accepted": False,
+        },
         "connection": _serialize_connection(connection),
         "sender": _serialize_sender(sender),
         "compliance": {

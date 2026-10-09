@@ -12,10 +12,12 @@ import re
 from urllib.parse import urlsplit
 from sqlalchemy import text, or_
 from sqlalchemy.exc import SQLAlchemyError
+from services.organization_type_presentation import organization_type_descriptor
 
 CONTRACT = 'organization.profile_settings.v1'
 LIMITS = {'nombre_empresa':150, 'telefono':20, 'direccion':200, 'ciudad':100,
-          'provincia':100, 'pais':100, 'link_web':255, 'logo_url':255}
+          'provincia':100, 'pais':100, 'link_web':255, 'logo_url':255, 'actividad':100}
+CONFIG_TEXT_FIELDS = {'actividad': 'organization_profile_activity'}
 FIELDS = frozenset((*LIMITS, 'latitud', 'longitud', 'horario_json'))
 DAYS = ('Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo')
 HOURS_KEY = 'organization_profile_hours'
@@ -39,6 +41,11 @@ def profile_values(tenant, owner):
     values['logo_url'] = str(getattr(tenant,'logo_url',None) or values['logo_url'])
     values.update({key:getattr(owner,key,None) for key in ('latitud','longitud')})
     config = tenant.configuracion if isinstance(tenant.configuracion,dict) else {}
+    sector = getattr(owner, 'rubro', None)
+    legacy_activity = getattr(sector, 'nombre', None) or getattr(sector, 'clave', None) or ''
+    for field, config_key in CONFIG_TEXT_FIELDS.items():
+        stored = config.get(config_key, legacy_activity)
+        values[field] = stored if isinstance(stored, str) else ''
     hours = config.get(HOURS_KEY, getattr(owner,'horario_json',None))
     values['horario_json'] = deepcopy(hours) if isinstance(hours,list) else []
     return values
@@ -82,6 +89,9 @@ def build_profile_settings(tenant, owner, *, can_edit=False, writes_blocked=Fals
     return {'contract_version':CONTRACT,'tenant':{'id':tenant.id,'slug':tenant.slug},
         'revision':profile_revision(tenant,owner,values),'values':values,
         'can_edit':access['mode']=='editable','editability':access,'save_endpoint':f'/api/admin/tenants/{tenant.slug}/config',
+        'ui': {**organization_type_descriptor(getattr(tenant, 'tipo', None)),
+            'activity_label': 'Rubro o actividad',
+            'activity_description': 'Describe la actividad de la organización. Las funciones y los permisos se administran por separado.'},
         'concurrency':'expected_revision','provider_calls_performed':False}
 
 
@@ -164,10 +174,11 @@ def save_profile_settings(session, tenant_model, user_model, audit_model, *, ten
         changes=validate_changes(data.get('organization_profile'),before['values'])
         changed={key:value for key,value in changes.items() if value!=before['values'][key]}
         for key,value in changed.items():
-            if key=='horario_json':
+            if key=='horario_json' or key in CONFIG_TEXT_FIELDS:
                 if tenant.configuracion is not None and not isinstance(tenant.configuracion,dict):
                     raise ProfileSettingsError('profile_legacy_config_invalid',409)
-                tenant.configuracion={**(tenant.configuracion or {}),HOURS_KEY:value}
+                config_key = HOURS_KEY if key == 'horario_json' else CONFIG_TEXT_FIELDS[key]
+                tenant.configuracion={**(tenant.configuracion or {}),config_key:value}
             else:
                 setattr(owner,key,value)
                 if key=='nombre_empresa': tenant.nombre=value

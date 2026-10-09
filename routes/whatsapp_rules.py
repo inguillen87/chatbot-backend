@@ -334,7 +334,7 @@ def _require_template_pack_capability(user: User, tenant, capability: str) -> se
 
 
 def _template_pack_registry_map(tenant) -> dict[str, dict]:
-    base_catalog = whatsapp_template_pack_catalog()
+    base_catalog = whatsapp_template_pack_catalog(tenant_slug=tenant.slug)
     template_names = {
         str(template.get("name") or "")
         for pack in base_catalog["packs"]
@@ -391,7 +391,7 @@ def _template_pack_registry_map(tenant) -> dict[str, dict]:
 
 
 def _template_pack_catalog_payload(tenant, user: User) -> dict:
-    payload = whatsapp_template_pack_catalog(_template_pack_registry_map(tenant))
+    payload = whatsapp_template_pack_catalog(_template_pack_registry_map(tenant), tenant_slug=tenant.slug)
     capabilities = _template_pack_capabilities(user)
     payload.update(
         {
@@ -1454,7 +1454,7 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
 
 def _materialize_template_pack_drafts_locked(user: User, tenant, vertical: str, payload: dict):
     normalized_vertical = normalize_whatsapp_template_vertical(vertical)
-    pack = whatsapp_template_pack(normalized_vertical)
+    pack = whatsapp_template_pack(normalized_vertical, tenant_slug=tenant.slug)
     if not normalized_vertical or not pack:
         abort(404, description="Pack de plantillas no encontrado")
     requested_version = str(payload.get("pack_version") or pack["pack_version"]).strip()

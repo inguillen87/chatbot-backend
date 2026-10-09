@@ -17,7 +17,8 @@ from utils.roles import is_authorized_superadmin_user
 from services.organization_profile_settings import (
     build_profile_settings, save_profile_settings, ProfileSettingsError,
 )
-from utils.tenant_admin_access import can_manage_tenant_control_plane
+from services.organization_type_presentation import organization_type_descriptor
+from utils.tenant_admin_access import can_manage_tenant_control_plane, resolve_consistent_user_tenant
 from middleware.tenant_context import require_tenant
 from models import (
     AuditEvent,
@@ -231,59 +232,17 @@ def _sanitize_personalization_options_for_storage(raw_options):
 
 
 def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool:
-    """Return True if ``current_user`` can manage the given tenant.
+    """Resolve operational membership consistently with the panel profile.
 
-    Besides the explicit ``tenant_id`` match used in most flows, admins may be
-    linked as the owning municipality/pyme user without ``tenant_id`` filled in.
-    Allow those owners (and platform admins) to administer employees to avoid
-    false 403 responses when legacy data lacks ``tenant_id``.
+    Control-plane writes apply their additional role checks separately. Legacy
+    owners and employees remain supported only when their references agree.
     """
-
     if not current_user or not tenant:
         return False
-
     if is_authorized_superadmin_user(current_user):
         return True
-
-    if current_user.tenant_id and current_user.tenant_id == tenant.id:
-        return True
-
-    if getattr(current_user, "tenant_slug", None) and tenant.slug and current_user.tenant_slug.lower() == tenant.slug.lower():
-        return True
-
-    # Unconditional Owner Check (Strongest)
-    # Handle int vs str comparison just in case
-    if tenant.municipio_id and str(current_user.id) == str(tenant.municipio_id):
-        return True
-    if tenant.pyme_id and str(current_user.id) == str(tenant.pyme_id):
-        return True
-
-    # 3) fallback LEGACY municipio
-    if getattr(current_user, "tipo_chat", None) == "municipio":
-        # a) usuario tiene municipio_id apuntando al tenant (ID)
-        if getattr(current_user, "municipio_id", None) and str(current_user.municipio_id) == str(tenant.id):
-            return True
-        # c) usuario es empleado del dueño (mismo municipio_id)
-        if getattr(tenant, "municipio_id", None) and getattr(current_user, "municipio_id", None):
-            if str(current_user.municipio_id) == str(tenant.municipio_id):
-                return True
-
-    # 4) fallback LEGACY pyme/empresa
-    tipo_chat = getattr(current_user, "tipo_chat", "")
-    if tipo_chat in ("pyme", "empresa"):
-        if getattr(current_user, "empresa_id", None) and current_user.empresa_id == tenant.id:
-            return True
-        if getattr(current_user, "pyme_id", None) and current_user.pyme_id == tenant.id:
-             return True
-        # Check affiliation (employee/admin of same owner)
-        if getattr(tenant, "pyme_id", None):
-            owner_id = tenant.pyme_id
-            if getattr(current_user, "empresa_id", None) == owner_id:
-                return True
-            if getattr(current_user, "pyme_id", None) == owner_id:
-                return True
-
-    return False
+    resolved = resolve_consistent_user_tenant(current_user)
+    return resolved is not None and resolved.id == tenant.id
 
 
 def _survey_response_counts_subquery(tenant_id: int):
@@ -2355,6 +2314,8 @@ def get_tenant_config_bundle(current_user, slug):
     integration_access = integration_access_payload(tenant)
     response = {
         "tenant": {
+            **organization_type_descriptor(tenant.tipo),
+            "id": tenant.id,
             "slug": tenant.slug,
             "nombre": tenant.nombre,
             "tipo": tenant.tipo,
@@ -2716,7 +2677,14 @@ def update_tenant_config_bundle(current_user, slug):
 
     # Update Tenant fields
     tenant_data = data.get('tenant', {})
-    if 'nombre' in tenant_data: tenant.nombre = tenant_data['nombre']
+    if not isinstance(tenant_data, dict):
+        return jsonify({'error': 'Enviá los datos de la organización como un objeto JSON válido.'}), 400
+    if 'nombre' in tenant_data and (not isinstance(tenant_data['nombre'], str) or tenant_data['nombre'] != tenant.nombre):
+        return jsonify({
+            'reason_code': 'organization_name_requires_profile_update',
+            'error': 'Para cambiar el nombre, abrí Datos institucionales y guardá el perfil de la organización.',
+            'save_endpoint': f'/api/admin/tenants/{tenant.slug}/config',
+        }), 409
     if 'logo_url' in tenant_data: tenant.logo_url = tenant_data['logo_url']
     if 'dispatch_email' in tenant_data: tenant.dispatch_email = tenant_data['dispatch_email']
     if 'dispatch_phone' in tenant_data: tenant.dispatch_phone = tenant_data['dispatch_phone']

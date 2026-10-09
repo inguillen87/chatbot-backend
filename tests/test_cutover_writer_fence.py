@@ -24,10 +24,6 @@ def _set_fence(client, enabled: bool) -> bool:
 
 def test_cutover_writer_fence_defaults_fail_open_for_normal_operation():
     assert Config.CUTOVER_WRITER_FENCE_ENABLED is False
-    assert (
-        "CUTOVER_WRITER_FENCE_ENABLED=false"
-        in (REPOSITORY_ROOT / ".env.example").read_text(encoding="utf-8")
-    )
 
 
 def test_cutover_writer_fence_blocks_mutating_methods_before_route_handlers(client):

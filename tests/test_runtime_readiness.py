@@ -70,6 +70,9 @@ def _postgres_engine(**schema_overrides):
         "update_privilege": True,
         "delete_privilege": True,
         "identity_sequence_privilege": True,
+        "auth_tables_present": True,
+        "auth_columns_valid": True,
+        "auth_privileges_valid": True,
     }
     schema_state.update(schema_overrides)
 
@@ -107,7 +110,7 @@ def _postgres_engine(**schema_overrides):
         def execute(self, statement, parameters=None):
             self.statements.append(statement)
             self.statement_parameters.append(parameters)
-            if "AS relation_present" in str(statement):
+            if "AS relation_present" in str(statement) or "AS auth_tables_present" in str(statement):
                 return Result(mapping=schema_state)
             return Result(value=1)
 
@@ -154,7 +157,7 @@ def test_database_and_redis_are_ready_with_short_timeouts():
         )
     ]
     assert redis_client.closed is True
-    assert len(connection.statements) == 1
+    assert len(connection.statements) == 2
     probe_sql = str(connection.statements[0])
     assert "pg_catalog.to_regclass" in probe_sql
     assert "FROM municipio_chat_idempotency_receipt" not in probe_sql
@@ -794,3 +797,21 @@ def test_application_registers_liveness_and_readiness(client):
         "required": False,
         "status": "not_configured",
     }
+
+
+def test_required_auth_session_schema_and_application_role_fail_closed():
+    cases = [('auth_tables_present', 'required_auth_session_schema_missing'),
+             ('auth_columns_valid', 'required_auth_session_schema_incompatible'),
+             ('auth_privileges_valid', 'required_auth_session_privilege_missing')]
+    for field, reason in cases:
+        engine, connection = _postgres_engine(**{field: False})
+        payload = evaluate_runtime_readiness(engine=engine, redis_uri='rediss://redis.invalid/0',
+            production_like=True, redis_factory=lambda **_kwargs: (_ for _ in ()).throw(AssertionError('redis skipped')))
+        assert payload['ready'] is False
+        assert payload['components']['database']['reason_code'] == reason
+        assert payload['components']['redis']['status'] == 'not_checked'
+        assert len(connection.statements) == 2
+        statement = str(connection.statements[1])
+        assert 'auth_session_retirement' in statement
+        assert 'pg_catalog.has_table_privilege' in statement
+        assert 'CREATE TABLE' not in statement

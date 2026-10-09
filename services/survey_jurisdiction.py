@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from flask import current_app
 from sqlalchemy.exc import IntegrityError
@@ -346,13 +346,27 @@ def _receipt_chain_is_valid(rows: list[SurveyContentReceipt]) -> bool:
     return True
 
 
-def _readiness(encuesta: EncEncuesta) -> dict[str, Any]:
+def _readiness(
+    encuesta: EncEncuesta,
+    *,
+    receipt_rows: Sequence[SurveyContentReceipt] | None = None,
+) -> dict[str, Any]:
     content_sha256 = survey_content_sha256(encuesta)
     tenant = db.session.get(TenantProfile, int(encuesta.tenant_id))
     verified_ref = tenant_verified_jurisdiction(tenant) if tenant is not None else None
     survey_ref = _normalized_ref(encuesta.jurisdiction_ref)
     origin = str(encuesta.content_origin or "legacy_unverified").strip().lower()
-    rows = _receipt_rows(encuesta)
+    rows = _receipt_rows(encuesta) if receipt_rows is None else list(receipt_rows)
+    if any(
+        (row.tenant_id, row.survey_id)
+        != (encuesta.tenant_id, encuesta.id)
+        for row in rows
+    ):
+        raise SurveyJurisdictionError(
+            "Los recibos de contenido no corresponden a la encuesta consultada",
+            reason_code="survey_content_receipt_scope_mismatch",
+            action_hint="contact_support",
+        )
     receipt_chain_valid = _receipt_chain_is_valid(rows)
     latest_mutation = next(
         (item for item in reversed(rows) if item.event_type in _MUTATION_EVENTS),
@@ -419,10 +433,14 @@ def _readiness(encuesta: EncEncuesta) -> dict[str, Any]:
     }
 
 
-def jurisdiction_contract(encuesta: EncEncuesta) -> dict[str, Any]:
+def jurisdiction_contract(
+    encuesta: EncEncuesta,
+    *,
+    receipt_rows: Sequence[SurveyContentReceipt] | None = None,
+) -> dict[str, Any]:
     """Read-only admin contract; never creates, binds or refreshes rows."""
 
-    readiness = _readiness(encuesta)
+    readiness = _readiness(encuesta, receipt_rows=receipt_rows)
     config = jurisdiction_gate_configuration()
     publish_enforced, config_valid = _tenant_is_enforced(
         int(encuesta.tenant_id), visibility=False
@@ -545,7 +563,11 @@ def assert_content_mutation_allowed(encuesta: EncEncuesta) -> None:
     )
 
 
-def survey_is_publicly_visible(encuesta: EncEncuesta) -> bool:
+def survey_is_publicly_visible(
+    encuesta: EncEncuesta,
+    *,
+    receipt_rows: Sequence[SurveyContentReceipt] | None = None,
+) -> bool:
     enforced, config_valid = _tenant_is_enforced(
         int(encuesta.tenant_id), visibility=True
     )
@@ -553,7 +575,7 @@ def survey_is_publicly_visible(encuesta: EncEncuesta) -> bool:
         return True
     if not config_valid:
         return False
-    return bool(_readiness(encuesta)["ready"])
+    return bool(_readiness(encuesta, receipt_rows=receipt_rows)["ready"])
 
 
 def _validate_receipt_idempotency_key(value: Any) -> str:

@@ -19,7 +19,7 @@ from flask import (
     send_file,
 )
 from flask_login import current_user
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import quote_plus, urlencode, urlsplit
 
 from extensions import limiter
 from config import (
@@ -38,6 +38,7 @@ from services.encuestas_service import (
     serialize_public_comment,
     create_comentario,
     list_comentarios,
+    normalize_survey_comment_mode,
     reportar_comentario,
     resolve_optional_survey_bearer_user,
     resolve_survey_submission_id,
@@ -392,24 +393,31 @@ def _resolve_comment_social_providers() -> list[dict]:
         for item in configured:
             if isinstance(item, dict):
                 provider_id = str(item.get("id") or item.get("provider") or "").strip().lower()
-                if provider_id:
+                oauth_url = str(item.get("oauthUrl") or item.get("oauth_url") or "").strip()
+                message_origin = str(item.get("messageOrigin") or item.get("message_origin") or "").strip()
+                try:
+                    oauth = urlsplit(oauth_url)
+                    origin = urlsplit(message_origin)
+                    _ = oauth.port, origin.port
+                except ValueError:
+                    continue
+                if (provider_id in {"facebook", "google", "instagram"}
+                    and oauth.scheme == "https" and oauth.netloc and not oauth.username and not oauth.password
+                    and origin.scheme == "https" and origin.netloc and origin.path in {"", "/"}
+                    and not origin.query and not origin.fragment and not origin.username and not origin.password):
                     normalized.append(
                         {
                             "id": provider_id,
                             "label": str(item.get("label") or provider_id.title()),
+                            "oauthUrl": oauth_url,
+                            "messageOrigin": f"https://{origin.netloc}",
+                            "connectLabel": str(item.get("connectLabel") or item.get("label") or provider_id.title()),
                         }
                     )
-            elif isinstance(item, str) and item.strip():
-                provider_id = item.strip().lower()
-                normalized.append({"id": provider_id, "label": provider_id.title()})
         if normalized:
             return normalized
 
-    return [
-        {"id": "facebook", "label": "Facebook"},
-        {"id": "google", "label": "Google"},
-        {"id": "instagram", "label": "Instagram"},
-    ]
+    return []
 
 
 def _attach_comment_social_config(data: dict) -> dict:
@@ -417,12 +425,11 @@ def _attach_comment_social_config(data: dict) -> dict:
         return data
     if data.get("permitir_comentarios"):
         comment_cfg = data.setdefault("commentConfig", {})
-        comment_cfg.setdefault(
-            "requiresSocialToken",
-            _coerce_bool(current_app.config.get("SURVEY_SOCIAL_COMMENT_REQUIRE_TOKEN"), default=False),
-        )
-        comment_cfg.setdefault("acceptedModes", ["anon", "social"])
-        data.setdefault("socialProviders", _resolve_comment_social_providers())
+        providers = _resolve_comment_social_providers()
+        comment_cfg["requiresSocialToken"] = True
+        comment_cfg["acceptedModes"] = ["anon", "social"] if providers else ["anon"]
+        comment_cfg["socialProviders"] = providers
+        data["socialProviders"] = providers
     return data
 
 
@@ -499,7 +506,7 @@ def _enrich_comment_payload_with_social_token(payload: Dict[str, Any]) -> tuple[
         if claim_value:
             payload[payload_key] = claim_value
 
-    current_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+    current_mode = str(payload.get("mode") or payload.get("comment_mode") or payload.get("modo") or "").strip().lower()
     if not current_mode and payload.get("auth_provider"):
         payload["mode"] = "social"
     return payload, False, True
@@ -1481,19 +1488,15 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 payload = {}
             try:
                 payload, invalid_social_token, has_social_token = _enrich_comment_payload_with_social_token(payload)
-                requires_social_token = _coerce_bool(
-                    current_app.config.get("SURVEY_SOCIAL_COMMENT_REQUIRE_TOKEN"),
-                    default=False,
-                )
-                comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
+                comment_mode = normalize_survey_comment_mode(payload)
                 is_social_comment = comment_mode == "social"
-                if invalid_social_token and (is_social_comment or requires_social_token):
+                if invalid_social_token and is_social_comment:
                     raise EncuestaError(
                         "Token social inválido o expirado",
                         status_code=400,
                         payload={"reason_code": "invalid_social_token", "retryable": False},
                     )
-                if requires_social_token and is_social_comment and not has_social_token:
+                if is_social_comment and not has_social_token:
                     raise EncuestaError(
                         "Se requiere token social válido para comentar",
                         status_code=400,
@@ -1521,9 +1524,8 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return "", 204
 
         try:
-            # We fetch encuesta just to ensure the slug is valid, though report doesn't strictly depend on it in service
-            _load_public_encuesta_for_request(slug)
-            reportar_comentario(comentario_id)
+            encuesta = _load_public_encuesta_for_request(slug)
+            reportar_comentario(comentario_id, encuesta_id=encuesta.id)
             return jsonify({"ok": True}), 200
         except EncuestaError as err:
             return _public_error_response(err)

@@ -155,9 +155,16 @@ class TwilioV2GetOnlyClient:
             )
         )
         require(allowed, "twilio_read_endpoint_not_allowlisted")
+        params = (
+            {"PageSize": "1000"}
+            if url in {SENDERS_URL, SERVICES_URL} or url.endswith("/ChannelSenders")
+            else None
+        )
+        if url == SENDERS_URL:
+            params = {**params, "Channel": "whatsapp"}
         response = self._session.get(
             url,
-            params={"PageSize": "1000"} if url in {SENDERS_URL, SERVICES_URL} or url.endswith("/ChannelSenders") else None,
+            params=params,
             auth=(self.account_sid, self._auth_token),
             headers={"Accept": "application/json"},
             allow_redirects=False,
@@ -188,7 +195,7 @@ class TwilioV2GetOnlyClient:
         )
         return _list_payload(
             self._get(f"{SERVICES_URL}/{service_sid}/ChannelSenders"),
-            "channel_senders",
+            "senders",
         )
 
 

@@ -71,20 +71,14 @@ def test_global_authority_is_disabled_by_default_and_malformed_opt_in_fails_clos
     )
 
 
-def test_example_environment_declares_inert_fail_closed_authority_contract():
-    values = {}
-    for raw_line in (REPOSITORY_ROOT / ".env.example").read_text(
-        encoding="utf-8"
-    ).splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key] = value
-
-    assert values[config_gate.GLOBAL_WRITER_RUNTIME_IDENTITY] == ""
-    assert values[config_gate.GLOBAL_WRITER_AUTHORITY_FLAG] == "false"
-    assert values[config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL] == ""
+def test_config_declares_inert_fail_closed_authority_contract():
+    from config import Config
+    values = {name: getattr(Config, name) for name in
+              (config_gate.GLOBAL_WRITER_AUTHORITY_FLAG, config_gate.GLOBAL_WRITER_RUNTIME_IDENTITY,
+               config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL)}
+    assert values[config_gate.GLOBAL_WRITER_RUNTIME_IDENTITY] is None
+    assert values[config_gate.GLOBAL_WRITER_AUTHORITY_FLAG] is False
+    assert values[config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL] is None
     assert config_gate.global_writer_authority_enabled(values) is False
 
     accidentally_enabled = dict(values)
@@ -329,6 +323,8 @@ def test_control_engine_bounds_connect_pool_statement_lock_and_idle_waits(monkey
     )
 
     kwargs = captured["kwargs"]
+    assert kwargs["pool_size"] == 2
+    assert kwargs["max_overflow"] == 1
     assert kwargs["pool_timeout"] == authority.CONTROL_POOL_TIMEOUT_SECONDS
     assert kwargs["connect_args"]["connect_timeout"] == (
         authority.CONTROL_CONNECT_TIMEOUT_SECONDS
@@ -343,6 +339,61 @@ def test_control_engine_bounds_connect_pool_statement_lock_and_idle_waits(monkey
         "idle_in_transaction_session_timeout="
         f"{authority.CONTROL_IDLE_TRANSACTION_TIMEOUT_MS}ms"
     ) in options
+
+
+def test_control_engine_uses_explicit_bounded_capacity_and_rebuilds_cached_pool(monkeypatch):
+    created = []
+
+    class Engine:
+        disposed = False
+
+        def dispose(self):
+            self.disposed = True
+
+    def create_engine(url, **kwargs):
+        engine = Engine()
+        created.append((engine, kwargs))
+        return engine
+
+    monkeypatch.setattr(authority, "_CONTROL_ENGINE", None)
+    monkeypatch.setattr(authority, "_CONTROL_ENGINE_FINGERPRINT", None)
+    monkeypatch.setattr(authority, "create_engine", create_engine)
+    config = {config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL:
+        "postgresql://operator:secret@control.invalid/authority?sslmode=require",
+        "CUTOVER_GLOBAL_WRITER_AUTHORITY_POOL_SIZE": "8",
+        "CUTOVER_GLOBAL_WRITER_AUTHORITY_MAX_OVERFLOW": "8"}
+    first = authority._control_database_engine(config)
+    assert authority._control_database_engine(config) is first
+    assert len(created) == 1
+    assert created[0][1]["pool_size"] == 8
+    assert created[0][1]["max_overflow"] == 8
+    assert created[0][1]["pool_timeout"] == 2
+    config["CUTOVER_GLOBAL_WRITER_AUTHORITY_MAX_OVERFLOW"] = "0"
+    assert authority._control_database_engine(config) is not first
+    assert first.disposed
+    assert len(created) == 2
+    assert created[1][1]["max_overflow"] == 0
+
+
+@pytest.mark.parametrize("key,value", [
+    ("CUTOVER_GLOBAL_WRITER_AUTHORITY_POOL_SIZE", value)
+    for value in ("0", "17", "-1", "1.5", True, "١", "")
+] + [
+    ("CUTOVER_GLOBAL_WRITER_AUTHORITY_MAX_OVERFLOW", value)
+    for value in ("17", "-1", "1.5", False, "", "unbounded")
+])
+def test_invalid_control_pool_settings_fail_closed_before_any_connection(monkeypatch, key, value):
+    monkeypatch.setattr(authority, "create_engine", lambda *_a, **_k:
+        pytest.fail("invalid capacity must not create a connection pool"))
+    decision = authority.evaluate_global_writer_authority({
+        config_gate.GLOBAL_WRITER_AUTHORITY_FLAG: True,
+        config_gate.GLOBAL_WRITER_RUNTIME_IDENTITY: "vercel",
+        config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL:
+            "postgresql://operator:secret@control.invalid/authority?sslmode=require",
+        key: value,
+    })
+    assert not decision.allowed
+    assert decision.reason_code == "global_writer_authority_control_pool_configuration_invalid"
 
 
 def test_control_database_outage_is_redacted_and_fail_closed(monkeypatch):

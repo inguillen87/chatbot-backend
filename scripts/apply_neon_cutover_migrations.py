@@ -62,6 +62,7 @@ GOVERNMENT_LAUNCH_REVISION = "20260905_government_launch_v1"
 MUNICIPIO_REPLY_REVISION = "20260905_municipio_reply_v1"
 MUNICIPIO_HANDOFF_REVISION = "20260905_municipio_handoff_v1"
 FLASK_SESSIONS_REVISION = "20260906_flask_sessions_v1"
+AUTH_SESSION_REVISION = "20261001_auth_session_v1"
 MIGRATION_STEPS = (
     REPAIR_REVISION,
     IDEMPOTENCY_REVISION,
@@ -78,6 +79,7 @@ MIGRATION_STEPS = (
     MUNICIPIO_REPLY_REVISION,
     MUNICIPIO_HANDOFF_REVISION,
     FLASK_SESSIONS_REVISION,
+    AUTH_SESSION_REVISION,
 )
 FINAL_MIGRATION_REVISION = REVIEWED_MIGRATION_HEAD
 EXPECTED_MIGRATION_SOURCE_SHA256 = {
@@ -124,6 +126,7 @@ EXPECTED_MIGRATION_SOURCE_SHA256 = {
     FLASK_SESSIONS_REVISION: (
         "b8e4e5bcc2b7c75686e344a7d66fad9161e8d41739e106ddd3868199ca1f3ced"
     ),
+    AUTH_SESSION_REVISION: "5cd8ebc3cb695b79ab9ebfe711ce7e69d310ee7eeb4f61521433570ac51204f7",
 }
 
 STATEMENT_TIMEOUT_MS = 120_000
@@ -609,6 +612,43 @@ POST_SYNC_SCHEMA_REQUIREMENTS: Mapping[str, tuple[Mapping[str, Any], ...]] = {
                 "flask_sessions_pkey": (("id",), True),
                 "flask_sessions_session_id_key": (("session_id",), True),
             },
+        },
+    ),
+    AUTH_SESSION_REVISION: (
+        {
+            "table": "auth_provider_session",
+            "columns": {"provider", "provider_session_id", "revoked_at", "reason", "revision", "remote_status"},
+            "exact_columns": True,
+            "constraints": {"auth_provider_session_pkey"},
+            "foreign_keys": set(), "exact_foreign_keys": True,
+            "indexes": {"auth_provider_session_pkey": (("provider", "provider_session_id"), True)},
+        },
+        {
+            "table": "auth_session",
+            "columns": {"id", "actor_id", "actor_version", "provider", "audience", "provider_session_id", "flask_sid_hash", "retirement_nonce", "created_at", "expires_at", "revoked_at", "revision"},
+            "exact_columns": True,
+            "constraints": {"auth_session_pkey", "auth_session_actor_id_fkey", "fk_auth_session_provider_sid", "ck_auth_session_provider", "ck_auth_session_revision"},
+            "foreign_keys": {("actor_id", "user", "id", "NO ACTION"), ("provider", "auth_provider_session", "provider", "NO ACTION"), ("provider_session_id", "auth_provider_session", "provider_session_id", "NO ACTION")},
+            "exact_foreign_keys": True,
+            "indexes": {"auth_session_pkey": (("id",), True), "ix_auth_session_actor_id": (("actor_id",), False), "ix_auth_session_provider_session_id": (("provider_session_id",), False)},
+        },
+        {
+            "table": "auth_session_audit",
+            "columns": {"id", "lineage_id", "actor_id", "event_type", "request_id", "created_at"},
+            "exact_columns": True,
+            "constraints": {"auth_session_audit_pkey", "auth_session_audit_lineage_id_fkey", "auth_session_audit_actor_id_fkey"},
+            "foreign_keys": {("lineage_id", "auth_session", "id", "NO ACTION"), ("actor_id", "user", "id", "NO ACTION")},
+            "exact_foreign_keys": True,
+            "indexes": {"auth_session_audit_pkey": (("id",), True), "ix_auth_session_audit_lineage_id": (("lineage_id",), False)},
+        },
+        {
+            "table": "auth_session_retirement",
+            "columns": {"request_id", "lineage_id", "actor_id", "receipt", "created_at"},
+            "exact_columns": True,
+            "constraints": {"auth_session_retirement_pkey", "auth_session_retirement_lineage_id_fkey", "auth_session_retirement_actor_id_fkey"},
+            "foreign_keys": {("lineage_id", "auth_session", "id", "NO ACTION"), ("actor_id", "user", "id", "NO ACTION")},
+            "exact_foreign_keys": True,
+            "indexes": {"auth_session_retirement_pkey": (("request_id",), True)},
         },
     ),
 }
@@ -1143,13 +1183,14 @@ def _foreign_key_contract(
                   ON referential.constraint_catalog = constraint_row.constraint_catalog
                  AND referential.constraint_schema = constraint_row.constraint_schema
                  AND referential.constraint_name = constraint_row.constraint_name
-                JOIN information_schema.constraint_column_usage AS referenced_column
+                JOIN information_schema.key_column_usage AS referenced_column
                   ON referenced_column.constraint_catalog =
                      referential.unique_constraint_catalog
                  AND referenced_column.constraint_schema =
                      referential.unique_constraint_schema
                  AND referenced_column.constraint_name =
                      referential.unique_constraint_name
+                 AND referenced_column.ordinal_position = key_column.position_in_unique_constraint
                 WHERE constraint_row.table_schema = 'public'
                   AND constraint_row.table_name = :table_name
                   AND constraint_row.constraint_type = 'FOREIGN KEY'

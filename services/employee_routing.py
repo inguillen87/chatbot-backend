@@ -14,11 +14,16 @@ from services.employee_ticket_access import (
     ticket_assignee_category_values_are_compatible,
 )
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.ticket_category_authority import (
+    build_municipio_category_authorities,
+    resolve_municipio_category_authority,
+)
 from services.territorial_evidence import canonicalize_territorial_category
 from utils.roles import ROLE_EMPLEADO, canonical_role
 
 
 EMPLOYEE_ROUTING_CONTRACT_VERSION = "employee.routing.v1"
+CATEGORY_INVENTORY_CONTRACT_VERSION = "employee.category_inventory.v1"
 
 _CLOSED_STATES = {"resuelto", "cerrado", "closed", "resolved", "entregado", "completed", "completado"}
 _DEFAULT_OPERATIONAL_CHANNELS = ("web", "whatsapp")
@@ -223,7 +228,33 @@ def _append_config_values(target: set[str], cfg: dict[str, Any], *keys: str) -> 
         target.update(normalize_scope_list(values, limit=80))
 
 
-def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _record_category_inventory_source(
+    evidence: dict[str, dict[str, Any]] | None,
+    values: Any,
+    source: str,
+    *,
+    category_id: int | None = None,
+) -> None:
+    if evidence is None:
+        return
+    for value in values:
+        key = category_label_key(value)
+        if not key:
+            if category_id is None:
+                continue
+            key = f"redacted_category:{category_id}"
+        item = evidence.setdefault(key, {"label": str(value or "").strip(), "sources": set(), "ids": set()})
+        item["sources"].add(source)
+        if category_id is not None:
+            item["ids"].add(category_id)
+
+
+def tenant_operational_dimensions(
+    tenant: TenantProfile,
+    ticket_snapshots: list[dict[str, Any]] | None = None,
+    *,
+    category_inventory_sources: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Return real/configured dimensions useful for employee routing screens."""
 
     cfg = _tenant_config(tenant)
@@ -249,17 +280,23 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
         sources["zonas"].append("open_tickets")
         sources["channels"].append("open_tickets")
 
+    persisted_category_rows = CategoriaTicket.query.filter_by(tenant_id=tenant.id).all()
     persisted_categories = [
         str(row.nombre or "").strip().lower()
-        for row in CategoriaTicket.query.filter_by(tenant_id=tenant.id).all()
+        for row in persisted_category_rows
         if str(row.nombre or "").strip()
     ]
+    for row in persisted_category_rows:
+        _record_category_inventory_source(
+            category_inventory_sources, [row.nombre], "tenant_category_catalog", category_id=row.id
+        )
     if persisted_categories:
         categories.update(persisted_categories)
         sources["categorias"].append("categorias_ticket")
 
+    configured_categories: set[str] = set()
     _append_config_values(
-        categories,
+        configured_categories,
         routing_cfg,
         "categorias",
         "categories",
@@ -267,23 +304,27 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
         "default_ticket_categories",
     )
     _append_config_values(
-        categories,
+        configured_categories,
         cfg,
         "employee_categories",
         "ticket_categories",
         "categorias_ticket",
         "default_ticket_categories",
     )
+    categories.update(configured_categories)
+    _record_category_inventory_source(category_inventory_sources, configured_categories, "tenant_config")
     if routing_cfg or cfg:
         sources["categorias"].append("tenant_config")
 
     if not categories and is_education_tenant(tenant):
         categories.update(normalize_scope_list([item["key"] for item in education_case_taxonomy()]))
         sources["categorias"].append("education_taxonomy")
+        _record_category_inventory_source(category_inventory_sources, categories, "education_taxonomy")
 
     if not categories and str(tenant.tipo or "").lower() in {"municipio", "gobierno"}:
         categories.update(normalize_scope_list(list(CATEGORIAS_RECLAMO), limit=80))
         sources["categorias"].append("municipio_baseline_taxonomy")
+        _record_category_inventory_source(category_inventory_sources, categories, "municipio_baseline_taxonomy")
 
     if not categories and str(tenant.tipo or "").lower() in {"pyme", "empresa", "commerce"}:
         owner_id = getattr(tenant, "pyme_id", None) or getattr(tenant, "municipio_id", None)
@@ -292,6 +333,17 @@ def tenant_operational_dimensions(tenant: TenantProfile, ticket_snapshots: list[
             query = query.filter((CatalogoItem.tenant_id == tenant.id) | (CatalogoItem.user_id == owner_id))
         catalog_categories = [str(row[0] or "").strip().lower() for row in query.with_entities(CatalogoItem.categoria).distinct().limit(80).all()]
         categories.update(normalize_scope_list(catalog_categories, limit=80))
+        if category_inventory_sources is not None:
+            # Keep legacy dimensions unchanged while excluding explicit foreign
+            # catalog ownership from the new tenant-scoped inventory.
+            inventory_catalog_categories = [
+                row[0]
+                for row in query.filter(or_(
+                    CatalogoItem.tenant_id == tenant.id,
+                    CatalogoItem.tenant_id.is_(None),
+                )).with_entities(CatalogoItem.categoria).distinct().limit(80).all()
+            ]
+            _record_category_inventory_source(category_inventory_sources, inventory_catalog_categories, "catalog_categories")
         if catalog_categories:
             sources["categorias"].append("catalog_categories")
 
@@ -344,6 +396,7 @@ def _ticket_snapshot(
     ticket: Any,
     *,
     category_names_by_id: dict[int, str] | None = None,
+    municipio_category_authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     category_names_by_id = category_names_by_id or {}
     if isinstance(ticket, TenantTicket):
@@ -370,10 +423,11 @@ def _ticket_snapshot(
             "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
         }
     if isinstance(ticket, MunicipioTicket):
-        persisted_category = category_names_by_id.get(getattr(ticket, "categoria_id", None))
-        category = canonicalize_territorial_category(
-            persisted_category or ticket.categoria
-        )["category"]
+        # Routing labels remain useful for the existing eligibility policy;
+        # they must not confer authority that the private detail cannot verify.
+        authority = (municipio_category_authority if municipio_category_authority is not None
+                     else resolve_municipio_category_authority(ticket))
+        category = authority["authoritative_category"] if authority["verified"] else None
         return {
             "source_model": "MunicipioTicket",
             "id": ticket.id,
@@ -381,7 +435,8 @@ def _ticket_snapshot(
             "title": ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket}",
             "status": ticket.estado,
             "category": _norm(ticket.categoria, "sin_categoria"),
-            "authoritative_category": _norm(category, "sin_categoria"),
+            "authoritative_category": _norm(category, "sin_categoria") if category else None,
+            "category_authority": authority,
             "category_id": getattr(ticket, "categoria_id", None),
             "zone": _norm(ticket.distrito, "sin_zona"),
             "channel": _norm(ticket.canal_ingreso, "whatsapp"),
@@ -391,9 +446,7 @@ def _ticket_snapshot(
             "updated_at": (ticket.ultima_actividad or ticket.fecha).isoformat() if (ticket.ultima_actividad or ticket.fecha) else None,
         }
     persisted_category = category_names_by_id.get(getattr(ticket, "categoria_id", None))
-    category = canonicalize_territorial_category(
-        persisted_category or ticket.categoria
-    )["category"]
+    category = persisted_category or canonicalize_territorial_category(ticket.categoria)["category"]
     return {
         "source_model": "PymeTicket",
         "id": ticket.id,
@@ -452,21 +505,34 @@ def _tenant_tickets(tenant: TenantProfile) -> list[Any]:
 
 def tenant_open_ticket_snapshots(tenant: TenantProfile) -> list[dict[str, Any]]:
     tickets = _tenant_tickets(tenant)
+    municipal_authorities = build_municipio_category_authorities(
+        [ticket for ticket in tickets if isinstance(ticket, MunicipioTicket)],
+        tenant_id=tenant.id,
+    )
+    # Municipal catalog references were already resolved in the shared batch.
+    # Preserve the separate Pyme read model without adding a query per ticket.
     category_ids = {
         int(ticket.categoria_id)
         for ticket in tickets
-        if getattr(ticket, "categoria_id", None)
+        if isinstance(ticket, PymeTicket) and getattr(ticket, "categoria_id", None)
     }
     category_names_by_id = {
         int(category.id): str(category.nombre or "").strip().lower()
         for category in (
-            CategoriaTicket.query.filter(CategoriaTicket.id.in_(category_ids)).all()
+            CategoriaTicket.query.filter(
+                CategoriaTicket.tenant_id == tenant.id,
+                CategoriaTicket.id.in_(category_ids),
+            ).all()
             if category_ids
             else []
         )
     }
     return [
-        _ticket_snapshot(ticket, category_names_by_id=category_names_by_id)
+        _ticket_snapshot(
+            ticket, category_names_by_id=category_names_by_id,
+            municipio_category_authority=municipal_authorities.get(ticket.id)
+            if isinstance(ticket, MunicipioTicket) else None,
+        )
         for ticket in tickets
     ]
 
@@ -502,7 +568,10 @@ def score_employee_for_ticket(emp: User, ticket: dict[str, Any], workload: int =
     if isinstance(category_id, int) and category_id in persisted_scope.ids:
         score += 45
         reasons.append("category_id_match")
-    elif authoritative_category in scope["categorias"]:
+    elif (
+        authoritative_category in scope["categorias"]
+        or canonicalize_territorial_category(authoritative_category)["category"] in scope["categorias"]
+    ):
         score += 45
         reasons.append("category_match")
     if ticket["zone"] in scope["zonas"]:
@@ -560,6 +629,107 @@ def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], work
     return candidates[0] if candidates else None
 
 
+def _inventory_category_label(value: Any, *, known_category: bool = False) -> str | None:
+    label = str(value or "").strip()
+    # Only category fields enter this inventory. No address, case title or
+    # contact field is used, and structurally unsafe labels remain redacted.
+    if (
+        not is_valid_employee_category_label(label)
+        or category_label_key(label) == "sin_categoria"
+        or (not known_category and any(character.isdigit() for character in label))
+        or (not known_category and any(character in label for character in (",", ";")))
+        or any(character in label for character in ("\n", "\r"))
+    ):
+        return None
+    return label
+
+
+def _build_category_inventory(
+    tenant: TenantProfile,
+    tickets: list[dict[str, Any]],
+    employees: list[User],
+    evidence: dict[str, dict[str, Any]],
+    *,
+    viewer_scope: str,
+) -> dict[str, Any]:
+    items: dict[str, dict[str, Any]] = {}
+    eligible_ids: dict[str, set[int]] = {}
+
+    def add_item(key: str, label: str) -> dict[str, Any]:
+        return items.setdefault(key, {
+            "key": key,
+            "label": label,
+            "persisted_category_ids": [],
+            "source_types": [],
+            "open_count": 0,
+            "unassigned_count": 0,
+            "eligible_employee_count": None,
+            "coverage_reason_code": "no_current_open_ticket_evidence",
+        })
+
+    scoped_sources = {
+        key: source
+        for key, source in evidence.items()
+        if viewer_scope != "employee_categories"
+        or (employees and any(
+            employee_ticket_category_values_allow(
+                employees[0], category=key, category_id=category_id
+            )
+            for category_id in source["ids"] or [None]
+        ))
+    }
+    persisted_ids = {category_id for source in scoped_sources.values() for category_id in source["ids"]}
+    redacted_persisted_ids: set[int] = set()
+    for key, source in scoped_sources.items():
+        label = _inventory_category_label(source["label"], known_category=True)
+        if label is None:
+            redacted_persisted_ids.update(source["ids"])
+            continue
+        item = add_item(key, label)
+        item["persisted_category_ids"] = sorted(source["ids"])
+        item["source_types"] = sorted(source["sources"])
+
+    for ticket in tickets:
+        category = ticket.get("authoritative_category") or ticket.get("category")
+        source = scoped_sources.get(category_label_key(category)) or {}
+        label = _inventory_category_label(category, known_category=bool(source))
+        key = category_label_key(category) if label else "unclassified"
+        item = add_item(key, label or "Tema pendiente de clasificación")
+        item["open_count"] += 1
+        item["unassigned_count"] += int(not ticket.get("assignee_id"))
+        item["source_types"] = sorted(set(item["source_types"]) | {"open_tickets"})
+        eligible_ids.setdefault(key, set()).update(
+            employee.id
+            for employee in employees
+            if ticket_assignee_category_values_are_compatible(
+                employee,
+                category=category,
+                category_id=ticket.get("category_id"),
+            )
+        )
+        item["eligible_employee_count"] = len(eligible_ids[key])
+        item["coverage_reason_code"] = "current_open_ticket_eligibility"
+
+    inventory_items = sorted(items.values(), key=lambda item: item["key"])
+    return {
+        "contract_version": CATEGORY_INVENTORY_CONTRACT_VERSION,
+        "tenant": {"id": tenant.id, "slug": tenant.slug},
+        "population": "open_tickets",
+        "viewer_scope": viewer_scope,
+        "coverage_basis": "employees_eligible_for_at_least_one_current_open_ticket",
+        "read_only": True,
+        "writes_performed": False,
+        "summary": {
+            "persisted_categories": len(persisted_ids),
+            "redacted_persisted_categories": len(redacted_persisted_ids),
+            "detected_topics": sum(not item["persisted_category_ids"] and item["open_count"] > 0 for item in inventory_items),
+            "open_count": len(tickets),
+            "unassigned_count": sum(not ticket.get("assignee_id") for ticket in tickets),
+        },
+        "items": inventory_items,
+    }
+
+
 def build_employee_routing_payload(
     tenant: TenantProfile,
     *,
@@ -596,7 +766,10 @@ def build_employee_routing_payload(
     # recommendations for their authorized category slice.
     workloads = workload_from_snapshots(all_tickets)
     unassigned = [ticket for ticket in tickets if not ticket.get("assignee_id")]
-    supported_dimensions = tenant_operational_dimensions(tenant, tickets)
+    inventory_sources: dict[str, dict[str, Any]] = {}
+    supported_dimensions = tenant_operational_dimensions(
+        tenant, tickets, category_inventory_sources=inventory_sources
+    )
 
     categories = sorted(
         set(supported_dimensions["categorias"])
@@ -647,6 +820,10 @@ def build_employee_routing_payload(
             "sources": supported_dimensions.get("sources") or {},
         },
         "employees": employee_items,
+        "category_inventory": _build_category_inventory(
+            tenant, tickets, employees, inventory_sources,
+            viewer_scope="employee_categories" if viewer_is_limited_employee else "tenant_dispatch",
+        ),
         "queues": {
             "open": tickets,
             "unassigned": unassigned,

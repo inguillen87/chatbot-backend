@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import base64
 import logging
 import os
@@ -16,7 +16,13 @@ from services.llm_provider_network_policy import (
     require_provider_network,
 )
 from services.provider_platform import is_sender_ready_status
-from services.render_env_sync import sync_render_env_var
+from services.whatsapp_operation_availability import (
+    build_whatsapp_operation_availability,
+    legacy_subaccount_token_candidates,
+    normalize_whatsapp_sender_id,
+    subaccount_token_ref_names,
+    tenant_configuration_snapshot,
+)
 
 
 CONTRACT_VERSION = "twilio.tech_provider.v1"
@@ -319,6 +325,62 @@ def _backend_base_url(config: Mapping[str, Any]) -> str:
     ).rstrip("/")
 
 
+def _canonical_voice_url(
+    value: Any, *, base_url: str, tenant_slug: str, path: str, default_url: str,
+) -> str:
+    """Project known historical callbacks without writing provider or tenant state."""
+    current = _clean(value) or default_url
+    try:
+        old = urlsplit(current)
+        if (
+            old.scheme not in {"http", "https"}
+            or old.hostname != "chatbot-backend-2e14.onrender.com"
+            or old.username is not None or old.password is not None
+            or old.port not in {None, 80 if old.scheme == "http" else 443}
+            or old.path != path
+        ):
+            return current
+        canonical = urlsplit(base_url)
+        if (
+            canonical.scheme not in {"http", "https"} or not canonical.hostname
+            or canonical.username is not None or canonical.password is not None
+            or canonical.query or canonical.fragment
+        ):
+            return current
+        # Reject malformed ports before using the trusted application's origin.
+        canonical.port
+    except ValueError:
+        return current
+    try:
+        pairs = parse_qsl(old.query, keep_blank_values=True, max_num_fields=64)
+    except ValueError:
+        return default_url
+
+    selectors = {
+        key: [value for candidate, value in pairs if candidate == key]
+        for key in ("tenant", "tenant_slug", "vertical", "sector", "intent")
+    }
+    tenant_values = selectors["tenant"] + selectors["tenant_slug"]
+    valid_scope = (
+        bool(tenant_slug)
+        and not old.fragment
+        and all(key in selectors for key, _value in pairs)
+        and (bool(tenant_values) or path == "/voice/status")
+        and all(len(values) <= 1 for values in selectors.values())
+        and all(value == tenant_slug for value in tenant_values)
+        and all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value)
+                for key in ("vertical", "sector", "intent") for value in selectors[key])
+        and (not selectors["vertical"] or not selectors["sector"]
+             or selectors["vertical"] == selectors["sector"])
+    )
+    if not valid_scope:
+        return default_url
+    return urlunsplit((
+        canonical.scheme, canonical.netloc, canonical.path.rstrip("/") + path,
+        old.query, "",
+    ))
+
+
 def _frontend_base_url(config: Mapping[str, Any]) -> str:
     return (
         _clean(config.get("PUBLIC_FRONTEND_URL"))
@@ -381,20 +443,23 @@ def _build_setup_health(
     state: Mapping[str, Any],
     env: Mapping[str, Any],
     base_url: str,
+    credential_storage: Mapping[str, Any] | None = None,
+    operation_availability: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     sender_status = _clean(state.get("sender_status")).upper()
-    sender_online = is_sender_ready_status(sender_status) or _step_done(sender_status)
+    sender_online = is_sender_ready_status(sender_status)
+    operations = (operation_availability or {}).get("operations") or {}
+    poll_operation = operations.get("poll_sender_status") or {}
+    owned_vault_blocked = poll_operation.get("reason_code") == "twilio_vault_onboarding_integration_required"
     has_subaccount = bool(state.get("twilio_account_sid"))
     has_messaging_service = bool(state.get("messaging_service_sid"))
     has_meta_account = is_meta_embedded_signup_complete(state)
     has_sender = bool(state.get("sender_sid") or state.get("sender_id"))
     has_voice = bool(state.get("voice_twiml_app_sid")) or _step_done(state.get("voice_status"))
     webhooks_ready = bool(env.get("ready") and base_url)
-    templates_ready = bool(
-        state.get("template_registry_ready")
-        or state.get("templates_ready")
-        or state.get("content_templates_ready")
-    )
+    templates_ready = any(state.get(key) is True for key in (
+        "template_registry_ready", "templates_ready", "content_templates_ready",
+    ))
 
     checklist = [
         _checklist_item(
@@ -437,7 +502,7 @@ def _build_setup_health(
         _checklist_item(
             item_id="sender_online",
             label="Canal online",
-            description="El sender ya puede enviar y recibir mensajes reales.",
+            description="Último estado registrado del sender; no confirma una entrega real.",
             done=sender_online,
             status=sender_status.lower() if sender_status else "pending",
             action="poll_sender_status",
@@ -460,7 +525,7 @@ def _build_setup_health(
         _checklist_item(
             item_id="templates_webviews",
             label="Plantillas y webviews",
-            description="Menus, CTAs, pagos, pedidos, reclamos y seguimientos listos para WhatsApp.",
+            description="Configuración registrada de menús y acciones; su aprobación y entrega requieren comprobación.",
             done=templates_ready,
             status="ready" if templates_ready else "review_required",
             action="review_templates_and_webviews",
@@ -469,7 +534,14 @@ def _build_setup_health(
     ]
     completed = sum(1 for item in checklist if item["done"])
     blockers: list[dict[str, Any]] = []
-    if not env.get("ready"):
+    if owned_vault_blocked:
+        blockers.append({
+            "code": "twilio_vault_onboarding_integration_required",
+            "label": "Activación segura pendiente",
+            "detail": poll_operation.get("message"),
+            "action": "wait_for_platform_activation",
+        })
+    elif not env.get("ready"):
         blockers.append(
             {
                 "code": "missing_platform_env",
@@ -479,12 +551,13 @@ def _build_setup_health(
             }
         )
     elif not has_subaccount or not has_messaging_service:
+        activation_blocked = credential_storage is not None and credential_storage.get("provisioning_ready") is not True
         blockers.append(
             {
-                "code": "tenant_infra_pending",
-                "label": "Falta preparar infraestructura del tenant",
-                "detail": "Crear subcuenta y Messaging Service desde Chatboc.",
-                "action": "prepare_activation",
+                "code": "tenant_secure_activation_pending" if activation_blocked else "tenant_infra_pending",
+                "label": "Activación de la organización pendiente" if activation_blocked else "Falta preparar infraestructura del tenant",
+                "detail": credential_storage.get("message") if activation_blocked else "Crear subcuenta y Messaging Service desde Chatboc.",
+                "action": "wait_for_platform_activation" if activation_blocked else "prepare_activation",
             }
         )
     elif not has_meta_account:
@@ -497,23 +570,33 @@ def _build_setup_health(
             }
         )
     elif not has_sender:
+        register_operation = operations.get("register_sender") or {}
+        registration_blocked = bool(operations) and register_operation.get("can_execute") is not True
         blockers.append(
             {
-                "code": "sender_registration_pending",
-                "label": "Falta registrar sender",
-                "detail": "Registrar o asociar el numero de WhatsApp productivo.",
-                "action": "register_sender",
+                "code": register_operation.get("reason_code") if registration_blocked else "sender_registration_pending",
+                "label": "Registro del canal pendiente" if registration_blocked else "Falta registrar sender",
+                "detail": register_operation.get("message") if registration_blocked else "Registrar o asociar el numero de WhatsApp productivo.",
+                "action": "wait_for_platform_activation" if registration_blocked else "register_sender",
             }
         )
     elif not sender_online:
+        polling_blocked = bool(operations) and poll_operation.get("can_execute") is not True
         blockers.append(
             {
-                "code": "sender_not_online",
-                "label": "Sender todavia no esta online",
-                "detail": f"Estado actual: {sender_status or 'pendiente'}.",
-                "action": "poll_sender_status",
+                "code": poll_operation.get("reason_code") if polling_blocked else "sender_not_online",
+                "label": "Comprobación del canal pendiente" if polling_blocked else "Sender todavia no esta online",
+                "detail": poll_operation.get("message") if polling_blocked else f"Estado actual: {sender_status or 'pendiente'}.",
+                "action": "wait_for_platform_activation" if polling_blocked else "poll_sender_status",
             }
         )
+    elif operations and poll_operation.get("can_execute") is not True:
+        blockers.append({
+            "code": poll_operation.get("reason_code") or "sender_status_unavailable",
+            "label": "Comprobación del canal pendiente",
+            "detail": poll_operation.get("message"),
+            "action": "wait_for_platform_activation",
+        })
 
     if blockers:
         next_action = blockers[0]["action"]
@@ -522,7 +605,7 @@ def _build_setup_health(
     elif not templates_ready:
         next_action = "review_templates_and_webviews"
     else:
-        next_action = "send_whatsapp_smoke_test"
+        next_action = "await_live_test_support"
 
     if not env.get("ready"):
         health_status = "blocked"
@@ -531,7 +614,7 @@ def _build_setup_health(
     elif completed < len(checklist):
         health_status = "in_progress"
     else:
-        health_status = "ready"
+        health_status = "configuration_complete"
 
     return {
         "contract_version": "twilio.tech_provider.setup_health.v1",
@@ -542,6 +625,8 @@ def _build_setup_health(
         "recommended_next_action": next_action,
         "blockers": blockers,
         "operator_checklist": checklist,
+        "operation_availability": operation_availability,
+        "delivery_accepted": False,
         "smoke_tests": {
             "provider_status": f"/api/v2/tenants/{tenant_slug}/integrations/whatsapp/status",
             "whatsapp_experience": f"/api/v2/tenants/{tenant_slug}/whatsapp/experience",
@@ -558,6 +643,8 @@ def _build_smoke_playbook(
     setup_health: Mapping[str, Any],
     env: Mapping[str, Any],
 ) -> dict[str, Any]:
+    operations = (setup_health.get("operation_availability") or {}).get("operations") or {}
+    poll_operation = operations.get("poll_sender_status") or {}
     tests = [
         {
             "id": "provider_status",
@@ -617,22 +704,26 @@ def _build_smoke_playbook(
             "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/sender-status",
             "execution_mode": "status_poll",
             "danger_level": "safe",
-            "can_execute": any(
+            "can_execute": poll_operation.get("can_execute") is True and any(
                 item.get("id") == "sender_registration" and item.get("done")
                 for item in setup_health.get("operator_checklist") or []
             ),
             "requires": ["sender_registration"],
             "validates": ["sender_online", "meta_approval"],
+            "reason_code": poll_operation.get("reason_code"),
+            "message": poll_operation.get("message"),
         },
         {
             "id": "live_whatsapp_message",
             "label": "Prueba real WhatsApp",
-            "description": "Reservada para cuando el sender este online; debe pedir confirmacion explicita antes de enviar.",
+            "description": "La prueba real todavía no está habilitada; la configuración registrada se conserva.",
             "method": "POST",
             "endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/smoke-test/live_whatsapp_message",
             "execution_mode": "manual_confirmation_required",
             "danger_level": "real_message",
-            "can_execute": setup_health.get("status") == "ready",
+            "can_execute": False,
+            "reason_code": "execution_not_implemented",
+            "message": "La prueba real todavía no está habilitada; la configuración registrada se conserva.",
             "requires": ["sender_online", "templates_webviews"],
             "validates": ["envio_real", "delivery_status", "inbound_reply"],
             "confirmation_required": True,
@@ -747,13 +838,7 @@ def _safe_env_suffix(value: Any) -> str:
 
 
 def _subaccount_token_ref_names(account_sid: str | None, tenant_slug: str | None = None) -> list[str]:
-    names: list[str] = []
-    if account_sid:
-        names.append(f"TWILIO_SUBACCOUNT_AUTH_TOKEN_{_safe_env_suffix(account_sid)}")
-    if tenant_slug:
-        names.append(f"TWILIO_SUBACCOUNT_AUTH_TOKEN_{_safe_env_suffix(tenant_slug)}")
-    names.append("TWILIO_SUBACCOUNT_AUTH_TOKEN")
-    return list(dict.fromkeys(names))
+    return subaccount_token_ref_names(account_sid, tenant_slug)
 
 
 def _read_config_or_env(config: Mapping[str, Any], key: str) -> str:
@@ -767,23 +852,9 @@ def _resolve_subaccount_auth_token(
     app_config: Mapping[str, Any],
     allow_global_fallback: bool = True,
 ) -> tuple[str | None, list[str]]:
-    subaccount_sid = _clean(state.get("twilio_account_sid"))
-    candidates: list[str] = []
-    explicit_ref = _clean(state.get("twilio_subaccount_token_ref"))
-    if explicit_ref:
-        candidates.append(explicit_ref)
-    for alias in state.get("twilio_subaccount_token_ref_aliases") or []:
-        alias_key = _clean(alias)
-        if alias_key:
-            candidates.append(alias_key)
-    generated_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
-    if not allow_global_fallback:
-        generated_refs = [
-            key for key in generated_refs
-            if key != "TWILIO_SUBACCOUNT_AUTH_TOKEN"
-        ]
-    candidates.extend(generated_refs)
-    candidates = list(dict.fromkeys(candidates))
+    candidates = legacy_subaccount_token_candidates(
+        state, tenant_slug, allow_global_fallback=allow_global_fallback,
+    )
     for key in candidates:
         token = _read_config_or_env(app_config, key)
         if token:
@@ -809,6 +880,27 @@ def resolve_twilio_runtime_credentials(
         else {}
     )
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    from services.tenant_provider_credentials import (
+        PRIVATE_CONFIG_KEY, VAULT_REF, ProviderCredentialError, open_token,
+    )
+    connection_config = getattr(provider_connection, "config", None)
+    connection_config = connection_config if isinstance(connection_config, dict) else {}
+    credential_ref = _clean(getattr(provider_connection, "credentials_ref", None))
+    if PRIVATE_CONFIG_KEY in connection_config or credential_ref.startswith("vault:"):
+        if credential_ref != VAULT_REF:
+            return TwilioRuntimeCredentials(account_sid=None, auth_token=None, scope="conflict")
+        try:
+            credential = open_token(
+                connection=provider_connection,
+                tenant_id=getattr(tenant, "id", None),
+                app_config=app_config,
+            )
+        except ProviderCredentialError:
+            return TwilioRuntimeCredentials(account_sid=None, auth_token=None, scope="tenant_vault_unavailable")
+        if state.get("twilio_account_sid") and _clean(state.get("twilio_account_sid")) != credential.account_sid:
+            return TwilioRuntimeCredentials(account_sid=None, auth_token=None, scope="conflict")
+        return TwilioRuntimeCredentials(account_sid=credential.account_sid, auth_token=credential.auth_token,
+                                        scope="tenant_vault", token_refs=(VAULT_REF,))
     parent_sid = _read_config_or_env(app_config, "TWILIO_ACCOUNT_SID")
     parent_token = _read_config_or_env(app_config, "TWILIO_AUTH_TOKEN")
 
@@ -873,16 +965,7 @@ def _twilio_application_response_sid(payload: Mapping[str, Any]) -> str | None:
 
 
 def _normalize_whatsapp_sender_id(value: Any) -> str | None:
-    raw = _clean(value)
-    if not raw:
-        return None
-    if raw.startswith("whatsapp:"):
-        phone = raw.replace("whatsapp:", "", 1)
-    else:
-        phone = raw
-    if not phone.startswith("+"):
-        phone = f"+{_digits(phone)}"
-    return f"whatsapp:{phone}" if phone and phone != "+" else None
+    return normalize_whatsapp_sender_id(value)
 
 
 def _profile_from_payload(tenant, payload: Mapping[str, Any], request_payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -922,7 +1005,7 @@ from services.whatsapp_self_service import build_whatsapp_self_service
 
 
 def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -> dict[str, Any]:
-    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    cfg = tenant_configuration_snapshot(tenant)
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     env = _env_status(app_config)
     base_url = _backend_base_url(app_config)
@@ -930,8 +1013,27 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
     tenant_slug = getattr(tenant, "slug", None)
     meta_app_id = _clean(app_config.get("TWILIO_META_APP_ID")) or None
     embedded_signup_config_id = _clean(app_config.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID")) or None
+    credential_storage = _provisioning_credential_storage_contract(app_config)
+    operation_availability = build_whatsapp_operation_availability(tenant, state, app_config)
+    operations = operation_availability["operations"]
+    owned_vault_blocked = operations["poll_sender_status"]["reason_code"] == "twilio_vault_onboarding_integration_required"
+    if owned_vault_blocked:
+        credential_storage = {**credential_storage, "blocked_operations": [
+            "create_subaccount", "create_messaging_service", "register_sender", "poll_sender_status", "prepare_voice",
+        ]}
+    missing_infrastructure = not state.get("twilio_account_sid") or not state.get("messaging_service_sid")
     status = state.get("status") or ("ready_for_embedded_signup" if env["ready"] else "needs_platform_config")
-    setup_health = _build_setup_health(tenant_slug=tenant_slug, state=state, env=env, base_url=base_url)
+    if owned_vault_blocked or (env["ready"] and missing_infrastructure and credential_storage["provisioning_ready"] is not True):
+        status = "needs_secure_activation"
+    setup_health = _build_setup_health(tenant_slug=tenant_slug, state=state, env=env, base_url=base_url,
+                                       credential_storage=credential_storage,
+                                       operation_availability=operation_availability)
+    if setup_health["recommended_next_action"] == "wait_for_platform_activation":
+        status = "needs_secure_activation"
+    elif setup_health["status"] == "configuration_complete":
+        status = "configuration_complete"
+    elif setup_health["status"] == "blocked":
+        status = "needs_platform_config"
     smoke_playbook = _build_smoke_playbook(tenant_slug=tenant_slug, setup_health=setup_health, env=env)
     signup_query = urlencode(
         {
@@ -954,6 +1056,7 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
         "provider": "twilio_tech_provider",
         "self_service": build_whatsapp_self_service(tenant, state),
         "status": status,
+        "operation_availability": operation_availability,
         "tenant": {
             "id": getattr(tenant, "id", None),
             "slug": tenant_slug,
@@ -965,7 +1068,7 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "live_enabled": _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED"),
             "tenant_auto_bootstrap_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED", True),
             "tenant_auto_provision_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_PROVISION_ENABLED"),
-            "render_env_sync_enabled": _bool_config(app_config, "RENDER_ENV_SYNC_ENABLED"),
+            "credential_storage": credential_storage,
             "manual_twilio_console_allowed": False,
             "customer_sees_twilio_console": False,
             "env": env,
@@ -997,9 +1100,21 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
         "voice": {
             "status": state.get("voice_status") or ("ready" if state.get("voice_twiml_app_sid") else "pending"),
             "twiml_app_sid": state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"),
-            "voice_url": state.get("voice_url") or cfg.get("voice_url") or f"{base_url}/twilio/voice?tenant={tenant_slug}",
-            "fallback_url": state.get("voice_fallback_url") or cfg.get("voice_fallback_url") or f"{base_url}/voice/fallback?tenant={tenant_slug}",
-            "status_callback_url": state.get("voice_status_callback_url") or cfg.get("voice_status_callback_url") or f"{base_url}/voice/status",
+            "voice_url": _canonical_voice_url(
+                state.get("voice_url") or cfg.get("voice_url"), base_url=base_url,
+                tenant_slug=_clean(tenant_slug), path="/twilio/voice",
+                default_url=f"{base_url}/twilio/voice?{urlencode({'tenant': tenant_slug})}",
+            ),
+            "fallback_url": _canonical_voice_url(
+                state.get("voice_fallback_url") or cfg.get("voice_fallback_url"), base_url=base_url,
+                tenant_slug=_clean(tenant_slug), path="/voice/fallback",
+                default_url=f"{base_url}/voice/fallback?{urlencode({'tenant': tenant_slug})}",
+            ),
+            "status_callback_url": _canonical_voice_url(
+                state.get("voice_status_callback_url") or cfg.get("voice_status_callback_url"),
+                base_url=base_url, tenant_slug=_clean(tenant_slug), path="/voice/status",
+                default_url=f"{base_url}/voice/status",
+            ),
             "vertical": state.get("voice_vertical") or cfg.get("voice_vertical"),
             "intent": state.get("voice_intent") or cfg.get("voice_intent"),
             "completion_endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/voice-app",
@@ -1059,17 +1174,11 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
                 "state": "done" if state.get("messaging_service_sid") else "pending",
             },
             {
-                "id": "sync_subaccount_secret_to_render",
-                "owner": "backend_secret_store",
-                "method": "PUT",
-                "endpoint": "https://api.render.com/v1/services/{ServiceId}/env-vars/{EnvVarKey}",
-                "state": (
-                    "done"
-                    if state.get("render_subaccount_secret_synced")
-                    else "enabled"
-                    if _bool_config(app_config, "RENDER_ENV_SYNC_ENABLED")
-                    else "manual_or_disabled"
-                ),
+                "id": "persist_tenant_credentials",
+                "owner": "chatboc_private_store",
+                "method": "INTERNAL",
+                "endpoint": None,
+                "state": "pending_durable_provisioning",
             },
             {
                 "id": "assign_or_register_whatsapp_sender",
@@ -1196,14 +1305,24 @@ def build_voice_application_request(tenant, payload: Mapping[str, Any], app_conf
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     base_url = _backend_base_url(app_config)
-    tenant_slug = _clean(payload.get("tenant_slug") or getattr(tenant, "slug", None))
+    tenant_slug = _clean(getattr(tenant, "slug", None))
     vertical = _voice_vertical_for_tenant(tenant, payload)
     intent = _voice_intent_for_vertical(vertical, payload)
     app_sid = _clean(payload.get("voice_twiml_app_sid") or state.get("voice_twiml_app_sid") or cfg.get("voice_twiml_app_sid"))
     friendly_name = _clean(payload.get("friendly_name")) or f"Chatboc Voice - {tenant_slug or getattr(tenant, 'id', 'tenant')}"
-    voice_url = _clean(payload.get("voice_url")) or f"{base_url}/twilio/voice?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
-    fallback_url = _clean(payload.get("voice_fallback_url")) or f"{base_url}/voice/fallback?tenant={tenant_slug}&vertical={vertical}&intent={intent}"
-    status_callback_url = _clean(payload.get("voice_status_callback_url")) or f"{base_url}/voice/status"
+    query = urlencode({"tenant": tenant_slug, "vertical": vertical, "intent": intent})
+    voice_url = _canonical_voice_url(
+        payload.get("voice_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/twilio/voice", default_url=f"{base_url}/twilio/voice?{query}",
+    )
+    fallback_url = _canonical_voice_url(
+        payload.get("voice_fallback_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/voice/fallback", default_url=f"{base_url}/voice/fallback?{query}",
+    )
+    status_callback_url = _canonical_voice_url(
+        payload.get("voice_status_callback_url"), base_url=base_url, tenant_slug=tenant_slug,
+        path="/voice/status", default_url=f"{base_url}/voice/status",
+    )
     sender_sid = _clean(payload.get("sender_sid") or state.get("sender_sid"))
     sender_id = _normalize_whatsapp_sender_id(payload.get("sender_id") or state.get("sender_id") or getattr(tenant, "whatsapp_sender_id", None))
     return {
@@ -1222,6 +1341,24 @@ def build_voice_application_request(tenant, payload: Mapping[str, Any], app_conf
         "sender_id": sender_id,
         "existing_state": state,
     }
+
+
+def _tenant_has_internal_provider_credentials(tenant: Any) -> bool:
+    """Stop legacy onboarding before it can use env tokens for a vault tenant.
+
+    These consumers have not yet joined the durable provisioning transaction.
+    Read columns instead of cached ORM objects so a stale dirty identity cannot
+    hide a committed credential rotation or flush over it before this check.
+    """
+    from services.tenant_provider_credentials import tenant_has_internal_provider_credentials
+    return tenant_has_internal_provider_credentials(tenant)
+
+
+def _blocked_vault_onboarding(contract_version: str) -> dict[str, Any]:
+    return {"contract_version": contract_version, "ok": False, "mode": "blocked",
+            "reason_code": "twilio_vault_onboarding_integration_required",
+            "provider_calls_performed": False, "state_patch": {},
+            "tenant_config_patch": {}, "steps": []}
 
 
 def _twilio_voice_account_credentials(
@@ -1247,6 +1384,8 @@ def _twilio_voice_account_credentials(
 
 
 def provision_twilio_voice_application(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
+    if _tenant_has_internal_provider_credentials(tenant):
+        return _blocked_vault_onboarding("twilio.tech_provider.voice_application.v1")
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     request_payload = build_voice_application_request(tenant, payload, app_config)
@@ -1389,17 +1528,25 @@ def provision_twilio_voice_application(tenant, payload: Mapping[str, Any], app_c
     return result
 
 
+def _provisioning_credential_storage_contract(app_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    from services.tenant_provider_credentials import credential_storage_status
+    status = credential_storage_status(app_config or {})
+    # Local storage configuration does not authorize remote account creation.
+    # Durable provisioning and reconciliation are a separate unfinished gate.
+    return {**status, "blocked_operations": ["create_subaccount", "create_messaging_service"],
+            "provisioning_ready": False,
+            "message": (
+                "Chatboc debe completar la activación segura de esta organización antes de crear su conexión de WhatsApp. Podés actualizar el estado; no hace falta repetir la autorización de Meta ni cargar claves aquí."
+            )}
+
+
 def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     request_payload = build_provisioning_request(tenant, payload, app_config)
     live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")
-    parent_account_sid = _clean(app_config.get("TWILIO_ACCOUNT_SID"))
-    parent_auth_token = _clean(app_config.get("TWILIO_AUTH_TOKEN"))
     existing_subaccount_sid = _clean(state.get("twilio_account_sid"))
     existing_messaging_service_sid = _clean(state.get("messaging_service_sid"))
-    tenant_slug = getattr(tenant, "slug", None)
-    env = _env_status(app_config)
 
     result = {
         "contract_version": "twilio.tech_provider.provisioning.v1",
@@ -1407,6 +1554,9 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
         "mode": "live" if live_enabled else "dry_run",
         "request": request_payload,
         "steps": [],
+        "credential_storage": _provisioning_credential_storage_contract(app_config),
+        "provider_calls_performed": False,
+        "provider_resources_created": False,
         "state_patch": {
             "status": "provisioning_plan_ready",
             "last_step": "plan_ready",
@@ -1417,6 +1567,8 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
     }
 
     if not live_enabled:
+        # A plan does not change the connection or certify remote readiness.
+        result["state_patch"] = {}
         result["steps"].append({"id": "create_subaccount", "status": "planned"})
         result["steps"].append({"id": "create_messaging_service", "status": "planned"})
         result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
@@ -1435,89 +1587,22 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
                 "sid": existing_messaging_service_sid,
             }
         )
-        result["state_patch"].update({"status": "provisioning_blocked", "last_step": "validate_existing_state"})
+        result["state_patch"] = {}
         return result
 
-    subaccount_sid = existing_subaccount_sid
-    subaccount_token: str | None = None
-    token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
-
-    if subaccount_sid:
+    if existing_subaccount_sid and existing_messaging_service_sid:
+        # This is a read-only replay of existing references. Do not advance
+        # onboarding or rewrite sender/account state based on a provision click.
+        result["idempotent_replay"] = True
+        result["state_patch"] = {}
         result["steps"].append(
             {
                 "id": "create_subaccount",
                 "status": "done",
                 "operation": "reuse",
-                "sid": subaccount_sid,
+                "sid": existing_subaccount_sid,
             }
         )
-        result["state_patch"].update(
-            {
-                "status": "subaccount_reused",
-                "last_step": "reuse_subaccount",
-                "twilio_account_sid": subaccount_sid,
-            }
-        )
-    else:
-        if not (parent_account_sid and parent_auth_token):
-            result["ok"] = False
-            result["mode"] = "blocked"
-            result["reason_code"] = "twilio_credentials_missing"
-            result["missing_env"] = env["missing"]
-            return result
-
-        try:
-            subaccount = _twilio_post_form(
-                url="https://api.twilio.com/2010-04-01/Accounts.json",
-                account_sid=parent_account_sid,
-                auth_token=parent_auth_token,
-                data={"FriendlyName": request_payload["friendly_name"]},
-            )
-        except Exception as exc:
-            result["ok"] = False
-            result["mode"] = "blocked"
-            result["reason_code"] = "twilio_subaccount_creation_failed"
-            result["error"] = str(exc)
-            result["state_patch"].update({"status": "provisioning_failed", "last_step": "create_subaccount"})
-            return result
-
-        subaccount_sid = _clean(subaccount.get("sid"))
-        subaccount_token = _clean(subaccount.get("auth_token"))
-        token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
-        result["steps"].append({"id": "create_subaccount", "status": "done", "sid": subaccount_sid})
-        result["state_patch"].update(
-            {
-                "status": "subaccount_created" if not subaccount_token else "creating_messaging_service",
-                "last_step": "create_subaccount",
-                "twilio_account_sid": subaccount_sid,
-                "twilio_subaccount_token_present": bool(subaccount_token),
-                "twilio_subaccount_token_ref": token_refs[0],
-                "twilio_subaccount_token_ref_aliases": token_refs[1:],
-            }
-        )
-
-        if subaccount_sid and subaccount_token:
-            render_env_sync = sync_render_env_var(token_refs[0], subaccount_token, app_config)
-            result["secure_secret_required"] = {
-                "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
-                "required_env": token_refs,
-                "render_env_sync": render_env_sync,
-                "do_not_store_in_database": True,
-            }
-            result["state_patch"].update(
-                {
-                    "render_subaccount_secret_synced": bool(render_env_sync.get("secret_value_stored")),
-                    "render_subaccount_secret_sync_status": render_env_sync.get("mode"),
-                }
-            )
-
-    if existing_messaging_service_sid:
-        onboarding_already_advanced = bool(
-            state.get("waba_id")
-            or state.get("phone_number_id")
-            or state.get("sender_sid")
-        )
-        result["idempotent_replay"] = True
         result["steps"].append(
             {
                 "id": "create_messaging_service",
@@ -1526,95 +1611,40 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
                 "sid": existing_messaging_service_sid,
             }
         )
-        result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
-        result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
-        result["state_patch"].update(
-            {
-                "status": (
-                    state.get("status")
-                    if onboarding_already_advanced and state.get("status")
-                    else "ready_for_embedded_signup"
-                ),
-                "last_step": (
-                    state.get("last_step")
-                    if onboarding_already_advanced and state.get("last_step")
-                    else "reuse_messaging_service"
-                ),
-                "twilio_account_sid": subaccount_sid,
-                "messaging_service_sid": existing_messaging_service_sid,
-            }
-        )
         return result
 
-    if subaccount_sid and not subaccount_token:
-        subaccount_token, token_refs = _resolve_subaccount_auth_token(
-            state={**state, "twilio_account_sid": subaccount_sid},
-            tenant_slug=tenant_slug,
-            app_config=app_config,
-            allow_global_fallback=False,
-        )
-        result["state_patch"].update(
-            {
-                "twilio_subaccount_token_ref": token_refs[0],
-                "twilio_subaccount_token_ref_aliases": token_refs[1:],
-            }
-        )
-
-    if not (subaccount_sid and subaccount_token):
-        result["ok"] = False
-        result["mode"] = "blocked"
-        result["reason_code"] = "twilio_subaccount_token_missing"
-        result["required_env"] = token_refs
-        result["steps"].append({"id": "create_messaging_service", "status": "blocked_subaccount_token_missing"})
-        result["state_patch"].update({"status": "messaging_service_blocked", "last_step": "resolve_subaccount_token"})
-        return result
-
-    try:
-        messaging_service = _twilio_post_form(
-            url="https://messaging.twilio.com/v1/Services",
-            account_sid=subaccount_sid,
-            auth_token=subaccount_token,
-            data={
-                "FriendlyName": request_payload["friendly_name"][:64],
-                "InboundRequestUrl": request_payload["webhook_url"],
-                "InboundMethod": "POST",
-                "StatusCallback": request_payload["status_callback_url"],
-                "UseInboundWebhookOnNumber": "false",
-                "Usecase": "notifications",
-            },
-        )
-    except Exception as exc:
-        result["ok"] = False
-        result["mode"] = "blocked"
-        result["reason_code"] = "twilio_messaging_service_creation_failed"
-        result["error"] = str(exc)
-        result["steps"].append({"id": "create_messaging_service", "status": "failed"})
-        result["state_patch"].update({"status": "messaging_service_failed", "last_step": "create_messaging_service"})
-        return result
-
-    messaging_service_sid = messaging_service.get("sid")
-    result["steps"].append({"id": "create_messaging_service", "status": "done", "sid": messaging_service_sid})
-    result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
-    result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
-    result.setdefault(
-        "secure_secret_required",
+    # Storage alone cannot make remote provisioning durable. Stop before I/O
+    # until the provisioning transaction and reconciliation path are complete.
+    result.update(
         {
-            "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
-            "required_env": token_refs,
-            "do_not_store_in_database": True,
-        },
-    )
-    result["state_patch"].update(
-        {
-            "status": "ready_for_embedded_signup",
-            "last_step": "create_messaging_service",
-            "messaging_service_sid": messaging_service_sid,
+            "ok": False,
+            "mode": "blocked",
+            "reason_code": (
+                "twilio_provisioning_transaction_unavailable"
+                if result["credential_storage"]["ready"]
+                else "twilio_tenant_credential_store_unavailable"
+            ),
+            "retryable": False,
+            "message": "La activación de nuevas conexiones de WhatsApp todavía no está habilitada.",
+            "next_action": (
+                "complete_durable_tenant_provisioning"
+                if result["credential_storage"]["ready"]
+                else "configure_tenant_provider_credential_store"
+            ),
+            "state_patch": {},
         }
     )
+    result["steps"].append({"id": "credential_storage_preflight", "status": "blocked"})
+    result["steps"].append(
+        {"id": "create_subaccount", "status": "blocked" if not existing_subaccount_sid else "existing"}
+    )
+    result["steps"].append({"id": "create_messaging_service", "status": "blocked"})
     return result
 
 
 def register_whatsapp_sender(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
+    if _tenant_has_internal_provider_credentials(tenant):
+        return _blocked_vault_onboarding("twilio.tech_provider.sender_registration.v1")
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     request_payload = build_provisioning_request(tenant, payload, app_config)
@@ -1762,6 +1792,8 @@ def register_whatsapp_sender(tenant, payload: Mapping[str, Any], app_config: Map
 
 
 def poll_whatsapp_sender_status(tenant, app_config: Mapping[str, Any]) -> dict[str, Any]:
+    if _tenant_has_internal_provider_credentials(tenant):
+        return _blocked_vault_onboarding("twilio.tech_provider.sender_status.v1")
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")

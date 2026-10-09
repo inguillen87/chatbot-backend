@@ -468,7 +468,9 @@ def _counts(tenant: TenantProfile | None) -> dict[str, int]:
             CategoriaTicket.query.filter_by(tenant_id=tenant.id, tipo="ticket")
         ),
         "routed_team_members": _safe_count(
-            User.query.join(User.categorias_ticket)
+            # PostgreSQL cannot DISTINCT whole user rows containing JSON.
+            # Count each employee by scalar identity, preserving scope filters.
+            User.query.with_entities(User.id).join(User.categorias_ticket)
             .filter(
                 User.tenant_id == tenant.id,
                 User.es_empleado.is_(True),

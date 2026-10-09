@@ -3,12 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
 
-import jwt
 import pytest
 
 from database import db
 from models import EncEncuesta, TenantProfile, User
 from models_survey_jurisdiction import SurveyContentReceipt
+from services.auth_session_lifecycle import issue_token
 from services.encuestas_service import (
     EncuestaError,
     _ensure_locked_public_encuesta,
@@ -359,15 +359,14 @@ def test_legacy_admin_publish_route_explains_cross_jurisdiction_conflict(
         survey.jurisdiction_ref = "ar:tf:ushuaia"
         db.session.commit()
         survey_id = int(survey.id)
-        token = jwt.encode(
+        # Local fixture session: use the current durable authentication contract.
+        token = issue_token(
             {
                 "user_id": user.id,
                 "rol": user.rol,
                 "tenant_slug": tenant.slug,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            client.application.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         headers = {
             "Authorization": f"Bearer {token}",
@@ -398,23 +397,22 @@ def test_v2_government_publish_endpoint_returns_stable_evidence_409(client):
         user, tenant = _user_and_tenant(verified=False)
         survey = create_encuesta(_payload("Consulta municipal sin evidencia"), user)
         survey_id = int(survey.id)
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": user.id,
                 "rol": user.rol,
                 "tenant_slug": tenant.slug,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            client.application.config["SECRET_KEY"],
-            algorithm="HS256",
         )
+        tenant_slug = tenant.slug
 
     response = client.post(
         f"/api/v2/surveys/{survey_id}/publish",
-        query_string={"tenant_slug": tenant.slug, "tenant": tenant.slug},
+        query_string={"tenant_slug": tenant_slug, "tenant": tenant_slug},
         headers={
             "Authorization": f"Bearer {token}",
-            "X-Tenant-Slug": tenant.slug,
+            "X-Tenant-Slug": tenant_slug,
         },
     )
 
@@ -470,15 +468,13 @@ def test_enforced_published_content_requires_duplicate_before_mutation(client):
         survey_id = int(survey.id)
         public_slug = link.slug_publico
         tenant_id = int(tenant.id)
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": user.id,
                 "rol": user.rol,
                 "tenant_slug": tenant.slug,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            client.application.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         headers = {
             "Authorization": f"Bearer {token}",
@@ -613,15 +609,13 @@ def test_v2_review_route_is_read_only_on_get_and_rejects_reserved_create_fields(
             tenant.id
         )
         survey = create_encuesta(_payload(), user)
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": user.id,
                 "rol": user.rol,
                 "tenant_slug": tenant.slug,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            client.application.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         headers = {
             "Authorization": f"Bearer {token}",
@@ -679,15 +673,13 @@ def test_bind_requires_reload_and_route_never_approves_post_bind_hash_implicitly
         tenant.jurisdiction_verified_by_user_id = user.id
         tenant.jurisdiction_verified_at = datetime.now(timezone.utc)
         db.session.commit()
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": user.id,
                 "rol": user.rol,
                 "tenant_slug": tenant.slug,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            client.application.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         headers = {
             "Authorization": f"Bearer {token}",

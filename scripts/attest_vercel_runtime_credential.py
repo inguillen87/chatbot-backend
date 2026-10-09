@@ -2,9 +2,12 @@
 
 The attestor performs no provider or database request.  It verifies immutable
 Vercel runtime signals, the exact deployment challenge, the target database
-fingerprint, and that a tenant-scoped account/credential pair is present.  It
-then signs a document containing only metadata and an opaque credential
-binding.  Raw secrets are never returned or logged.
+fingerprint, and that the configured account/credential pair is present. It
+signs only metadata and an opaque credential binding. Environment variable
+names cannot prove provider scope, so this configuration-only attestation
+marks scope unverified. Promotion must remain blocked until independent
+provider evidence establishes the actual scope for this same credential.
+Raw secrets are never returned or logged.
 """
 
 from __future__ import annotations
@@ -296,7 +299,10 @@ def build_runtime_attestation_envelope(
         "signing_key_environment_variable": signing_env,
         "credential_binding_key_environment_variable": binding_env,
         "credential_binding_hmac_sha256": binding,
-        "resolved_credential_scope": "subaccount",
+        # A tenant-prefixed variable can contain an inherited root credential.
+        # No provider scope was observed in this configuration-only operation;
+        # the promoter rejects unverified scope instead of certifying a name.
+        "resolved_credential_scope": "unverified",
         "secret_present": True,
         "secret_value_disclosed": False,
         "challenge_nonce": nonce,

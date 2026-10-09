@@ -22,7 +22,7 @@ from urllib.parse import quote_plus, urlsplit
 
 from flask import current_app, g, has_request_context, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from sqlalchemy import func, or_, inspect, text
+from sqlalchemy import func, or_, inspect, text, tuple_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload, load_only, selectinload
 
@@ -51,6 +51,7 @@ from models import (
     TenantProfile,
     User,
 )
+from models_survey_jurisdiction import SurveyContentReceipt
 from services.user_service import get_user_profile_identity
 from services.survey_refs import is_canonical_survey_logical_ref
 from services.survey_response_provenance import (
@@ -5051,6 +5052,7 @@ def list_encuestas_page(
     limit: Any = None,
     cursor: Any = None,
     page: Any = None,
+    include_archived: bool = False,
 ) -> Dict[str, Any]:
     """Return a hard-bounded tenant page using stable descending ids."""
 
@@ -5069,6 +5071,8 @@ def list_encuestas_page(
         )
 
     base_query = EncEncuesta.query.filter(EncEncuesta.tenant_id == int(tenant_id))
+    if include_archived is not True:
+        base_query = base_query.filter(EncEncuesta.estado != "archivada")
     if estado:
         base_query = base_query.filter(EncEncuesta.estado == estado)
 
@@ -5118,6 +5122,7 @@ def list_encuestas(
     limit: Any = None,
     cursor: Any = None,
     page: Any = None,
+    include_archived: bool = False,
 ) -> List[EncEncuesta]:
     """Compatibility wrapper; even direct callers receive a bounded page."""
 
@@ -5127,6 +5132,7 @@ def list_encuestas(
         limit=limit,
         cursor=cursor,
         page=page,
+        include_archived=include_archived,
     )["items"]
 
 
@@ -7186,7 +7192,24 @@ def save_respuesta(
     anon_cookie = request_ctx.get("anon_id")
     ip = request_ctx.get("ip")
 
-    fingerprint = build_unique_fingerprint(
+    from services.survey_participation_assurance import (
+        ACCOUNT_POLICIES,
+        ParticipationAssuranceError,
+        reviewed_grant_fingerprint,
+        strict_participation_enabled,
+    )
+
+    try:
+        strict_participation = strict_participation_enabled(tenant_id)
+    except ParticipationAssuranceError as exc:
+        raise EncuestaError(
+            exc.message, status_code=exc.status_code, payload=exc.to_dict()
+        ) from exc
+    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
+    requires_reviewed_grant = strict_participation and policy not in ACCOUNT_POLICIES
+    # Weak client identifiers are never used as admission authority in strict
+    # mode. The actual grant is validated below before any response is staged.
+    fingerprint = None if requires_reviewed_grant else build_unique_fingerprint(
         encuesta,
         tenant_id,
         dni=dni,
@@ -7195,8 +7218,7 @@ def save_respuesta(
         ip=ip,
         anon_cookie=anon_cookie,
     )
-    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
-    if fingerprint is None and policy != "libre":
+    if fingerprint is None and policy != "libre" and not requires_reviewed_grant:
         required_identifiers = {
             "por_cookie": ["anon_id"],
             "cookie": ["anon_id"],
@@ -7350,6 +7372,24 @@ def save_respuesta(
                 status_code=exc.status_code,
                 payload=exc.to_dict(),
             ) from exc
+
+    if requires_reviewed_grant:
+        try:
+            fingerprint = reviewed_grant_fingerprint(
+                encuesta, governance_release, eligibility_grant
+            )
+        except ParticipationAssuranceError as exc:
+            if commit:
+                db.session.rollback()
+            raise EncuestaError(
+                exc.message, status_code=exc.status_code, payload=exc.to_dict()
+            ) from exc
+        if EncRespuesta.query.filter_by(
+            encuesta_id=encuesta.id,
+            huella_unica=fingerprint,
+            response_origin=SURVEY_RESPONSE_ORIGIN_REAL,
+        ).first():
+            raise _survey_duplicate_response_error()
 
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
@@ -8885,6 +8925,7 @@ def _build_admin_lifecycle_contract(
     governed_release: bool,
     jurisdiction_scope: Optional[Mapping[str, Any]] = None,
     survey_evidence_gate: Optional[Mapping[str, Any]] = None,
+    public_access: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Describe the persisted lifecycle without deriving unavailable KPIs."""
 
@@ -8967,6 +9008,7 @@ def _build_admin_lifecycle_contract(
     accepts_responses = (
         phase in {"collecting", "live_voting"}
         and not jurisdiction_conflict
+        and (public_access is None or public_access.get("allowed") is True)
     )
 
     publish_reason = None
@@ -9036,6 +9078,7 @@ def _build_admin_lifecycle_contract(
             "can_share": (
                 persisted_state == "publicada"
                 and not jurisdiction_conflict
+                and (public_access is None or public_access.get("allowed") is True)
                 and bool(_resolve_public_slug(encuesta))
             ),
             "can_view_results": response_count > 0,
@@ -9065,6 +9108,80 @@ def _build_admin_lifecycle_contract(
     }
 
 
+def build_survey_availability_contract(
+    encuesta: EncEncuesta,
+    tenant: Optional[TenantProfile],
+    *,
+    metricas: Optional[Mapping[str, Any]] = None,
+    governed_release: bool = False,
+    admin_scope: Optional[Mapping[str, Any]] = None,
+    content_receipt_rows: Optional[Sequence[SurveyContentReceipt]] = None,
+) -> Dict[str, Any]:
+    """Read the same public guard and operational veto for every admin surface."""
+    from services.survey_jurisdiction import (
+        jurisdiction_contract,
+        survey_is_publicly_visible,
+        tenant_requires_government_survey_evidence,
+    )
+
+    scope = admin_scope or _build_admin_jurisdiction_scope(encuesta, tenant)
+    public_slug = _resolve_public_slug(encuesta)
+    evaluated = None
+    evidence_gate = None
+    if tenant_requires_government_survey_evidence(tenant):
+        evaluated = jurisdiction_contract(
+            encuesta, receipt_rows=content_receipt_rows
+        )
+        evidence_gate = evaluated.get("government_evidence_gate")
+    if evaluated is not None:
+        publicly_visible = bool(
+            not evaluated["visibility_enforced"]
+            or (evaluated["configuration_valid"] and evaluated["ready"])
+        )
+    else:
+        publicly_visible = survey_is_publicly_visible(
+            encuesta, receipt_rows=content_receipt_rows
+        )
+    reason = None
+    next_action = None
+    if not publicly_visible:
+        evaluated = evaluated or jurisdiction_contract(
+            encuesta, receipt_rows=content_receipt_rows
+        )
+        reason = (
+            evaluated.get("reason_code")
+            if evaluated.get("configuration_valid")
+            else "survey_jurisdiction_gate_configuration_invalid"
+        ) or "survey_jurisdiction_guard_blocked"
+        next_action = evaluated.get("next_action") or "review_survey_jurisdiction"
+    elif str(encuesta.estado or "").strip().lower() != "publicada":
+        reason = "survey_not_published"
+    elif not _is_encuesta_activa(encuesta):
+        reason = "survey_outside_active_window"
+    elif not public_slug:
+        reason = "survey_public_link_missing"
+    public_access = {
+        "contract_version": "surveys.public_access.v1",
+        "allowed": reason is None,
+        "reason_code": reason,
+        "next_action": next_action,
+    }
+    lifecycle = _build_admin_lifecycle_contract(
+        encuesta,
+        metricas or {},
+        governed_release=governed_release,
+        jurisdiction_scope=scope,
+        survey_evidence_gate=evidence_gate,
+        public_access=public_access,
+    )
+    return {
+        "admin_scope": scope,
+        "public_access": public_access,
+        "admin_lifecycle": lifecycle,
+        "public_slug": public_slug,
+    }
+
+
 def build_admin_list_payload(
     encuestas: Sequence[EncEncuesta],
     *,
@@ -9075,6 +9192,7 @@ def build_admin_list_payload(
     stats_map = _collect_admin_panel_stats(encuestas)
     geo_points = _collect_recent_geo_points(encuestas)
     governance_map = _bulk_survey_governance_contract_map(encuestas)
+    content_receipts_map = _bulk_survey_content_receipt_map(encuestas)
     encuestas_payload: List[Dict[str, Any]] = []
     estados = Counter()
     total_respuestas = 0
@@ -9126,11 +9244,6 @@ def build_admin_list_payload(
         )
         for resolved_tenant_id in tenant_ids
     }
-    from services.survey_jurisdiction import (
-        jurisdiction_contract,
-        tenant_requires_government_survey_evidence,
-    )
-
     for encuesta in encuestas:
         metricas = stats_map.get(encuesta.id or -1, _empty_panel_metrics())
         governance = governance_map.get(
@@ -9179,23 +9292,23 @@ def build_admin_list_payload(
             }
         )
         data["jurisdiction"] = jurisdiction_summary
-        tenant_profile = tenant_profiles_by_id.get(int(encuesta.tenant_id))
-        survey_evidence_gate = None
-        if tenant_requires_government_survey_evidence(tenant_profile):
-            survey_evidence_gate = jurisdiction_contract(encuesta).get(
-                "government_evidence_gate"
-            )
-        lifecycle = _build_admin_lifecycle_contract(
+        availability = build_survey_availability_contract(
             encuesta,
-            metricas,
+            tenant_profiles_by_id.get(int(encuesta.tenant_id)),
+            metricas=metricas,
             governed_release=bool(
                 isinstance(data.get("governance"), Mapping)
                 and data["governance"].get("release_required") is True
             ),
-            jurisdiction_scope=admin_scope,
-            survey_evidence_gate=survey_evidence_gate,
+            admin_scope=admin_scope,
+            content_receipt_rows=content_receipts_map[
+                (int(encuesta.tenant_id), int(encuesta.id))
+            ],
         )
+        data["public_access"] = availability["public_access"]
+        lifecycle = availability["admin_lifecycle"]
         data["admin_lifecycle"] = lifecycle
+        data["esta_activa"] = bool(lifecycle["accepts_responses"])
         if bool(
             isinstance(data.get("governance"), Mapping)
             and data["governance"].get("release_required") is True
@@ -9685,6 +9798,38 @@ def _legacy_survey_governance_contract() -> Dict[str, Any]:
     }
 
 
+def _bulk_survey_content_receipt_map(
+    encuestas: Sequence[EncEncuesta],
+) -> Dict[Tuple[int, int], List[SurveyContentReceipt]]:
+    """Load the exact receipt chains for a bounded page in one scoped query."""
+
+    keys = {
+        (int(encuesta.tenant_id), int(encuesta.id))
+        for encuesta in encuestas
+        if encuesta.id is not None and encuesta.tenant_id is not None
+    }
+    rows_by_key: Dict[Tuple[int, int], List[SurveyContentReceipt]] = {
+        key: [] for key in keys
+    }
+    if not keys:
+        return rows_by_key
+    rows = (
+        SurveyContentReceipt.query.filter(
+            tuple_(SurveyContentReceipt.tenant_id, SurveyContentReceipt.survey_id)
+            .in_(sorted(keys))
+        )
+        .order_by(
+            SurveyContentReceipt.tenant_id.asc(),
+            SurveyContentReceipt.survey_id.asc(),
+            SurveyContentReceipt.id.asc(),
+        )
+        .all()
+    )
+    for row in rows:
+        rows_by_key[(int(row.tenant_id), int(row.survey_id))].append(row)
+    return rows_by_key
+
+
 def _bulk_survey_governance_contract_map(
     encuestas: Sequence[EncEncuesta],
 ) -> Dict[Tuple[int, int], Dict[str, Any]]:
@@ -9894,6 +10039,8 @@ def serialize_encuesta(
 
         jurisdiction = jurisdiction_contract(encuesta)
 
+    from services.survey_participation_assurance import participation_assurance_contract
+
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
@@ -9966,6 +10113,7 @@ def serialize_encuesta(
             ),
         },
         "governance": governance,
+        "participation_assurance": participation_assurance_contract(encuesta, governance),
         "jurisdiction": jurisdiction,
         "tags": _collect_encuesta_tags(encuesta),
         "preguntas_count": len(encuesta.preguntas),
@@ -10024,6 +10172,7 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
             "provider": "chatboc_session",
         },
         "privacy": data["privacy"],
+        "participation_assurance": data["participation_assurance"],
         "eligibility": (
             data.get("governance", {}).get("eligibility")
             if isinstance(data.get("governance"), dict)
@@ -10181,17 +10330,51 @@ def _compute_live_results(encuesta: EncEncuesta) -> Dict[str, Any]:
     return results
 
 
+def normalize_survey_comment_mode(payload: Mapping[str, Any]) -> str:
+    mode = str(payload.get("mode") or payload.get("comment_mode") or payload.get("modo") or "anon").strip().lower()
+    if mode in {"anon", "anonimo", "anonymous"}:
+        return "anon"
+    if mode in {"social", "facebook", "google", "instagram"}:
+        return "social"
+    raise EncuestaError("Modo de comentario inválido", status_code=400, payload={"reason_code": "invalid_comment_mode"})
+
+
 def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[User]) -> EncComentario:
     encuesta = db.session.get(EncEncuesta, encuesta_id)
     if not encuesta or not encuesta.permitir_comentarios:
         raise EncuestaError("Comentarios no habilitados para esta encuesta", status_code=403)
 
-    texto = (payload.get("texto") or "").strip()
+    raw_text = payload.get("texto")
+    texto = raw_text.strip() if isinstance(raw_text, str) else ""
     if not texto:
         raise EncuestaError("El comentario no puede estar vacío")
+    if len(texto) > 500:
+        raise EncuestaError("El comentario no puede superar 500 caracteres", status_code=400, payload={"reason_code": "comment_too_long"})
 
-    comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
-    comment_mode = "social" if comment_mode == "social" else "anon"
+    comment_mode = normalize_survey_comment_mode(payload)
+    payload = dict(payload)
+    if comment_mode == "social":
+        token = payload.get("social_token") or payload.get("auth_token")
+        if not token and has_request_context():
+            token = request.headers.get("X-Survey-Social-Token")
+        if not token:
+            raise EncuestaError("Se requiere token social válido para comentar", status_code=400, payload={"reason_code": "social_token_required"})
+        claims = verify_social_comment_token(str(token))
+        if not claims:
+            raise EncuestaError("Token social inválido o expirado", status_code=400, payload={"reason_code": "invalid_social_token"})
+        for claim_key, payload_key in (("provider", "auth_provider"), ("auth_user_id", "auth_user_id"), ("auth_email", "auth_email"), ("auth_first_name", "auth_first_name"), ("auth_last_name", "auth_last_name")):
+            claimed = str(claims.get(claim_key) or "").strip()
+            incoming = str(payload.get(payload_key) or "").strip()
+            if incoming and incoming.lower() != claimed.lower():
+                raise EncuestaError("Los datos sociales no coinciden con el token", status_code=400, payload={"reason_code": "social_identity_mismatch"})
+            payload[payload_key] = claimed
+        # Public display names must come from the signed profile, never a free field.
+        payload.pop("nombre", None)
+        payload.pop("nombre_autor", None)
+    else:
+        # An explicit anonymous choice never retains a session, name or social identifier.
+        user = None
+        payload = {"texto": texto, "mode": "anon", "channel": payload.get("channel")}
 
     auth_provider = (
         payload.get("auth_provider")
@@ -10221,7 +10404,7 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
     if not display_name:
         display_name = (payload.get("nombre") or payload.get("nombre_autor") or "").strip()
     if not display_name and comment_mode == "social":
-        display_name = auth_email or (f"Usuario {auth_provider.title()}" if auth_provider else "")
+        display_name = f"Usuario {auth_provider.title()}" if auth_provider else ""
 
     anon_id = payload.get("anon_id")
     if comment_mode == "social":
@@ -10344,6 +10527,8 @@ def serialize_public_comment(comentario: EncComentario) -> Dict[str, Any]:
 
 
 def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 50), 100))
+    offset = max(0, int(offset or 0))
     base_query = (
         EncComentario.query.filter_by(encuesta_id=encuesta_id, estado="publicado")
         .order_by(EncComentario.created_at.desc())
@@ -10424,9 +10609,9 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
     return results
 
 
-def reportar_comentario(comentario_id: int) -> EncComentario:
+def reportar_comentario(comentario_id: int, *, encuesta_id: int) -> EncComentario:
     comentario = db.session.get(EncComentario, comentario_id)
-    if not comentario:
+    if not comentario or comentario.encuesta_id != encuesta_id:
         raise EncuestaError("Comentario no encontrado", status_code=404)
 
     comentario.report_count += 1

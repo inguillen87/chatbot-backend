@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-import jwt
 import pytest
 
 from models import MunicipioTicket, TenantProfile, TicketComentario, User, db
+from services.auth_session_lifecycle import issue_token
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     municipio_ticket_belongs_to_tenant,
@@ -40,15 +40,13 @@ def _tenant(owner: User, slug: str) -> TenantProfile:
 
 
 def _headers(app, owner: User, tenant: TenantProfile) -> dict[str, str]:
-    token = jwt.encode(
+    token = issue_token(
         {
             "user_id": owner.id,
             "rol": owner.rol,
             "tenant_slug": tenant.slug,
             "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
     )
     return {
         "Authorization": f"Bearer {token}",
@@ -115,8 +113,8 @@ def test_unique_legacy_owner_can_read_while_ambiguous_and_orphan_rows_are_quaran
         f"/api/v2/inbox/omnichannel/{unique_ticket.id}?source_model=MunicipioTicket",
         headers=_headers(app, owner, tenant_a),
     )
-    assert hidden_read.status_code == 404
-    assert hidden_read.get_json()["reason_code"] == "ticket_not_found"
+    assert hidden_read.status_code == 403
+    assert hidden_read.get_json()["reason_code"] == "forbidden_tenant"
 
 
 def test_explicit_tenant_is_authoritative_and_ambiguous_legacy_mutations_fail_closed(
@@ -149,18 +147,18 @@ def test_explicit_tenant_is_authoritative_and_ambiguous_legacy_mutations_fail_cl
         },
         headers=_headers(app, owner, tenant_a),
     )
-    assert response.status_code == 404
-    assert response.get_json()["reason_code"] == "ticket_not_found"
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "forbidden_tenant"
     db.session.refresh(legacy_ticket)
     assert legacy_ticket.estado == "nuevo"
     assert TicketComentario.query.filter_by(municipio_ticket_id=legacy_ticket.id).count() == 0
 
     legacy_response = client.put(
         f"/tickets/municipio/{legacy_ticket.id}/estado",
-        json={"estado": "en_proceso"},
+        json={"estado": "en_proceso", "expected_estado": "nuevo"},
         headers=_headers(app, owner, tenant_a),
     )
-    assert legacy_response.status_code == 404
+    assert legacy_response.status_code == 403
     db.session.refresh(legacy_ticket)
     assert legacy_ticket.estado == "nuevo"
 

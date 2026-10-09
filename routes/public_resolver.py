@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from copy import deepcopy
 import hashlib
+import hmac
 import json
 import os
 from urllib import error as urllib_error
@@ -2694,29 +2696,52 @@ def widget_config():
 
 
 def _resolve_tenant_for_lead_capture(payload: dict) -> TenantProfile | None:
-    tenant_slug = (
-        payload.get("tenant_slug")
-        or payload.get("tenant")
-        or request.args.get("tenant_slug")
-        or request.args.get("tenant")
-    )
-    tenant_slug = str(tenant_slug or "").strip().lower()
-
-    if tenant_slug in {"pyme", "municipio"}:
-        return (
-            TenantProfile.query.filter_by(tipo=tenant_slug)
-            .filter(TenantProfile.is_active.is_(True))
-            .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
-            .first()
-        )
+    tenant_slug = _public_lead_scope_value([
+        payload.get("tenant_slug"), payload.get("tenant"),
+        request.args.get("tenant_slug"), request.args.get("tenant"),
+        request.headers.get("X-Tenant-Slug"), request.headers.get("X-Tenant"),
+    ], lower=True)
 
     if tenant_slug:
         try:
-            return resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
+            return resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True,
+                allow_fallback=False, allow_lazy_demo_creation=False,
+                allow_context_fallback=False, register_widget_token=False)
         except TenantResolutionError:
             return None
 
     return None
+
+
+def _public_lead_scope_value(values, *, lower: bool = False) -> str:
+    """Require agreeing explicit selectors; they are contact scope, never auth."""
+    selected = ""
+    for value in values:
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError("public_lead_capture_scope_conflict")
+        candidate = value.strip()
+        if lower:
+            candidate = candidate.lower()
+        if not candidate:
+            continue
+        if selected and not hmac.compare_digest(selected.encode(), candidate.encode()):
+            raise ValueError("public_lead_capture_scope_conflict")
+        selected = candidate
+    return selected
+
+
+def _public_lead_context(*, tenant: TenantProfile, session_id: str, anon_id: str):
+    """Lock the exact anonymous row before any contact DML; never claim it."""
+    context = ChatSessionContext.query.filter_by(chat_session_id=session_id).with_for_update().one_or_none()
+    if context is not None and (
+        context.tenant_id != tenant.id
+        or context.user_id is not None
+        or not hmac.compare_digest(str(context.anon_id or "").encode(), anon_id.encode())
+    ):
+        raise ValueError("public_lead_capture_scope_conflict")
+    return context
 
 
 def _build_lead_capture_ack(tenant: TenantProfile | None) -> dict:
@@ -2797,9 +2822,12 @@ def _lead_idempotency_key(
     interes: str,
     mensaje: str,
 ) -> str | None:
-    explicit = payload.get("idempotency_key") or payload.get("idempotencyKey") or request.headers.get("Idempotency-Key")
+    explicit = _public_lead_scope_value([
+        payload.get("idempotency_key"), payload.get("idempotencyKey"), request.headers.get("Idempotency-Key")])
     if explicit:
-        return str(explicit).strip()[:120] or None
+        if len(explicit) > 120:
+            raise ValueError("public_lead_capture_scope_conflict")
+        return explicit
     if not tenant:
         return None
     source = "|".join(
@@ -2817,38 +2845,9 @@ def _lead_idempotency_key(
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _resolve_or_create_lead_user(
-    *,
-    tenant: TenantProfile | None,
-    anon_id: str,
-    nombre: str,
-    email: str,
-    telefono: str,
-) -> User:
-    user = User.query.filter_by(email=email).first() if email else None
-    if not user:
-        user = User.create_or_get_by_anon(anon_id or None, display_name=nombre or "Interesado")
-
-    if nombre:
-        user.name = nombre
-    if email and (not user.email or user.email.endswith("@passkey.chatboc")):
-        user.email = email
-    if telefono:
-        user.telefono = telefono
-    if tenant:
-        user.tenant_id = tenant.id
-        user.tenant_slug = tenant.slug
-        if not user.tipo_chat:
-            user.tipo_chat = (tenant.tipo or "pyme").lower()
-    db.session.add(user)
-    db.session.flush()
-    return user
-
-
 def _build_lead_ticket(
     *,
     tenant: TenantProfile,
-    user: User,
     payload: dict,
     request_id: str,
     idempotency_key: str,
@@ -2904,7 +2903,7 @@ def _build_lead_ticket(
     }
     ticket = TenantTicket(
         tenant_id=tenant.id,
-        user_id=user.id,
+        user_id=None,
         categoria="lead_capture",
         descripcion=mensaje or f"Lead capturado desde {channel}",
         estado="nuevo",
@@ -2973,7 +2972,6 @@ def capture_public_lead():
 
     payload = request.get_json(silent=True) or {}
     request_id = _public_request_id()
-    tenant = _resolve_tenant_for_lead_capture(payload)
 
     nombre = str(payload.get("nombre") or payload.get("name") or "").strip()
     email = str(payload.get("email") or "").strip().lower()
@@ -2999,65 +2997,59 @@ def capture_public_lead():
             field_errors=field_errors,
         )
 
-    anon_id = (
-        str(payload.get("anon_id") or "").strip()
-        or str(request.headers.get("X-Anon-Id") or "").strip()
-        or str(request.cookies.get("chatboc_anon_id") or "").strip()
-    )
+    try:
+        tenant = _resolve_tenant_for_lead_capture(payload)
+        anon_id = _public_lead_scope_value([
+            payload.get("anon_id"), request.headers.get("X-Anon-Id"), request.headers.get("Anon-Id")])
+        if not anon_id:
+            anon_id = str(request.cookies.get("chatboc_anon_id") or "").strip()
+        raw_session_id = _public_lead_scope_value([
+            payload.get("chat_session_id"), request.headers.get("X-Chat-Session-Id")])
+        session_id = _normalize_public_chat_session_id(raw_session_id)
+        if tenant is None or not tenant.is_active or not anon_id or len(anon_id) > 80 or not session_id:
+            return _lead_error_response("No se pudo validar el alcance del contacto.", 422,
+                "public_lead_capture_scope_unavailable", "send_exact_tenant_and_anonymous_session")
+        idempotency_key = _lead_idempotency_key(
+            payload=payload, tenant=tenant, anon_id=anon_id, email=email,
+            telefono=telefono, session_id=session_id, interes=interes, mensaje=mensaje)
+        # Serializes new-key captures as well as retries on this tenant, so a
+        # concurrent caller cannot insert a conflicting fingerprint after the
+        # scope check. This row lock is held only through local contact DML.
+        tenant = TenantProfile.query.filter_by(id=tenant.id).with_for_update().populate_existing().one()
+        if not tenant.is_active:
+            return _lead_error_response("No se pudo validar el alcance del contacto.", 422,
+                "public_lead_capture_scope_unavailable", "send_exact_tenant_and_anonymous_session")
+        context_obj = _public_lead_context(tenant=tenant, session_id=session_id, anon_id=anon_id)
+    except ValueError:
+        db.session.rollback()
+        return _lead_error_response("La sesion indicada no pertenece al alcance validado. No se realizo ninguna accion.",
+            409, "public_lead_capture_scope_conflict", "use_the_original_anonymous_session")
+    existing_lead = TenantTicket.query.filter_by(tenant_id=tenant.id, fingerprint=idempotency_key).with_for_update().first()
+    if existing_lead is not None:
+        existing_details = existing_lead.datos_extra if isinstance(existing_lead.datos_extra, dict) else {}
+        existing_profile = existing_details.get("lead_profile")
+        expected_scope = {"anon_id": anon_id, "chat_session_id": session_id, "tenant_slug": tenant.slug}
+        if not isinstance(existing_profile, dict) or existing_lead.user_id is not None or any(
+            existing_profile.get(key) != value for key, value in expected_scope.items()
+        ):
+            db.session.rollback()
+            return _lead_error_response("El contacto indicado no pertenece al alcance validado.", 409,
+                "public_lead_capture_scope_conflict", "use_the_original_contact_request")
+        if any(existing_profile.get(key) != value for key, value in {
+            "nombre": nombre, "email": email, "telefono": telefono, "interes": interes, "mensaje": mensaje,
+        }.items()):
+            db.session.rollback()
+            return _lead_error_response("La clave del contacto ya fue usada con otros datos.", 409,
+                "public_lead_capture_idempotency_conflict", "use_a_new_key_for_changed_contact_details")
 
-    user = _resolve_or_create_lead_user(
-        tenant=tenant,
-        anon_id=anon_id,
-        nombre=nombre,
-        email=email,
-        telefono=telefono,
-    )
-
-    raw_session_id = (
-        str(payload.get("chat_session_id") or "").strip()
-        or str(request.headers.get("X-Chat-Session-Id") or "").strip()
-    )
-    session_id = _normalize_public_chat_session_id(raw_session_id)
-    idempotency_key = _lead_idempotency_key(
-        payload=payload,
-        tenant=tenant,
-        anon_id=anon_id,
-        email=email,
-        telefono=telefono,
-        session_id=session_id,
-        interes=interes,
-        mensaje=mensaje,
-    )
-
-    context_obj = None
-    if session_id:
-        context_obj = ChatSessionContext.query.get(session_id)
-        if not context_obj:
-            context_obj = ChatSessionContext(
-                chat_session_id=session_id,
-                anon_id=anon_id or user.anon_id,
-                user_id=user.id,
-                context_data={"source_chat_session_id": raw_session_id}
-                if raw_session_id and raw_session_id != session_id
-                else {},
-            )
-    elif anon_id:
-        context_obj = (
-            ChatSessionContext.query
-            .filter(ChatSessionContext.anon_id == anon_id)
-            .order_by(desc(ChatSessionContext.last_updated))
-            .first()
-        )
+    if context_obj is None:
+        context_obj = ChatSessionContext(
+            chat_session_id=session_id, tenant_id=tenant.id, anon_id=anon_id, user_id=None,
+            context_data={"source_chat_session_id": raw_session_id}
+            if raw_session_id and raw_session_id != session_id else {})
 
     if context_obj:
-        if not context_obj.user_id:
-            context_obj.user_id = user.id
-        if anon_id and not context_obj.anon_id:
-            context_obj.anon_id = anon_id
-        if tenant and not context_obj.tenant_id:
-            context_obj.tenant_id = tenant.id
-
-        data = context_obj.context_data if isinstance(context_obj.context_data, dict) else {}
+        data = deepcopy(context_obj.context_data) if isinstance(context_obj.context_data, dict) else {}
         lead_profile = data.get("lead_profile") if isinstance(data.get("lead_profile"), dict) else {}
         if nombre:
             lead_profile["nombre"] = nombre
@@ -3096,13 +3088,13 @@ def capture_public_lead():
 
     lead_question = mensaje or f"Lead capturado ({interes or 'sin_interes'})"
     conv = Conversacion(
-        user_id=user.id,
+        user_id=None,
         pyme_id=(tenant.pyme_id if tenant else None) or (tenant.municipio_id if tenant else None),
         pregunta=lead_question,
         respuesta="Lead registrado",
         fuente="lead_capture",
         rubro=(tenant.tipo if tenant else None),
-        session_id=anon_id or user.anon_id or str(user.id),
+        session_id=session_id,
     )
     db.session.add(conv)
     lead_ticket = None
@@ -3110,7 +3102,6 @@ def capture_public_lead():
     if tenant and idempotency_key:
         lead_ticket, deduplicated = _build_lead_ticket(
             tenant=tenant,
-            user=user,
             payload=payload,
             request_id=request_id,
             idempotency_key=idempotency_key,
@@ -3126,11 +3117,11 @@ def capture_public_lead():
             AnalyticsEventV2(
                 tenant_id=tenant.id,
                 tenant_type=tenant.tipo,
-                user_id=user.id,
-                anon_id=anon_id or user.anon_id,
+                user_id=None,
+                anon_id=anon_id,
                 channel=str(payload.get("channel") or payload.get("source") or "web_widget").strip().lower() or "web_widget",
                 event_name="lead_capture_created",
-                session_id=session_id or anon_id or user.anon_id,
+                session_id=session_id,
                 metadata_payload={
                     "request_id": request_id,
                     "idempotency_key": idempotency_key,

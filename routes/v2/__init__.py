@@ -9,6 +9,7 @@ from routes.v2.offline_sync import offline_sync_bp
 from routes.v2.saas import v2_saas_bp
 from routes.v2.sla import v2_sla_bp
 from routes.v2.surveys import v2_public_surveys_bp, v2_surveys_bp
+from routes.v2.survey_rehearsals import bp as production_survey_rehearsals_bp
 from routes.v2.tenants import v2_tenants_bp
 from routes.v2.tenant_blueprints import v2_tenant_blueprints_bp
 from routes.v2.tickets import v2_tickets_bp
@@ -27,6 +28,7 @@ def register_v2_blueprints(app):
     app.register_blueprint(v2_sla_bp)
     app.register_blueprint(v2_surveys_bp)
     app.register_blueprint(v2_public_surveys_bp)
+    app.register_blueprint(production_survey_rehearsals_bp)
     app.register_blueprint(v2_analytics_bp)
     app.register_blueprint(offline_sync_bp)
     app.register_blueprint(v2_saas_bp)

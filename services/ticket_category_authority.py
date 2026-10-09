@@ -6,7 +6,6 @@ from typing import Any, Iterable
 
 from models import CategoriaTicket
 from services.territorial_evidence import canonicalize_territorial_category
-from utils.ticket_utils import normalize_category
 
 
 CONTRACT_VERSION = "ticket.category_authority.v1"
@@ -15,6 +14,32 @@ CONTRACT_VERSION = "ticket.category_authority.v1"
 def _text(value: Any) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def _guidance(*, verified: bool, conflict: bool, reason_code: str) -> dict[str, str | None]:
+    if reason_code == "ticket_tenant_mismatch":
+        return {
+            "message": "No se pudo verificar la categoría dentro de esta organización.",
+            "recovery_text": "Solicitá a supervisión revisar el ámbito del caso antes de clasificarlo o derivarlo.",
+            "action_hint": "review_ticket_category",
+        }
+    if conflict:
+        message = "La categoría del catálogo y la categoría registrada no coinciden."
+    elif verified:
+        return {
+            "message": "La categoría del caso está verificada.",
+            "recovery_text": None,
+            "action_hint": None,
+        }
+    elif reason_code == "category_not_found_in_tenant_catalog":
+        message = "La referencia de categoría no se encontró en el catálogo de esta organización."
+    else:
+        message = "La categoría registrada no tiene una referencia verificada en el catálogo de esta organización."
+    return {
+        "message": message,
+        "recovery_text": "Solicitá a supervisión revisar la clasificación del caso y el catálogo de la organización antes de derivarlo.",
+        "action_hint": "review_ticket_category",
+    }
 
 
 def build_municipio_category_authorities(
@@ -51,20 +76,26 @@ def build_municipio_category_authorities(
         category_id = getattr(ticket, "categoria_id", None)
         same_tenant = tenant_id is not None and getattr(ticket, "tenant_id", None) == tenant_id
         category = categories.get(category_id) if same_tenant else None
-        authoritative = normalize_category(_text(getattr(category, "nombre", None))) if category else None
+        # A tenant catalog entry is the authority itself. Global keyword or
+        # substring normalization must never rename a verified catalog label.
+        authoritative = _text(getattr(category, "nombre", None)) if category else None
         alias_evidence = canonicalize_territorial_category(persisted)
         alias_category = alias_evidence["category"]
-        alias_verified = alias_category == "luminarias" and bool(persisted)
+        alias_verified = same_tenant and alias_category == "luminarias" and bool(persisted)
         if not authoritative and alias_verified:
-            authoritative = normalize_category(alias_category) or alias_category
+            authoritative = "Luminarias"
         verified = bool(authoritative)
-        persisted_normalized = normalize_category(persisted)
+        persisted_normalized = canonicalize_territorial_category(persisted)["category"] if persisted else None
+        authoritative_normalized = canonicalize_territorial_category(authoritative)["category"] if authoritative else None
         conflict = bool(
             verified
             and persisted_normalized
-            and persisted_normalized.casefold() != authoritative.casefold()
+            and persisted_normalized != authoritative_normalized
         )
-        if category and verified:
+        if not same_tenant:
+            reason_code = "ticket_tenant_mismatch"
+            source = "persisted_category_unverified"
+        elif category and verified:
             reason_code = "verified_tenant_category"
             source = "tenant_category_catalog"
         elif alias_verified:
@@ -72,9 +103,6 @@ def build_municipio_category_authorities(
             source = "persisted_category_exact_alias"
         elif not isinstance(category_id, int) or category_id <= 0:
             reason_code = "category_id_missing_and_alias_unverified"
-            source = "persisted_category_unverified"
-        elif not same_tenant:
-            reason_code = "ticket_tenant_mismatch"
             source = "persisted_category_unverified"
         else:
             reason_code = "category_not_found_in_tenant_catalog"
@@ -89,6 +117,7 @@ def build_municipio_category_authorities(
             "authoritative_category": authoritative,
             "persisted_category": persisted,
             "conflict": conflict,
+            **_guidance(verified=verified, conflict=conflict, reason_code=reason_code),
         }
     return resolved
 

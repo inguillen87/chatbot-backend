@@ -1277,13 +1277,35 @@ def public_tenant_widget_config(tenant_slug: str):
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_tenant_info():
     tenant = _require_tenant()
+    theme_config = tenant.get_theme_config()
+    # This identity envelope is also consumed by the organization presence
+    # editor. Publish only its palette, never arbitrary widget/provider config.
+    public_theme = {}
+    if theme_config.get("mode") in ("light", "dark", "system"):
+        public_theme["mode"] = theme_config["mode"]
+    for mode in ("light", "dark"):
+        palette = theme_config.get(mode)
+        if isinstance(palette, dict):
+            public_theme[mode] = {
+                key: palette[key]
+                for key in ("primary", "secondary", "background", "text")
+                if isinstance(palette.get(key), str)
+            }
     return jsonify({
         "slug": tenant.slug,
         "nombre": tenant.nombre,
         "logo_url": tenant.logo_url,
         "tipo": tenant.tipo,
         "tipo_chat": tenant.tipo,
-        "tema": tenant.tema or {}
+        "tema": tenant.tema or {},
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "nombre": tenant.nombre,
+            "logo_url": tenant.logo_url,
+            "dominio": tenant.dominio,
+            "theme_config": public_theme,
+        },
     })
 
 

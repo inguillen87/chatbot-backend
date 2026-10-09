@@ -4,9 +4,10 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import selectinload
 
 from models import (
     AnalyticsEventV2,
@@ -28,6 +29,7 @@ from models import (
 )
 from services.commerce_unified import dedupe_unified_orders
 from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.encuestas_service import build_survey_availability_contract
 from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
 from services.operational_heatmap_access import (
     build_employee_aggregated_heatmap,
@@ -43,6 +45,7 @@ from services.survey_response_provenance import (
     build_survey_response_provenance,
 )
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.ticket_category_authority import build_municipio_category_authorities
 from services.territorial_evidence import (
     build_territorial_facets,
     canonicalize_territorial_category,
@@ -67,7 +70,6 @@ _SLA_HEALTHY_STATES = {"ok", "normal", "healthy", "on_track", "within_sla"}
 _SLA_PAUSED_STATES = {"paused", "pausado", "on_hold", "waiting_customer", "esperando_cliente"}
 _SLA_AT_RISK_WINDOW_SECONDS = 4 * 60 * 60
 _ACTIVE_PRESENCE = {"active", "online", "typing", "present"}
-_LIVE_SURVEY_STATES = {"publicada", "published", "activa", "active", "en_vivo", "live"}
 _COMMERCE_REQUEST_KINDS = {
     "pedido",
     "order",
@@ -729,28 +731,36 @@ def _heatmap_source_quality(
             "records": ticket_total,
             "points": int(ticket_points),
             "pending_geocode": len(geocoding_candidates),
-            "coordinate_coverage_pct": round((ticket_points / ticket_total) * 100, 2) if ticket_total else 0.0,
+            "coordinate_coverage_pct": round((ticket_points / ticket_total) * 100, 2) if ticket_total else None,
+            "coverage_basis": "visible_points_over_filtered_ticket_records",
+            "records_scope": "tickets_created_in_period_after_filters",
         },
         "survey": {
             "label": "Encuestas y votaciones",
             "records": int(source_counts.get("survey", 0)),
             "points": int(source_counts.get("survey", 0)),
             "pending_geocode": 0,
-            "coordinate_coverage_pct": 100.0 if source_counts.get("survey", 0) else 0.0,
+            "coordinate_coverage_pct": None,
+            "coverage_reason_code": "full_source_population_not_measured",
+            "records_scope": "visible_geo_points_only",
         },
         "analytics_event": {
             "label": "Eventos digitales",
             "records": int(source_counts.get("analytics_event", 0)),
             "points": int(source_counts.get("analytics_event", 0)),
             "pending_geocode": 0,
-            "coordinate_coverage_pct": 100.0 if source_counts.get("analytics_event", 0) else 0.0,
+            "coordinate_coverage_pct": None,
+            "coverage_reason_code": "full_source_population_not_measured",
+            "records_scope": "visible_geo_points_only",
         },
         "commerce": {
             "label": "Pedidos y ventas",
             "records": commerce_total,
             "points": commerce_points,
             "pending_geocode": 0,
-            "coordinate_coverage_pct": round((commerce_points / commerce_total) * 100, 2) if commerce_total else 0.0,
+            "coordinate_coverage_pct": round((commerce_points / commerce_total) * 100, 2) if commerce_total else None,
+            "coverage_basis": "visible_points_over_period_commerce_records",
+            "records_scope": "commerce_records_in_period",
             "privacy_mode": "coordinates_without_customer_pii",
         },
     }
@@ -763,8 +773,12 @@ def _heatmap_source_quality(
             "points": len(points),
             "pending_geocode": len(geocoding_candidates),
             "weakest_source": min(
-                sources.items(),
+                (
+                    item for item in sources.items()
+                    if item[1]["coordinate_coverage_pct"] is not None
+                ),
                 key=lambda item: (item[1]["coordinate_coverage_pct"], -item[1]["pending_geocode"]),
+                default=(None, None),
             )[0],
         },
     }
@@ -963,6 +977,23 @@ def _sla_observation(
     }
 
 
+def observe_legacy_ticket_sla(
+    ticket: Any, *, as_of: datetime | None = None,
+    source_model: str | None = None,
+) -> dict[str, Any]:
+    """Use the same SLA evidence for records and metadata-only projections.
+
+    Creation/activity dates describe age; they never establish an SLA deadline.
+    Municipality metadata preserves the existing datos_extra-over-detalles rule.
+    """
+    extra = _as_dict(getattr(ticket, "datos_extra", None))
+    details = (_json_object(getattr(ticket, "detalles", None))
+        if isinstance(ticket, MunicipioTicket) or source_model == "MunicipioTicket" else {})
+    return _sla_observation(
+        status=_norm(ticket.estado, "nuevo"), metadata={**details, **extra}, as_of=as_of
+    )
+
+
 def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     extra = _as_dict(ticket.datos_extra)
     location = _ticket_location_evidence(
@@ -1003,7 +1034,12 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
     }
 
 
-def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
+def _municipio_ticket_record(
+    ticket: MunicipioTicket,
+    *,
+    as_of: datetime | None = None,
+    category_authority: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     channel = _norm(getattr(ticket, "canal_ingreso", None), "web")
     details = _json_object(getattr(ticket, "detalles", None))
@@ -1016,8 +1052,20 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         zone=getattr(ticket, "distrito", None),
         metadata=metadata,
     )
-    sla = _sla_observation(status=status, metadata=metadata, as_of=as_of)
-    category = canonicalize_territorial_category(ticket.categoria)
+    sla = observe_legacy_ticket_sla(ticket, as_of=as_of)
+    authoritative_category = (
+        category_authority.get("authoritative_category")
+        if category_authority and category_authority.get("verified")
+        else None
+    )
+    category = canonicalize_territorial_category(authoritative_category or ticket.categoria)
+    raw_category = str(ticket.categoria or "").strip() or None
+    if authoritative_category:
+        category["provenance"] = {
+            **category["provenance"],
+            "source": category_authority["source"],
+            "persisted_input": raw_category,
+        }
     return {
         "source": "municipio_ticket",
         "source_model": "MunicipioTicket",
@@ -1027,8 +1075,11 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         "priority": "normal",
         "channel": channel,
         "category": category["category"],
-        "raw_category": category["raw_category"],
+        # Authorization continues to use the persisted label/ID. The catalog
+        # projection changes grouping only and never recategorizes the record.
+        "raw_category": raw_category,
         "category_provenance": category["provenance"],
+        "category_authority": category_authority,
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
         "zone": _norm(location.get("zone"), "sin_zona"),
@@ -1046,6 +1097,23 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
     }
 
 
+def _municipio_ticket_records(
+    tenant: TenantProfile,
+    tickets: list[MunicipioTicket],
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
+    authorities = build_municipio_category_authorities(tickets, tenant_id=tenant.id)
+    return [
+        _municipio_ticket_record(
+            ticket,
+            as_of=as_of,
+            category_authority=authorities.get(ticket.id),
+        )
+        for ticket in tickets
+    ]
+
+
 def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     extra = _as_dict(getattr(ticket, "datos_extra", None))
@@ -1055,11 +1123,7 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
         address=getattr(ticket, "direccion", None),
         metadata=extra,
     )
-    sla = _sla_observation(
-        status=status,
-        metadata=extra,
-        as_of=as_of,
-    )
+    sla = observe_legacy_ticket_sla(ticket, as_of=as_of)
     category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "pyme_ticket",
@@ -1112,7 +1176,7 @@ def _collect_ticket_records(
     municipio_ticket_query = _between(_municipio_ticket_query(tenant), MunicipioTicket.fecha, start_date, end_date)
     municipio_ticket_query = apply_employee_ticket_category_scope(municipio_ticket_query, viewer, MunicipioTicket)
     municipio_tickets = municipio_ticket_query.all()
-    records.extend(_municipio_ticket_record(ticket, as_of=as_of) for ticket in municipio_tickets)
+    records.extend(_municipio_ticket_records(tenant, municipio_tickets, as_of=as_of))
 
     pyme_ticket_query = _between(
         PymeTicket.query.filter_by(tenant_id=tenant.id),
@@ -1167,7 +1231,7 @@ def _collect_open_ticket_records(
         as_of=as_of,
     )
     municipio_ticket_query = apply_employee_ticket_category_scope(municipio_ticket_query, viewer, MunicipioTicket)
-    records.extend(_municipio_ticket_record(ticket, as_of=as_of) for ticket in municipio_ticket_query.all())
+    records.extend(_municipio_ticket_records(tenant, municipio_ticket_query.all(), as_of=as_of))
 
     pyme_ticket_query = _created_at_membership_query(
         _open_status_query(
@@ -1512,23 +1576,42 @@ def _build_queue_truth(
     }
 
 
-def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
-    encuestas_query = EncEncuesta.query.filter_by(tenant_id=tenant.id)
-    survey_count = encuestas_query.count()
-    live_vote_predicate = or_(
-        EncEncuesta.es_votacion_envivo.is_(True),
-        func.lower(func.coalesce(EncEncuesta.tipo, "")).like("%vot%"),
-        func.lower(func.coalesce(EncEncuesta.titulo, "")).like("%vot%"),
+def _operational_survey_response_query(tenant_id: int):
+    """Operational aggregates exclude archives; historical analytics stay intact."""
+    return (
+        EncRespuesta.query.filter(EncRespuesta.tenant_id == tenant_id)
+        .join(EncEncuesta, EncRespuesta.encuesta_id == EncEncuesta.id)
+        .filter(EncEncuesta.tenant_id == tenant_id, EncEncuesta.estado != "archivada")
     )
-    live_vote_query = encuestas_query.filter(live_vote_predicate)
-    live_vote_count = live_vote_query.count()
-    live_votaciones = live_vote_query.order_by(EncEncuesta.id.asc()).limit(10).all()
-    active_survey_count = encuestas_query.filter(
-        func.lower(func.coalesce(EncEncuesta.estado, "")).in_(_LIVE_SURVEY_STATES)
-    ).count()
+
+
+def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
+    encuestas = (
+        EncEncuesta.query.filter_by(tenant_id=tenant.id)
+        .filter(EncEncuesta.estado != "archivada")
+        .options(selectinload(EncEncuesta.links), selectinload(EncEncuesta.preguntas))
+        .order_by(EncEncuesta.id.asc()).all()
+    )
+    availability_by_id = {
+        int(encuesta.id): build_survey_availability_contract(encuesta, tenant)
+        for encuesta in encuestas
+    }
+    live_votaciones = [
+        encuesta for encuesta in encuestas
+        if availability_by_id[int(encuesta.id)]["admin_lifecycle"]["instrument_kind"] == "voting"
+    ]
+    survey_count = len(encuestas)
+    active_survey_count = sum(
+        availability["admin_lifecycle"]["accepts_responses"] is True
+        for availability in availability_by_id.values()
+    )
+    live_vote_count = sum(
+        availability_by_id[int(encuesta.id)]["admin_lifecycle"]["accepts_responses"] is True
+        for encuesta in live_votaciones
+    )
 
     period_response_query = _between(
-        EncRespuesta.query.filter_by(tenant_id=tenant.id),
+        _operational_survey_response_query(tenant.id),
         EncRespuesta.submitted_at,
         start_date,
         end_date,
@@ -1563,7 +1646,7 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
     response_by_survey: Counter = Counter()
     geo_by_survey: Counter = Counter()
     channel_by_survey: dict[int, Counter] = {}
-    live_survey_ids = [int(encuesta.id) for encuesta in live_votaciones]
+    live_survey_ids = [int(encuesta.id) for encuesta in live_votaciones[:10]]
     if live_survey_ids:
         geo_condition = and_(
             EncRespuesta.lat.isnot(None),
@@ -1609,6 +1692,7 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
         response_by_survey=response_by_survey,
         geo_by_survey=geo_by_survey,
         channel_by_survey=channel_by_survey,
+        availability_by_id=availability_by_id,
     )
 
     return {
@@ -1616,7 +1700,10 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
             "encuestas": survey_count,
             "public_surveys": public_survey_count,
             "active": active_survey_count,
+            "accepting_responses": active_survey_count,
             "votaciones_live": live_vote_count,
+            "configured_votations": len(live_votaciones),
+            "published": sum(encuesta.estado == "publicada" for encuesta in encuestas),
             "responses": real_response_count + public_response_count,
             "responses_with_geo": response_with_geo_count,
             "public_responses": public_response_count,
@@ -1629,13 +1716,17 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
                 "title": encuesta.titulo,
                 "status": encuesta.estado,
                 "show_live_results": bool(encuesta.mostrar_resultados_envivo),
-                "public_token": _public_survey_token(encuesta),
-                "live_results_endpoint": f"/api/v2/public/surveys/{_public_survey_token(encuesta)}/live-results",
-                "public_url": f"/e/{_public_survey_token(encuesta)}",
+                **_survey_availability_fields(availability_by_id[int(encuesta.id)]),
+                "public_token": availability_by_id[int(encuesta.id)]["public_slug"],
+                **_survey_public_paths(
+                    tenant, availability_by_id[int(encuesta.id)],
+                    show_live_results=bool(encuesta.mostrar_resultados_envivo),
+                ),
             }
             for encuesta in live_votaciones[:10]
         ],
         "live_control_room": live_control_room,
+        "availability_scope": {"mode": "tenant_all_instruments", "configured_votations": len(live_votaciones), "returned_monitors": min(10, len(live_votaciones))},
         "response_provenance": build_survey_response_provenance(
             real_count=real_response_count + public_response_count,
             synthetic_count=synthetic_response_count,
@@ -1645,12 +1736,30 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
     }
 
 
-def _public_survey_token(encuesta: EncEncuesta) -> str:
-    for link in getattr(encuesta, "links", []) or []:
-        slug_publico = str(getattr(link, "slug_publico", "") or "").strip()
-        if slug_publico:
-            return slug_publico
-    return str(getattr(encuesta, "slug", "") or "").strip()
+def _survey_public_paths(
+    tenant: TenantProfile, availability: dict[str, Any], *, show_live_results: bool,
+) -> dict[str, Any]:
+    if availability["admin_lifecycle"]["capabilities"]["can_share"] is not True:
+        return {"public_url": None, "live_results_endpoint": None, "heatmap_endpoint": None}
+    public_token = quote(str(availability["public_slug"]), safe="")
+    query = urlencode({"tenant_slug": tenant.slug})
+    results_path = f"/api/v2/public/surveys/{public_token}/live-results"
+    return {
+        "public_url": f"/e/{public_token}?{query}",
+        "live_results_endpoint": f"{results_path}?{query}" if show_live_results else None,
+        "heatmap_endpoint": f"{results_path}?{query}&include_heatmap=1" if show_live_results else None,
+    }
+
+
+def _survey_availability_fields(availability: dict[str, Any]) -> dict[str, Any]:
+    lifecycle = availability["admin_lifecycle"]
+    return {
+        "public_access": availability["public_access"],
+        "accepts_responses": lifecycle["accepts_responses"],
+        "can_share": lifecycle["capabilities"]["can_share"],
+        "phase": lifecycle["phase"],
+        "admin_scope": availability["admin_scope"],
+    }
 
 
 def _survey_live_control_room(
@@ -1661,15 +1770,19 @@ def _survey_live_control_room(
     response_by_survey: Counter,
     geo_by_survey: Counter,
     channel_by_survey: dict[int, Counter],
+    availability_by_id: dict[int, dict[str, Any]],
 ) -> dict[str, Any]:
     monitors: list[dict[str, Any]] = []
     for encuesta in live_votaciones[:10]:
         survey_id = int(encuesta.id)
-        public_token = _public_survey_token(encuesta)
+        availability = availability_by_id[survey_id]
+        public_token = availability["public_slug"]
+        lifecycle = availability["admin_lifecycle"]
+        accepts_responses = lifecycle["accepts_responses"]
         total = int(response_by_survey.get(survey_id, 0))
         geo = int(geo_by_survey.get(survey_id, 0))
         show_live_results = bool(encuesta.mostrar_resultados_envivo)
-        published = _norm(encuesta.estado, "") in _LIVE_SURVEY_STATES
+        published = lifecycle["persisted_state"] == "publicada"
         monitors.append(
             {
                 "id": survey_id,
@@ -1680,34 +1793,42 @@ def _survey_live_control_room(
                 "type": encuesta.tipo,
                 "live": bool(encuesta.es_votacion_envivo),
                 "published": published,
+                **_survey_availability_fields(availability),
                 "show_live_results": show_live_results,
                 "responses": total,
                 "responses_with_geo": geo,
                 "geo_coverage_rate": round((geo / total) * 100, 2) if total else 0.0,
                 "channels": _counter(channel_by_survey.get(survey_id, Counter())),
-                "public_url": f"/e/{public_token}",
+                **_survey_public_paths(tenant, availability, show_live_results=show_live_results),
                 "admin_url": f"/admin/encuestas/{survey_id}/analytics?focus=live",
-                "live_results_endpoint": f"/api/v2/public/surveys/{public_token}/live-results",
-                "heatmap_endpoint": f"/api/v2/public/surveys/{public_token}/live-results?include_heatmap=1",
                 "whatsapp_template_id": "gov_survey_invite" if getattr(tenant, "tipo", "") == "municipio" else "survey_invite",
                 "state": (
                     "live_collecting"
-                    if published and show_live_results
+                    if accepts_responses and show_live_results
                     else "published_hidden_results"
-                    if published
-                    else "setup_required"
+                    if accepts_responses
+                    else lifecycle["phase"]
+                    if lifecycle["phase"] in {"draft", "closed", "archived", "scheduled", "window_ended"}
+                    else "unavailable"
                 ),
             }
         )
 
     total_responses = sum(int(item["responses"]) for item in monitors)
     total_geo = sum(int(item["responses_with_geo"]) for item in monitors)
+    accepting_count = sum(
+        availability_by_id[int(encuesta.id)]["admin_lifecycle"]["accepts_responses"] is True
+        for encuesta in live_votaciones
+    )
     return {
         "contract_version": "operations.survey_live_control_room.v1",
         "enabled": bool(monitors),
-        "state": "live" if any(item["state"] == "live_collecting" for item in monitors) else "setup_required" if monitors else "empty",
+        "state": "live" if accepting_count else "unavailable" if monitors else "empty",
         "summary": {
-            "live_surveys": len(monitors),
+            "live_surveys": accepting_count,
+            "accepting_responses": accepting_count,
+            "configured_monitors": len(live_votaciones),
+            "returned_monitors": len(monitors),
             "responses": total_responses,
             "responses_with_geo": total_geo,
             "geo_coverage_rate": round((total_geo / total_responses) * 100, 2) if total_responses else 0.0,
@@ -1715,8 +1836,8 @@ def _survey_live_control_room(
         },
         "monitors": monitors,
         "realtime": {
-            "enabled": True,
-            "refresh_seconds": 10 if monitors else 30,
+            "enabled": bool(accepting_count),
+            "refresh_seconds": 10 if accepting_count else 30,
             "socket_events": ["survey.vote.created", "survey.response.created", "analytics.event.created"],
             "fallback_polling": True,
         },
@@ -2474,7 +2595,7 @@ def build_operational_freshness(
             "period_count": int(period_count or 0),
         }
         for origin, latest_at, period_count in (
-            EncRespuesta.query.filter_by(tenant_id=tenant.id)
+            _operational_survey_response_query(tenant.id)
             .with_entities(
                 EncRespuesta.response_origin,
                 func.max(EncRespuesta.submitted_at),
@@ -2697,8 +2818,12 @@ def _crm_tickets_href(
     heatmap_cell: Any | None = None,
     sla: Any | None = None,
     assignee: Any | None = None,
+    tenant_slug: str | None = None,
+    zone: Any | None = None,
 ) -> str:
     params: list[tuple[str, Any]] = [("tab", "tickets")]
+    if tenant_slug:
+        params.append(("tenant_slug", tenant_slug))
     if source_model is not None:
         params.append(("source_model", source_model))
     if ticket_id is not None:
@@ -2707,6 +2832,8 @@ def _crm_tickets_href(
         params.append(("focus", focus))
     if category:
         params.append(("categoria", category))
+    if zone:
+        params.append(("zona", zone))
     if channel:
         params.append(("canal", channel))
     if status:
@@ -2949,7 +3076,7 @@ def _location_quality(
         if not _record_has_coordinates(record) and not record.get("address")
     ]
     total = len(ticket_records)
-    coverage_pct = round((len(with_coordinates) / total) * 100, 2) if total else 0.0
+    coverage_pct = round((len(with_coordinates) / total) * 100, 2) if total else None
     coordinate_sources = Counter(
         _location_provenance_source(record, "coordinate") for record in with_coordinates
     )
@@ -3023,9 +3150,10 @@ def _heatmap_quality_contract(
 ) -> dict[str, Any]:
     total_ticket_records = int(location_quality.get("total_ticket_records") or 0)
     ticket_records_with_coordinates = int(location_quality.get("ticket_records_with_coordinates") or 0)
+    persisted_coordinate_records = int(location_quality.get("ticket_records_with_persisted_coordinates") or 0)
     pending_geocode = len(geocoding_candidates or [])
     visible_points = len(points or [])
-    ticket_coverage_rate = round(ticket_records_with_coordinates / total_ticket_records, 4) if total_ticket_records else 0.0
+    ticket_coverage_rate = round(ticket_records_with_coordinates / total_ticket_records, 4) if total_ticket_records else None
     has_survey_or_event_points = any(
         point.get("source") in {"survey", "analytics_event", "commerce"}
         for point in points or []
@@ -3047,7 +3175,11 @@ def _heatmap_quality_contract(
     elif pending_geocode:
         state = "pending_geocode"
         reason_code = "addresses_need_geocoding"
-        label = "Direcciones pendientes de geocodificar"
+        label = "Ubicaciones pendientes de revisión"
+    elif int(location_quality.get("ticket_records_outside_jurisdiction") or 0):
+        state = "blocked"
+        reason_code = "coordinates_outside_jurisdiction"
+        label = "Coordenadas fuera de la jurisdicción"
     elif records:
         state = "blocked"
         reason_code = "missing_coordinates"
@@ -3063,11 +3195,17 @@ def _heatmap_quality_contract(
         "label": label,
         "reason_code": reason_code,
         "coverage_rate": ticket_coverage_rate,
-        "coverage_percent": round(ticket_coverage_rate * 100, 1),
+        "coverage_percent": round(ticket_coverage_rate * 100, 1) if ticket_coverage_rate is not None else None,
         "visible_points": visible_points,
         "total_ticket_records": total_ticket_records,
         "ticket_records_with_coordinates": ticket_records_with_coordinates,
-        "ticket_records_without_coordinates": max(0, total_ticket_records - ticket_records_with_coordinates),
+        "ticket_records_with_persisted_coordinates": persisted_coordinate_records,
+        "ticket_records_outside_jurisdiction": int(location_quality.get("ticket_records_outside_jurisdiction") or 0),
+        "ticket_records_unverified_jurisdiction": int(location_quality.get("ticket_records_unverified_jurisdiction") or 0),
+        "ticket_records_without_coordinates": max(0, total_ticket_records - persisted_coordinate_records),
+        "ticket_records_without_validated_coordinates": max(0, total_ticket_records - ticket_records_with_coordinates),
+        "coverage_denominator": "tickets_created_in_period_after_filters",
+        "coverage_numerator": "tickets_with_validated_coordinates",
         "pending_geocode": pending_geocode,
         "max_points": max_points,
         "can_render_heatmap": bool(visible_points),
@@ -3230,9 +3368,14 @@ def _heatmap_narrative_contract(
 
     if points:
         headline = f"{points} puntos territoriales listos para decision"
+        coverage_percent = quality.get("coverage_percent")
+        coverage_text = (
+            f"cobertura GPS de reclamos del {coverage_percent}%"
+            if coverage_percent is not None
+            else "sin reclamos en el período para calcular su cobertura GPS"
+        )
         body = (
-            f"El mapa consolida {cells} zonas activas con cobertura "
-            f"{quality.get('coverage_percent', 0)}% y senales AI en modo {ai_summary.get('risk_level') or 'normal'}."
+            f"El mapa consolida {cells} zonas activas, {coverage_text}."
         )
     elif quality.get("reason_code") == "official_jurisdiction_boundary_unavailable":
         headline = "Alcance territorial pendiente de validación oficial"
@@ -3241,8 +3384,17 @@ def _heatmap_narrative_contract(
             "su pertenencia mediante el polígono oficial del tenant."
         )
     elif pending_geocode:
-        headline = f"{pending_geocode} direcciones listas para geocodificar"
-        body = "La UI puede mostrar la cola territorial y pedir coordenadas antes de pintar calor real."
+        headline = f"{pending_geocode} direcciones para revisar"
+        body = f"Hay {pending_geocode} reclamos con dirección y sin coordenadas guardadas."
+        outside_records = int(quality.get("ticket_records_outside_jurisdiction") or 0)
+        if outside_records:
+            body += f" Además, {outside_records} ubicaciones guardadas quedan fuera de la jurisdicción."
+    elif quality.get("reason_code") == "coordinates_outside_jurisdiction":
+        headline = "Ubicaciones fuera de la jurisdicción"
+        body = (
+            "Hay coordenadas guardadas, pero quedan fuera del territorio del tenant. "
+            "Revisar las ubicaciones de origen permite corregir cada caso sin reubicar puntos automáticamente."
+        )
     elif state == "blocked":
         headline = "Sin coordenadas reales para pintar el territorio"
         body = "Hay actividad operativa, pero falta latitud/longitud o direcciones utiles para construir hotspots."
@@ -3451,7 +3603,10 @@ def _heatmap_hotspot_actions_contract(
     quality: dict[str, Any],
     geocoding_candidates: list[dict[str, Any]],
     ai_summary: dict[str, Any],
+    tenant_slug: str | None = None,
+    segment_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    queue_href = _heatmap_geocoding_queue_href(tenant_slug, segment_filters)
     actions: list[dict[str, Any]] = []
     for index, hotspot in enumerate(hotspots[:5]):
         actions.append(
@@ -3475,8 +3630,10 @@ def _heatmap_hotspot_actions_contract(
                 "action_type": "open_queue",
                 "target": {"type": "geocoding_queue", "candidate_count": len(geocoding_candidates)},
                 "ui_hint": "open_geocoding_queue",
-                "href": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
-                "frontend_path": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
+                "enabled": bool(tenant_slug),
+                "tenant_slug": tenant_slug,
+                "href": queue_href,
+                "frontend_path": queue_href,
                 "writes_enabled": False,
             }
         )
@@ -3531,13 +3688,35 @@ def _heatmap_hotspot_actions_contract(
     }
 
 
+def _heatmap_geocoding_queue_href(
+    tenant_slug: str | None, segment_filters: dict[str, Any] | None
+) -> str:
+    filters = segment_filters or {}
+    def csv_filter(key):
+        value = filters.get(key)
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+            return ",".join(value)
+        return None
+    return _crm_tickets_href(
+        focus="open_geocoding_queue",
+        tenant_slug=tenant_slug,
+        category=csv_filter("category"),
+        zone=csv_filter("zone"),
+    )
+
+
 def _heatmap_geocoding_guidance(
     *,
     geocoding_candidates: list[dict[str, Any]],
     location_quality: dict[str, Any],
     quality: dict[str, Any],
+    tenant_slug: str | None = None,
+    segment_filters: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_count = len(geocoding_candidates or [])
+    queue_href = _heatmap_geocoding_queue_href(tenant_slug, segment_filters)
     return {
         "contract_version": "operations.heatmap_geocoding_guidance.v1",
         "state": "pending" if candidate_count else "clear",
@@ -3567,11 +3746,14 @@ def _heatmap_geocoding_guidance(
         "recommended_actions": [
             {
                 "id": "open_geocoding_queue",
-                "label": "Abrir cola de geocodificacion",
-                "enabled": bool(candidate_count),
+                "label": "Revisar cola",
+                "enabled": bool(candidate_count and tenant_slug),
+                "action_type": "open_queue",
+                "writes_enabled": False,
+                "tenant_slug": tenant_slug,
                 "ui_hint": "open_geocoding_queue",
-                "href": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
-                "frontend_path": _crm_tickets_href(focus="open_geocoding_queue", sla="risk"),
+                "href": queue_href,
+                "frontend_path": queue_href,
             },
             {
                 "id": "request_whatsapp_location",
@@ -3965,6 +4147,7 @@ def build_operational_heatmap(
             "category": record["category"],
             "raw_category": record.get("raw_category"),
             "category_provenance": record.get("category_provenance"),
+            "category_authority": record.get("category_authority"),
             "channel": record["channel"],
             "status": record["status"],
             "sla_state": record.get("sla_state") or "normal",
@@ -3992,7 +4175,7 @@ def build_operational_heatmap(
     )
     if not employee_view:
         survey_response_query = _between(
-            EncRespuesta.query.filter_by(tenant_id=tenant.id),
+            _operational_survey_response_query(tenant.id),
             EncRespuesta.submitted_at,
             start_date,
             end_date,
@@ -4438,12 +4621,16 @@ def build_operational_heatmap(
         geocoding_candidates=geocoding_candidates,
         location_quality=location_quality,
         quality=quality,
+        tenant_slug=tenant.slug,
+        segment_filters=filters,
     )
     hotspot_actions = _heatmap_hotspot_actions_contract(
         hotspots=hotspots,
         quality=quality,
         geocoding_candidates=geocoding_candidates,
         ai_summary=ai_summary,
+        tenant_slug=tenant.slug,
+        segment_filters=filters,
     )
     viewport_presets = _heatmap_viewport_presets(
         bounds=bounds,
@@ -4494,11 +4681,7 @@ def build_operational_heatmap(
             "empty_reason": (
                 None
                 if points
-                else (
-                    "official_jurisdiction_boundary_unavailable"
-                    if boundary_unavailable
-                    else "no_real_geo_points"
-                )
+                else quality.get("reason_code") or "no_real_geo_points"
             ),
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events", "commerce_activity", "ai_risk", "whatsapp_activity"],
@@ -4660,11 +4843,28 @@ def build_operational_heatmap(
                 "map_quality": "Calidad del mapa",
                 "coverage": "Cobertura GPS",
                 "visible_points": "Puntos visibles",
-                "pending_geocode": "Pendientes de geocodificar",
-                "realtime": "Actualizacion en vivo",
+                "pending_geocode": "Ubicaciones pendientes de revisión",
+                "geocoding_queue": "Ubicaciones pendientes",
+                "geocoding_queue_description": "Revisá las direcciones antes de completar o confirmar su ubicación. Abrir la cola no cambia los casos.",
+                "geocoding_queue_empty": "No hay direcciones pendientes para los filtros actuales.",
+                "geocoding_queue_unavailable": "La cola de ubicaciones todavía no está disponible para este mapa.",
+                "geocoding_technical_details": "Detalles de la actualización de ubicación",
+                "realtime": "Actualización por consulta",
+                "realtime_poll_description": "Consulta cada 20 segundos mientras esta vista está activa. No indica una conexión en vivo.",
+                "realtime_polling_status": "Consulta periódica",
+                "realtime_unavailable": "Actualización pendiente",
+                "quality_reason_unavailable": "No se informó un motivo de calidad para este mapa.",
+                "reason_ready": "Las coordenadas disponibles cumplen el alcance territorial revisado.",
+                "reason_low_ticket_coordinate_coverage": "Sólo una parte de los casos tiene coordenadas verificadas.",
+                "reason_official_jurisdiction_boundary_unavailable": "Falta verificar el contorno oficial de esta organización.",
+                "reason_addresses_need_geocoding": "Hay direcciones que requieren revisión y coordenadas.",
+                "reason_address_without_coordinates": "Dirección sin coordenadas guardadas.",
+                "reason_coordinates_outside_jurisdiction": "Las coordenadas guardadas están fuera del alcance territorial.",
+                "reason_missing_coordinates": "Los casos todavía no tienen coordenadas verificadas.",
+                "reason_no_operational_events": "No hay casos o eventos para el período seleccionado.",
                 "quality_ready": "Mapa operativo confiable",
                 "quality_partial": "Cobertura territorial parcial",
-                "quality_pending_geocode": "Direcciones pendientes de geocodificar",
+                "quality_pending_geocode": "Ubicaciones pendientes de revisión",
                 "quality_blocked": "Sin coordenadas reales",
                 "quality_empty": "Sin eventos para el periodo",
             }
@@ -4781,7 +4981,6 @@ def _summary_from_metrics(
 def _build_trends(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "survey_responses",
-        "live_votes",
         "chat_messages",
         "whatsapp_messages",
         "orders",
@@ -4793,6 +4992,10 @@ def _build_trends(current: dict[str, Any], previous: dict[str, Any]) -> dict[str
         "contract_version": "operations.trends.v1",
         "items": [_trend_item(key, current.get(key, 0), previous.get(key, 0)) for key in keys],
         "unavailable": [
+            {
+                "key": "live_votes",
+                "reason_code": "current_availability_not_historical_snapshot",
+            },
             {
                 "key": "open_tickets",
                 "reason_code": "point_in_time_snapshot_has_no_historical_ledger",
@@ -5305,17 +5508,23 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
         if not isinstance(monitor, dict):
             continue
         reason_codes: list[str] = []
+        receiving = monitor.get("accepts_responses") is True
         responses = int(monitor.get("responses") or 0)
         geo_rate = float(monitor.get("geo_coverage_rate") or 0)
-        if responses == 0:
+        if not receiving:
+            reason_codes.append(
+                (monitor.get("public_access") or {}).get("reason_code")
+                or "survey_not_receiving_responses"
+            )
+        elif responses == 0:
             reason_codes.append("survey_no_responses")
-        if 0 < responses < 10:
+        if receiving and 0 < responses < 10:
             reason_codes.append("low_participation")
         if responses and geo_rate < 50:
             reason_codes.append("low_geo_coverage")
         if not bool(monitor.get("show_live_results")):
             reason_codes.append("live_results_hidden")
-        if not reason_codes and bool(monitor.get("published")):
+        if not reason_codes and receiving:
             reason_codes.append("survey_live_monitoring")
         priority = "medium" if set(reason_codes).intersection({"survey_no_responses", "low_geo_coverage"}) else "low"
         record_id = monitor.get("id")
@@ -5331,7 +5540,7 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
                 "recommended_action": _ai_ops_recommended_action(
                     action_id="open_survey_analytics",
                     label="Ver analitica",
-                    endpoint=f"/api/v2/public/surveys/{monitor.get('public_token')}/live-results",
+                    endpoint=f"/api/v2/surveys/{record_id}/analytics",
                     ui_hint="open_survey_analytics",
                     href=(
                         f"/admin/encuestas/{quote(str(record_id), safe='')}/analytics?focus=live"
@@ -5342,6 +5551,8 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
                 "signals": {
                     "status": monitor.get("status"),
                     "responses": responses,
+                    "accepts_responses": receiving,
+                    "public_access": monitor.get("public_access"),
                     "geo_coverage_rate": geo_rate,
                     "confidence": "deterministic",
                 },
@@ -5612,6 +5823,14 @@ def build_operational_dashboard(
         "employees": employee_metrics,
         "maps": {
             "heatmap": {
+                "period": heatmap["period"],
+                "population": {
+                    "contract_version": "operations.heatmap_population.v1",
+                    "ticket_membership": "created_in_period",
+                    "ticket_status_scope": "all_states",
+                    "current_open_queue": False,
+                    "privacy_mode": (heatmap.get("privacy") or {}).get("mode"),
+                },
                 "summary": heatmap["summary"],
                 "bounds": heatmap["bounds"],
                 "hotspots": heatmap.get("hotspots") or [],
@@ -5621,6 +5840,8 @@ def build_operational_dashboard(
                 "ai_layers": heatmap.get("ai_layers"),
                 "map_experience": heatmap.get("map_experience"),
                 "location_quality": heatmap.get("location_quality"),
+                "quality": heatmap.get("quality"),
+                "jurisdiction": heatmap.get("jurisdiction"),
                 "geocoding": {
                     "candidate_count": ((heatmap.get("geocoding") or {}).get("candidate_count") or 0),
                     "reason_code": ((heatmap.get("geocoding") or {}).get("reason_code") or "no_pending_addresses"),

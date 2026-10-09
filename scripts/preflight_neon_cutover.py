@@ -33,8 +33,12 @@ NEON_BRANCH_ID_PATTERN = re.compile(r"^br-[a-z0-9-]{3,63}$")
 # This is the reviewed cutover boundary, not merely whichever migration was
 # added most recently.  Both read-only preflight and the writer use this single
 # allowlist value so a new or branched Alembic head fails closed until reviewed.
-REVIEWED_MIGRATION_HEAD = "20260906_flask_sessions_v1"
+REVIEWED_MIGRATION_HEAD = "20261001_auth_session_v1"
 REQUIRED_HEAD_TABLES = (
+    "auth_provider_session",
+    "auth_session",
+    "auth_session_audit",
+    "auth_session_retirement",
     "cutover_global_writer_authority",
     "demo_survey_participation",
     "flask_sessions",

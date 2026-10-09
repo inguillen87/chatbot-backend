@@ -529,7 +529,19 @@ def overview_v2(current_user):
         TenantTicket.query.filter(TenantTicket.tenant_id == tenant.id, TenantTicket.estado.in_(["vencido", "overdue"])).count()
     )
     survey_responses = int(survey_stats.get("total_votes") or 0)
-    survey_completion_rate = float(survey_stats.get("participation_rate") or 0.0)
+    # Participation and completion have different populations. Neither recent
+    # activity nor response counts prove how many survey sessions were started
+    # and completed; do not convert an unavailable metric to zero.
+    survey_completion_rate_metadata = {
+        "contract_version": "analytics.survey_completion.v1",
+        "state": "unavailable",
+        "value": None,
+        "reason_code": "survey_completion_population_unavailable",
+        "basis": "completed_survey_sessions_over_started_survey_sessions",
+        "numerator": {"value": None, "grain": "completed_survey_sessions", "verified": False},
+        "denominator": {"value": None, "grain": "started_survey_sessions", "verified": False},
+        "observed_response_records": survey_stats.get("total_votes"),
+    }
     contract_summary = {
         "conversations": conversations,
         "open_tickets": open_tickets,
@@ -553,7 +565,10 @@ def overview_v2(current_user):
             "avg_first_response_time": None,
             "avg_resolution_time": None,
             "survey_response_count": survey_responses,
-            "survey_completion_rate": survey_completion_rate,
+            "survey_completion_rate": None,
+            "survey_completion_rate_metadata": survey_completion_rate_metadata,
+            "survey_participation_rate": survey_stats.get("participation_rate"),
+            "survey_participation_rate_metadata": survey_stats.get("participation_rate_metadata"),
             "csat_score": 0,
             "nps_score": 0,
             "access": _integration_access(tenant),

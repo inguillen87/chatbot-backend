@@ -1,6 +1,5 @@
 import unittest
 import json
-import jwt
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from app import create_app, db
@@ -26,6 +25,15 @@ class TestAdminTenantVerification(unittest.TestCase):
         now = datetime.now(timezone.utc)
         payload = {'user_id': user.id, 'exp': now + timedelta(days=1)}
         if user.rol == "super_admin":
+            metadata = dict(user.accesibilidad or {})
+            auth_metadata = dict(metadata.get("auth") or {})
+            auth_metadata.update(
+                provider="clerk",
+                session_version=auth_session_version(user),
+                clerk={"user_id": f"synthetic_admin_tenant_verification_{user.id}"},
+            )
+            metadata["auth"] = auth_metadata
+            user.accesibilidad = metadata
             payload.update(
                 {
                     "rol": user.rol,
@@ -38,11 +46,8 @@ class TestAdminTenantVerification(unittest.TestCase):
                     "iat": now,
                 }
             )
-        return jwt.encode(
-            payload,
-            self.app.config['SECRET_KEY'],
-            algorithm="HS256"
-        )
+        from services.auth_session_lifecycle import issue_token
+        return issue_token(payload)
 
     def test_create_tenant(self):
         payload = {

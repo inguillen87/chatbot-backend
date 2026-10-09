@@ -94,6 +94,15 @@ from services.survey_access_policy import (
     SURVEY_PUBLISH_CAPABILITY,
     missing_survey_capabilities,
 )
+from services.survey_editorial_relocation import (
+    action_descriptor as editorial_relocation_action,
+    archive_history_metadata,
+    apply_relocation,
+    preview_relocation,
+    preview_restore,
+    relocation_status,
+    restore_originals,
+)
 from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -1315,6 +1324,8 @@ def _attach_public_contract(
     tenant_slug: str | None = None,
     responses_count: int | None = None,
 ) -> dict[str, Any]:
+    from routes.encuestas_public import _attach_comment_social_config
+    _attach_comment_social_config(payload)
     title = payload.get("titulo") or payload.get("title") or getattr(encuesta, "titulo", None)
     public_state = _survey_public_state(encuesta)
     live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
@@ -1910,6 +1921,12 @@ def list_surveys_v2(current_user):
         return denied
 
     estado = (request.args.get("estado") or request.args.get("status") or "").strip() or None
+    include_archived_value = request.args.get("include_archived", "false")
+    if include_archived_value not in {"true", "false", "1", "0"}:
+        return _error_response("include_archived debe ser true o false.", 400)
+    include_archived = include_archived_value in {"true", "1"}
+    if include_archived and not is_authorized_superadmin_user(current_user):
+        return _error_response("El historial archivado requiere SuperAdmin autorizado.", 403)
     try:
         page_data = list_encuestas_page(
             tenant_id=tenant.id,
@@ -1917,6 +1934,7 @@ def list_surveys_v2(current_user):
             limit=request.args.get("limit"),
             cursor=request.args.get("cursor"),
             page=request.args.get("page"),
+            include_archived=include_archived,
         )
         admin_payload = build_admin_list_payload(
             page_data["items"],
@@ -1944,8 +1962,88 @@ def list_surveys_v2(current_user):
             "has_more": pagination["has_more"],
             "pagination": pagination,
             "access": integration_access_payload(tenant),
+            "editorial_relocation": editorial_relocation_action(current_user),
+            "include_archived": include_archived,
+            "archived_editorial_relocations": archive_history_metadata(tenant.id, page_data["items"]) if include_archived else {},
         }
     )
+
+
+@v2_surveys_bp.route("/surveys/editorial-relocations/preview", methods=["GET"])
+@token_requerido
+@require_role("super_admin")
+def preview_editorial_relocation_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    raw_ids = request.args.get("survey_ids", "")
+    if not re.fullmatch(r"[0-9]{1,12}(,[0-9]{1,12}){0,4}", raw_ids):
+        return _error_response("Seleccioná entre una y cinco encuestas válidas.", 400)
+    try:
+        result = preview_relocation(current_user, tenant.id,
+            request.args.get("target_tenant_id"), request.args.get("target_tenant_slug"),
+            [int(value) for value in raw_ids.split(",")])
+        return jsonify(result)
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
+
+
+@v2_surveys_bp.route("/surveys/editorial-relocations/status", methods=["GET"])
+@token_requerido
+@require_role("super_admin")
+def editorial_relocation_status_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    try:
+        return jsonify(relocation_status(current_user, tenant.id, request.args.get("idempotency_key")))
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
+
+
+@v2_surveys_bp.route("/surveys/editorial-relocations", methods=["POST"])
+@token_requerido
+@require_role("super_admin")
+@limiter.limit("10 per minute", key_func=survey_admin_write_rate_limit_key)
+def apply_editorial_relocation_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    try:
+        result, replayed = apply_relocation(current_user, tenant.id,
+            request.get_json(silent=True), request.headers.get("Idempotency-Key"))
+        return jsonify({**result, "idempotent_replay": replayed}), 200 if replayed else 201
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
+
+
+@v2_surveys_bp.route("/surveys/editorial-relocations/restore-preview", methods=["GET"])
+@token_requerido
+@require_role("super_admin")
+def preview_editorial_restore_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    try:
+        return jsonify(preview_restore(current_user, tenant.id, request.args.get("idempotency_key")))
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
+
+
+@v2_surveys_bp.route("/surveys/editorial-relocations/restore", methods=["POST"])
+@token_requerido
+@require_role("super_admin")
+@limiter.limit("10 per minute", key_func=survey_admin_write_rate_limit_key)
+def restore_editorial_originals_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    try:
+        result, replayed = restore_originals(current_user, tenant.id,
+            request.get_json(silent=True), request.headers.get("Idempotency-Key"))
+        return jsonify({**result, "idempotent_replay": replayed}), 200 if replayed else 201
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
 
 
 @v2_surveys_bp.route("/surveys", methods=["POST"])
@@ -3506,8 +3604,7 @@ def survey_live_results_v2(token: str):
             require_tenant_match=preferred_tenant_id is not None,
             allow_closed_for_read=True,
         )
-        is_tenant_owner = preferred_tenant_id is not None and getattr(encuesta, "tenant_id", None) == preferred_tenant_id
-        if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)) and not is_tenant_owner:
+        if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
             return _error_response(
                 "Los resultados en vivo no estan publicados para esta encuesta.",
                 403,

@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping
 
 from flask import current_app, request
 from limits import parse
+from limits.storage import RedisStorage, RedisClusterStorage, RedisSentinelStorage
 
 from extensions import limiter
 from services.encuestas_service import EncuestaError, get_public_encuesta
@@ -142,6 +143,16 @@ def _consume_rate_limit(
     identifiers = (_RATE_LIMIT_NAMESPACE, scope_key)
     try:
         strategy = limiter.limiter
+        strict_storage = current_app.config.get(
+            "ENFORCE_PUBLIC_SURVEY_DISTRIBUTED_RATE_LIMIT"
+        )
+        if strict_storage is True or str(strict_storage or "").strip().lower() in {"1", "true"}:
+            # Inspect the actual strategy storage, not a URI that might have
+            # fallen back to memory. Redis exceptions still deny intake below.
+            if not isinstance(
+                strategy.storage, (RedisStorage, RedisClusterStorage, RedisSentinelStorage)
+            ):
+                raise RuntimeError("survey_distributed_rate_storage_required")
         allowed = bool(strategy.hit(item, *identifiers))
         window = strategy.get_window_stats(item, *identifiers)
         remaining = max(0, int(window.remaining))

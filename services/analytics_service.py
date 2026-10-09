@@ -19,6 +19,26 @@ from services.survey_response_provenance import (
 MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT = "municipio_ticket_scope.v1"
 MUNICIPIO_CONSULTANT_REPORT_TYPE = "consultant_municipio"
 
+
+def _survey_participation_rate_evidence(
+    *,
+    survey_id: int | None,
+    observed_response_records: int | None,
+) -> dict[str, Any]:
+    """Describe the missing evidence without using activity as a population."""
+    return {
+        "contract_version": "analytics.survey_participation.v1",
+        "state": "unavailable",
+        "value": None,
+        "reason_code": "survey_eligible_population_not_sealed" if survey_id is not None else "no_active_survey",
+        "basis": "unique_eligible_respondents_over_verified_eligible_population",
+        "numerator": {"value": None, "grain": "unique_eligible_respondents", "verified": False},
+        "denominator": {"value": None, "grain": "eligible_population", "verified": False},
+        "observed_response_records": observed_response_records,
+        "response_grain": "real_survey_response_record",
+        "scope": {"mode": "latest_published_survey", "survey_id": survey_id},
+    }
+
 try:
     import pygeohash as pgh
 except ImportError:
@@ -595,8 +615,11 @@ class AnalyticsService:
 
     def get_survey_summary(self, tenant_id: int) -> Dict[str, Any]:
         """
-        Returns summary for active surveys: total votes, estimated participation rate,
-        and results histograms.
+        Return real response counts and results for the latest published survey.
+
+        Response records and recent analytics users do not establish a shared
+        eligible population. Participation remains unavailable until both its
+        unique-person numerator and eligible denominator can be verified.
         """
         # Find active survey(s) or just the most recent one for now
         # Assuming one active public survey for simplicity in dashboard summary
@@ -606,7 +629,16 @@ class AnalyticsService:
         ).order_by(desc(EncEncuesta.id)).first()
 
         if not survey:
-            return {"active_survey": None, "stats": {}}
+            return {
+                "active_survey": None,
+                "stats": {
+                    "participation_rate": None,
+                    "participation_rate_metadata": _survey_participation_rate_evidence(
+                        survey_id=None,
+                        observed_response_records=None,
+                    ),
+                },
+            }
 
         total_votes, unverified_votes, synthetic_votes = db.session.query(
             func.coalesce(
@@ -671,20 +703,15 @@ class AnalyticsService:
 
         histogram = [{"option": r[0], "count": r[1]} for r in results]
 
-        # Estimated Population (Active Users in last 30 days as proxy)
-        active_users_30d = db.session.query(func.count(func.distinct(AnalyticsEvent.user_id))).filter(
-            AnalyticsEvent.tenant_id == tenant_id,
-            AnalyticsEvent.timestamp >= datetime.now(timezone.utc) - timedelta(days=30)
-        ).scalar() or 1 # Avoid div by zero
-
-        participation_rate = (total_votes / active_users_30d) * 100
-        if participation_rate > 100: participation_rate = 100
-
         return {
             "active_survey": {"title": survey.titulo, "id": survey.id},
             "stats": {
                 "total_votes": total_votes,
-                "participation_rate": round(participation_rate, 2),
+                "participation_rate": None,
+                "participation_rate_metadata": _survey_participation_rate_evidence(
+                    survey_id=survey.id,
+                    observed_response_records=total_votes,
+                ),
                 "results_by_option": histogram,
                 "response_provenance": build_survey_response_provenance(
                     real_count=total_votes,

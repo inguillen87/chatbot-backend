@@ -25,6 +25,20 @@ _SECTIONS = (
 )
 
 
+def build_platform_workspace(*, authorized=False):
+    if authorized is not True:
+        return None
+    return {
+        'contract_version': 'platform.workspace.v1',
+        'heading': 'Chatboc · Plataforma',
+        'organization_label': 'Administración de plataforma',
+        'role_label': 'SuperAdmin',
+        'organization_action': {'label': 'Organizaciones', 'href': '/superadmin?section=organizations'},
+        'selection_heading': 'Elegí una organización',
+        'selection_description': 'Seleccioná el cliente desde el directorio para consultar o editar sus datos con su alcance verificado.',
+    }
+
+
 def build_organization_workspace(tenant):
     tenant_id = getattr(tenant, 'id', None)
     slug = getattr(tenant, 'slug', None)

@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
+from utils.postgres_tls import normalize_postgres_tls_uri
 
 from cutover_writer_fence import cutover_writer_fence_enabled
 from global_writer_authority import (
@@ -286,7 +287,7 @@ def resolve_database_uri(
     if configured:
         if render_standby_required:
             _validate_render_standby_database_uri(configured)
-        return configured
+        return normalize_postgres_tls_uri(configured)
     if is_vercel_runtime(runtime_env):
         raise RuntimeError(
             "DATABASE_URL es obligatoria en Vercel; SQLite efimero no es un almacenamiento valido."
@@ -1011,6 +1012,8 @@ class Config:
         "UPSTASH_REDIS_URL",
         default="memory://",
     )
+    # Separate environment counters when Preview and Production share Redis.
+    RATELIMIT_KEY_PREFIX = os.getenv("RATELIMIT_KEY_PREFIX", "").strip()
     # Public readiness probes stay bounded and never serialize dependency
     # details. Runtime parsing clamps probe timeouts and cache TTL to 0.1-5 s.
     READINESS_DATABASE_TIMEOUT_SECONDS = os.getenv(
@@ -1141,6 +1144,11 @@ class Config:
     # migration and tenant policy have been explicitly enabled.
     ENABLE_VOICE_CONSENT_LIFECYCLE_V1 = _env_strict_opt_in(
         "ENABLE_VOICE_CONSENT_LIFECYCLE_V1"
+    )
+    # A long-lived Media Stream must be separately admitted on the Vercel
+    # writer runtime. Consent rollout alone must never open this transport.
+    VERCEL_VOICE_STREAM_WRITER_ENABLED = _env_strict_opt_in(
+        "VERCEL_VOICE_STREAM_WRITER_ENABLED"
     )
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
@@ -1482,6 +1490,18 @@ class Config:
         "SURVEY_ELIGIBILITY_SECRET_V1",
         "",
     )
+    # Explicit participation canary. Existing rows and legacy admission remain
+    # unchanged outside this allowlist; a declared phone/cookie is not proof.
+    ENABLE_SURVEY_PARTICIPATION_ASSURANCE_V1 = _env_strict_opt_in(
+        "ENABLE_SURVEY_PARTICIPATION_ASSURANCE_V1"
+    )
+    SURVEY_PARTICIPATION_ASSURANCE_TENANT_IDS = os.getenv(
+        "SURVEY_PARTICIPATION_ASSURANCE_TENANT_IDS", ""
+    )
+    # Require the actual distributed limiter, including on serverless Vercel.
+    ENFORCE_PUBLIC_SURVEY_DISTRIBUTED_RATE_LIMIT = _env_strict_opt_in(
+        "ENFORCE_PUBLIC_SURVEY_DISTRIBUTED_RATE_LIMIT"
+    )
     # Workflow Studio durable writes remain a reviewed control-plane canary.
     # Runtime consumption is intentionally a separate, currently disabled gate.
     ENABLE_WHATSAPP_WORKFLOW_STUDIO_DURABLE_V1 = _env_strict_opt_in(
@@ -1506,6 +1526,9 @@ class Config:
     TWILIO_META_APP_ID = os.getenv("TWILIO_META_APP_ID")
     TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID = os.getenv("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID")
     TWILIO_PARTNER_SOLUTION_ID = os.getenv("TWILIO_PARTNER_SOLUTION_ID")
+    # Dedicated AES-256 keyring; never reuse SECRET_KEY or a provider token.
+    TENANT_PROVIDER_CREDENTIAL_KEYRING = os.getenv("TENANT_PROVIDER_CREDENTIAL_KEYRING")
+    TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID = os.getenv("TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID")
     TWILIO_TECH_PROVIDER_LIVE_ENABLED = os.getenv(
         "TWILIO_TECH_PROVIDER_LIVE_ENABLED",
         "false",

@@ -153,7 +153,15 @@ def responder_chatboc(
     knowledge_response = None
     if not kwargs.get('demo_metadata') and not kwargs.get('uploaded_file_info') and not kwargs.get('datos_interpretados_archivo'):
         from services.institutional_assistant import maybe_handle_institutional_question
-        knowledge_response = maybe_handle_institutional_question(pregunta, effective_owner_user, chat_db_context)
+        knowledge_input = pregunta
+        separate_action = kwargs.get('action_id')
+        if isinstance(separate_action, str) and separate_action.strip():
+            # The shared widget sends its visible label as pregunta and the
+            # canonical action separately. Preserve that structured action for
+            # validation; never reinterpret its label as a new complaint.
+            knowledge_input = dict(pregunta) if isinstance(pregunta, dict) else {'pregunta': pregunta}
+            knowledge_input['action_id'] = separate_action
+        knowledge_response = maybe_handle_institutional_question(knowledge_input, effective_owner_user, chat_db_context)
 
     # 2. Detectar nombre de rubro (universal)
     rubro_nombre = ""

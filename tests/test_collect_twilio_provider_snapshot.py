@@ -181,10 +181,35 @@ def test_network_client_exposes_only_allowlisted_get_without_redirects():
     assert len(session.calls) == 1
     url, kwargs = session.calls[0]
     assert url == collector.SENDERS_URL
+    assert kwargs["params"] == {"PageSize": "1000", "Channel": "whatsapp"}
     assert kwargs["allow_redirects"] is False
     assert kwargs["auth"] == (ACCOUNT, "token-value")
     assert not hasattr(client, "post")
     assert not hasattr(client, "send")
+
+
+def test_messaging_service_channel_senders_use_the_provider_senders_collection():
+    class ChannelSenderSession(FakeSession):
+        def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return FakeResponse({
+                "senders": [{"sid": SENDER, "sender_type": "WhatsApp"}],
+                "meta": {"key": "senders", "next_page_url": None},
+            })
+
+    session = ChannelSenderSession()
+    client = collector.TwilioV2GetOnlyClient(
+        account_sid_value=ACCOUNT,
+        auth_token="token-value",
+        session=session,
+    )
+    assert client.list_service_senders(SERVICE) == [
+        {"sid": SENDER, "sender_type": "WhatsApp"}
+    ]
+    url, kwargs = session.calls[0]
+    assert url == f"{collector.SERVICES_URL}/{SERVICE}/ChannelSenders"
+    assert kwargs["params"] == {"PageSize": "1000"}
+    assert kwargs["allow_redirects"] is False
 
 
 def test_pagination_must_be_exhaustive_for_exactly_one_claim():

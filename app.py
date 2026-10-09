@@ -104,7 +104,18 @@ _PUBLIC_CORS_EXACT_PATHS = {
 _PUBLIC_WIDGET_AUTH_PREFIXES = ("/auth/widget", "/api/auth/widget")
 
 
-def _is_public_cross_origin_path(path: str) -> bool:
+def _is_authenticated_rehearsal_path(path: str, method: str | None) -> bool:
+    """Only the two account-authenticated technical rehearsal endpoints."""
+    match = re.fullmatch(
+        r"/api/v2/public/tenants/[a-z0-9][a-z0-9-]{0,99}/survey-rehearsals/"
+        r"rehearsal_[a-f0-9]{32}/respond(?P<status>/status)?", str(path or "")
+    )
+    return bool(match and method in ({"GET", "OPTIONS"} if match.group("status") else {"POST", "OPTIONS"}))
+
+
+def _is_public_cross_origin_path(path: str, method: str | None = None) -> bool:
+    if _is_authenticated_rehearsal_path(path, method):
+        return False
     normalized = str(path or "").rstrip("/") or "/"
     if normalized in _PUBLIC_CORS_EXACT_PATHS:
         return True
@@ -364,7 +375,14 @@ def create_app(config_class=Config):
             from flask_login import current_user
 
             g.viewer = None
+            g.pop('_login_user', None)
+            g.current_user = None
+            g.token_payload = {}
+            g.auth_credential_source = None
             g.explicit_bearer_present = False
+            from services.auth_session_lifecycle import is_retirement_request
+            if is_retirement_request():
+                return
             authorization_header = request.headers.get("Authorization", "").strip()
             has_explicit_bearer = bool(
                 re.match(
@@ -405,6 +423,10 @@ def create_app(config_class=Config):
 
         @app.before_request
         def attach_contact_identity():
+            from services.auth_session_lifecycle import is_retirement_request
+            if is_retirement_request():
+                g.contact_identity = None
+                return
             g.contact_identity = resolve_contact_identity_from_request(
                 request,
                 include_body=request_path_allows_contact_identity_body(request.path),
@@ -447,6 +469,9 @@ def create_app(config_class=Config):
         @login_manager.user_loader
         def load_user(user_id):
             try:
+                from services.auth_session_lifecycle import is_retirement_request, cookie_lineage_for_user
+                if is_retirement_request():
+                    return None
                 from utils.auth_helpers import (
                     is_clerk_managed_user,
                     is_demo_user_account,
@@ -455,6 +480,8 @@ def create_app(config_class=Config):
                 from utils.roles import is_super_admin_role
 
                 user = User.query.get(int(user_id))
+                if cookie_lineage_for_user(user_id) is None:
+                    return None
                 if is_user_auth_disabled(user) or is_demo_user_account(user):
                     return None
                 if user and is_clerk_managed_user(user):
@@ -474,6 +501,12 @@ def create_app(config_class=Config):
             app.config['SESSION_TYPE'] = 'cachelib'
             app.config['SESSION_CACHELIB'] = SimpleCache(default_timeout=300)
         init_migration_managed_session(app, db)
+        from utils.migration_managed_session import isolate_retirement_session
+        isolate_retirement_session(app)
+        from services.auth_session_lifecycle import attach_retirement_descriptor
+        app.after_request(attach_retirement_descriptor)
+        from services.attachment_delivery import register_attachment_delivery_redaction
+        register_attachment_delivery_redaction(app)
 
     # Logging de app
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -547,6 +580,7 @@ def create_app(config_class=Config):
             "Authorization",
             "Origin",
             "X-Chatboc-Token",
+            "X-Chatboc-Knowledge",
             "X-Entity-Token",
             "X-Chat-Session-Id",
             "X-Anon-Id",
@@ -652,7 +686,7 @@ def create_app(config_class=Config):
             if not origin:
                 return resp
 
-            if _is_public_cross_origin_path(request.path):
+            if _is_public_cross_origin_path(request.path, request.method):
                 _clear_cors_headers(resp)
                 resp.headers.setdefault("X-Request-Id", _request_id())
                 _set_single_header(resp, "Access-Control-Allow-Origin", origin)
@@ -662,7 +696,12 @@ def create_app(config_class=Config):
                 _set_cors_vary(resp)
                 return resp
 
-            if not _credentialed_origin_is_allowed(origin):
+            if (not _credentialed_origin_is_allowed(origin)
+                or _is_authenticated_rehearsal_path(request.path, request.method)
+                and not is_same_site_credential_origin(
+                    origin, backend_url=app.config.get("BACKEND_URL"),
+                    public_root_domain=app.config.get("PUBLIC_ROOT_DOMAIN"),
+                )):
                 _clear_cors_headers(resp)
                 return resp
 
@@ -1114,6 +1153,9 @@ def create_app(config_class=Config):
             None if process_role == "survey-effect-worker" else app,
             **socket_init_kwargs,
         )
+        if process_role != "survey-effect-worker":
+            from socket_service import install_auth_session_socket_guard
+            install_auth_session_socket_guard(app)
         if process_role == "survey-effect-worker":
             app.extensions["socketio_external_emitter"] = socketio
 

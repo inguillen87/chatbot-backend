@@ -51,6 +51,8 @@ def _onboarding_status(contract: Mapping[str, Any], state: Mapping[str, Any], au
         return "pending_sender_registration"
     if state.get("messaging_service_sid") and state.get("twilio_account_sid"):
         return "ready_for_embedded_signup"
+    if contract.get("status") == "needs_secure_activation":
+        return "pending_platform_activation"
     if auto_provision_enabled:
         return "provisioning_started"
     if contract.get("status") == "needs_platform_config":
@@ -88,12 +90,14 @@ def _public_payload_for_config(
             "start_embedded_signup"
             if status in {"ready_for_embedded_signup", "plan_ready"}
             else "wait_for_platform_config"
-            if status == "needs_platform_config"
+            if status in {"needs_platform_config", "pending_platform_activation"}
             else "complete_phone_validation"
         ),
         "admin_next_action": (
-            "enable_twilio_meta_render_env"
+            "complete_platform_config"
             if status == "needs_platform_config"
+            else "complete_secure_tenant_activation"
+            if status == "pending_platform_activation"
             else "review_provider_status"
         ),
         "connect": {
@@ -109,9 +113,9 @@ def _public_payload_for_config(
             {"id": "create_subaccount", "owner": "backend", "state": _step_state(workflow, "create_subaccount")},
             {"id": "create_messaging_service", "owner": "backend", "state": _step_state(workflow, "create_messaging_service")},
             {
-                "id": "sync_subaccount_secret_to_render",
-                "owner": "backend_secret_store",
-                "state": _step_state(workflow, "sync_subaccount_secret_to_render", "manual_or_disabled"),
+                "id": "persist_tenant_credentials",
+                "owner": "chatboc_private_store",
+                "state": _step_state(workflow, "persist_tenant_credentials", "pending_durable_provisioning"),
             },
             {
                 "id": "embedded_signup",
