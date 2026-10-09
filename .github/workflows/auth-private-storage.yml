@@ -15,6 +15,7 @@ name: Durable sessions and private attachments
       - routes/internal_cron.py
       - routes/voice_routes.py
       - routes/ticket.py
+      - routes/crm/**
       - services/auth_session_lifecycle.py
       - services/clerk_auth_service.py
       - services/runtime_readiness.py
@@ -31,6 +32,7 @@ name: Durable sessions and private attachments
       - services/global_writer_authority.py
       - socket_service.py
       - utils/auth_helpers.py
+      - utils/tenant_admin_access.py
       - utils/migration_managed_session.py
       - migrations/versions/20261001_add_auth_session_lifecycle_v1.py
       - scripts/*neon_cutover*.py
@@ -47,6 +49,8 @@ name: Durable sessions and private attachments
       - tests/test_migration_managed_session.py
       - tests/test_live_chat_room_access.py
       - tests/profile_acceptance_runtime.py
+      - tests/crm_template_integrity_http.py
+      - tests/run_crm_template_integrity_postgres.py
       - .github/workflows/auth-private-storage.yml
   workflow_dispatch:
 permissions:
@@ -77,6 +81,7 @@ jobs:
           python -m tests.auth_session_lifecycle_http 2>&1 | tee .qa-artifacts/auth-private-storage/session-http.log
           python -m tests.institutional_assistant_source_http 2>&1 | tee .qa-artifacts/auth-private-storage/source-http.log
           python -m tests.test_private_attachment_storage_http 2>&1 | tee .qa-artifacts/auth-private-storage/attachment-http.log
+          python -m tests.crm_template_integrity_http 2>&1 | tee .qa-artifacts/auth-private-storage/crm-template-http.log
       - name: Private storage, direct upload and retired Render authority regressions
         shell: bash
         run: |
@@ -125,6 +130,7 @@ jobs:
           set -euo pipefail
           mkdir -p .qa-artifacts/auth-session-postgres
           python -m tests.run_auth_session_lifecycle_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/postgres.log
+          python -m tests.run_crm_template_integrity_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/crm-template-jsonb.log
       - name: Preserve disposable PostgreSQL evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from uuid import uuid4
@@ -39,6 +40,7 @@ from services.crm_people_directory import (
 )
 from socket_service import emit_crm_contact_update, emit_crm_notification_update
 from utils.roles import canonical_role, is_authorized_superadmin_user
+from utils.tenant_admin_access import can_manage_tenant_control_plane
 
 crm_bp = Blueprint('crm_bp', __name__)
 
@@ -187,6 +189,18 @@ def require_crm_tenant_operator(func):
         role = canonical_role(getattr(current_user, "rol", None))
         if role not in CRM_TENANT_OPERATOR_ROLES:
             return _crm_access_error("insufficient_permissions", "ask_admin")
+        return func(current_user, *args, **kwargs)
+
+    return wrapper
+
+
+def require_crm_template_manager(func):
+    """Use the institutional configuration authority for template changes."""
+    @wraps(func)
+    def wrapper(current_user, *args, **kwargs):
+        tenant = getattr(g, "tenant_profile", None)
+        if not can_manage_tenant_control_plane(current_user, tenant):
+            return _crm_access_error("tenant_admin_required", "ask_admin")
         return func(current_user, *args, **kwargs)
 
     return wrapper
@@ -572,14 +586,16 @@ def _parse_scheduled_for(raw_value: str | None, tz_name: str | None) -> datetime
 
 
 def _tenant_templates(tenant) -> list[dict]:
-    cfg = tenant.configuracion or {}
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
     templates = cfg.get("campaign_templates")
-    return templates if isinstance(templates, list) else []
+    # Never return the mapped JSON list itself: an in-place change would also
+    # mutate SQLAlchemy's comparison value and could disappear after commit.
+    return deepcopy(templates) if isinstance(templates, list) else []
 
 
 def _save_tenant_templates(tenant, templates: list[dict]) -> None:
-    cfg = tenant.configuracion or {}
-    cfg["campaign_templates"] = templates
+    cfg = deepcopy(tenant.configuracion) if isinstance(tenant.configuracion, dict) else {}
+    cfg["campaign_templates"] = deepcopy(templates)
     tenant.configuracion = cfg
 
 
@@ -921,11 +937,10 @@ def update_contact_stage(current_user, slug, contact_id):
 @require_crm_tenant_operator
 def crm_module_permissions(current_user, slug):
     tenant = g.tenant_profile
-    is_superadmin = _is_superadmin(current_user)
     return jsonify({
         "tenant": _tenant_brief(tenant),
         "modules": CRM_MODULE_PERMISSIONS,
-        "can_manage": is_superadmin or getattr(current_user, "rol", None) in {"admin", "tenant_admin", "manager"},
+        "can_manage": can_manage_tenant_control_plane(current_user, tenant),
         "role_templates": {
             "operador": ["crm_contacts_read"],
             "supervisor": [
@@ -962,6 +977,7 @@ def campaign_templates_list(current_user, slug):
 @token_requerido
 @require_tenant
 @require_crm_tenant_operator
+@require_crm_template_manager
 def campaign_templates_create(current_user, slug):
     tenant = g.tenant_profile
     payload = request.get_json(silent=True) or {}
@@ -994,6 +1010,7 @@ def campaign_templates_create(current_user, slug):
 @token_requerido
 @require_tenant
 @require_crm_tenant_operator
+@require_crm_template_manager
 def campaign_templates_update(current_user, slug, template_slug):
     tenant = g.tenant_profile
     payload = request.get_json(silent=True) or {}
