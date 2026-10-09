@@ -17,6 +17,8 @@ UI = {
     'topics': 'Temas de consulta', 'sources': 'Documentos y fuentes', 'source_details': 'Consultar fuentes',
     'question': 'Escribí tu consulta', 'placeholder': '¿Sobre qué necesitás información?',
     'send': 'Consultar', 'back': 'Volver', 'home': 'Todos los temas', 'loading': 'Consultando la información…',
+    'more_options': 'Más opciones', 'previous_options': 'Opciones anteriores',
+    'options_page': 'Opciones: grupo {current} de {total}',
     'unknown': 'Esta información no está incluida en las fuentes disponibles. Podés elegir otro tema.',
     'error': 'No se pudo completar la consulta. Volvé a intentarlo o elegí un tema.',
     'retry': 'Volver a consultar', 'import': 'Incorporar conocimiento',
@@ -30,6 +32,7 @@ UI = {
     'answer': 'Respuesta', 'evidence': 'Información respaldada por documentos', 'close': 'Cerrar fuentes',
     'pending': 'El cambio no está confirmado. Consultá el estado antes de volver a intentarlo.',
 }
+_CHANNEL_UI_KEYS = ('more_options', 'previous_options', 'options_page', 'large_text', 'source_details')
 
 def _record(tenant_id):
     return TenantConfig.query.filter_by(tenant_id=tenant_id, key=KEY, channel=CHANNEL).first()
@@ -335,4 +338,5 @@ def maybe_handle_institutional_question(question, owner, session=None):
         'botones': buttons,
         'knowledge_sources': [s for n in nodes for s in n['sources']],
         'knowledge_tenant': deepcopy(result['tenant']), 'knowledge_nodes': deepcopy(nodes),
+        'knowledge_ui': {key: UI[key] for key in _CHANNEL_UI_KEYS},
         'fuente': 'institutional_knowledge', 'context_revision': state['revision']}
