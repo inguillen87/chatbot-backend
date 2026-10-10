@@ -25,7 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from models import db, MessagingEventLedger, TenantProfile, User, WebhookDelivery
 from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
-from services.institutional_assistant import maybe_handle_institutional_question
+from services.institutional_assistant import maybe_handle_institutional_question, read_state
 from services.tenant_provider_credentials import ProviderCredentialError
 from cutover_writer_fence import cutover_writer_fence_enabled
 
@@ -244,14 +244,14 @@ def _answer(event, context):
     session = SimpleNamespace(tenant_id=TENANT_ID, context_data=context)
     if event.content_type == "location":
         return ("📍 Recibí tu ubicación. No la guardaré en esta prueba.\n"
-                "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", context)
+                "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", context, None)
     if event.content_type == "audio":
         return ("🎙️ Recibí una nota de voz. Esta prueba todavía no transcribe audio.\n"
-                "Podés escribir una palabra o un número del menú. También podés pedir ayuda de una persona.", context)
+                "Podés escribir una palabra o un número del menú. También podés pedir ayuda de una persona.", context, None)
     question = event.selection if event.content_type == "interactive" else event.text
     if event.content_type == "interactive" and not question.startswith("knowledge:"):
         # The pilot has no operational dispatch, ticket creation or flow submit.
-        return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", context)
+        return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", context, None)
     if isinstance(question, str) and question.strip().casefold() in {"hola", "buenas", "buen día", "buen dia"}:
         question = "menu"
     result = maybe_handle_institutional_question(question, owner, session)
@@ -265,7 +265,22 @@ def _answer(event, context):
     if len(body) > 3500:
         body = body[:3400].rsplit("\n", 1)[0] + "\nInformación completa: https://www.chatboc.ar/t/tierra-del-fuego"
     body += "\n\nPodés responder con el número o tus palabras. Escribí MENÚ para volver."
-    return body, session.context_data
+    return body, session.context_data, result.get("context_revision")
+
+
+def _knowledge_revision_current(revision):
+    if revision is None:
+        return True  # Fixed audio/location/error text contains no canonical content.
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision):
+        return False
+    # The intent is already committed. Discard cached ORM state before this
+    # last public-read check, so retirement/replacement cannot reuse an answer.
+    db.session.expire_all()
+    with db.session.no_autoflush:
+        tenant = db.session.get(TenantProfile, TENANT_ID)
+        if tenant is None or tenant.slug != TENANT_SLUG:
+            return False
+        return read_state(tenant, public=True)["revision"] == revision
 
 
 def _finish(delivery, status="processed", reason=None):
@@ -327,7 +342,7 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
             continue
         try:
             contact_key = _pseudonym(event.contact, cfg)
-            body, context = _answer(event, _previous_context(contact_key, event.sender.sender_id))
+            body, context, revision = _answer(event, _previous_context(contact_key, event.sender.sender_id))
             # This intent is durable before I/O, and remains uncertain on interruption.
             receipt = MessagingEventLedger(tenant_id=TENANT_ID,
                 provider_connection_id=event.sender.connection_id,
@@ -343,7 +358,8 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
                 return (sender == event.sender and payload.get("type") == "text"
                         and payload.get("to") == event.contact and event.contact in live_cfg["RECIPIENTS"]
                         and 0 <= clock() - event.timestamp < 24 * 3600
-                        and not cutover_writer_fence_enabled(current_app.config))
+                        and not cutover_writer_fence_enabled(current_app.config)
+                        and _knowledge_revision_current(revision))
             result = cloud.send_once(binding_loader=load,
                 payload=cloud.text_payload(recipient=event.contact, body=body), now=clock(),
                 policy_check=policy, post=post or (lambda url, **kw: _graph_request("POST", url, **kw)))

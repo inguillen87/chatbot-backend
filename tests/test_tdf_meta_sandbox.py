@@ -177,6 +177,24 @@ def test_disabling_pilot_after_answer_prevents_send(environment, monkeypatch):
     assert db.session.query(WebhookDelivery).count() == 1
 
 
+@pytest.mark.parametrize("change", ["retire", "replace"])
+def test_knowledge_retirement_or_replacement_before_post_blocks_and_cannot_replay(environment, monkeypatch, change):
+    original = pilot._answer
+    def withdraw(event, context):
+        result = original(event, context)
+        row = db.session.query(TenantConfig).filter_by(tenant_id=46, key="institutional_assistant", channel="knowledge").one()
+        state = deepcopy(row.json_value)
+        state["generation"] += 1
+        if change == "retire": state["visibility"] = "private"
+        state["revision"] = digest({key: state[key] for key in ("bundle_hash", "generation", "visibility")})
+        row.json_value = state; db.session.commit()
+        return result
+    monkeypatch.setattr(pilot, "_answer", withdraw)
+    assert process(document(), post=lambda *a, **k: pytest.fail("Withdrawn content must never send"))["accepted"] == 0
+    assert db.session.query(MessagingEventLedger).one().external_status == "send_uncertain"
+    assert process(document(), post=lambda *a, **k: pytest.fail("No replay of withdrawn answer"))["replayed"] == 1
+
+
 @pytest.mark.parametrize("change", ["production", "foreign_tenant", "duplicate_phone", "wrong_waba", "missing_vault", "expired"])
 def test_exact_persisted_sandbox_binding_fail_closed(environment, change):
     env = environment

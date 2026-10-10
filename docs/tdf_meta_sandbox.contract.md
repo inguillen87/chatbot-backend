@@ -115,6 +115,9 @@ The runtime checks the token app/scopes/expiry through `debug_token`, exact
 phone membership through `/{waba}/phone_numbers` and subscribed app through
 `/{waba}/subscribed_apps`. Authority is fresh for at most 60 seconds and never
 outlives the credential. It re-reads committed binding/revocation before send.
+Immediately before POST, canonical content also requires a fresh public
+knowledge state with the exact revision used to generate the answer. Retirement
+or replacement leaves the intent quarantined and cannot be retried by replay.
 The Graph transport uses fixed HTTPS host, default TLS validation, bounded
 body/timeouts, no redirects, proxy inheritance, automatic retries or URL debug
 logging. See the [official Meta Cloud API collection](https://www.postman.com/meta/whatsapp-business-platform/documentation/wlk6lh4/whatsapp-cloud-api).
