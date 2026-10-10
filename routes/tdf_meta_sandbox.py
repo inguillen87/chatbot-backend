@@ -7,6 +7,35 @@ from services.meta_whatsapp_webhook import MAX_BODY_BYTES, verify_challenge
 from services.tenant_provider_credentials import ProviderCredentialError
 
 tdf_meta_sandbox_bp = Blueprint("tdf_meta_sandbox", __name__)
+CHALLENGE_KEYS = frozenset({"hub.mode", "hub.verify_token", "hub.challenge"})
+MAX_CHALLENGE_QUERY_BYTES = 4096
+MAX_CHALLENGE_PARAMETERS = 16
+MAX_CHALLENGE_KEY_BYTES = 128
+
+
+def _challenge_query():
+    """Meta may add inert GET parameters; authentication fields stay unique.
+
+    Diagnostics contain only fixed field names and counts. Extra names are also
+    free-form input, so neither their names nor any values enter logs.
+    """
+    size = len(request.query_string)
+    if size > MAX_CHALLENGE_QUERY_BYTES:
+        current_app.logger.info("Meta TDF challenge GET rejected reason=query_size query_bytes=%d", size)
+        raise pilot.PilotError("tdf_meta_challenge_invalid", 400)
+    pairs = list(request.args.items(multi=True))
+    present = sorted(CHALLENGE_KEYS.intersection(request.args))
+    count = len(pairs)
+    duplicate_required = sum(len(request.args.getlist(key)) > 1 for key in CHALLENGE_KEYS)
+    current_app.logger.info(
+        "Meta TDF challenge GET fields=%s parameter_count=%d extra_count=%d duplicate_required_count=%d query_bytes=%d",
+        present, count, sum(key not in CHALLENGE_KEYS for key, _ in pairs), duplicate_required, size)
+    if (count > MAX_CHALLENGE_PARAMETERS
+            or any(not key or len(key.encode("utf-8")) > MAX_CHALLENGE_KEY_BYTES for key, _ in pairs)
+            or not CHALLENGE_KEYS.issubset(request.args)
+            or any(len(request.args.getlist(key)) != 1 for key in CHALLENGE_KEYS)):
+        raise pilot.PilotError("tdf_meta_challenge_invalid", 400)
+    return {key: request.args[key] for key in CHALLENGE_KEYS}
 
 
 @tdf_meta_sandbox_bp.after_request
@@ -20,11 +49,9 @@ def callback():
     try:
         cfg = pilot.settings(current_app.config)
         if request.method == "GET":
-            keys = {"hub.mode", "hub.verify_token", "hub.challenge"}
-            if set(request.args) != keys or any(len(request.args.getlist(k)) != 1 for k in keys):
-                raise pilot.PilotError("tdf_meta_challenge_invalid", 400)
-            result = verify_challenge(mode=request.args["hub.mode"], token=request.args["hub.verify_token"],
-                challenge=request.args["hub.challenge"], verify_token=cfg["VERIFY_TOKEN"])
+            query = _challenge_query()
+            result = verify_challenge(mode=query["hub.mode"], token=query["hub.verify_token"],
+                challenge=query["hub.challenge"], verify_token=cfg["VERIFY_TOKEN"])
             return result, 200, {"Content-Type": "text/plain; charset=utf-8"}
         if request.args or request.mimetype != "application/json":
             raise pilot.PilotError("tdf_meta_json_required", 400)

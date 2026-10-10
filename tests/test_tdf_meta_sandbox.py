@@ -113,6 +113,69 @@ def test_default_disabled_and_challenge_is_strict(environment):
     assert db.session.query(WebhookDelivery).count() == 0
 
 
+def challenge_params(environment):
+    return {"hub.mode": "subscribe", "hub.verify_token": environment.app.config["META_TDF_SANDBOX_VERIFY_TOKEN"],
+            "hub.challenge": "123456"}
+
+
+def test_challenge_get_allows_only_bounded_inert_extras_and_logs_no_free_input(environment,caplog):
+    params = challenge_params(environment)
+    extras = [("inert", "https://example.invalid/?hub.verify_token=not-used"),
+              ("inert", "duplicate-extra-is-inert"), ("a-private-name-not-to-log", "a-private-value-not-to-log")]
+    with caplog.at_level("INFO"):
+        response = environment.client.get(URL,query_string=[*params.items(),*extras])
+    assert response.status_code == 200 and response.data == b"123456"
+    assert response.headers["Content-Type"] == "text/plain; charset=utf-8"
+    assert "no-store" in response.headers["Cache-Control"]
+    assert "parameter_count=6" in caplog.text and "extra_count=3" in caplog.text
+    assert "hub.verify_token" in caplog.text and params["hub.verify_token"] not in caplog.text
+    for name,value in extras: assert name not in caplog.text and value not in caplog.text
+    assert db.session.query(WebhookDelivery).count() == 0
+
+
+@pytest.mark.parametrize("required",["hub.mode","hub.verify_token","hub.challenge"])
+def test_challenge_get_required_fields_cannot_be_missing_or_duplicated_with_extras(environment,required):
+    params=challenge_params(environment)
+    for query in [[(k,v) for k,v in params.items() if k != required],
+                  [*params.items(),(required,params[required])]]:
+        reply=environment.client.get(URL,query_string=[*query,("inert","ignored")])
+        assert reply.status_code == 400 and reply.json["reason_code"] == "tdf_meta_challenge_invalid"
+
+
+def test_challenge_get_query_count_key_and_raw_size_limits_are_exact(environment):
+    from routes.tdf_meta_sandbox import MAX_CHALLENGE_QUERY_BYTES
+    params=list(challenge_params(environment).items())
+    assert environment.client.get(URL,query_string=[*params,*[("extra","x")]*13]).status_code == 200
+    assert environment.client.get(URL,query_string=[*params,*[("extra","x")]*14]).status_code == 400
+    assert environment.client.get(URL,query_string=[*params,("k"*128,"x")]).status_code == 200
+    assert environment.client.get(URL,query_string=[*params,("k"*129,"x")]).status_code == 400
+    assert environment.client.get(URL,query_string=[*params,("","x")]).status_code == 400
+    from urllib.parse import urlencode
+    prefix=urlencode(params)+"&extra="
+    exact=prefix+"x"*(MAX_CHALLENGE_QUERY_BYTES-len(prefix))
+    assert environment.client.get(URL+"?"+exact).status_code == 200
+    assert environment.client.get(URL+"?"+exact+"x").status_code == 400
+
+
+@pytest.mark.parametrize("change",[{"hub.mode":"other"},{"hub.verify_token":"wrong-token"},
+                                 {"hub.challenge":"non-numeric"},{"hub.challenge":"1"*257},
+                                 {"hub.challenge":"١٢٣"}])
+def test_challenge_get_extras_cannot_replace_existing_authentication(environment,change):
+    query={**challenge_params(environment),**change,"inert":"subscribe"}
+    response=environment.client.get(URL,query_string=query)
+    assert response.status_code == 403 and response.json["reason_code"] == "tdf_meta_authentication_or_binding_denied"
+
+
+def test_challenge_get_compatibility_does_not_allow_post_query_or_skip_signature(environment,monkeypatch):
+    calls=[]
+    monkeypatch.setattr(pilot,"process",lambda *args:calls.append(args))
+    raw,signature=encoded(document())
+    response=environment.client.post(URL,query_string={"inert":"ignored"},data=raw,
+        content_type="application/json",headers={"X-Hub-Signature-256":signature})
+    assert response.status_code == 400 and response.json["reason_code"] == "tdf_meta_json_required"
+    assert calls==[] and db.session.query(WebhookDelivery).count() == 0
+
+
 def test_bad_signature_is_before_graph_and_writes(environment, monkeypatch):
     monkeypatch.setattr(pilot.GraphAuthority, "__call__", lambda *args: pytest.fail("Signature must come first"))
     raw, signature = encoded(document())
