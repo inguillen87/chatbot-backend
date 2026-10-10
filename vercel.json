@@ -3,7 +3,8 @@
   "git": {
     "deploymentEnabled": {
       "release/vercel-neon-complete-20261001": false,
-      "release/tdf-accessible-meta-20261010": false
+      "release/tdf-accessible-meta-20261010": false,
+      "feature/realtime-accessible-owner-20261010": false
     }
   },
   "framework": "container",
