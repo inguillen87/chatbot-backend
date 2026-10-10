@@ -202,9 +202,15 @@ def test_adding_reply_mapping_does_not_retry_historical_rejected_message(environ
     ledger = db.session.query(MessagingEventLedger).one()
     assert ledger.external_status == "rejected" and ledger.error_code == "131030"
     environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({CONTACT: APPROVED_REPLY_INPUT})
-    assert process(old, post=accepted_post)["replayed"] == 1
+    accepted_calls = []
+    def counted_accepted(url, **kwargs):
+        accepted_calls.append(kwargs["json"])
+        return accepted_post(url, **kwargs)
+    assert process(old, post=counted_accepted)["replayed"] == 1
+    assert accepted_calls == []
     assert len(calls) == 1 and db.session.query(MessagingEventLedger).count() == 1
-    assert process(bsuid_document(mid="wamid.synthetic-new-after-mapping"), post=accepted_post)["accepted"] == 1
+    assert process(bsuid_document(mid="wamid.synthetic-new-after-mapping"), post=counted_accepted)["accepted"] == 1
+    assert len(accepted_calls) == 1 and accepted_calls[0]["to"] == APPROVED_REPLY_INPUT
     assert db.session.query(MessagingEventLedger).count() == 2
 
 
