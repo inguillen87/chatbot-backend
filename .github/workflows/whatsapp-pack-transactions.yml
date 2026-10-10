@@ -10,6 +10,7 @@ name: WhatsApp draft transactions
       - tests/test_organization_type_presentation.py
       - tests/super_admin_plan_membership_http.py
       - tests/test_organization_profile_settings.py
+      - tests/test_organization_profile_real_locks.py
       - services/organization_setup_journey.py
       - services/organization_modules.py
       - tests/test_organization_modules.py
@@ -156,6 +157,10 @@ jobs:
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
           import pytest; raise SystemExit(pytest.main(['-q',
           'tests/test_organization_domain_binding.py', 'tests/test_organization_domain_vercel.py']))"
+      - name: Verify actual mapped profile eager joins lock only owner and actor
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_organization_profile_real_locks.py']))"
       - name: Verify durable owner voice admission and real authenticated HTTP offline
         run: >-
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();

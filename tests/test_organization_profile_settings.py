@@ -197,45 +197,6 @@ class OrganizationProfileSettingsTests(unittest.TestCase):
             with self.assertRaises(ProfileSettingsError):self.save()
         self.assertEqual(self.read()['values'],self.initial['values'])
 
-    def test_real_user_eager_categories_lock_only_sorted_actor_and_owner(self):
-        from sqlalchemy.dialects import postgresql
-        from sqlalchemy.orm import Query, Session as OrmSession
-        from models import User as RealUser, TenantProfile as RealTenant
-        statements, rollbacks = {}, []
-        class CapturedLocks(Exception): pass
-        class CaptureQuery(Query):
-            def one_or_none(query):
-                statements['tenant'] = query.statement.compile(
-                    dialect=postgresql.dialect(), compile_kwargs={'literal_binds':True})
-                return SimpleNamespace(id=46, is_active=True, municipio_id=9, pyme_id=None)
-            def all(query):
-                statements['users'] = query.statement.compile(dialect=postgresql.dialect())
-                raise CapturedLocks()
-        # Compile actual mapped classes and the service's queries. The older
-        # column-only fixture omits User.categorias_ticket lazy='joined', which
-        # hid PostgreSQL's FOR UPDATE nullable-side error from its save tests.
-        orm_session = OrmSession(query_cls=CaptureQuery)
-        def setup_lock_timeout(statement):
-            self.assertEqual(str(statement), "SET LOCAL lock_timeout = '5s'")
-        session = SimpleNamespace(query=orm_session.query,
-            get_bind=lambda:SimpleNamespace(dialect=postgresql.dialect()),
-            execute=setup_lock_timeout, rollback=lambda:rollbacks.append(True))
-        try:
-            with self.assertRaises(CapturedLocks):
-                save_profile_settings(session,RealTenant,RealUser,Audit,tenant_id=46,actor_id=5,
-                    data={'organization_profile':{'logo_url':'https://example.test/logo.png'},
-                          'expected_revision':'0'*64},authorize=allowed)
-        finally:
-            orm_session.close()
-        tenant_sql, user_sql = str(statements['tenant']), str(statements['users'])
-        self.assertTrue(tenant_sql.endswith('FOR UPDATE OF tenant_profile'))
-        self.assertIn('LEFT OUTER JOIN', user_sql)
-        self.assertEqual(RealUser.categorias_ticket.property.lazy, 'joined')
-        self.assertIn('ORDER BY "user".id', user_sql)
-        self.assertTrue(user_sql.endswith('FOR UPDATE OF "user"'))
-        self.assertEqual(len(statements['users'].params), 1)
-        self.assertEqual(set(next(iter(statements['users'].params.values()))), {5,9})
-        self.assertEqual(rollbacks, [True])
     @unittest.skipUnless(POSTGRES,'concurrent row locks are checked in PostgreSQL CI')
     def test_two_admins_with_same_revision_have_one_save_and_one_conflict(self):
         barrier=Barrier(2)
