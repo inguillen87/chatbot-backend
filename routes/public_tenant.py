@@ -56,6 +56,30 @@ from services.user_merge import merge_anon_into_user
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
 
+
+@public_tenant_bp.route('/api/public/host-resolution', methods=['GET'])
+def public_host_resolution():
+    """Resolve one exact verified hostname, independent of ambient tenant/session hints."""
+    from services.organization_domain_binding import DomainBindingError, PUBLIC, resolve_active_host
+    from services.plan_access import tenant_allows_custom_domains
+    def reply(payload, status):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'no-store'
+        return result, status
+    if set(request.args) != {'host'} or len(request.args.getlist('host')) != 1:
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_invalid', 'tenant': None}, 400)
+    try:
+        payload = resolve_active_host(db.session, TenantProfile, request.args['host'],
+            entitlement=tenant_allows_custom_domains)
+    except DomainBindingError:
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_invalid', 'tenant': None}, 400)
+    except Exception:
+        # A registry/database fault cannot turn into an identity fallback or cached brand.
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_not_available', 'tenant': None}, 503)
+    if payload is None:
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_not_available', 'tenant': None}, 404)
+    return reply(payload, 200)
+
 RESERVED_PUBLIC_SLUGS = {
     "demo",
     "demo-catalogs",

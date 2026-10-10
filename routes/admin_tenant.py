@@ -2,6 +2,8 @@ from services.organization_modules import ModuleSelectionError, build_module_sel
 from services.plan_access import tenant_allows_module_selection
 from services.organization_branding import BrandingError, build_branding, save_branding
 from services.plan_access import tenant_allows_workspace_branding
+from services.plan_access import tenant_allows_custom_domains
+from services.organization_domain_binding import DomainBindingError, build_domain_binding, save_domain_binding
 from cutover_writer_fence import cutover_writer_fence_enabled
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
@@ -2356,6 +2358,49 @@ def get_tenant_config_bundle(current_user, slug):
     result = jsonify(response)
     result.headers["Cache-Control"] = "no-store"
     return result
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/domain', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def tenant_domain_binding(current_user, slug):
+    """Own-tenant DNS preparation, never an HTTP activation/provider-write endpoint."""
+    def reply(payload, status=200):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'private, no-store'
+        result.headers['Vary'] = 'Cookie, Authorization'
+        return result, status
+    if request.args:
+        return reply({'contract_version': 'organization.domain_error.v1',
+            'reason_code': 'domain_request_invalid'}, 400)
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None:
+        return reply({'reason_code': 'domain_not_found'}, 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return reply({'reason_code': 'domain_forbidden'}, 403)
+    writes_blocked = cutover_writer_fence_enabled(current_app.config)
+    if request.method == 'PUT':
+        # Defense in depth alongside the global cutover middleware and auth flow.
+        if writes_blocked:
+            return reply({'reason_code': 'maintenance'}, 503)
+        import os
+        origin = request.headers.get('Origin')
+        allowed = {value.strip() for value in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+            if value.strip() and value.strip() != '*'}
+        allowed.add(request.host_url.rstrip('/'))
+        if origin is not None and origin not in allowed:
+            return reply({'reason_code': 'domain_origin_forbidden'}, 403)
+    try:
+        if request.method == 'GET':
+            return reply(build_domain_binding(tenant, can_edit=True,
+                entitled=tenant_allows_custom_domains(tenant), writes_blocked=writes_blocked))
+        result = save_domain_binding(db.session, TenantProfile, User, AuditEvent,
+            tenant_id=tenant.id, actor_id=current_user.id, data=request.get_json(silent=True),
+            authorize=can_manage_tenant_control_plane, entitlement=tenant_allows_custom_domains)
+        return reply(result)
+    except DomainBindingError as exc:
+        return reply({'contract_version': 'organization.domain_error.v1', 'reason_code': exc.code,
+            'error': {'code': exc.status, 'message': exc.message}}, exc.status)
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/conversation-guide', methods=['GET'])

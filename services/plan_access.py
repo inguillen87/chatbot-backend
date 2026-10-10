@@ -469,3 +469,10 @@ def tenant_allows_workspace_branding(tenant: TenantProfile | None) -> bool:
 def tenant_allows_module_selection(tenant: TenantProfile | None) -> bool:
     """Same explicit Full policy as workspace customization; never a client-editable feature flag."""
     return tenant_allows_workspace_branding(tenant)
+
+
+def tenant_allows_custom_domains(tenant: TenantProfile | None) -> bool:
+    """Domain lifecycle has its own Pro/Full entitlement; no other feature changes."""
+    return bool(tenant is not None and getattr(tenant, 'is_active', False) is True
+        and not tenant_is_demo_context(tenant)
+        and normalize_plan(getattr(tenant, 'plan', None)) in {'pro', *FULL_INTEGRATION_PLANS})
