@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": {
+      "fix/tdf-voice-trial-admission-20261010": false,
       "fix/tdf-whatsapp-progressive-menu-20261010": false,
       "fix/tdf-meta-owner-bsuid-20261010": false,
       "release/enterprise-channel-closure-20261010": false,

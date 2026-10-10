@@ -11,7 +11,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from services.auth_session_lifecycle import request_auth_session_active
 from services.institutional_assistant import read_state
 from services.institutional_assistant_content import ContentError
-from services.browser_realtime import CONTRACT, UI, VoiceError, AcceptedCallError, VoiceLedger, limits, validate_offer, session_config, provider_request, resolve_provider_key
+from services.browser_realtime import CONTRACT, UI, VoiceError, AcceptedCallError, VoiceLedger, limits, require_trial_current, validate_offer, session_config, provider_request, resolve_provider_key
 
 browser_realtime_bp = Blueprint('browser_realtime', __name__)
 PREFIX = '/api/admin/tenants/<slug>/realtime/browser'
@@ -82,10 +82,13 @@ def capabilities(current_user, slug):
         actor, tenant = _actor(), _tenant(slug)
         _authorize(actor, tenant)
         payload = {'contract_version': CONTRACT, 'enabled': False, 'owner_trial': True,
-                   'ui': UI, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
+                   'ui': dict(UI), 'tenant': {'id': tenant.id, 'slug': tenant.slug},
                    'generated_video': False, 'telephone_calls': False}
         try:
             payload['limits'] = limits(tenant.configuracion)
+            ledger = VoiceLedger(db.session, TenantProfile, AuditEvent)
+            payload['admission'] = ledger.admission_snapshot(tenant.id, payload['limits'])
+            ledger.require_admission(tenant.id, payload['limits'])
             if not resolve_provider_key(current_app.config):
                 raise VoiceError('browser_voice_provider_not_configured')
             state = read_state(tenant, public=True)
@@ -93,9 +96,19 @@ def capabilities(current_user, slug):
             payload.update(enabled=True, revision=state['revision'])
         except (VoiceError, ContentError) as error:
             payload['reason_code'] = error.code
+            if error.code == 'browser_voice_trial_expired':
+                payload['ui']['disabled'] = 'La prueba de voz terminó. Podés seguir usando el chat por texto.'
+            elif error.code == 'browser_voice_total_cap':
+                payload['ui']['disabled'] = 'Se usaron las sesiones disponibles de esta prueba de voz. El chat por texto sigue disponible.'
+            elif error.code == 'browser_voice_previous_session_pending':
+                payload['ui']['disabled'] = UI['pending']
+            elif error.code == 'browser_voice_hourly_cap':
+                payload['ui']['disabled'] = 'Se alcanzó el límite horario de esta prueba de voz. Podés seguir por texto.'
         return _response(payload)
     except VoiceError as error:
         return _fail(error)
+    except SQLAlchemyError:
+        return _fail(VoiceError('browser_voice_ledger_unavailable'))
 
 
 @browser_realtime_bp.post(PREFIX + '/sessions')
@@ -126,7 +139,14 @@ def start(current_user, slug):
         if command['revision'] != state['revision']:
             raise VoiceError('browser_voice_revision_conflict', 412)
         config = session_config(tenant.configuracion or {}, current_app.config, state)
-        identifier = ledger.reserve(tenant_id, actor_id, state['revision'], quota['max_sessions_per_hour'])
+        identifier = ledger.reserve(tenant_id, actor_id, state['revision'], quota)
+        try:
+            # A slow reservation commit must not start a call after expiry.
+            require_trial_current(quota, ledger.clock())
+        except VoiceError:
+            ledger.append(tenant_id, actor_id, identifier, 'failed',
+                          {'reason_code': 'browser_voice_trial_expired'})
+            raise
         try:
             result = provider_request(key, actor_id, sdp=offer, config=config)
         except AcceptedCallError as error:
@@ -148,12 +168,19 @@ def start(current_user, slug):
                     or not request_auth_session_active(actor_id)):
                 raise VoiceError('browser_voice_session_retired', 403)
             _authorize(fresh_actor, fresh_tenant)
-            limits(fresh_tenant.configuracion)
+            require_trial_current(quota, ledger.clock())
+            fresh_quota = limits(fresh_tenant.configuracion)
+            require_trial_current(fresh_quota, ledger.clock())
+            if fresh_quota != quota:
+                raise VoiceError('browser_voice_state_changed', 412)
             if read_state(fresh_tenant, public=True)['revision'] != state['revision']:
                 raise VoiceError('browser_voice_revision_conflict', 412)
-        except (VoiceError, ContentError):
+            require_trial_current(quota, ledger.clock())
+        except (VoiceError, ContentError) as error:
             # Close an acknowledged call when the session/corpus changed in flight.
-            ledger.stop(tenant_id, actor_id, identifier, key)
+            ledger.stop(tenant_id, actor_id, identifier, key, provider=provider_request)
+            if error.code == 'browser_voice_trial_expired':
+                raise error from None
             raise VoiceError('browser_voice_state_changed', 412) from None
         return _response({'contract_version': CONTRACT, 'session_id': identifier,
                           'sdp': result['sdp'], 'revision': state['revision'], 'limits': quota})

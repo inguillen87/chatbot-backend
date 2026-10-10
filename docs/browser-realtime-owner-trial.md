@@ -19,8 +19,12 @@ It never requests camera permission, sends tool calls or stores transcripts.
 ## Admission and scope
 
 - Disabled by default. Existing tenant configuration must explicitly contain
-  `browser_realtime_voice: {enabled: true, max_sessions_per_hour: 1}` (integer
-  cap 1–3); this change does not apply that setting anywhere.
+  `browser_realtime_voice` with `enabled: true`, integer
+  `max_sessions_per_hour: 1`, integer `max_total_sessions: 1` (both caps 1–3),
+  and `trial_expires_at`, an explicitly approved fixed UTC Unix timestamp in
+  seconds. Missing fields, booleans used as integers, or invalid bounds fail
+  closed. Old enabled configurations receive no grace period. This source
+  change supplies no deadline and applies no setting to an existing tenant.
 - Existing OpenAI configuration and model resolver are reused. No new key,
   provider account, environment variable, app, database or migration is added.
   Key resolution honors an explicit Flask setting, otherwise the existing
@@ -34,6 +38,16 @@ It never requests camera permission, sends tool calls or stores transcripts.
   state. The existing append-only `AuditEvent` table durably records admission
   before provider creation. At most one unresolved call exists per tenant;
   unknown requests block creation even after the hourly admission window.
+- Every reservation for this tenant and contract consumes the total trial
+  allowance, including closed, failed and unknown attempts. It never resets
+  on a new actor, corpus revision, expiry setting or hourly window. Admission
+  checks the fixed deadline immediately before the durable intent. An
+  acknowledged creation that crosses the deadline is closed once without
+  delivering SDP; Stop remains available after trial expiry or exhaustion.
+  Capabilities reports the fixed deadline and total reservations/remaining
+  allowance as an advisory snapshot, with a fixed expired/exhausted message.
+  The authenticated POST rechecks admission; a stale browser capability can
+  still request microphone consent before that rejection.
 - The provider creation is not retried. Normal hangup commits a stop intent
   before its one attempt; unknown closure does not retry or claim success.
   A validated provider call ID survives an invalid, oversized, compressed or

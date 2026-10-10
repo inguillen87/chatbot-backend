@@ -26,7 +26,14 @@ audit = next(node for node in source.body if isinstance(node, ast.ClassDef) and 
 exec(compile(ast.Module(body=[audit], type_ignores=[]), 'voice-source-audit', 'exec'), namespace)
 User, Tenant, Audit = (namespace[name] for name in ('User','TenantProfile','AuditEvent'))
 NOW = datetime(2026, 10, 10, tzinfo=timezone.utc)
+DEADLINE = int((NOW + timedelta(days=1)).timestamp())
 OFFER = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n'
+
+
+def trial_config(*, cap=2, total=3, deadline=DEADLINE):
+    return {'browser_realtime_voice': {'enabled': True,
+        'max_sessions_per_hour': cap, 'max_total_sessions': total,
+        'trial_expires_at': deadline}}
 
 
 @pytest.fixture
@@ -44,10 +51,12 @@ def store(tmp_path):
     engine.dispose()
 
 
-def reserve(session, tenant_id=1, actor_id=1, cap=2, clock=NOW):
+def reserve(session, tenant_id=1, actor_id=1, cap=2, clock=NOW, total=3, deadline=DEADLINE,
+            revision='published-revision'):
     ledger = voice.VoiceLedger(session, Tenant, Audit, clock=lambda: clock)
     ledger.lock(tenant_id)
-    identifier = ledger.reserve(tenant_id, actor_id, 'published-revision', cap)
+    identifier = ledger.reserve(tenant_id, actor_id, revision,
+        voice.limits(trial_config(cap=cap, total=total, deadline=deadline)))
     return ledger, identifier
 
 
@@ -125,6 +134,96 @@ def test_postgresql_lock_targets_tenant_only():
     {'browser_realtime_voice': {'enabled':True,'max_sessions_per_hour':4}}])
 def test_disabled_by_default_or_unbounded_configuration_cannot_admit(config):
     with pytest.raises(voice.VoiceError): voice.limits(config)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('max_total_sessions', None), ('max_total_sessions', True),
+    ('max_total_sessions', 0), ('max_total_sessions', 4), ('max_total_sessions', 1.0),
+    ('trial_expires_at', None), ('trial_expires_at', True), ('trial_expires_at', 0),
+    ('trial_expires_at', '1790000000'), ('trial_expires_at', 1790000000.0),
+    ('trial_expires_at', 253402300800)])
+def test_trial_requires_explicit_fixed_integer_deadline_and_total_cap(field, value):
+    config = trial_config()
+    config['browser_realtime_voice'][field] = value
+    with pytest.raises(voice.VoiceError):
+        voice.limits(config)
+
+
+def test_legacy_enabled_config_has_no_grace_period():
+    with pytest.raises(voice.VoiceError, match='total_cap_required'):
+        voice.limits({'browser_realtime_voice': {'enabled': True, 'max_sessions_per_hour': 1}})
+
+
+def test_total_admission_survives_terminal_events_actor_revision_and_hour_changes(store):
+    with store() as session:
+        first, one = reserve(session, clock=NOW-timedelta(days=2))
+        first.append(1, 1, one, 'failed', {})
+        second, two = reserve(session, actor_id=2, revision='different-revision', clock=NOW-timedelta(days=1))
+        second.append(1, 2, two, 'accepted', {'call_id': 'rtc_fixture'})
+        second.stop(1, 2, two, 'synthetic', provider=Mock(return_value={'stopped': True}))
+        third, three = reserve(session, revision='third-revision')
+        third.append(1, 1, three, 'failed', {})
+    with store() as next_process:
+        # Extending the deadline or moving to tomorrow does not reset totals.
+        with pytest.raises(voice.VoiceError, match='total_cap') as error:
+            reserve(next_process, actor_id=2, clock=NOW+timedelta(days=2), deadline=DEADLINE+86400*3)
+        assert error.value.status == 429
+        assert next_process.query(Audit).filter_by(resource_type=voice.CONTRACT,
+            event_type=voice.EVENT+'intent').count() == 3
+        next_process.rollback()
+        _, foreign = reserve(next_process, tenant_id=2, actor_id=2)
+        assert foreign not in (one, two, three)
+
+
+def test_unknown_reservation_is_in_total_snapshot_and_never_expires_away(store):
+    with store() as session:
+        ledger, _ = reserve(session, clock=NOW-timedelta(days=2))
+        assert ledger.admission_snapshot(1, voice.limits(trial_config(total=1))) == {
+            'total_sessions_reserved': 1, 'total_sessions_remaining': 0}
+        with pytest.raises(voice.VoiceError, match='previous_session_pending'):
+            reserve(session)
+        assert session.query(Audit).count() == 1
+
+
+def test_foreign_contract_cannot_consume_quota_or_fake_resolution(store):
+    with store() as session:
+        session.add(Audit(tenant_id=1, actor_user_id=1, resource_id='foreign',
+            resource_type='other-contract', event_type=voice.EVENT+'intent', details={}, created_at=NOW))
+        session.commit()
+        ledger, identifier = reserve(session, total=1)
+        session.add(Audit(tenant_id=1, actor_user_id=1, resource_id=identifier,
+            resource_type='other-contract', event_type=voice.EVENT+'stopped', details={}, created_at=NOW))
+        session.commit()
+        assert ledger.admission_snapshot(1, voice.limits(trial_config(total=1)))['total_sessions_reserved'] == 1
+        with pytest.raises(voice.VoiceError, match='previous_session_pending'):
+            reserve(session, total=1)
+
+
+def test_deadline_equal_now_denies_and_expiry_during_admission_queries_reserves_nothing(store):
+    with store() as session:
+        with pytest.raises(voice.VoiceError, match='trial_expired'):
+            reserve(session, deadline=int(NOW.timestamp()))
+        assert session.query(Audit).count() == 0
+        session.rollback()
+        ticks = iter([NOW, NOW, NOW+timedelta(seconds=1)])
+        ledger = voice.VoiceLedger(session, Tenant, Audit, clock=lambda: next(ticks))
+        ledger.lock(1)
+        with pytest.raises(voice.VoiceError, match='trial_expired'):
+            ledger.reserve(1, 1, 'published-revision',
+                voice.limits(trial_config(deadline=int(NOW.timestamp())+1)))
+        assert session.query(Audit).count() == 0
+
+
+def test_stop_remains_available_after_expiry_without_reconsuming_total(store):
+    with store() as session:
+        ledger, identifier = reserve(session, total=1)
+        ledger.append(1, 1, identifier, 'accepted', {'call_id': 'rtc_fixture'})
+        ledger.clock = lambda: NOW+timedelta(days=2)
+        provider = Mock(return_value={'stopped': True})
+        assert ledger.stop(1, 1, identifier, 'synthetic', provider=provider)['stopped']
+        assert ledger.stop(1, 1, identifier, 'synthetic', provider=provider)['stopped']
+        assert provider.call_count == 1
+        assert ledger.admission_snapshot(1, voice.limits(trial_config(total=1)))['total_sessions_reserved'] == 1
 
 
 @pytest.mark.parametrize('sdp', ['v=0\r\nm=video 9 X\r\n', OFFER+'m=video 9 X\r\n', 'x', OFFER+'x'*50000, OFFER+'\x00'], ids=['video','mixed','invalid','large','nul'])
@@ -327,7 +426,7 @@ def route_client(store, monkeypatch):
     from utils import auth_helpers as auth
     session = store()
     tenant=session.get(Tenant,1)
-    tenant.configuracion={'browser_realtime_voice':{'enabled':True,'max_sessions_per_hour':2}}
+    tenant.configuracion=trial_config()
     session.commit()
     app=Flask('voice-http');app.config['OPENAI_API_KEY']='synthetic-key'
     monkeypatch.setattr(routes,'db',SimpleNamespace(session=session))
@@ -346,6 +445,10 @@ def route_client(store, monkeypatch):
     monkeypatch.setattr(routes,'auth_session_version',lambda actor:1)
     monkeypatch.setattr(routes,'request_auth_session_active',lambda actor:True)
     monkeypatch.setattr(routes,'read_state',lambda tenant,**kw:state())
+    original_init = voice.VoiceLedger.__init__
+    def init(ledger, *args, clock=None):
+        original_init(ledger, *args, clock=clock or (lambda: NOW))
+    monkeypatch.setattr(voice.VoiceLedger, '__init__', init)
     app.add_url_rule('/<slug>/sessions','voice-start',routes.start,methods=['POST'])
     app.add_url_rule('/<slug>/capabilities','voice-cap',routes.capabilities,methods=['GET'])
     provider=Mock(return_value={'call_id':'rtc_fixture','sdp':OFFER})
@@ -377,6 +480,173 @@ def test_http_success_keeps_key_call_id_and_offer_out_of_browser_response(route_
     assert session.query(Audit).count()==2 and provider.call_count==1
     assert client.post('/a/sessions',json={'sdp':OFFER,'revision':'published-revision','consent':True}).status_code==409
     assert provider.call_count==1
+
+
+@pytest.mark.parametrize('kind', ['legacy', 'expired', 'exhausted'])
+def test_http_capabilities_and_start_fail_closed_without_provider_for_trial_limits(route_client, kind):
+    client, session, routes, provider = route_client
+    tenant = session.get(Tenant, 1)
+    if kind == 'legacy':
+        tenant.configuracion = {'browser_realtime_voice': {'enabled': True, 'max_sessions_per_hour': 2}}
+        expected, status = 'browser_voice_total_cap_required', 503
+    elif kind == 'expired':
+        tenant.configuracion = trial_config(deadline=int(NOW.timestamp()))
+        expected, status = 'browser_voice_trial_expired', 410
+    else:
+        tenant.configuracion = trial_config(total=1)
+        session.commit()
+        ledger, identifier = reserve(session, total=1)
+        ledger.append(1, 1, identifier, 'failed', {})
+        expected, status = 'browser_voice_total_cap', 429
+    session.commit()
+    before = session.query(Audit).count()
+    capability = client.get('/a/capabilities')
+    assert capability.status_code == 200 and capability.json['enabled'] is False
+    assert capability.json['reason_code'] == expected
+    assert capability.headers['Cache-Control'] == 'no-store'
+    if kind != 'legacy':
+        assert capability.json['admission']['total_sessions_reserved'] == (1 if kind == 'exhausted' else 0)
+        assert capability.json['limits']['trial_expires_at'] == tenant.configuracion['browser_realtime_voice']['trial_expires_at']
+        assert capability.json['ui']['disabled'] != voice.UI['disabled']
+    response = client.post('/a/sessions', json={'sdp': OFFER, 'revision': 'published-revision', 'consent': True})
+    assert response.status_code == status and response.json['reason_code'] == expected
+    assert not provider.called and session.query(Audit).count() == before
+    assert voice.UI['disabled'] == 'Esta prueba de voz todavía no está habilitada. El chat por texto sigue disponible.'
+
+
+@pytest.mark.parametrize('close_success', [True, False])
+def test_expiry_during_provider_closes_once_and_never_returns_sdp(route_client, close_success):
+    client, session, routes, provider = route_client
+    deadline = int(NOW.timestamp())+1
+    session.get(Tenant, 1).configuracion = trial_config(total=1, deadline=deadline)
+    session.commit()
+    original_clock = routes.VoiceLedger.__init__
+    def init(ledger, *args, **kwargs):
+        original_clock(ledger, *args, **kwargs)
+        ledger.clock = lambda: current[0]
+    current = [NOW]
+    # This clock changes only when the single synthetic provider call returns.
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(routes.VoiceLedger, '__init__', init)
+        def request(key, actor_id, **kwargs):
+            if kwargs.get('call_id'):
+                if not close_success:
+                    raise voice.VoiceError('browser_voice_provider_unknown')
+                return {'stopped': True}
+            current[0] = NOW+timedelta(seconds=1)
+            return {'call_id': 'rtc_fixture', 'sdp': OFFER}
+        provider.side_effect = request
+        response = client.post('/a/sessions', json={'sdp': OFFER, 'revision': 'published-revision', 'consent': True})
+        assert response.status_code == (410 if close_success else 409)
+        assert response.json['reason_code'] == ('browser_voice_trial_expired' if close_success else 'browser_voice_close_pending')
+        assert 'sdp' not in response.json and 'rtc_fixture' not in response.get_data(as_text=True)
+        assert provider.call_count == 2
+        rows = session.query(Audit).order_by(Audit.id).all()
+        assert [row.event_type for row in rows] == [voice.EVENT+kind for kind in
+            (['intent', 'accepted', 'stop_intent', 'stopped'] if close_success else ['intent', 'accepted', 'stop_intent'])]
+        again = client.post('/a/sessions', json={'sdp': OFFER, 'revision': 'published-revision', 'consent': True})
+        assert again.status_code == 410 and provider.call_count == 2
+
+
+def test_one_session_total_is_not_reconsumed_by_post_provider_revalidation(route_client):
+    client, session, routes, provider = route_client
+    session.get(Tenant, 1).configuracion = trial_config(total=1)
+    session.commit()
+    response = client.post('/a/sessions', json={'sdp': OFFER, 'revision': 'published-revision', 'consent': True})
+    assert response.status_code == 200 and provider.call_count == 1
+    assert response.json['limits']['max_total_sessions'] == 1
+    assert session.query(Audit).filter_by(event_type=voice.EVENT+'intent').count() == 1
+
+
+def test_deadline_crossing_durable_reservation_never_calls_provider(route_client, monkeypatch):
+    client, session, routes, provider = route_client
+    session.get(Tenant, 1).configuracion = trial_config(deadline=int(NOW.timestamp())+1)
+    session.commit()
+    original_init = voice.VoiceLedger.__init__
+    ticks = iter([NOW, NOW, NOW, NOW, NOW+timedelta(seconds=1), NOW+timedelta(seconds=1)])
+    def init(ledger, *args, **kwargs):
+        original_init(ledger, *args, **kwargs)
+        ledger.clock = lambda: next(ticks)
+    monkeypatch.setattr(voice.VoiceLedger, '__init__', init)
+    response = client.post('/a/sessions', json={'sdp': OFFER, 'revision': 'published-revision', 'consent': True})
+    assert response.status_code == 410 and not provider.called
+    assert [row.event_type for row in session.query(Audit).order_by(Audit.id)] == [
+        voice.EVENT+'intent', voice.EVENT+'failed']
+
+
+@pytest.mark.parametrize('changed', [
+    {'max_total_sessions': 2}, {'max_sessions_per_hour': 1},
+    {'trial_expires_at': DEADLINE+3600}])
+def test_trial_terms_changed_during_provider_are_closed_once(route_client, changed):
+    client, session, routes, provider = route_client
+    def request(key, actor_id, **kwargs):
+        if kwargs.get('call_id'):
+            return {'stopped': True}
+        config = trial_config()
+        config['browser_realtime_voice'].update(changed)
+        session.get(Tenant, 1).configuracion = config
+        session.commit()
+        return {'call_id': 'rtc_fixture', 'sdp': OFFER}
+    provider.side_effect = request
+    response = client.post('/a/sessions', json={'sdp': OFFER, 'revision': 'published-revision', 'consent': True})
+    assert response.status_code == 412 and response.json['reason_code'] == 'browser_voice_state_changed'
+    assert 'sdp' not in response.json and provider.call_count == 2
+    assert [row.event_type for row in session.query(Audit).order_by(Audit.id)] == [
+        voice.EVENT+kind for kind in ('intent','accepted','stop_intent','stopped')]
+
+
+def test_expiry_during_post_provider_corpus_read_closes_before_response(route_client, monkeypatch):
+    client, session, routes, provider = route_client
+    session.get(Tenant, 1).configuracion = trial_config(deadline=int(NOW.timestamp())+1)
+    session.commit()
+    current = [NOW]
+    original_init = voice.VoiceLedger.__init__
+    def init(ledger, *args, **kwargs):
+        original_init(ledger, *args, **kwargs)
+        ledger.clock = lambda: current[0]
+    monkeypatch.setattr(voice.VoiceLedger, '__init__', init)
+    reads = []
+    def read(tenant, **kwargs):
+        reads.append(True)
+        if len(reads) == 2:
+            current[0] = NOW+timedelta(seconds=1)
+        return state()
+    monkeypatch.setattr(routes, 'read_state', read)
+    def request(key, actor_id, **kwargs):
+        return {'stopped': True} if kwargs.get('call_id') else {'call_id': 'rtc_fixture', 'sdp': OFFER}
+    provider.side_effect = request
+    response = client.post('/a/sessions', json={'sdp': OFFER, 'revision': 'published-revision', 'consent': True})
+    assert response.status_code == 410 and 'sdp' not in response.json
+    assert provider.call_count == 2 and len(reads) == 2
+    assert session.query(Audit).filter_by(event_type=voice.EVENT+'stopped').count() == 1
+
+
+def test_capabilities_denies_pending_or_hourly_limit_without_new_reservation(route_client):
+    client, session, routes, provider = route_client
+    ledger, identifier = reserve(session, cap=1)
+    capability = client.get('/a/capabilities')
+    assert capability.json['enabled'] is False
+    assert capability.json['reason_code'] == 'browser_voice_previous_session_pending'
+    assert capability.json['ui']['disabled'] == voice.UI['pending']
+    ledger.append(1, 1, identifier, 'failed', {})
+    session.get(Tenant, 1).configuracion = trial_config(cap=1)
+    session.commit()
+    capability = client.get('/a/capabilities')
+    assert capability.json['enabled'] is False
+    assert capability.json['reason_code'] == 'browser_voice_hourly_cap'
+    assert capability.json['admission'] == {'total_sessions_reserved': 1, 'total_sessions_remaining': 2}
+    assert not provider.called and session.query(Audit).count() == 2
+
+
+def test_capabilities_ledger_failure_is_fixed_disabled_response_without_calls(route_client, monkeypatch):
+    client, session, routes, provider = route_client
+    monkeypatch.setattr(voice.VoiceLedger, 'admission_snapshot',
+        Mock(side_effect=sa.exc.SQLAlchemyError('private-database-marker')))
+    response = client.get('/a/capabilities')
+    assert response.status_code == 503
+    assert response.json['reason_code'] == 'browser_voice_ledger_unavailable'
+    assert 'private-database-marker' not in response.get_data(as_text=True)
+    assert not provider.called and session.query(Audit).count() == 0
 
 
 def test_provider_timeout_has_durable_intent_and_cannot_issue_a_second_call(route_client):

@@ -73,8 +73,20 @@ def limits(config):
     cap = value.get('max_sessions_per_hour')
     if type(cap) is not int or not 1 <= cap <= 3:
         raise VoiceError('browser_voice_cap_required')
-    return {'max_sessions_per_hour': cap, 'client_duration_seconds': 120,
+    total = value.get('max_total_sessions')
+    deadline = value.get('trial_expires_at')
+    if type(total) is not int or not 1 <= total <= 3:
+        raise VoiceError('browser_voice_total_cap_required')
+    if type(deadline) is not int or not 0 < deadline <= 253402300799:
+        raise VoiceError('browser_voice_trial_deadline_required')
+    return {'max_sessions_per_hour': cap, 'max_total_sessions': total,
+            'trial_expires_at': deadline, 'client_duration_seconds': 120,
             'max_output_tokens': MAX_OUTPUT_TOKENS, 'hard_duration_limit': False}
+
+
+def require_trial_current(quota, now):
+    if now.timestamp() >= quota['trial_expires_at']:
+        raise VoiceError('browser_voice_trial_expired', 410)
 
 
 def validate_offer(value):
@@ -212,20 +224,43 @@ class VoiceLedger:
             details=details, created_at=self.clock()))
         self.session.commit()
 
-    def reserve(self, tenant_id, actor_id, revision, cap):
+    def admission_snapshot(self, tenant_id, quota):
+        # A closed, failed or unknown reservation still consumes the trial.
+        # The quota never starts over for another actor, revision or hour.
+        total = self.session.query(self.audit_model.id).filter(
+            self.audit_model.tenant_id == tenant_id,
+            self.audit_model.resource_type == CONTRACT,
+            self.audit_model.event_type == EVENT+'intent').count()
+        return {'total_sessions_reserved': total,
+                'total_sessions_remaining': max(0, quota['max_total_sessions'] - total)}
+
+    def require_admission(self, tenant_id, quota):
+        require_trial_current(quota, self.clock())
         audit, terminal = self.audit_model, aliased(self.audit_model)
         unresolved = self.session.query(audit.id).filter(
-            audit.tenant_id == tenant_id, audit.event_type == EVENT+'intent',
+            audit.tenant_id == tenant_id, audit.resource_type == CONTRACT,
+            audit.event_type == EVENT+'intent',
             ~exists().where(terminal.tenant_id == tenant_id,
+                terminal.resource_type == CONTRACT,
                 terminal.resource_id == audit.resource_id,
                 terminal.event_type.in_([EVENT+'stopped', EVENT+'failed']))).first()
         if unresolved:
             raise VoiceError('browser_voice_previous_session_pending', 409)
+        if not self.admission_snapshot(tenant_id, quota)['total_sessions_remaining']:
+            raise VoiceError('browser_voice_total_cap', 429)
+        cap = quota['max_sessions_per_hour']
         attempts = self.session.query(audit.id).filter(audit.tenant_id == tenant_id,
+            audit.resource_type == CONTRACT,
             audit.event_type == EVENT+'intent', audit.created_at >= self.clock()-timedelta(hours=1)).limit(cap).all()
         if len(attempts) >= cap:
             raise VoiceError('browser_voice_hourly_cap', 429)
+
+    def reserve(self, tenant_id, actor_id, revision, quota):
+        self.require_admission(tenant_id, quota)
         identifier = uuid4().hex
+        # The caller retains the tenant lock through this durable reservation.
+        # Recheck immediately before admission if SQL crossed the deadline.
+        require_trial_current(quota, self.clock())
         self.append(tenant_id, actor_id, identifier, 'intent', {'revision': revision})
         return identifier
 
