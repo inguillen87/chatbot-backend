@@ -411,6 +411,26 @@ def test_opaque_contact_preserved_without_phone_inference_or_global_merge():
         cloud.text_payload(recipient=opaque_id, body="Blocked until current outbound BSUID schema verified")
 
 
+def test_default_parser_never_discards_a_bsuid_present_only_in_signed_contacts():
+    document = _document()
+    value = document["entry"][0]["changes"][0]["value"]
+    value["contacts"] = [{"wa_id": value["messages"][0]["from"], "user_id": "US.Synthetic123"}]
+    with pytest.raises(cloud.MetaContractError, match="contact_adapter_required"):
+        _parse(document)
+
+
+def test_context_contact_adapter_is_exclusive_and_sanitizes_private_errors():
+    calls = []
+    with pytest.raises(cloud.MetaContractError, match="binding_required"):
+        _parse(contact_resolver=lambda *a: calls.append(1), contact_identity_resolver=lambda *a: calls.append(2))
+    assert calls == []
+    def private_error(*args):
+        raise cloud.MetaContractError(TOKEN)
+    with pytest.raises(cloud.MetaContractError, match="contact_unavailable") as caught:
+        _parse(contact_identity_resolver=private_error)
+    assert TOKEN not in str(caught.value)
+
+
 def test_arbitrary_adapter_errors_are_sanitized_before_post_or_events():
     def failed(*_args):
         raise RuntimeError(TOKEN)

@@ -16,6 +16,8 @@ POST_DENIAL_REASONS = frozenset({
     "meta_webhook_signature_invalid", "meta_webhook_payload_invalid",
     "meta_webhook_authority_unavailable", "meta_webhook_contact_adapter_required",
     "meta_webhook_contact_unavailable", "meta_webhook_binding_unavailable",
+    "meta_webhook_contact_schema_invalid", "meta_webhook_contact_conflict",
+    "meta_webhook_contact_phone_not_allowed", "meta_webhook_contact_identity_unavailable",
 })
 
 

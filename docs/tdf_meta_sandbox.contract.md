@@ -180,6 +180,29 @@ The separate Meta-created sandbox templates are not dispatched by this route.
 
 ## Verification and rollback
 
+### Signed business-scoped user identity (reviewed 2026-10-10)
+
+Meta's [official BSUID contract](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids)
+adds `contacts.user_id` and `messages.from_user_id` even when the phone remains
+visible. Statuses use `recipient_user_id`. Optional parent identities are
+`contacts.parent_user_id`, `from_parent_user_id` and `recipient_parent_user_id`.
+BSUIDs are opaque and scoped to a business portfolio, not phone numbers.
+
+The trusted TDF-only context adapter runs after the exact raw-body signature and
+verified test sender. It requires an explicit phone equal to the existing
+recipient allowlist and exactly one signed contact with the same phone, BSUID
+and optional parent BSUID. Missing phones, BSUID-only users, ambiguous contacts,
+conflicting parents and phone prefix changes fail closed before receipt claims
+or sends. No contact book or global identity mapping is created.
+
+The typed association remains on the in-memory event. A qualified BSUID HMAC
+keys the conversation and signed status reconciliation; the semantic HMAC also
+retains the parent association. Receipts store neither raw IDs nor profile
+names. Replies still address only the exact approved phone using `to`; no
+BSUID-only outbound target is enabled. A phone-only failed status without a
+BSUID cannot reconcile a BSUID-keyed conversation, rather than inventing an
+association. Existing phone-only events retain their previous policy.
+
 Run the two new focal suites plus institutional menu contracts in a dedicated
 process using `tests.profile_acceptance_runtime.prepare_process()`. This clears
 developer environment, disables dotenv/schema bootstrap and blocks external

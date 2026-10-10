@@ -29,6 +29,7 @@ from services.institutional_assistant import maybe_handle_institutional_question
 from services.tenant_provider_credentials import ProviderCredentialError
 from cutover_writer_fence import cutover_writer_fence_enabled
 from services.tdf_meta_audio import TdfAudioError, audio_error_message, transcribe_meta_voice_note
+from services.tdf_meta_contact_identity import owner_contact_resolver
 
 TENANT_ID, TENANT_SLUG = 46, "tierra-del-fuego"
 # Exact Meta test resources observed on 2026-10-10; never the JUNI/shared WABA.
@@ -189,9 +190,23 @@ def _pseudonym(value, cfg):
     return hmac.new(cfg["APP_SECRET"].encode(), value.encode(), hashlib.sha256).hexdigest()
 
 
+def _contact_key(event, cfg):
+    if event.contact_identity is None:
+        return _pseudonym(event.contact, cfg)
+    # BSUID continuity is namespaced by the authenticated test sender. A phone
+    # without its association cannot reconcile a different BSUID's receipt.
+    material = [event.sender.tenant_id, event.sender.app_id, event.sender.waba_id,
+                event.sender.phone_number_id, event.contact_identity.user_id]
+    return _pseudonym(json.dumps(material, separators=(",", ":")), cfg)
+
+
 def _semantic_digest(event, cfg):
     values = [event.message_id, event.contact, event.content_type,
         event.text, event.selection, event.location, event.status, event.error_codes]
+    if event.contact_identity is not None:
+        # Retain the authenticated association in the durable digest only; no
+        # raw BSUID/phone/name is written to receipt payloads or metadata.
+        values.extend([event.contact_identity.user_id, event.contact_identity.parent_user_id])
     if event.content_type == "audio":
         values.extend(["meta_audio_v1", event.media_id, event.media_mime_type, event.media_sha256])
     material = json.dumps(values,
@@ -327,7 +342,7 @@ def _status(event, delivery, cfg):
         MessagingEventLedger.provider_sender_id == event.sender.sender_id,
         MessagingEventLedger.external_message_sid == event.message_id,
         MessagingEventLedger.event_type == "tdf_sandbox_reply")).all()
-    if len(rows) == 1 and rows[0].request_id == _pseudonym(event.contact, cfg):
+    if len(rows) == 1 and rows[0].request_id == _contact_key(event, cfg):
         row = rows[0]
         ranks = {"accepted": 0, "sent": 1, "delivered": 2, "read": 3, "failed": -1}
         if row.external_status not in {"delivered", "read"} or event.status in {"delivered", "read"}:
@@ -353,7 +368,9 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
         return load()
     events = webhook.parse_webhook(raw_body=raw_body, signature=signature,
         app_secret=cfg["APP_SECRET"], app_id=cfg["APP_ID"], now=operation_now,
-        binding_resolver=resolve, allow_sandbox_content=True)
+        binding_resolver=resolve, allow_sandbox_content=True,
+        contact_identity_resolver=lambda item, kind, contacts, sender:
+            owner_contact_resolver(sender_scope=sender, recipients=cfg["RECIPIENTS"])(item, kind, contacts, sender))
     if len(events) > 10:
         raise PilotError("tdf_meta_batch_limit", 413)
     if any(event.contact not in cfg["RECIPIENTS"] for event in events):
@@ -372,7 +389,7 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
             _finish(delivery, "failed", "tdf_sandbox_service_window_expired")
             continue
         try:
-            contact_key = _pseudonym(event.contact, cfg)
+            contact_key = _contact_key(event, cfg)
             previous = _previous_context(contact_key, event.sender.sender_id)
             if event.content_type == "audio":
                 audio_revision = read_state(db.session.get(TenantProfile, TENANT_ID), public=True)["revision"]

@@ -81,6 +81,197 @@ def encoded(doc):
     return raw, "sha256=" + hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()
 
 
+BSUID, PARENT_BSUID = "AR.SyntheticOwner123", "AR.ENT.SyntheticParent123"
+
+
+def bsuid_document(*, uid=BSUID, parent=None, **kwargs):
+    doc = document(**kwargs)
+    value = doc["entry"][0]["changes"][0]["value"]
+    message = value["messages"][0]
+    message["from_user_id"] = uid
+    contact = {"wa_id": message.get("from"), "user_id": uid,
+               "profile": {"name": "Synthetic private display name", "username": "synthetic-private"}}
+    if parent is not None:
+        message["from_parent_user_id"] = parent
+        contact["parent_user_id"] = parent
+    value["contacts"] = [contact]
+    return doc
+
+
+def bsuid_status(state, *, uid=BSUID, parent=None, phone=CONTACT):
+    doc = bsuid_document(uid=uid, parent=parent)
+    value = doc["entry"][0]["changes"][0]["value"]
+    value.pop("messages")
+    value["statuses"] = [{"id": "wamid.reply1", "timestamp": str(NOW),
+                          "recipient_id": phone, "recipient_user_id": uid, "status": state}]
+    if parent is not None:
+        value["statuses"][0]["recipient_parent_user_id"] = parent
+    value["contacts"][0]["wa_id"] = phone
+    return doc
+
+
+@pytest.mark.parametrize("parent", [None, PARENT_BSUID])
+def test_signed_bsuid_owner_association_is_preserved_and_durable_without_pii(environment, parent):
+    from services.tdf_meta_contact_identity import owner_contact_resolver
+    doc = bsuid_document(parent=parent)
+    raw, signature = encoded(doc)
+    cfg = pilot.settings(environment.app.config)
+    loader = pilot.binding_loader(cfg, NOW, authority)
+    event, = pilot.webhook.parse_webhook(raw_body=raw, signature=signature, app_secret=SECRET,
+        app_id=pilot.TEST_APP, now=NOW, binding_resolver=lambda *_: loader(),
+        contact_identity_resolver=lambda item, kind, contacts, sender:
+            owner_contact_resolver(sender_scope=sender, recipients=cfg["RECIPIENTS"])(item, kind, contacts, sender))
+    assert event.contact_identity.user_id == BSUID and event.contact_identity.parent_user_id == parent
+    assert event.contact == CONTACT and BSUID not in repr(event) and CONTACT not in repr(event)
+    posts = []
+    def post(url, **kwargs):
+        posts.append(kwargs["json"])
+        return accepted_post(url, **kwargs)
+    assert process(doc, post=post)["accepted"] == 1
+    assert posts[0]["to"] == CONTACT and "recipient" not in posts[0]
+    assert process(doc, post=post)["replayed"] == 1 and len(posts) == 1
+    ledger = db.session.query(MessagingEventLedger).one()
+    assert ledger.request_id == pilot._contact_key(event, cfg)
+    assert ledger.request_id != pilot._pseudonym(CONTACT, cfg)
+    serialized = json.dumps(ledger.metadata_json) + str(ledger.payload) + ledger.request_id
+    delivery = db.session.query(WebhookDelivery).one()
+    serialized += delivery.payload_digest + delivery.event_id + str(delivery.last_error)
+    for private in (BSUID, CONTACT, PARENT_BSUID, "Synthetic private display name", "synthetic-private"):
+        assert private not in serialized
+    assert process(bsuid_status("delivered", parent=parent))["statuses"] == 1
+    assert ledger.external_status == "delivered"
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("bsuid_only", "identity_unavailable"), ("empty_phone", "identity_unavailable"),
+    ("foreign_phone", "phone_not_allowed"), ("argentine_prefix_change", "phone_not_allowed"),
+    ("missing_contacts", "contact_conflict"), ("duplicate_contacts", "contact_conflict"),
+    ("conflicting_wa_id", "contact_conflict"), ("conflicting_user_id", "contact_conflict"),
+    ("missing_message_bsuid", "schema_invalid"), ("invalid_bsuid", "schema_invalid"),
+    ("parent_only", "schema_invalid"), ("parent_mismatch", "contact_conflict"),
+    ("parent_missing_contact", "contact_conflict"), ("parent_country_conflict", "schema_invalid"),
+    ("unknown_item_identity", "schema_invalid"), ("group", "schema_invalid"),
+])
+def test_bsuid_unknown_or_conflicting_owner_identity_has_no_receipt_or_post(environment, case, reason):
+    doc = bsuid_document(parent=PARENT_BSUID)
+    value = doc["entry"][0]["changes"][0]["value"]
+    item, contact = value["messages"][0], value["contacts"][0]
+    if case == "bsuid_only": item.pop("from"); contact.pop("wa_id")
+    elif case == "empty_phone": item["from"] = contact["wa_id"] = ""
+    elif case == "foreign_phone": item["from"] = contact["wa_id"] = "5491112345699"
+    elif case == "argentine_prefix_change": item["from"] = contact["wa_id"] = CONTACT.replace("549", "54", 1)
+    elif case == "missing_contacts": value.pop("contacts")
+    elif case == "duplicate_contacts": value["contacts"].append(deepcopy(contact))
+    elif case == "conflicting_wa_id": contact["wa_id"] = "5491112345699"
+    elif case == "conflicting_user_id": contact["user_id"] = "AR.OtherOwner123"
+    elif case == "missing_message_bsuid": item.pop("from_user_id")
+    elif case == "invalid_bsuid": item["from_user_id"] = contact["user_id"] = "ar.not-country-format"
+    elif case == "parent_only": item.pop("from_user_id"); contact.pop("user_id")
+    elif case == "parent_mismatch": contact["parent_user_id"] = "AR.ENT.OtherParent123"
+    elif case == "parent_missing_contact": contact.pop("parent_user_id")
+    elif case == "parent_country_conflict": item["from_parent_user_id"] = contact["parent_user_id"] = "US.ENT.OtherParent123"
+    elif case == "unknown_item_identity": item["user_id"] = BSUID
+    elif case == "group": item["group_id"] = "SyntheticGroup"
+    calls = []
+    with pytest.raises(cloud.MetaContractError, match=reason):
+        process(doc, post=lambda *a, **k: calls.append(1))
+    assert calls == [] and db.session.query(WebhookDelivery).count() == 0
+    assert db.session.query(MessagingEventLedger).count() == 0
+
+
+def test_bsuid_change_cannot_replay_or_reconcile_another_identity(environment):
+    posts = []
+    def post(url, **kwargs):
+        posts.append(1)
+        return accepted_post(url, **kwargs)
+    assert process(bsuid_document(), post=post)["accepted"] == 1
+    with pytest.raises(pilot.PilotError, match="event_conflict"):
+        process(bsuid_document(uid="AR.ChangedOwner123"), post=post)
+    assert posts == [1]
+    assert process(bsuid_status("delivered", uid="AR.ChangedOwner123"))["statuses"] == 1
+    assert db.session.query(MessagingEventLedger).one().external_status == "accepted"
+    assert process(bsuid_status("read"))["statuses"] == 1
+    assert db.session.query(MessagingEventLedger).one().external_status == "read"
+
+
+def test_bsuid_adapter_is_never_called_before_signature_and_exact_test_binding(environment, monkeypatch):
+    calls = []
+    original = pilot.owner_contact_resolver
+    monkeypatch.setattr(pilot, "owner_contact_resolver", lambda **kwargs: (calls.append(1), original(**kwargs))[1])
+    doc = bsuid_document()
+    raw, signature = encoded(doc)
+    with pytest.raises(cloud.MetaContractError, match="signature_invalid"):
+        pilot.process(raw, "sha256=" + "0" * 64, now=NOW, authority=authority)
+    doc["entry"][0]["id"] = "10068207913300410"  # Existing customer WABA must never bind to the pilot.
+    with pytest.raises(cloud.MetaContractError, match="binding_unavailable"):
+        process(doc)
+    assert calls == [] and db.session.query(WebhookDelivery).count() == 0
+
+
+@pytest.mark.parametrize("kind", ["message", "status"])
+def test_bsuid_denial_http_logs_only_fixed_code(environment, monkeypatch, caplog, kind):
+    doc = bsuid_document(contact="5491112345699") if kind == "message" else bsuid_status("delivered", phone="5491112345699")
+    monkeypatch.setattr(pilot, "GraphAuthority", lambda *_: authority)
+    monkeypatch.setattr(pilot.time, "time", lambda: NOW)
+    raw, signature = encoded(doc)
+    response = environment.client.post(URL, data=raw, content_type="application/json",
+        headers={"X-Hub-Signature-256": signature})
+    assert response.status_code == 403
+    assert "reason=meta_webhook_contact_phone_not_allowed" in caplog.text
+    for private in (BSUID, CONTACT, "5491112345699", SECRET, TOKEN, signature):
+        assert private not in caplog.text
+    assert db.session.query(WebhookDelivery).count() == 0
+
+
+@pytest.mark.parametrize("changed,value", [
+    ("tenant_id", 1), ("app_id", "1255104043465364"), ("waba_id", "10068207913300410"),
+    ("phone_number_id", "660753250460901"), ("environment", "production"),
+])
+def test_owner_identity_adapter_rejects_other_sender_namespaces(changed, value):
+    from dataclasses import replace
+    from services.tdf_meta_contact_identity import owner_contact_resolver
+    sender = cloud.MetaSenderSnapshot(46, 1, 1, pilot.TEST_APP, pilot.TEST_WABA, pilot.TEST_PHONE, "sandbox")
+    with pytest.raises(cloud.MetaContractError, match="schema_invalid"):
+        owner_contact_resolver(sender_scope=replace(sender, **{changed: value}), recipients=[CONTACT])
+
+
+def test_legacy_contacts_cannot_conflict_and_failed_without_bsuid_stays_explicit(environment):
+    legacy = document()
+    value = legacy["entry"][0]["changes"][0]["value"]
+    value["contacts"] = [{"wa_id": "5491112345699"}]
+    with pytest.raises(cloud.MetaContractError, match="contact_conflict"):
+        process(legacy)
+    assert db.session.query(WebhookDelivery).count() == 0
+    assert process(bsuid_document())["accepted"] == 1
+    failed = bsuid_status("failed")
+    value = failed["entry"][0]["changes"][0]["value"]
+    value.pop("contacts")
+    value["statuses"][0].pop("recipient_user_id")
+    assert process(failed)["statuses"] == 1
+    assert db.session.query(MessagingEventLedger).one().external_status == "accepted"
+
+
+def test_signed_bsuid_identity_survives_accessible_audio_and_selection(environment, monkeypatch):
+    posts = []
+    def post(url, **kwargs):
+        posts.append(kwargs["json"])
+        return accepted_post(url, **kwargs)
+    assert process(bsuid_document(), post=post)["accepted"] == 1
+    action = posts[0]["interactive"]["action"]["sections"][0]["rows"][0]["id"]
+    assert process(bsuid_document(mid="wamid.bsuidselection", content={"type": "interactive", "interactive": {
+        "type": "list_reply", "list_reply": {"id": action}}}), post=post)["accepted"] == 1
+    seen = []
+    def transcribe(event, **kwargs):
+        seen.append(event.contact_identity.user_id)
+        return "menu"
+    monkeypatch.setattr(pilot, "transcribe_meta_voice_note", transcribe)
+    assert process(bsuid_document(mid="wamid.bsuidvoice", content={"type": "audio", "audio": {
+        "id": "555555", "mime_type": "audio/ogg"}}), post=post)["accepted"] == 1
+    assert seen == [BSUID] and len(posts) == 3
+    assert all(payload["to"] == CONTACT for payload in posts)
+    assert len({row.request_id for row in db.session.query(MessagingEventLedger)}) == 1
+
+
 @pytest.mark.parametrize("error,expected", [
     (pilot.PilotError("tdf_sandbox_recipient_not_allowed", 403), "tdf_sandbox_recipient_not_allowed"),
     (cloud.MetaContractError("meta_webhook_signature_invalid"), "meta_webhook_signature_invalid"),

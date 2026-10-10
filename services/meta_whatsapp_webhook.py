@@ -27,6 +27,18 @@ MAX_EVENTS = 100
 
 
 @dataclass(frozen=True)
+class MetaContactIdentity:
+    """Signed identity association returned only by a trusted context adapter.
+
+    The phone is an explicit destination, never a derivation from the BSUID.
+    The event's verified sender supplies the business/tenant namespace.
+    """
+    phone: str = field(repr=False)
+    user_id: str = field(repr=False)
+    parent_user_id: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
 class MetaWebhookEvent:
     sender: MetaSenderSnapshot
     kind: str
@@ -43,6 +55,7 @@ class MetaWebhookEvent:
     media_id: str | None = field(default=None, repr=False)
     media_mime_type: str | None = field(default=None, repr=False)
     media_sha256: str | None = field(default=None, repr=False)
+    contact_identity: MetaContactIdentity | None = field(default=None, repr=False)
 
 
 def verify_challenge(*, mode: str, token: str, challenge: str, verify_token: str) -> str:
@@ -83,6 +96,7 @@ def _list(value, *, allow_empty=False):
 def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                   app_id: str, now: int, binding_resolver: Callable,
                   contact_resolver: Callable | None = None,
+                  contact_identity_resolver: Callable | None = None,
                   allow_sandbox_content: bool = False) -> tuple[MetaWebhookEvent, ...]:
     """Resolver is trusted server code keyed by (phone ID, app ID, entry WABA ID).
 
@@ -92,10 +106,14 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
     Contact IDs are opaque and never normalized into phones or joined globally.
     A trusted contact adapter is required for newer identity fields; their exact
     current Cloud API schema is not assumed by this isolated foundation.
+    A context adapter additionally receives signed contacts and the verified
+    sender; it can preserve a typed BSUID association without a global merge.
     """
     verify_signature(raw_body=raw_body, signature=signature, app_secret=app_secret)
     app_id = meta_id(app_id)
-    if type(now) is not int or now < 0 or not callable(binding_resolver):
+    if (type(now) is not int or now < 0 or not callable(binding_resolver)
+            or (contact_identity_resolver is not None and
+                (not callable(contact_identity_resolver) or contact_resolver is not None))):
         raise MetaContractError("meta_webhook_binding_required")
     try:
         document = json.loads(raw_body.decode("utf-8"), object_pairs_hook=_unique_pairs,
@@ -138,7 +156,25 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                 for kind, values in (("message", messages), ("status", statuses)):
                     for item in values:
                         message_id, timestamp = item["id"], item["timestamp"]
-                        if contact_resolver is not None:
+                        identity = None
+                        if contact_identity_resolver is not None:
+                            try:
+                                contact = contact_identity_resolver(item, kind, value.get("contacts"), binding.sender)
+                            except MetaContractError as exc:
+                                reason = str(exc)
+                                if reason not in {"meta_webhook_contact_schema_invalid", "meta_webhook_contact_conflict",
+                                                  "meta_webhook_contact_phone_not_allowed", "meta_webhook_contact_identity_unavailable"}:
+                                    reason = "meta_webhook_contact_unavailable"
+                                raise MetaContractError(reason) from None
+                            except Exception:
+                                raise MetaContractError("meta_webhook_contact_unavailable") from None
+                            if isinstance(contact, MetaContactIdentity):
+                                identity, contact = contact, contact.phone
+                                if (not isinstance(identity.user_id, str) or not _CONTACT_ID.fullmatch(identity.user_id)
+                                        or (identity.parent_user_id is not None and
+                                            (not isinstance(identity.parent_user_id, str) or not _CONTACT_ID.fullmatch(identity.parent_user_id)))):
+                                    raise ValueError
+                        elif contact_resolver is not None:
                             try:
                                 contact = contact_resolver(item, kind)
                             except Exception:
@@ -146,7 +182,10 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                         else:
                             # Do not discard a BSUID in favor of a phone if a new
                             # identity schema is present but not yet verified.
-                            if any(k in item for k in ("from_user_id", "user_id", "recipient_user_id", "parent_user_id")):
+                            if (any(k in item for k in ("from_user_id", "user_id", "recipient_user_id", "parent_user_id",
+                                                       "from_parent_user_id", "recipient_parent_user_id"))
+                                    or any(isinstance(row, dict) and ("user_id" in row or "parent_user_id" in row)
+                                           for row in _list(value.get("contacts", []), allow_empty=True))):
                                 raise MetaContractError("meta_webhook_contact_adapter_required")
                             contact = item["from"] if kind == "message" else item["recipient_id"]
                         if (not isinstance(message_id, str) or not _WAMID.fullmatch(message_id)
@@ -204,7 +243,7 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                         event_key = "meta:" + hashlib.sha256(json.dumps(material, separators=(",", ":")).encode()).hexdigest()
                         events.append(MetaWebhookEvent(binding.sender, kind, event_key,
                                                        int(timestamp), message_id, contact, text, status, codes,
-                                                       content_type, selection, location, media_id, media_mime_type, media_sha256))
+                                                       content_type, selection, location, media_id, media_mime_type, media_sha256, identity))
                         if len(events) > MAX_EVENTS:
                             raise ValueError
         # Delivery timestamps vary across retries; semantic key dedupes within batch.
@@ -213,9 +252,9 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
             previous = unique.get(event.event_key)
             if previous is not None and (previous.text, previous.contact, previous.error_codes,
                     previous.content_type, previous.selection, previous.location, previous.media_id,
-                    previous.media_mime_type, previous.media_sha256) != (event.text,
+                    previous.media_mime_type, previous.media_sha256, previous.contact_identity) != (event.text,
                     event.contact, event.error_codes, event.content_type, event.selection, event.location,
-                    event.media_id, event.media_mime_type, event.media_sha256):
+                    event.media_id, event.media_mime_type, event.media_sha256, event.contact_identity):
                 raise MetaContractError("meta_webhook_duplicate_conflict")
             unique.setdefault(event.event_key, event)
         return tuple(unique.values())

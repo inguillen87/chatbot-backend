@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": {
+      "fix/tdf-meta-owner-bsuid-20261010": false,
       "release/enterprise-channel-closure-20261010": false,
       "release/vercel-neon-complete-20261001": false,
       "release/tdf-accessible-meta-20261010": false,

@@ -8,6 +8,7 @@ on:
       - 'services/institutional_assistant_*.py'
       - 'services/meta_tdf_sandbox.py'
       - 'services/tdf_meta_sandbox.py'
+      - 'services/tdf_meta_contact_identity.py'
       - 'services/tdf_meta_audio.py'
       - 'services/meta_whatsapp_webhook.py'
       - 'services/audio_transcription_service.py'
