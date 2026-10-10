@@ -535,6 +535,7 @@ def load_tests(loader, suite, pattern):
     suite.addTests(loader.loadTestsFromName('tests.regular_tenant_demo_classification_http'))
     suite.addTests(loader.loadTestsFromName('tests.public_lead_capture_scope_http'))
     suite.addTests(loader.loadTestsFromName('tests.twilio_voice_url_canonicalization'))
+    suite.addTests(loader.loadTestsFromName('tests.institutional_assistant_audio_http'))
     return suite
 
 

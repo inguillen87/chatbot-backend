@@ -62,6 +62,10 @@ def workspace(tenant, state, *, editable=False, public=False):
     if state:
         bundle = state['bundle']
         data['knowledge'] = {**overview(bundle, public=public), 'version': bundle['version'], 'initial': materialize_node(bundle['nodes'][bundle['start']], public=public)}
+        if state['visibility'] == 'public':
+            from services.institutional_assistant_audio import audio_reading_capability
+            capability = audio_reading_capability()
+            if capability is not None: data['audio_reading'] = capability
     return data
 
 def save_state(tenant, actor, command):
@@ -345,6 +349,8 @@ def maybe_handle_institutional_question(question, owner, session=None):
             'message_type': 'interactive_buttons' if buttons else 'text',
             'fuente': 'institutional_knowledge_unknown_question',
             'context_revision': state['revision']}
+    from services.institutional_assistant_audio import audio_reading_capability
+    capability = audio_reading_capability()
     return {'message_body': result['text'] + ''.join('\n\n' + l['label'] + ': ' + l['url'] for l in links)
         + ('\n\n' + UI['sources'] + ':\n' + '\n'.join(citations) if citations else ''),
         'message_type': 'interactive_buttons' if choices else 'text',
@@ -352,4 +358,5 @@ def maybe_handle_institutional_question(question, owner, session=None):
         'knowledge_sources': [s for n in nodes for s in n['sources']],
         'knowledge_tenant': deepcopy(result['tenant']), 'knowledge_nodes': deepcopy(nodes),
         'knowledge_ui': {key: UI[key] for key in _CHANNEL_UI_KEYS},
+        **({'knowledge_audio_reading': capability} if capability is not None else {}),
         'fuente': 'institutional_knowledge', 'context_revision': state['revision']}

@@ -677,7 +677,7 @@ def create_app(config_class=Config):
             "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Window, "
             "X-RateLimit-Reset-After, Retry-After, "
             "X-Chat-Idempotency-Contract, X-Idempotency-Status, "
-            "Idempotency-Replayed"
+            "Idempotency-Replayed, X-Chatboc-Knowledge-Revision, X-Chatboc-Tenant-ID"
         )
 
         @app.after_request
@@ -744,6 +744,8 @@ def create_app(config_class=Config):
                 "X-Chat-Idempotency-Contract",
                 "X-Idempotency-Status",
                 "Idempotency-Replayed",
+                "X-Chatboc-Knowledge-Revision",
+                "X-Chatboc-Tenant-ID",
             ],
         )
 

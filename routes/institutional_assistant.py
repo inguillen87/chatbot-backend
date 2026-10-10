@@ -116,6 +116,20 @@ def public_canonical_node(slug, node_id):
     tenant = _tenant(slug, canonical_revision=revision)
     return _reply(answer(tenant, {'revision': revision, 'node_id': node_id}, public=True))
 
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/audio', methods=['POST'])
+def public_audio(slug):
+    from services.institutional_assistant_audio import MAX_AUDIO_COMMAND_BYTES, synthesize_public_nodes
+    if not request.content_length or request.content_length > MAX_AUDIO_COMMAND_BYTES:
+        raise ContentError('knowledge_command_invalid', 400)
+    tenant = _tenant(slug)
+    audio, revision = synthesize_public_nodes(tenant, _json())
+    response = Response(audio, content_type='audio/mpeg')
+    response.headers['Content-Length'] = str(len(audio))
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Chatboc-Knowledge-Revision'] = revision
+    response.headers['X-Chatboc-Tenant-ID'] = str(tenant.id)
+    return response
+
 def _source_reply(tenant, source_id, revision, *, public=False, actor=None):
     from services.institutional_assistant_sources import source_document
     data, filename, mime = source_document(tenant, source_id, revision, public=public, actor=actor)
