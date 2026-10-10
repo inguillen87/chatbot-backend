@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
+import re
 from typing import Any, Mapping
 
 from models import (
@@ -10,6 +11,9 @@ from models import (
     CategoriaTicket,
     EncEncuesta,
     MessageTemplateRegistry,
+    MessagingEventLedger,
+    ProviderConnection,
+    ProviderSender,
     PublicSurvey,
     TenantProfile,
     User,
@@ -156,22 +160,73 @@ def _channel(
     }
 
 
-def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool) -> tuple[str, list[str], str | None]:
+def _meta_sandbox_status(tenant: TenantProfile | None) -> tuple[str, list[str], str | None] | None:
+    """Local test configuration only; never calls Graph or opens a credential."""
+    from services import tdf_meta_sandbox as pilot
+    from services.meta_whatsapp_credentials import CONTRACT, PRIVATE_CONFIG_KEY, VAULT_REF
+    from flask import current_app
+
+    if (getattr(tenant, "id", None), getattr(tenant, "slug", None)) != (pilot.TENANT_ID, pilot.TENANT_SLUG):
+        return None
+    connection = ProviderConnection.query.filter_by(tenant_id=tenant.id, provider="meta",
+        channel="whatsapp", environment="sandbox").first()
+    if connection is None:
+        return None
+    evidence = ["Meta Cloud API: entorno de prueba", "Destinatarios limitados por el backend"]
+    if (connection.external_app_id, connection.external_account_id) != (pilot.TEST_APP, pilot.TEST_WABA):
+        return "blocked", evidence, "meta_sandbox_binding_mismatch"
+    senders = ProviderSender.query.filter_by(tenant_id=tenant.id, provider_connection_id=connection.id,
+        channel="whatsapp", waba_id=pilot.TEST_WABA, phone_number_id=pilot.TEST_PHONE).limit(2).all()
+    if len(senders) != 1:
+        return "blocked", evidence, "meta_sandbox_sender_not_unique"
+    if connection.status != "connected" or senders[0].status != "connected":
+        return "pending", evidence, "meta_sandbox_configuration_pending"
+    try:
+        pilot.settings(current_app.config)
+    except pilot.PilotError:
+        return "pending", evidence, "meta_sandbox_runtime_configuration_required"
+    envelope = _as_mapping(_as_mapping(connection.config).get(PRIVATE_CONFIG_KEY))
+    expiry, revision = envelope.get("expires_at"), envelope.get("revision")
+    if (connection.credentials_ref != VAULT_REF or envelope.get("contract") != CONTRACT
+            or type(expiry) is not int or type(revision) is not int or revision < 1):
+        return "pending", evidence, "meta_sandbox_credential_configuration_required"
+    if expiry <= int(datetime.now(timezone.utc).timestamp()):
+        return "pending", evidence, "meta_sandbox_local_credential_expired"
+    evidence += ["Conexión de prueba configurada", "Credencial temporal registrada; no validada en este informe"]
+    receipts = MessagingEventLedger.query.filter_by(tenant_id=tenant.id,
+        provider_connection_id=connection.id, provider_sender_id=senders[0].id,
+        channel="whatsapp", direction="outbound", event_type="tdf_sandbox_reply", provider=pilot.PROVIDER)
+    accepted = _safe_count(receipts.filter(MessagingEventLedger.external_status.in_(["accepted", "sent", "delivered", "read"])))
+    delivered = _safe_count(receipts.filter(MessagingEventLedger.external_status.in_(["delivered", "read"])))
+    evidence += [f"Histórico de prueba: {accepted} respuestas aceptadas; {delivered} con entrega registrada",
+                 "Servicio productivo y conversación actual no certificados"]
+    return "pending", evidence, "meta_sandbox_production_not_certified"
+
+
+def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool, tenant=None) -> tuple[str, list[str], str | None]:
     onboarding = _as_mapping(cfg.get("whatsapp_onboarding"))
     state = _as_mapping(cfg.get(STATE_KEY))
     raw_status = str(onboarding.get("status") or "").strip().lower()
     sender_status = str(state.get("sender_status") or "").strip().lower()
 
     evidence: list[str] = []
-    if onboarding.get("provider"):
-        evidence.append(f"provider:{onboarding.get('provider')}")
-    if sender_status:
+    provider = onboarding.get("provider")
+    provider = provider if isinstance(provider, str) else None
+    if provider in {"twilio", "twilio_tech_provider"}:
+        evidence.append("Proveedor historico: Twilio")
+    elif provider in {"meta", "meta_cloud_api"}:
+        evidence.append("Proveedor declarado: Meta")
+    if sender_status in READY_STATES | {"draft", "pending", "offline", "failed", "sender_registered"}:
         evidence.append(f"sender:{sender_status}")
 
     if not access_enabled:
         return "locked", evidence, "plan_full_required"
+    sandbox = _meta_sandbox_status(tenant)
+    if sandbox is not None:
+        return sandbox
     if sender_status in READY_STATES or raw_status in READY_STATES:
-        return "ready", evidence, None
+        evidence.append("Estado heredado; disponibilidad actual del proveedor no verificada")
+        return "pending", evidence, "whatsapp_legacy_runtime_verification_required"
     if raw_status == "sender_registered":
         return "pending", evidence, "sender_not_online"
     if raw_status == "pending_sender_registration":
@@ -183,6 +238,65 @@ def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool) -> tuple[str,
     if raw_status in {"needs_platform_config", "disabled"}:
         return "blocked", evidence, raw_status
     return "action_required", evidence, "connect_whatsapp"
+
+
+def _whatsapp_connection_summary(tenant, cfg, *, reason_code):
+    """Tenant-bound display metadata, never an authority or delivery claim."""
+    result = {
+        "contract_version": "tenant.whatsapp_connection_summary.v1",
+        "provider": None, "environment": None, "display_phone_number": None,
+        "configuration_status": "unconfigured", "reason_code": reason_code,
+        "expires_at": None,
+        "counts": {"sandbox_registered": 0, "production_registered": 0},
+        "production_ready": False, "conversation_verified": False,
+    }
+    if tenant is None:
+        return result
+    query = ProviderConnection.query.filter_by(tenant_id=tenant.id, channel="whatsapp")
+    result["counts"] = {
+        "sandbox_registered": query.filter_by(environment="sandbox").count(),
+        "production_registered": query.filter_by(environment="production").count(),
+    }
+    # Prefer the existing Meta test connection even while expired/pending; the
+    # UI must never silently substitute Twilio sample-number instructions.
+    connection = query.filter_by(provider="meta", environment="sandbox").first()
+    if connection is None:
+        connection = query.filter_by(provider="meta", environment="production").first()
+    if connection is None:
+        connection = query.filter_by(provider="twilio", environment="production").first()
+    if connection is not None:
+        result.update(provider=connection.provider, environment=connection.environment,
+                      configuration_status="unverified")
+        from services import tdf_meta_sandbox as pilot
+        from services.meta_whatsapp_credentials import PRIVATE_CONFIG_KEY
+        expected_pilot = ((tenant.id, tenant.slug) == (pilot.TENANT_ID, pilot.TENANT_SLUG)
+            and connection.provider == "meta" and connection.environment == "sandbox"
+            and (connection.external_app_id, connection.external_account_id) == (pilot.TEST_APP, pilot.TEST_WABA))
+        if expected_pilot:
+            sender_query = ProviderSender.query.filter_by(tenant_id=tenant.id, provider_connection_id=connection.id,
+                channel="whatsapp", waba_id=pilot.TEST_WABA, phone_number_id=pilot.TEST_PHONE)
+            expiry = _as_mapping(_as_mapping(connection.config).get(PRIVATE_CONFIG_KEY)).get("expires_at")
+            if type(expiry) is int and 0 < expiry < 253402300800:
+                result["expires_at"] = expiry
+            result["configuration_status"] = (
+                "configured" if reason_code == "meta_sandbox_production_not_certified" else
+                "expired" if reason_code == "meta_sandbox_local_credential_expired" else "pending")
+        else:
+            sender_query = ProviderSender.query.filter_by(tenant_id=tenant.id,
+                provider_connection_id=connection.id, channel="whatsapp")
+        senders = sender_query.limit(2).all()
+        if len(senders) == 1 and reason_code not in {"plan_full_required", "meta_sandbox_binding_mismatch"}:
+            number = senders[0].phone_number
+            if isinstance(number, str) and re.fullmatch(r"\+?[1-9][0-9]{6,14}", number):
+                result["display_phone_number"] = "+" + number.lstrip("+")
+        return result
+    provider = _as_mapping(cfg.get("whatsapp_onboarding")).get("provider")
+    provider = provider if isinstance(provider, str) else None
+    if provider in {"twilio", "twilio_tech_provider"}:
+        result.update(provider="twilio", environment="historical", configuration_status="unverified")
+    elif provider in {"meta", "meta_cloud_api"}:
+        result.update(provider="meta", environment="historical", configuration_status="unverified")
+    return result
 
 
 def _whatsapp_actions(
@@ -407,14 +521,14 @@ def _public_intake_security_status() -> tuple[str, list[str], str | None, str | 
 
     evidence = ["protege marketplace asistido", "protege encuestas publicas"]
     if site_key:
-        evidence.append("site key publica configurada")
+        evidence.append("referencia de clave publica configurada en servidor; frontend no evaluado")
+    else:
+        evidence.append("clave publica del frontend no evaluada desde el servidor")
     if secret:
         evidence.append("secret backend configurado")
     evidence.append("enforcement activo" if enforced else "enforcement pendiente")
 
     missing: list[str] = []
-    if not site_key:
-        missing.append("VITE_CLOUDFLARE_TURNSTILE_SITE_KEY")
     if not secret:
         missing.append("CLOUDFLARE_TURNSTILE_SECRET_KEY")
 
@@ -437,9 +551,9 @@ def _public_intake_security_status() -> tuple[str, list[str], str | None, str | 
             "pending",
             evidence,
             "turnstile_enforcement_pending",
-            "Site key y secret estan configurados. Activar enforcement despues del deploy frontend/backend.",
+            "Secret del servidor configurado. Comprobar VITE_CLOUDFLARE_TURNSTILE_SITE_KEY en el frontend publicado antes de activar enforcement.",
         )
-    return "ready", evidence, None, "Cargas anonimas protegidas con Cloudflare Turnstile."
+    return "ready", evidence, None, "Configuracion del servidor completa. Comprobar la clave del frontend publicado y una verificacion real antes de abrir participacion."
 
 
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
@@ -548,12 +662,28 @@ def _team_routing_status(
     )
 
 
-def _knowledge_content_status(counts: Mapping[str, int]) -> tuple[str, list[str], str, str]:
+def _knowledge_content_status(counts: Mapping[str, int], tenant=None) -> tuple[str, list[str], str | None, str]:
     """Keep content presence separate from verified retrieval readiness."""
 
     item_count = max(0, int(counts.get("catalog_items") or 0))
     committed_imports = max(0, int(counts.get("catalog_imports_committed") or 0))
     evidence: list[str] = []
+    if tenant is not None:
+        from services.institutional_assistant import read_state
+        from services.institutional_assistant_content import ContentError
+        try:
+            state = read_state(tenant)
+        except ContentError:
+            return "blocked", [], "knowledge_state_unavailable", "No pudimos validar la version institucional de esta organizacion. Revisar su estado antes de publicar."
+        if state is not None:
+            bundle = state["bundle"]
+            if not isinstance(bundle.get("nodes"), dict) or not isinstance(bundle.get("sources"), dict):
+                return "blocked", [], "knowledge_state_unavailable", "La estructura de la version institucional no es valida. Revisar su estado antes de publicar."
+            evidence = [f"{len(bundle['nodes'])} contenidos canonicos", f"{len(bundle['sources'])} fuentes documentales"]
+            if state["visibility"] == "public":
+                evidence.append(f"Version publicada: {state['revision']}")
+                return "ready", evidence, None, "Menu y respuestas canonicas publicados. Este estado no acredita indexacion RAG ni validacion institucional externa."
+            return "pending", evidence, "knowledge_publication_required", "La version institucional es interna. Revisar y habilitar en el agente para consultas publicas."
     if item_count:
         evidence.append(f"{item_count} contenidos estructurados")
     if committed_imports:
@@ -572,6 +702,16 @@ def _knowledge_content_status(counts: Mapping[str, int]) -> tuple[str, list[str]
         "knowledge_retrieval_verification_required",
         "El contenido existe, pero falta un recibo verificable de indexacion y una prueba de recuperacion antes de declararlo listo.",
     )
+
+
+def _survey_status(counts, security_status, security_reason):
+    count = max(0, int(counts.get("surveys") or 0))
+    if not count:
+        return "action_required", [], "survey_instruments_required", "Crear y revisar los instrumentos de participacion."
+    evidence = [f"{count} encuestas/votaciones registradas", "Existencia de instrumentos; no prueba de participacion operativa"]
+    if security_status != "ready":
+        return "pending", evidence, security_reason or "survey_public_security_required", "Los instrumentos existen. Completar la proteccion publica antes de comprobar envios y metricas."
+    return "pending", evidence, "survey_public_flow_verification_required", "Comprobar publicacion, consentimiento y elegibilidad aplicables, formulario publicado, unicidad y metricas. No se infiere funcionamiento por cantidad."
 
 
 def _institutional_branding_status(
@@ -598,7 +738,16 @@ def _institutional_branding_status(
     if palette_configured:
         evidence.append("paleta institucional configurada")
     if domain_configured:
-        evidence.append("dominio institucional registrado")
+        evidence.append("dominio declarado; activacion DNS/HTTPS no inferida")
+    from services.organization_domain_binding import build_domain_binding, DomainBindingError
+    from services.plan_access import tenant_allows_custom_domains
+    try:
+        domain = build_domain_binding(tenant, entitled=tenant_allows_custom_domains(tenant))
+        if domain["status"] != "unconfigured":
+            evidence.append("Dominio propio: activo con verificaciones vigentes" if domain["active"] else
+                            "Dominio propio: pendiente de verificacion o activacion")
+    except DomainBindingError:
+        evidence.append("Estado del dominio propio no verificable")
 
     missing: list[str] = []
     if not logo_configured:
@@ -715,7 +864,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
     provisioning = _as_mapping(cfg.get("provisioning"))
     preferred_channels = onboarding.get("preferred_channels") if isinstance(onboarding.get("preferred_channels"), list) else []
     identity_status, identity_evidence, identity_reason, identity_hint = _identity_auth_status(tenant, cfg)
-    whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled)
+    whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled, tenant)
     live_status, live_evidence = _live_chat_status(cfg)
     payment_status, payment_evidence, payment_reason = _payment_status(tenant, access_enabled)
     public_security_status, public_security_evidence, public_security_reason, public_security_hint = (
@@ -724,7 +873,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
     branding_status, branding_evidence, branding_reason, branding_hint = _institutional_branding_status(tenant)
     accessibility_status, accessibility_evidence, accessibility_reason, accessibility_hint = _accessibility_status(cfg)
     territory_status, territory_evidence, territory_reason, territory_hint = _territorial_status(tenant)
-    knowledge_status, knowledge_evidence, knowledge_reason, knowledge_hint = _knowledge_content_status(counts)
+    knowledge_status, knowledge_evidence, knowledge_reason, knowledge_hint = _knowledge_content_status(counts, tenant)
     crm_status, crm_evidence, crm_reason, crm_hint = _mesa_unica_status(counts)
     team_status, team_evidence, team_reason, team_hint = _team_routing_status(counts)
 
@@ -736,7 +885,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
     widget_status = "locked" if not access_enabled else ("ready" if widget_configured else "action_required")
     template_status = "locked" if not access_enabled else ("ready" if counts["approved_templates"] > 0 else "action_required")
     catalog_status = "ready" if counts["catalog_items"] > 0 else "action_required"
-    analytics_status = "ready" if counts["surveys"] > 0 else "action_required"
+    analytics_status, analytics_evidence, analytics_reason, analytics_hint = _survey_status(counts, public_security_status, public_security_reason)
 
     channels = [
         _channel(
@@ -803,11 +952,14 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             "whatsapp",
             "WhatsApp Business",
             whatsapp_status,
-            "Sender productivo, proveedor Twilio/Meta y pruebas de conversacion.",
+            "Configuracion y evidencias del canal. Un sandbox o estado heredado no certifica servicio productivo.",
             actions=_whatsapp_actions(tenant, cfg, whatsapp_status, whatsapp_reason, access_enabled),
             evidence=whatsapp_evidence,
             reason_code=whatsapp_reason,
             required_plan=None if access_enabled else "full",
+            progress_hint=("Prueba Meta limitada a destinatarios autorizados; no cambia los numeros productivos."
+                if whatsapp_reason and whatsapp_reason.startswith("meta_sandbox_") else
+                "Comprobar la disponibilidad actual del proveedor y una conversacion real antes de declarar el canal operativo."),
         ),
         _channel(
             "widget",
@@ -851,8 +1003,8 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             "knowledge_content",
             "Conocimiento institucional",
             knowledge_status,
-            "Tramites, servicios y documentos con procedencia, indexacion y recuperacion verificables.",
-            actions=[_action("open_knowledge", "Gestionar contenidos", _profile_path("catalogo"), primary=True)],
+            "Menu y respuestas canonicas con fuentes y version publicada. La indexacion RAG es una capacidad independiente.",
+            actions=[_action("open_knowledge", "Gestionar contenidos", "/implementacion", primary=True)],
             evidence=knowledge_evidence,
             reason_code=knowledge_reason,
             progress_hint=knowledge_hint,
@@ -892,7 +1044,9 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             analytics_status,
             "Encuestas, votaciones, reportes y mapas de calor para decisiones operativas.",
             actions=[_action("open_analytics", "Abrir analitica", _profile_path("analytics"), primary=True)],
-            evidence=[f"{counts['surveys']} encuestas/votaciones"] if counts["surveys"] else [],
+            evidence=analytics_evidence,
+            reason_code=analytics_reason,
+            progress_hint=analytics_hint,
         ),
     ]
 
@@ -932,10 +1086,13 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             "attention": attention_count,
             "progress": progress,
             "primary_next_action": (first_actionable or {}).get("actions", [{}])[0],
-            "health_label": "Listo para operar" if progress >= 85 else "Activacion en progreso",
+            "health_label": "Configuracion completa; falta validar operacion" if ready_count == len(channels) else "Configuracion en progreso",
+            "progress_scope": "configuration_checklist",
+            "production_ready": False,
         },
         "preferred_channels": preferred_channels,
         "counts": counts,
+        "whatsapp_connection": _whatsapp_connection_summary(tenant, cfg, reason_code=whatsapp_reason),
         "channels": channels,
         "implementation_journey": implementation_journey,
         "conversation_guide_control": guide_control,

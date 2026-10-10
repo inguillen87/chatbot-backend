@@ -152,6 +152,12 @@ jobs:
           'tests/test_tenant_provider_credentials.py']))"
       - name: Verify safe activation contract without provider calls
         run: python -m tests.twilio_credential_storage_contract
+      - name: Verify truthful current channel evidence without provider calls
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import pytest; raise SystemExit(pytest.main(['-q',
+          'tests/test_channel_activation_current_evidence.py', 'tests/test_channel_activation_contract.py',
+          'tests/test_tenant_implementation_journey.py', 'tests/test_organization_setup_journey.py']))"
       - name: Verify exact-host lifecycle and single-attempt Vercel adapter offline
         run: >-
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();

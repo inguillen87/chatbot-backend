@@ -191,7 +191,8 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
 
     assert payload["integration_access"]["enabled"] is True
     by_id = {item["id"]: item for item in payload["channels"]}
-    assert by_id["whatsapp"]["status"] == "ready"
+    assert by_id["whatsapp"]["status"] == "pending"
+    assert by_id["whatsapp"]["reason_code"] == "whatsapp_legacy_runtime_verification_required"
     assert by_id["widget"]["status"] == "ready"
     assert by_id["templates"]["status"] == "ready"
     assert by_id["catalog_marketplace"]["status"] == "ready"
@@ -306,7 +307,7 @@ def test_channel_activation_contract_register_sender_action_when_meta_signup_com
     assert whatsapp["actions"][1]["href"].endswith("/whatsapp/tech-provider/register-sender")
 
 
-def test_channel_activation_contract_marks_provider_online_sender_ready(client):
+def test_channel_activation_contract_does_not_certify_historical_online_sender(client):
     _, tenant = _create_owner_and_tenant(
         slug="online-sender-activation",
         plan="full",
@@ -319,9 +320,9 @@ def test_channel_activation_contract_marks_provider_online_sender_ready(client):
     payload = build_channel_activation_payload(tenant)
 
     whatsapp = {item["id"]: item for item in payload["channels"]}["whatsapp"]
-    assert whatsapp["status"] == "ready"
-    assert whatsapp["ready"] is True
-    assert whatsapp["reason_code"] is None
+    assert whatsapp["status"] == "pending"
+    assert whatsapp["ready"] is False
+    assert whatsapp["reason_code"] == "whatsapp_legacy_runtime_verification_required"
     assert whatsapp["actions"][0]["id"] == "open_whatsapp_setup"
 
 
@@ -339,7 +340,7 @@ def test_channel_activation_contract_surfaces_public_intake_security_readiness(c
     security_channel = {item["id"]: item for item in payload["channels"]}["public_intake_security"]
     assert security_channel["status"] == "action_required"
     assert security_channel["reason_code"] == "turnstile_config_missing"
-    assert "VITE_CLOUDFLARE_TURNSTILE_SITE_KEY" in security_channel["progress_hint"]
+    assert "clave publica del frontend no evaluada" in " ".join(security_channel["evidence"])
     assert "CLOUDFLARE_TURNSTILE_SECRET_KEY" in security_channel["progress_hint"]
 
     monkeypatch.setenv("VITE_CLOUDFLARE_TURNSTILE_SITE_KEY", "site-key-visible")

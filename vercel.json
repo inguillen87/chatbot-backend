@@ -9,7 +9,8 @@
       "feat/whitelabel-domain-lifecycle-20261010": false,
       "release/enterprise-tdf-consolidated-20261010": false,
       "fix/tdf-voice-corpus-budget-20261010": false,
-      "fix/tdf-meta-query-compat-20261010": false
+      "fix/tdf-meta-query-compat-20261010": false,
+      "fix/tenant-channel-readiness-20261010": false
     }
   },
   "framework": "container",
