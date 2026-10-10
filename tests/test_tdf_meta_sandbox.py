@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 import hmac
 import json
+import re
 import secrets
 from types import SimpleNamespace
 
@@ -632,6 +633,64 @@ def test_sources_paginate_without_truncating_public_references(environment):
     event.text = "FUENTES 4"
     body, _, _, _ = pilot._answer(event, context)
     assert "Ese grupo de referencias no está disponible" in body
+
+
+def test_sources_split_large_multi_node_page_union_without_cutting_public_evidence(environment, monkeypatch):
+    raw = public_presentation_fixture()
+    title = "Referencia pública " + "a" * 231
+    url = "https://example.org/" + "a" * (1800 - len("https://example.org/"))
+    expected_pages = sorted([*range(1, 2001, 2), *range(2, 1000, 2), 2000])
+    assert len(title) == 250 and len(url) == 1800 and len(expected_pages) == 1500
+    raw["sources"]["a"].update(title=title, page_count=2000, official_url=url)
+    raw["nodes"]["third"] = {**deepcopy(raw["nodes"]["requirements"]), "id": "third"}
+    raw["nodes"]["start"]["actions"].append({"code": "2", "label": "Tercer tema", "target": "third"})
+    node_ids = ["start", "requirements", "third"]
+    for index, node_id in enumerate(node_ids):
+        pages = expected_pages[index * 500:(index + 1) * 500]
+        raw["node_evidence"][node_id] = [{"source_id": "a", "pages": pages[offset:offset + 50]}
+                                         for offset in range(0, 500, 50)]
+    # Each node has ten valid fifty-page references; only the presentation
+    # combines the three nodes, exceeding one Meta text message if unpaged.
+    publish_presentation_fixture(environment, raw)
+    persisted_before = deepcopy(environment.state)
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda bundle, *a:
+        [deepcopy(bundle["nodes"][node_id]) for node_id in node_ids])
+    event = SimpleNamespace(content_type="text", text="Tres temas documentados")
+    _, context, _, _ = pilot._answer(event, {})
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("No new selection"))
+    collected, total, group = [], 1, 1
+    while group <= total:
+        event.text = "FUENTES" if group == 1 else "FUENTES " + str(group)
+        body, context, revision, choices = pilot._answer(event, context)
+        header = re.search(r"Referencias de esta orientación \((\d+)/(\d+)\):", body)
+        assert header and int(header.group(1)) == group
+        total = int(header.group(2))
+        assert len(body) < 4096 and revision == environment.state["revision"] and choices == ()
+        assert title in body and url in body and "revisión pendiente" in body
+        for page_list in re.findall(r" · páginas ([0-9, ]+)", body):
+            collected.extend(int(page) for page in page_list.split(", "))
+        if group < total:
+            assert "Para ver más, escribí FUENTES " + str(group + 1) + "." in body
+        group += 1
+    assert total > 1 and collected == expected_pages
+    row = TenantConfig.query.filter_by(tenant_id=46, key="institutional_assistant", channel="knowledge").one()
+    assert row.json_value == persisted_before
+
+
+def test_sources_fail_closed_if_any_single_entry_exceeds_the_page_budget(environment, monkeypatch):
+    from services import institutional_assistant_whatsapp as presentation
+    from services.institutional_assistant_content import ContentError
+    assert presentation._source_pages(["x" * 2800]) == ["x" * 2800]
+    with pytest.raises(ContentError, match="knowledge_reference_too_large"):
+        presentation._source_pages(["x" * 2801])
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    event = SimpleNamespace(content_type="text", text="menu")
+    _, context, _, _ = pilot._answer(event, {})
+    monkeypatch.setattr(presentation, "_source_entries", lambda nodes: ["PRIVATE OVERSIZED ENTRY" * 200])
+    event.text = "FUENTES"
+    body, next_context, revision, _ = pilot._answer(event, context)
+    assert "Escribí MENÚ para elegir" in body and revision is None
+    assert "PRIVATE OVERSIZED ENTRY" not in body and presentation.SOURCE_SCOPE not in next_context
 
 
 def test_list_titles_preserve_codes_whole_words_and_complete_text_alternative(environment):

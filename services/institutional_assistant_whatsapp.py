@@ -84,17 +84,33 @@ def present_answer(result, context, *, tenant_id, tenant_slug):
 def _source_entries(nodes):
     entries = []
     for source in _public_sources(nodes):
-        label = ' '.join(source['title'].split())
-        if source.get('pages'):
-            label += ' · páginas ' + ', '.join(str(page) for page in source['pages'])
+        title = ' '.join(source['title'].split())
+        suffix = ''
         notice = _review_notice([source])
         if notice:
-            label += '\n' + notice
+            suffix += '\n' + notice
         # Only the normalized official URL of an explicitly public document.
         # delivery metadata alone never promises a downloadable stored file.
         if source.get('url'):
-            label += '\n' + source['url']
-        entries.append(label)
+            suffix += '\n' + source['url']
+        if not source.get('pages'):
+            entries.append(title + suffix)
+            continue
+        # A document can collect evidence from three nodes. Split only its
+        # page list; every group retains the complete title, notice and URL.
+        prefix, current = title + ' · páginas ', []
+        for page in source['pages']:
+            page_text = str(page)
+            candidate = ', '.join(current + [page_text])
+            if len(prefix + candidate + suffix) > _PAGE_BODY_LIMIT:
+                if not current:
+                    raise ContentError('knowledge_reference_too_large', 400)
+                entries.append(prefix + ', '.join(current) + suffix)
+                current = []
+                if len(prefix + page_text + suffix) > _PAGE_BODY_LIMIT:
+                    raise ContentError('knowledge_reference_too_large', 400)
+            current.append(page_text)
+        entries.append(prefix + ', '.join(current) + suffix)
     entries.extend(_links(nodes))
     return entries
 
@@ -102,6 +118,8 @@ def _source_entries(nodes):
 def _source_pages(entries):
     pages, current = [], []
     for entry in entries:
+        if len(entry) > _PAGE_BODY_LIMIT:
+            raise ContentError('knowledge_reference_too_large', 400)
         if current and len('\n\n'.join(current + [entry])) > _PAGE_BODY_LIMIT:
             pages.append('\n\n'.join(current))
             current = []
@@ -133,9 +151,9 @@ def sources_answer(tenant, context, page):
         # answer() re-reads each result; this also fences a multi-node response.
         if read_state(tenant, public=True)['revision'] != scope['revision']:
             raise ContentError('knowledge_revision_conflict', 412)
+        pages = _source_pages(_source_entries(nodes))
     except ContentError:
         return _UNAVAILABLE, clear_source_scope(context), None
-    pages = _source_pages(_source_entries(nodes))
     if not pages:
         return 'No hay referencias públicas disponibles para esta orientación.', context, scope['revision']
     if not 1 <= page <= len(pages):
