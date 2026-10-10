@@ -62,6 +62,14 @@ mic/privacy controls, actual speech/captions and server closure. Confirm no
 recording or transcript exposure through infrastructure logs. Public rollout
 requires durable timed cancellation/spend controls and speech-grounding review.
 
+Full-app HTTP acceptance uses a fresh disposable SQLite app, real password login,
+real session middleware and SQL ledger; only published corpus/provider I/O are
+offline fixtures. Run separately from tests that import the application first:
+
+```powershell
+& 'C:/Temp/chatboc-scoped-testenv-20260930/Scripts/python.exe' -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q','tests/test_browser_realtime_http_acceptance.py']))"
+```
+
 ## Official API contracts checked on 2026-10-10
 
 - [WebRTC and server SDP exchange](https://developers.openai.com/api/docs/guides/voice-webrtc)
