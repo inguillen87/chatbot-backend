@@ -1,3 +1,0 @@
-LOCAL DEV: Credential file not found at 'data\google_service_key.json'. Google services may fail.
- * Serving Flask app 'app.py'
- * Debug mode: off

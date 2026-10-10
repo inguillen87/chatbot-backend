@@ -11,9 +11,10 @@ services:
     # docs/render.deploy.quickcheck.md; changing this early blocks every deploy.
     healthCheckPath: /health
     buildCommand: "./build.sh"
-    preDeployCommand: "flask db upgrade"
+    preDeployCommand: "python -m scripts.run_predeploy_migrations"
     startCommand: "gunicorn --config gunicorn.conf.py --bind 0.0.0.0:$PORT app:app"
     plan: starter
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -23,6 +24,40 @@ services:
         value: production
       - key: FLASK_ENV
         value: production
+      # Shared maintenance-window fence. It is inert by default and is
+      # propagated to every background writer below from this web service.
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        value: "false"
+      # Persistent cross-runtime authority remains inert until the approved
+      # cutover window. Runtime identity is declarative; the dedicated shared
+      # PostgreSQL control DSN never falls back to DATABASE_URL. If the flag is
+      # enabled before the DSN is loaded, every guarded writer fails closed.
+      - key: CUTOVER_RUNTIME_IDENTITY
+        value: render
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        value: "false"
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        sync: false
+      # These secrets must be loaded manually on the existing Render service.
+      # Standby mode stays false until the final writer freeze is certified.
+      - key: DATABASE_URL
+        sync: false
+      - key: MIGRATIONS_DATABASE_URL
+        sync: false
+      # Required only when standby mode is enabled. The pre-deploy hook checks
+      # both identifiers inside a read-only transaction before Render starts.
+      - key: EXPECTED_NEON_PROJECT_ID
+        sync: false
+      - key: EXPECTED_NEON_BRANCH_ID
+        sync: false
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        value: "false"
+      - key: CHATBOC_RENDER_STANDBY_SCHEMA_ACTION
+        value: "verify-only"
+      # Keep false until the R2 put/get/delete probe and remaining /data users
+      # are certified. The flag is intentionally explicit, never implicit.
+      - key: VERCEL_DURABLE_UPLOADS_REQUIRE_R2
+        value: "false"
       - key: BACKEND_URL
         value: https://api.chatboc.ar
       - key: PUBLIC_API_BASE_URL
@@ -394,7 +429,7 @@ services:
     buildCommand: "./build.sh"
     startCommand: "python -m services.whatsapp_inbound_worker --standby-when-legacy"
     plan: starter
-    maxShutdownDelaySeconds: 60
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -406,6 +441,36 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: whatsapp-durable-worker
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
+      - key: VERCEL_DURABLE_UPLOADS_REQUIRE_R2
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: VERCEL_DURABLE_UPLOADS_REQUIRE_R2
       - key: WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED
         value: "true"
       - key: DATABASE_URL
@@ -690,6 +755,31 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: whatsapp-payload-retention-cron
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -734,7 +824,7 @@ services:
     buildCommand: "./build.sh"
     startCommand: "python -m services.domain_effect_worker"
     plan: starter
-    maxShutdownDelaySeconds: 60
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -746,6 +836,31 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: domain-effect-worker
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -868,7 +983,7 @@ services:
     buildCommand: "./build.sh"
     startCommand: "python -m services.survey_response_effect_worker"
     plan: starter
-    maxShutdownDelaySeconds: 180
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -880,6 +995,31 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: survey-effect-worker
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -943,6 +1083,31 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: survey-retention-cron
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -957,7 +1122,7 @@ services:
   - type: cron
     name: weekly-analytics-report
     runtime: python
-    schedule: "0 0 * * 0" # Se ejecuta todos los domingos a las 00:00 UTC
+    schedule: "0 0 * * 0" # Drena lotes idempotentes cada domingo a las 00:00 UTC
     buildCommand: "./build.sh" # Usa las mismas dependencias
     startCommand: "flask generate-weekly-reports" # El comando que creamos en cli_commands.py
     plan: starter
@@ -966,6 +1131,63 @@ services:
         value: 3.12.0
       - key: FLASK_APP
         value: app.py
+      - key: ENV
+        value: production
+      - key: FLASK_ENV
+        value: production
+      - key: CHATBOC_PROCESS_ROLE
+        value: weekly-analytics-cron
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DATABASE_URL
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SECRET_KEY
+      - key: OPENAI_API_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OPENAI_API_KEY
+      - key: WEEKLY_ANALYTICS_RESERVATION_REDIS_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: RATELIMIT_STORAGE_URI
+      - key: WEEKLY_ANALYTICS_MAX_TENANTS_PER_RUN
+        value: "5"
+      - key: WEEKLY_ANALYTICS_MAX_BATCHES_PER_DRAIN
+        value: "12"
+      - key: WEEKLY_ANALYTICS_RESERVATION_TTL_SECONDS
+        value: "900"
       - key: LLM_PROVIDER_ORDER
         value: openai,gemini
       - key: GEMINI_API_KEY

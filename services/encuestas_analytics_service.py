@@ -17,7 +17,7 @@ from statistics import mean, median
 from threading import Lock
 from time import monotonic
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote, quote_plus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import Numeric, String, and_, case, cast, literal, or_
@@ -47,6 +47,13 @@ from services.survey_response_provenance import (
     build_survey_response_provenance,
     filter_survey_response_query_by_origin,
     is_trusted_demo_seed_response,
+)
+from services.survey_jurisdiction import (
+    tenant_requires_government_survey_evidence,
+)
+from services.territorial_evidence import (
+    coordinate_jurisdiction_status,
+    resolve_tenant_jurisdiction,
 )
 from utils.heatmap import (
     build_feature_collection,
@@ -996,6 +1003,50 @@ def _selected_response_ids_subquery(snapshot: Mapping[str, Any]):
     )
 
 
+def get_fieldwork_coverage_counts(
+    encuesta: EncEncuesta,
+    filtros: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """One bounded SQL row; never inspect the recent response detail sample.
+
+    The private route reconciles this total against its summary before exposing
+    coverage. Concurrent changes or corrupt stored tenant links cannot be
+    silently repaired into a plausible percentage.
+    """
+    _base_query, selected_query, mode = _response_queries(encuesta, filtros)
+    selected_query = selected_query.filter(EncRespuesta.tenant_id == encuesta.tenant_id)
+    expressions = {}
+    for key, column in (
+        ("channel", EncRespuesta.canal),
+        ("campaign", EncRespuesta.utm_campaign),
+        ("gender", EncRespuesta.genero),
+        ("age_range", EncRespuesta.rango_etario),
+        ("neighborhood", EncRespuesta.barrio),
+        ("city", EncRespuesta.ciudad),
+        ("province", EncRespuesta.provincia),
+        ("country", EncRespuesta.pais),
+    ):
+        expressions[key] = db.func.length(
+            db.func.trim(db.func.coalesce(cast(column, String), ""), " \t\r\n\f\v")
+        ) > 0
+    expressions["coordinates"] = (
+        EncRespuesta.lat.isnot(None)
+        & EncRespuesta.lng.isnot(None)
+        & EncRespuesta.lat.between(-90, 90)
+        & EncRespuesta.lng.between(-180, 180)
+    )
+    row = selected_query.with_entities(
+        db.func.count(EncRespuesta.id).label("selected_records"),
+        *(db.func.coalesce(db.func.sum(case((condition, 1), else_=0)), 0).label(key)
+          for key, condition in expressions.items()),
+    ).order_by(None).one()
+    return {
+        "survey_id": int(encuesta.id), "tenant_id": int(encuesta.tenant_id),
+        "mode": mode, "selected_records": int(row.selected_records),
+        "recorded": {key: int(getattr(row, key)) for key in expressions},
+    }
+
+
 def _exact_option_statistics(
     snapshot: Dict[str, Any],
 ) -> Tuple[Dict[int, Counter], Dict[int, Counter], Counter]:
@@ -1505,18 +1556,12 @@ def _bounded_geo_points(
                 "sampled": False,
                 "partial": False,
             }
-        rows = (
+        responses = (
             snapshot["selected_query"]
-            .with_entities(
-                EncRespuesta.id,
-                EncRespuesta.lat,
-                EncRespuesta.lng,
-                EncRespuesta.barrio,
-                EncRespuesta.ciudad,
-                EncRespuesta.provincia,
-                EncRespuesta.pais,
-                EncRespuesta.canal,
-                EncRespuesta.submitted_at,
+            .options(
+                selectinload(EncRespuesta.detalles).joinedload(
+                    EncRespuestaDetalle.opcion
+                )
             )
             .filter(
                 EncRespuesta.lat.isnot(None),
@@ -1531,38 +1576,36 @@ def _bounded_geo_points(
             .limit(effective_limit + 1)
             .all()
         )
-        partial = len(rows) > effective_limit
-        rows = rows[:effective_limit]
+        partial = len(responses) > effective_limit
+        responses = responses[:effective_limit]
         points = [
             {
-                "response_id": int(response_id),
-                "lat": float(lat),
-                "lng": float(lng),
+                "response_id": int(response.id),
+                "lat": float(response.lat),
+                "lng": float(response.lng),
                 "weight": 1,
-                "barrio": barrio,
-                "ciudad": ciudad,
-                "provincia": provincia,
-                "pais": pais,
-                "canal": canal,
-                "submitted_at": submitted_at.isoformat()
-                if submitted_at
+                "categoria": _extract_response_category(response),
+                "barrio": response.barrio,
+                "ciudad": response.ciudad,
+                "provincia": response.provincia,
+                "pais": response.pais,
+                "canal": response.canal,
+                "submitted_at": response.submitted_at.isoformat()
+                if response.submitted_at
                 else None,
             }
-            for (
-                response_id,
-                lat,
-                lng,
-                barrio,
-                ciudad,
-                provincia,
-                pais,
-                canal,
-                submitted_at,
-            ) in rows
+            for response in responses
         ]
         enrich_heatmap_points(
             points,
-            property_keys=("barrio", "ciudad", "provincia", "pais", "canal"),
+            property_keys=(
+                "categoria",
+                "barrio",
+                "ciudad",
+                "provincia",
+                "pais",
+                "canal",
+            ),
         )
         return points, {
             "sample_limit": effective_limit,
@@ -3138,21 +3181,34 @@ def get_segment_suggestions(
     filtros: Optional[Dict[str, Any]] = None,
     limit: int = 5,
 ) -> Dict[str, Any]:
-    """Return dynamic A/B segmentation suggestions from available survey data."""
+    """Exact, bounded A/B choices from the same authorized response selection."""
 
+    from services.survey_segment_compare import SEGMENT_COLUMNS, TRIM_CHARS, validate_global_filters
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
-    total = max(len(respuestas), 1)
+    validate_global_filters(filtros, _parse_datetime, _parse_bbox_filter)
+    _base, selected_query, mode = _response_queries(encuesta, filtros)
+    selected_query = selected_query.filter(EncRespuesta.tenant_id == encuesta.tenant_id)
     effective_limit = max(2, min(int(limit or 5), 10))
-
+    total_query = selected_query.with_entities(literal("__total").label("dimension"),
+        literal("").label("label"), db.func.count(EncRespuesta.id).label("n")).order_by(None)
+    union_parts = []
+    for key, column in SEGMENT_COLUMNS.items():
+        normalized = db.func.lower(db.func.trim(cast(column, String), TRIM_CHARS))
+        top = selected_query.with_entities(normalized.label("label"), db.func.count(EncRespuesta.id).label("n")).filter(
+            column.isnot(None), db.func.length(normalized) > 0,
+        ).group_by(normalized).order_by(db.func.count(EncRespuesta.id).desc(), normalized).limit(effective_limit).subquery()
+        union_parts.append(db.session.query(literal(key), top.c.label, top.c.n))
+    snapshot_rows = total_query.union_all(*union_parts).all()
+    total = int(next(row.n for row in snapshot_rows if row.dimension == "__total"))
     suggestions: Dict[str, List[Dict[str, Any]]] = {}
-    for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais"):
-        counter = Counter(str(getattr(respuesta, key) or "").strip() for respuesta in respuestas)
+    for key in SEGMENT_COLUMNS:
         options: List[Dict[str, Any]] = []
-        for label, count in counter.most_common(effective_limit):
+        for row in snapshot_rows:
+            if row.dimension != key: continue
+            label, count = row.label, int(row.n)
             if not label:
                 continue
-            coverage = round((count / total) * 100, 2)
+            coverage = round((count / total) * 100, 2) if total else None
             options.append(
                 {
                     "label": label,
@@ -3166,7 +3222,9 @@ def get_segment_suggestions(
 
     return {
         "encuesta_id": encuesta.id,
-        "total_respuestas": len(respuestas),
+        "total_respuestas": total,
+        "scope": {"survey_id": encuesta.id, "tenant_id": encuesta.tenant_id, "mode": mode},
+        "exact_aggregates": True,
         "dimensions": suggestions,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -3179,6 +3237,8 @@ def _build_executive_summary_text(
     forecast: Dict[str, Any],
     alerts: Dict[str, Any],
     heatmap: Dict[str, Any],
+    *,
+    availability: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Compose concise executive-ready narrative from analytics signals."""
 
@@ -3187,6 +3247,28 @@ def _build_executive_summary_text(
     projected_total = int(forecast.get("projected_total") or total)
     projected_additional = int(forecast.get("projected_additional") or 0)
     alerts_list = alerts.get("alerts") or []
+    lifecycle = (availability or {}).get("admin_lifecycle") or {}
+    if lifecycle.get("accepts_responses") is not True:
+        phase = lifecycle.get("phase")
+        if phase in {"closed", "archived", "window_ended"}:
+            one_liner = "El instrumento está finalizado. El análisis corresponde al histórico de respuestas registradas."
+            focus = "Revisar resultados históricos y documentar aprendizajes."
+        elif phase == "draft":
+            one_liner = "El instrumento está en borrador y todavía no recibe respuestas."
+            focus = "Revisar el instrumento y su disponibilidad antes de publicar."
+        elif phase == "scheduled":
+            one_liner = "El instrumento está programado y su ventana de participación todavía no comenzó."
+            focus = "Revisar la fecha de apertura y la disponibilidad del instrumento."
+        else:
+            one_liner = "El instrumento no está habilitado para recibir respuestas. El análisis conserva los registros disponibles."
+            focus = "Revisar la disponibilidad y la jurisdicción antes de difundir el enlace."
+        return {
+            "headline": f"{total} respuestas registradas ({completion:.1f}% de completitud).",
+            "one_liner": one_liner,
+            "focus_points": [focus],
+            "alert_count": len(alerts_list),
+            "projected_additional": projected_additional,
+        }
 
     top_barrio = None
     territorio = (summary.get("demografia") or {}).get("territorio_map") or {}
@@ -3902,11 +3984,6 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         base_payload["reason_code"] = "survey_context_unavailable"
         return base_payload
 
-    link = (
-        EncLink.query.filter_by(encuesta_id=encuesta.id)
-        .order_by(EncLink.id.asc())
-        .first()
-    )
     tenant_slug = None
     tenant_id = getattr(encuesta, "tenant_id", None)
     if tenant_id:
@@ -3916,22 +3993,42 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         except Exception:
             tenant_slug = None
 
-    slug_publico = str(getattr(link, "slug_publico", "") or "").strip() if link else ""
+    from services.encuestas_service import build_survey_availability_contract
+
+    availability = build_survey_availability_contract(
+        encuesta, db.session.get(TenantProfile, tenant_id) if tenant_id else None
+    )
+    lifecycle = availability["admin_lifecycle"]
+    can_share = lifecycle["capabilities"]["can_share"]
+
+    slug_publico = availability["public_slug"] or ""
     has_public_link = bool(slug_publico)
     is_published = str(getattr(encuesta, "estado", "") or "").lower() == "publicada" and has_public_link
     live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
-    public_state = "published" if is_published else "closed" if getattr(encuesta, "estado", None) == "cerrada" else "draft"
+    public_state = (
+        "published" if can_share
+        else "closed" if lifecycle["phase"] in {"closed", "archived", "window_ended"}
+        else "draft" if lifecycle["phase"] == "draft"
+        else "scheduled" if lifecycle["phase"] == "scheduled"
+        else "unavailable"
+    )
 
     links: Dict[str, Any] = {}
-    if has_public_link:
+    if can_share:
         tenant_query = {"tenant_slug": tenant_slug}
-        public_page_path = f"/e/{slug_publico}"
+        public_page_path = _append_query(f"/e/{quote(str(slug_publico), safe='')}", tenant_query)
         public_api_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}", tenant_query)
         respond_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}/respond", tenant_query)
-        live_results_endpoint = _append_query(f"/api/v2/public/surveys/{slug_publico}/live-results", tenant_query)
-        legacy_public_api_endpoint = f"/api/public/encuestas/v1/{slug_publico}"
-        legacy_live_results_endpoint = f"/api/public/encuestas/v1/{slug_publico}/live-results"
-        qr_endpoint = f"/api/public/encuestas/v1/{slug_publico}/qr?size=320"
+        live_results_endpoint = (
+            _append_query(f"/api/v2/public/surveys/{slug_publico}/live-results", tenant_query)
+            if live_results_enabled else None
+        )
+        legacy_public_api_endpoint = _append_query(f"/api/public/encuestas/v1/{slug_publico}", tenant_query)
+        legacy_live_results_endpoint = (
+            _append_query(f"/api/public/encuestas/v1/{slug_publico}/live-results", tenant_query)
+            if live_results_enabled else None
+        )
+        qr_endpoint = _append_query(f"/api/public/encuestas/v1/{slug_publico}/qr?size=320", tenant_query)
         share_text = f"Participa en {getattr(encuesta, 'titulo', None) or 'esta encuesta'}: {public_page_path}"
         links = {
             "public_page_path": public_page_path,
@@ -3951,7 +4048,7 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         }
 
     actions: List[Dict[str, Any]] = []
-    if has_public_link:
+    if can_share:
         actions.extend(
             [
                 {"id": "copy_public_link", "label": "Copiar link", "ui_hint": "copy", "href": links.get("copy_url")},
@@ -3968,7 +4065,7 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
                 "enabled": live_results_enabled,
             }
         )
-    else:
+    elif lifecycle["capabilities"]["can_publish"]:
         actions.append({"id": "publish_survey", "label": "Publicar encuesta", "ui_hint": "publish"})
 
     return {
@@ -3984,6 +4081,11 @@ def _build_survey_publication_contract(encuesta_id: int) -> Dict[str, Any]:
         "has_public_link": has_public_link,
         "is_live_vote": bool(getattr(encuesta, "es_votacion_envivo", False)),
         "live_results_enabled": live_results_enabled,
+        "public_access": availability["public_access"],
+        "accepts_responses": lifecycle["accepts_responses"],
+        "can_share": can_share,
+        "phase": lifecycle["phase"],
+        "admin_scope": availability["admin_scope"],
         "requires_identity": bool(getattr(encuesta, "requiere_identidad", False)),
         "anonymous_allowed": bool(getattr(encuesta, "anonimo_permitido", True)),
         "links": links,
@@ -4045,7 +4147,15 @@ def _get_dashboard_bundle_impl(
             segment_b={"canal": "whatsapp"},
         )
 
-    executive_summary = _build_executive_summary_text(summary, forecast, alerts, heatmap)
+    from services.encuestas_service import build_survey_availability_contract
+
+    encuesta = get_encuesta(encuesta_id)
+    availability = build_survey_availability_contract(
+        encuesta, db.session.get(TenantProfile, encuesta.tenant_id)
+    )
+    executive_summary = _build_executive_summary_text(
+        summary, forecast, alerts, heatmap, availability=availability
+    )
     visual_blueprint = _build_visual_blueprint(
         encuesta_id=encuesta_id,
         summary=summary,
@@ -4164,46 +4274,13 @@ def get_segment_compare(
     segment_a: Optional[Dict[str, Any]] = None,
     segment_b: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    from services.survey_segment_compare import exact_segment_comparison, validate_global_filters
     encuesta = get_encuesta(encuesta_id)
-    respuestas, data_provenance = _collect_respuestas_with_provenance(
-        encuesta,
-        filtros,
-    )
-
-    group_a = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_a)]
-    group_b = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_b)]
-
-    total_base = max(len(respuestas), 1)
-
-    def _segment_meta(name: str, filters_payload: Optional[Dict[str, Any]], group: Sequence[EncRespuesta]) -> Dict[str, Any]:
-        count = len(group)
-        return {
-            "name": name,
-            "label": f"Segmento {name.upper()}",
-            "filters": filters_payload or {},
-            "count": count,
-            "coverage": round((count / total_base) * 100, 2),
-        }
-
-    return {
-        "encuesta_id": encuesta.id,
-        "data_provenance": data_provenance,
-        "segment_a": {
-            "meta": _segment_meta("a", segment_a, group_a),
-            "filters": segment_a or {},
-            "stats": _segment_distribution(group_a, encuesta),
-        },
-        "segment_b": {
-            "meta": _segment_meta("b", segment_b, group_b),
-            "filters": segment_b or {},
-            "stats": _segment_distribution(group_b, encuesta),
-        },
-        "comparison_meta": {
-            "base_total": len(respuestas),
-            "gap_respuestas": len(group_a) - len(group_b),
-        },
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    global_filters = validate_global_filters(filtros, _parse_datetime, _parse_bbox_filter)
+    base_query, selected_query, mode = _response_queries(encuesta, filtros)
+    return exact_segment_comparison(encuesta, base_query, selected_query, mode,
+        global_filters=global_filters, segment_a=segment_a, segment_b=segment_b,
+        normalize_type=_normalize_question_type)
 
 
 def get_anomaly_report(
@@ -4409,6 +4486,34 @@ def get_heatmap(
     resolution: Optional[int] = None,
 ) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
+    survey_tenant_id = getattr(encuesta, "tenant_id", None)
+    tenant = (
+        db.session.get(TenantProfile, int(survey_tenant_id))
+        if survey_tenant_id is not None
+        else None
+    )
+    government_evidence_required = tenant_requires_government_survey_evidence(
+        tenant
+    )
+    jurisdiction = (
+        resolve_tenant_jurisdiction(tenant)
+        if government_evidence_required and tenant is not None
+        else {}
+    )
+    authority = (
+        jurisdiction.get("boundary_authority")
+        if isinstance(jurisdiction.get("boundary_authority"), Mapping)
+        else {}
+    )
+    jurisdiction_verified = bool(
+        government_evidence_required
+        and jurisdiction.get("enforced") is True
+        and jurisdiction.get("containment_verified") is True
+        and jurisdiction.get("containment_method") == "point_in_polygon"
+        and authority.get("kind") == "official"
+        and authority.get("source_ref")
+        and authority.get("snapshot_sha256")
+    )
     snapshot = _get_response_snapshot(encuesta, filtros)
     respuestas = list(snapshot["sample"])
     data_provenance = dict(snapshot["provenance"])
@@ -4434,11 +4539,118 @@ def get_heatmap(
     )
     allow_synthetic = bool(_as_bool((filtros or {}).get("allow_synthetic_geo") or (filtros or {}).get("include_synthetic_geo")))
     used_synthetic_points = False
-    if allow_synthetic and not points and respuestas:
+    if (
+        allow_synthetic
+        and not government_evidence_required
+        and not points
+        and respuestas
+    ):
         synthetic_points = _build_synthetic_heatmap_points(encuesta, respuestas)
         if synthetic_points:
             points = synthetic_points
             used_synthetic_points = True
+    jurisdiction_input_points = len(points)
+    jurisdiction_excluded_points = 0
+    if government_evidence_required:
+        authorized_points: List[Dict[str, Any]] = []
+        for point in points:
+            coordinate_status = coordinate_jurisdiction_status(
+                point.get("lat"), point.get("lng"), jurisdiction
+            )
+            if not jurisdiction_verified or coordinate_status != "within":
+                jurisdiction_excluded_points += 1
+                continue
+            source_ref = authority.get("source_ref")
+            snapshot_sha256 = authority.get("snapshot_sha256")
+            authorized_points.append(
+                {
+                    **point,
+                    "coordinate_jurisdiction_status": coordinate_status,
+                    "containment_verified": True,
+                    "source_ref": source_ref,
+                    "snapshot_sha256": snapshot_sha256,
+                    "jurisdiction_evidence": {
+                        "contract_version": (
+                            "surveys.heatmap.point_jurisdiction_evidence.v1"
+                        ),
+                        "containment_verified": True,
+                        "coordinate_jurisdiction_status": coordinate_status,
+                        "containment_method": "point_in_polygon",
+                        "authority_kind": "official",
+                        "source_ref": source_ref,
+                        "snapshot_sha256": snapshot_sha256,
+                    },
+                }
+            )
+        points = authorized_points
+        enrich_heatmap_points(
+            points,
+            property_keys=(
+                "barrio",
+                "ciudad",
+                "provincia",
+                "pais",
+                "canal",
+                "containment_verified",
+                "coordinate_jurisdiction_status",
+                "source_ref",
+                "snapshot_sha256",
+                "jurisdiction_evidence",
+            ),
+        )
+        # Exact SQL cells can mix accepted and rejected coordinates. Rebuild
+        # cells solely from authorized points so no rejected observation can
+        # influence a centroid or count.
+        authorized_cells: Dict[str, Dict[str, Any]] = {}
+        effective_resolution = resolution or DEFAULT_HEATMAP_RESOLUTION
+        for point in points:
+            cell_id = compute_heatmap_cell_id(
+                float(point["lat"]), float(point["lng"]), effective_resolution
+            )
+            cell = authorized_cells.setdefault(
+                cell_id,
+                {
+                    "cell_id": cell_id,
+                    "count": 0,
+                    "lat_sum": 0.0,
+                    "lng_sum": 0.0,
+                    "barrios": defaultdict(int),
+                    "canales": defaultdict(int),
+                },
+            )
+            cell["count"] += 1
+            cell["lat_sum"] += float(point["lat"])
+            cell["lng_sum"] += float(point["lng"])
+            if point.get("barrio"):
+                cell["barrios"][point["barrio"]] += 1
+            if point.get("canal"):
+                cell["canales"][point["canal"]] += 1
+        cells = []
+        for cell in authorized_cells.values():
+            centroid_lat, centroid_lng = compute_heatmap_centroid(
+                cell["cell_id"],
+                lat_sum=cell["lat_sum"],
+                lng_sum=cell["lng_sum"],
+                count=cell["count"],
+            )
+            cells.append(
+                {
+                    "cell_id": cell["cell_id"],
+                    "count": cell["count"],
+                    "centroid_lat": round(centroid_lat, 6),
+                    "centroid_lon": round(centroid_lng, 6),
+                    "barrios": dict(cell["barrios"]),
+                    "canales": dict(cell["canales"]),
+                }
+            )
+        cells.sort(key=lambda item: item["count"], reverse=True)
+        enrich_heatmap_cells(cells, property_keys=("barrios", "canales"))
+        cell_sampling = {
+            "cell_count": len(cells),
+            "partial": bool(point_sampling.get("partial")),
+            "source": "authorized_contained_points",
+            "excluded_by_jurisdiction": jurisdiction_excluded_points,
+        }
     metadata = _build_heatmap_metadata(encuesta, points)
     map_filter = _build_map_filter(points)
     metadata.update(
@@ -4448,9 +4660,66 @@ def get_heatmap(
             "has_coordinates": bool(points),
             "using_synthetic_points": used_synthetic_points,
             "can_render_heatmap": bool(points or cells),
-            "empty_reason": None if points or cells else "no_real_geo_points",
+            "empty_reason": (
+                "official_jurisdiction_boundary_unavailable"
+                if government_evidence_required and not jurisdiction_verified
+                else (
+                    None
+                    if points or cells
+                    else (
+                        "no_contained_geo_points"
+                        if government_evidence_required
+                        else "no_real_geo_points"
+                    )
+                )
+            ),
             "point_sampling": point_sampling,
             "cell_aggregation": cell_sampling,
+            "jurisdiction": {
+                "contract_version": "surveys.heatmap.jurisdiction.v1",
+                "required": government_evidence_required,
+                "enforced": government_evidence_required,
+                "state": (
+                    "verified"
+                    if jurisdiction_verified
+                    else (
+                        "blocked"
+                        if government_evidence_required
+                        else "not_required"
+                    )
+                ),
+                "containment_verified": jurisdiction_verified,
+                "containment_method": (
+                    jurisdiction.get("containment_method")
+                    if jurisdiction_verified
+                    else None
+                ),
+                "boundary_authority": dict(authority),
+                "reason_code": (
+                    "official_point_in_polygon_verified"
+                    if jurisdiction_verified
+                    else (
+                        "official_jurisdiction_boundary_unavailable"
+                        if government_evidence_required
+                        else "government_jurisdiction_not_required"
+                    )
+                ),
+            },
+            "provenance": {
+                "contract_version": "surveys.heatmap.territorial_provenance.v1",
+                "coordinate_policy": "persisted_coordinates_only",
+                "writes_performed": False,
+                "synthetic_coordinates_allowed": not government_evidence_required,
+                "source_ref": authority.get("source_ref") if jurisdiction_verified else None,
+                "snapshot_sha256": (
+                    authority.get("snapshot_sha256")
+                    if jurisdiction_verified
+                    else None
+                ),
+                "input_points": jurisdiction_input_points,
+                "authorized_points": len(points),
+                "excluded_points": jurisdiction_excluded_points,
+            },
         }
     )
     data_provenance.update(
@@ -4477,6 +4746,33 @@ def get_heatmap(
     provider_hint = map_config.get("provider") if isinstance(map_config, dict) else None
     if not provider_hint or provider_hint == "none":
         provider_hint = "maplibre"
+    map_render_ready = bool(
+        (points or cells)
+        and (
+            not government_evidence_required
+            or jurisdiction_verified
+        )
+    )
+    metadata["map"] = {
+        "contract_version": "surveys.heatmap.map_render.v1",
+        "render_ready": map_render_ready,
+        "available": bool(points or cells),
+        "provider_hint": provider_hint,
+        "fallback_provider": "maplibre",
+        "reason_code": (
+            "authorized_points_available"
+            if map_render_ready
+            else (
+                "official_jurisdiction_boundary_unavailable"
+                if government_evidence_required and not jurisdiction_verified
+                else (
+                    "no_contained_geo_points"
+                    if government_evidence_required
+                    else "no_real_geo_points"
+                )
+            )
+        ),
+    }
     heatmap_layer = {
         "kind": "heatmap",
         "supported_formats": supported_formats,
@@ -4531,16 +4827,35 @@ def get_heatmap(
         empty_state = "Sin puntos geograficos publicados para los filtros actuales."
         recommended_action = {"label": "Cambiar filtros", "route": f"/admin/encuestas/{encuesta_id}/analytics/heatmap"}
     legend = category_layers.get("legend") or {"mode": "category_weight", "min_weight": 0, "max_weight": 0}
+    government_boundary_blocked = bool(
+        government_evidence_required and not jurisdiction_verified
+    )
     render_contract = {
         "module": "heatmap",
-        "state": "ready" if bool(points or cells) else "empty",
+        "state": (
+            "blocked"
+            if government_boundary_blocked
+            else ("ready" if bool(points or cells) else "empty")
+        ),
         "dataset_key": "points",
         "fallback_dataset_key": "cells",
         "source_keys": ["points", "cells", "metadata.map_layers.heatmap"],
         "chart_hierarchy": ["echarts", "recharts", "plotly"],
         "map_hierarchy": [provider_hint, "maplibre", "google"],
         "can_render_heatmap": bool(points or cells),
-        "empty_reason": None if points or cells else "no_real_geo_points",
+        "empty_reason": (
+            "official_jurisdiction_boundary_unavailable"
+            if government_boundary_blocked
+            else (
+                None
+                if points or cells
+                else (
+                    "no_contained_geo_points"
+                    if government_evidence_required
+                    else "no_real_geo_points"
+                )
+            )
+        ),
         "ai_layers": True,
         "recommended_views": [
             "interactive_heatmap",
@@ -4725,6 +5040,12 @@ def _calculate_live_results_impl(
     results_final = (
         str(getattr(encuesta, "estado", "") or "").strip().lower() == "cerrada"
     )
+    from services.encuestas_service import build_survey_availability_contract
+
+    participation_availability = build_survey_availability_contract(
+        encuesta, db.session.get(TenantProfile, encuesta.tenant_id)
+    )
+    accepts_responses = participation_availability["admin_lifecycle"]["accepts_responses"]
     active_source_anonymous = privacy_mode == "source_anonymous" and not results_final
     if privacy_mode == "source_anonymous" and requested_filters:
         # Arbitrary public ranges/segments can be differenced even when every
@@ -4813,6 +5134,12 @@ def _calculate_live_results_impl(
         "snapshot_version": snapshot_version,
         "updated_at": getattr(encuesta, "updated_at", None),
         "survey_state": str(getattr(encuesta, "estado", "") or "").strip().lower(),
+        "participation_availability": {
+            "public_access": participation_availability["public_access"],
+            "accepts_responses": accepts_responses,
+            "can_share": participation_availability["admin_lifecycle"]["capabilities"]["can_share"],
+            "phase": participation_availability["admin_lifecycle"]["phase"],
+        },
         "range": analytics_range,
         "filters": requested_filters,
         "include_heatmap": bool(include_heatmap),
@@ -4965,16 +5292,19 @@ def _calculate_live_results_impl(
 
     ai_insights: List[str] = []
     if responses_count == 0:
-        ai_insights.append("Todavia no hay respuestas para mostrar: conviene revisar difusion y canales activos.")
+        ai_insights.append(
+            "Todavia no hay respuestas para mostrar: conviene revisar difusion y canales activos."
+            if accepts_responses else "No hay respuestas registradas para este instrumento sin recepción habilitada."
+        )
     elif top_question and top_question.get("lider"):
         ai_insights.append(
             f"La pregunta con mayor tracción es '{top_question['pregunta'][:70]}' y lidera '{top_question['lider']['label']}' con {top_question['lider']['porcentaje']}%."
         )
-    if responses_count > 0 and trend == "subiendo":
+    if accepts_responses and responses_count > 0 and trend == "subiendo":
         ai_insights.append("La curva reciente de participación está acelerando: conviene reforzar distribución del link ahora.")
-    elif responses_count > 0 and trend == "bajando":
+    elif accepts_responses and responses_count > 0 and trend == "bajando":
         ai_insights.append("La curva reciente está desacelerando: conviene activar recordatorios o pauta segmentada.")
-    elif responses_count > 0:
+    elif accepts_responses and responses_count > 0:
         ai_insights.append("La curva reciente se mantiene estable: se sugiere sostener frecuencia de difusión.")
 
     polling_interval_ms = 3000 if trend == "subiendo" else 8000 if trend == "bajando" else 5000
@@ -4983,8 +5313,11 @@ def _calculate_live_results_impl(
     empty_state = {
         "is_empty": responses_count == 0,
         "title": "Todavia no hay respuestas",
-        "message": "Publica el enlace o espera nuevas participaciones para ver metricas en vivo.",
-        "action_hint": "share_survey" if responses_count == 0 else None,
+        "message": (
+            "Publica el enlace o espera nuevas participaciones para ver metricas en vivo."
+            if accepts_responses else "El instrumento no recibe respuestas; consultá los resultados registrados."
+        ),
+        "action_hint": "share_survey" if responses_count == 0 and accepts_responses else None,
     }
     live_telemetry = {
         "has_responses": responses_count > 0,
@@ -5076,7 +5409,10 @@ def _calculate_live_results_impl(
             live_ai_items.append(
                 {
                     "source": "survey_empty_state",
-                    "text": "Encuesta o votacion sin respuestas. Revisar difusion, QR, WhatsApp y canales activos.",
+                    "text": (
+                        "Encuesta o votacion sin respuestas. Revisar difusion, QR, WhatsApp y canales activos."
+                        if accepts_responses else "Instrumento sin recepción habilitada. Revisar sus resultados y disponibilidad."
+                    ),
                     "category": "encuesta o votacion",
                     "channel": "public_link",
                     "status": "empty",
@@ -5109,10 +5445,10 @@ def _calculate_live_results_impl(
             "source": "huggingface_ai_insights",
             "requires_operator_confirmation": True,
         }
-        for index, action in enumerate(raw_recommendations or [])
+        for index, action in enumerate((raw_recommendations or []) if accepts_responses else [])
         if isinstance(action, Mapping)
     ]
-    if responses_count == 0:
+    if responses_count == 0 and accepts_responses:
         operator_recommendations.insert(
             0,
             {

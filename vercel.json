@@ -1,0 +1,38 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "fix/tdf-meta-owner-bsuid-20261010": false,
+      "release/enterprise-channel-closure-20261010": false,
+      "release/vercel-neon-complete-20261001": false,
+      "release/tdf-accessible-meta-20261010": false,
+      "feature/realtime-accessible-owner-20261010": false,
+      "feat/whitelabel-domain-lifecycle-20261010": false,
+      "release/enterprise-tdf-consolidated-20261010": false,
+      "fix/tdf-voice-corpus-budget-20261010": false,
+      "fix/tdf-meta-query-compat-20261010": false,
+      "fix/tenant-channel-readiness-20261010": false
+    }
+  },
+  "framework": "container",
+  "fluid": true,
+  "regions": ["gru1"],
+  "crons": [
+    {
+      "path": "/api/internal/cron/outbox-reconciliation",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/internal/cron/whatsapp-payload-retention",
+      "schedule": "43 3 * * *"
+    },
+    {
+      "path": "/api/internal/cron/survey-privacy-retention",
+      "schedule": "17 3 * * *"
+    },
+    {
+      "path": "/api/internal/cron/weekly-analytics-report",
+      "schedule": "0 0 * * 0"
+    }
+  ]
+}

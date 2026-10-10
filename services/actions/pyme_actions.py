@@ -80,6 +80,7 @@ class CatalogoHandler(BasePymeHandler):
                     categoria=self.context.get("rubro_nombre"),
                     limite=3,
                     coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME),
+                    tenant_id=self.context.get("tenant_id"),
                 )
             except Exception as exc:
                 logger.warning(

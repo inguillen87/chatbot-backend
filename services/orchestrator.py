@@ -21,7 +21,7 @@ from services.scraper_avanzado import (
     extraer_contenido_general,
     extraer_productos_de_url
 )
-from services.logic import RUBROS_PUBLICOS
+from services.rubro_classification import RUBROS_PUBLICOS
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

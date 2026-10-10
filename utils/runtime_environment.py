@@ -31,6 +31,23 @@ def is_render_runtime(environ: Mapping[str, str] | None = None) -> bool:
     )
 
 
+def is_vercel_runtime(environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether Vercel build/runtime signals are present.
+
+    Preview deployments are production-like from the application's security
+    perspective: they are public, autoscaled and cannot safely use local
+    bootstrap defaults or an ephemeral SQLite database.
+    """
+
+    runtime_env = os.environ if environ is None else environ
+    vercel_env = _normalized(runtime_env.get("VERCEL_ENV"))
+    return (
+        _normalized(runtime_env.get("VERCEL")) in _TRUTHY_VALUES
+        or vercel_env in {"preview", "production"}
+        or bool(_normalized(runtime_env.get("VERCEL_URL")))
+    )
+
+
 def is_production_runtime(
     *,
     config_env: object = None,
@@ -44,7 +61,7 @@ def is_production_runtime(
     """
 
     runtime_env = os.environ if environ is None else environ
-    if is_render_runtime(runtime_env):
+    if is_render_runtime(runtime_env) or is_vercel_runtime(runtime_env):
         return True
     signals = tuple(
         normalized
@@ -52,6 +69,7 @@ def is_production_runtime(
             _normalized(config_env),
             _normalized(runtime_env.get("ENV")),
             _normalized(runtime_env.get("FLASK_ENV")),
+            _normalized(runtime_env.get("VERCEL_ENV")),
         )
         if normalized
     )

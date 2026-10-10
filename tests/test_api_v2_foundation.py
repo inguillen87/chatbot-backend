@@ -1,5 +1,8 @@
+from datetime import datetime, timedelta, timezone
+import json
 import os
 import unittest
+from urllib.parse import unquote_plus
 from unittest.mock import patch
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
@@ -8,6 +11,7 @@ os.environ.setdefault("TESTING", "1")
 from app import create_app, db
 from config import Config
 from models import ChatSessionContext, MunicipioTicket, TenantProfile, TicketComentario, User, WhatsappNumero
+from routes.v2 import demo as demo_routes
 
 
 class V2BaseTestConfig(Config):
@@ -23,6 +27,19 @@ class BadProdConfig(V2BaseTestConfig):
     ENV = "prod"
     SECRET_KEY = "una-llave-secreta-muy-segura-para-desarrollo-local"
     DEBUG = False
+
+
+def _values_for_key(value, expected_key):
+    values = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == expected_key:
+                values.append(nested)
+            values.extend(_values_for_key(nested, expected_key))
+    elif isinstance(value, list):
+        for nested in value:
+            values.extend(_values_for_key(nested, expected_key))
+    return values
 
 
 class ApiV2FoundationTest(unittest.TestCase):
@@ -57,7 +74,17 @@ class ApiV2FoundationTest(unittest.TestCase):
         sector_groups = {group.get("key"): group for group in payload.get("sector_groups") or []}
         self.assertEqual((sector_groups.get("gobierno") or {}).get("tenant_slug"), "municipio")
         self.assertEqual((sector_groups.get("empresas") or {}).get("tenant_slug"), "bodega")
-        self.assertEqual((sector_groups.get("educacion") or {}).get("tenant_slug"), "colegio-demo")
+        education_group = sector_groups.get("educacion") or {}
+        self.assertIsNone(education_group.get("tenant_slug"))
+        self.assertFalse(education_group.get("available"))
+        education_rubros = [
+            item
+            for item in payload.get("rubros") or []
+            if item.get("sector") == "educacion"
+        ]
+        self.assertTrue(education_rubros)
+        self.assertTrue(all(item.get("tenant_slug") is None for item in education_rubros))
+        self.assertTrue(all(item.get("available") is False for item in education_rubros))
         self.assertTrue(any((item.get("resources") or []) for item in payload.get("rubros") or []))
         self.assertTrue(payload.get("resources"))
         first_rubro = (payload.get("rubros") or [])[0]
@@ -127,7 +154,257 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(frontend_key_flags)
         self.assertTrue(all(flag is False for flag in frontend_key_flags))
 
+    def test_v2_demo_catalog_uses_unique_education_tenant_for_all_session_scopes(self):
+        owner = User(
+            name="Colegio Sandbox",
+            email="catalog-education-sandbox@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="qa-colegio-sandbox",
+            nombre="Colegio Sandbox",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            vertical="educacion",
+            subvertical="colegio_privado",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        session_scopes = {}
+        for response_profile in ("full", "selector"):
+            query = "" if response_profile == "full" else "?response_profile=selector"
+            with patch.object(
+                demo_routes,
+                "_first_education_tenant_for_demo",
+                wraps=demo_routes._first_education_tenant_for_demo,
+            ) as education_resolver:
+                response = self.client.get(f"/api/v2/demo/catalog{query}")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(education_resolver.call_count, 1)
+            payload = response.get_json()
+            education_group = next(
+                group
+                for group in payload.get("sector_groups") or []
+                if group.get("key") == "educacion"
+            )
+            self.assertEqual(education_group.get("tenant_slug"), tenant.slug)
+            self.assertTrue(education_group.get("available"))
+            session_scopes.setdefault(
+                "sector_group",
+                {
+                    "sector": "educacion",
+                    "tenant_slug": education_group.get("tenant_slug"),
+                    "response_profile": "widget",
+                },
+            )
+
+            education_rubros = [
+                item
+                for item in payload.get("rubros") or []
+                if item.get("sector") == "educacion"
+            ]
+            self.assertTrue(education_rubros)
+            for rubro in education_rubros:
+                self.assertEqual(rubro.get("tenant_slug"), tenant.slug)
+                self.assertTrue(rubro.get("available"))
+                self.assertEqual(set(_values_for_key(rubro, "tenant_slug")), {tenant.slug})
+                session_scopes.setdefault(
+                    f"education_rubro:{rubro.get('slug')}",
+                    {
+                        "sector": "educacion",
+                        "rubro": rubro.get("slug"),
+                        "tenant_slug": rubro.get("tenant_slug"),
+                        "response_profile": "widget",
+                    },
+                )
+
+            for rubro in education_group.get("rubros") or []:
+                self.assertEqual(rubro.get("tenant_slug"), tenant.slug)
+                self.assertTrue(rubro.get("available"))
+
+        for scope in session_scopes.values():
+            session_response = self.client.post("/api/v2/demo/session", json=scope)
+            self.assertEqual(session_response.status_code, 200, scope)
+            self.assertEqual(session_response.get_json().get("tenant_slug"), tenant.slug)
+
+        for wrong_tenant_slug in ("unknown-school", "bodega", "municipio"):
+            wrong_slug_response = self.client.post(
+                "/api/v2/demo/session",
+                json={"sector": "educacion", "tenant_slug": wrong_tenant_slug},
+            )
+            self.assertEqual(wrong_slug_response.status_code, 404)
+            self.assertEqual(
+                wrong_slug_response.get_json().get("reason_code"),
+                "tenant_not_found",
+            )
+        self.assertIsNone(TenantProfile.query.filter_by(slug="bodega").first())
+        self.assertIsNone(TenantProfile.query.filter_by(slug="municipio").first())
+
+        for mismatched_scope in (
+            {"sector": "educacion", "rubro": "bodega"},
+            {
+                "sector": "educacion",
+                "rubro": "bodega",
+                "tenant_slug": tenant.slug,
+            },
+        ):
+            mismatched_response = self.client.post(
+                "/api/v2/demo/session",
+                json=mismatched_scope,
+            )
+            self.assertEqual(mismatched_response.status_code, 400)
+            self.assertEqual(
+                mismatched_response.get_json().get("reason_code"),
+                "validation_error",
+            )
+
+    def test_v2_demo_session_legacy_education_alias_resolves_real_active_tenant(self):
+        owner = User(
+            name="Colegio Alias Target",
+            email="catalog-education-alias@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="education-alias-target",
+            nombre="Colegio Alias Target",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            vertical="educacion",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "educacion",
+                "tenant_slug": "colegio-demo",
+                "response_profile": "widget",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json().get("tenant_slug"), tenant.slug)
+        self.assertIsNone(TenantProfile.query.filter_by(slug="colegio-demo").first())
+
+    def test_v2_demo_catalog_marks_education_unavailable_without_active_education_tenant(self):
+        business_owner = User(
+            name="Comercio Activo",
+            email="catalog-active-business@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        inactive_school_owner = User(
+            name="Colegio Inactivo",
+            email="catalog-inactive-school@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add_all([business_owner, inactive_school_owner])
+        db.session.flush()
+        db.session.add_all(
+            [
+                TenantProfile(
+                    slug="active-business",
+                    nombre="Comercio Activo",
+                    tipo="pyme",
+                    pyme_id=business_owner.id,
+                    is_active=True,
+                    vertical="retail",
+                ),
+                TenantProfile(
+                    slug="inactive-school",
+                    nombre="Colegio Inactivo",
+                    tipo="pyme",
+                    pyme_id=inactive_school_owner.id,
+                    is_active=False,
+                    vertical="educacion",
+                    capabilities_json={"education": {"enabled": True}},
+                ),
+            ]
+        )
+        db.session.commit()
+
+        for query in ("", "?response_profile=selector"):
+            response = self.client.get(f"/api/v2/demo/catalog{query}")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            education_group = next(
+                group
+                for group in payload.get("sector_groups") or []
+                if group.get("key") == "educacion"
+            )
+            self.assertIsNone(education_group.get("tenant_slug"))
+            self.assertFalse(education_group.get("available"))
+
+            education_rubros = [
+                item
+                for item in payload.get("rubros") or []
+                if item.get("sector") == "educacion"
+            ]
+            self.assertTrue(education_rubros)
+            self.assertTrue(all(item.get("tenant_slug") is None for item in education_rubros))
+            self.assertTrue(all(item.get("available") is False for item in education_rubros))
+            for rubro in education_rubros:
+                self.assertTrue(
+                    all(value is None for value in _values_for_key(rubro, "tenant_slug"))
+                )
+                if "admin_preview_endpoint" in rubro:
+                    self.assertIsNone(rubro.get("admin_preview_endpoint"))
+                    self.assertFalse((rubro.get("survey_voting") or {}).get("enabled"))
+            self.assertTrue(
+                all(
+                    item.get("tenant_slug") is None and item.get("available") is False
+                    for item in education_group.get("rubros") or []
+                )
+            )
+
+        session_response = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "educacion", "rubro": "colegios"},
+        )
+        self.assertEqual(session_response.status_code, 404)
+        self.assertEqual(
+            session_response.get_json().get("reason_code"),
+            "tenant_resolution_failed",
+        )
+
+        wrong_scope_response = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "educacion", "tenant_slug": "active-business"},
+        )
+        self.assertEqual(wrong_scope_response.status_code, 404)
+        self.assertEqual(
+            wrong_scope_response.get_json().get("reason_code"),
+            "tenant_not_found",
+        )
+
+        inactive_response = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "educacion", "tenant_slug": "inactive-school"},
+        )
+        self.assertEqual(inactive_response.status_code, 404)
+        self.assertEqual(
+            inactive_response.get_json().get("reason_code"),
+            "tenant_not_found",
+        )
+
     def test_v2_demo_session_returns_workspace_contract(self):
+        self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = (
+            "https://chatboc-r2-preview.vercel.app"
+        )
         owner = User(name="Demo Pyme", email="demo-pyme@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
         db.session.flush()
@@ -216,6 +493,14 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(((workspace.get("survey_voting") or {}).get("seed_policy") or {}).get("responses_per_item"), 100)
         self.assertEqual(len((workspace.get("survey_voting") or {}).get("items") or []), 5)
         self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in (workspace.get("survey_voting") or {}).get("items") or []))
+        self.assertTrue(
+            all(
+                (item.get("public_url") or "").startswith(
+                    "https://chatboc-r2-preview.vercel.app/e/"
+                )
+                for item in (workspace.get("survey_voting") or {}).get("items") or []
+            )
+        )
         self.assertTrue(any(action.get("action_id") == "mostrar_menu_encuestas" for action in workspace.get("primary_actions") or []))
         self.assertIn("/api/public/encuestas/v1/", (workspace.get("survey_voting") or {}).get("respond_endpoint") or "")
         self.assertIn("/api/public/encuestas/v1/", (workspace.get("survey_voting") or {}).get("results_endpoint") or "")
@@ -234,10 +519,41 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("location"))
         self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("file"))
         self.assertTrue(whatsapp_sandbox.get("scenario_scripts"))
+        sandbox_surveys = whatsapp_sandbox.get("surveys_votings") or {}
+        sandbox_items = sandbox_surveys.get("all_items") or []
+        self.assertEqual(len(sandbox_items), 6)
+        self.assertTrue(
+            all(
+                str(item.get("public_url") or "").startswith(
+                    "https://chatboc-r2-preview.vercel.app/e/"
+                )
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                str(item.get("qr_url") or "").startswith(
+                    "https://chatboc-r2-preview.vercel.app/api/public/encuestas/v1/"
+                )
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                "https://chatboc-r2-preview.vercel.app/e/"
+                in unquote_plus(str(item.get("whatsapp_share_url") or ""))
+                for item in sandbox_items
+            )
+        )
+        decoded_sandbox_surveys = unquote_plus(json.dumps(sandbox_surveys, sort_keys=True))
+        self.assertIn("https://chatboc-r2-preview.vercel.app/e/", decoded_sandbox_surveys)
+        self.assertNotIn("https://www.chatboc.ar/e/", decoded_sandbox_surveys)
         self.assertEqual((payload.get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
         self.assertEqual(((payload.get("chat_seed") or {}).get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
 
     def test_public_whatsapp_sandbox_launcher_requires_no_auth_and_exposes_trial_contract(self):
+        preview_frontend = "https://chatboc-r2-preview.vercel.app"
+        self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = preview_frontend
         owner = User(name="Bodega Demo", email="bodega-sandbox@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
         db.session.flush()
@@ -296,6 +612,31 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue((contract.get("surveys_votings") or {}).get("enabled"))
         self.assertEqual(((contract.get("surveys_votings") or {}).get("seed_policy") or {}).get("responses_per_item"), 100)
         self.assertEqual(len((contract.get("surveys_votings") or {}).get("items") or []), 5)
+        sandbox_surveys = contract.get("surveys_votings") or {}
+        sandbox_items = sandbox_surveys.get("all_items") or []
+        self.assertEqual(len(sandbox_items), 6)
+        self.assertTrue(
+            all(
+                str(item.get("public_url") or "").startswith(f"{preview_frontend}/e/")
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                str(item.get("qr_url") or "").startswith(
+                    f"{preview_frontend}/api/public/encuestas/v1/"
+                )
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                f"{preview_frontend}/e/" in unquote_plus(str(item.get("whatsapp_share_url") or ""))
+                for item in sandbox_items
+            )
+        )
+        decoded_sandbox_surveys = unquote_plus(json.dumps(sandbox_surveys, sort_keys=True))
+        self.assertNotIn("https://www.chatboc.ar/e/", decoded_sandbox_surveys)
         self.assertTrue(any(script.get("expected_result") == "survey_response" for script in contract.get("scenario_scripts") or []))
         self.assertFalse((payload.get("frontend_contract") or {}).get("requires_auth"))
 
@@ -370,6 +711,101 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertNotEqual(payload.get("demo_session_id"), payload.get("chat_session_id"))
         self.assertLessEqual(len(payload.get("chat_session_id") or ""), 36)
 
+    def test_demo_sessions_created_in_same_second_have_unique_jwt_jti_and_chat_session(self):
+        from routes.v2.tenants import decode_demo_session_token
+
+        owner = User(
+            name="Demo Unique Session",
+            email="demo-unique-session@test.com",
+            password_hash="hash",
+            tipo_chat="municipio",
+            rol="admin",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="municipio-unique-session",
+            nombre="Municipio Unique Session",
+            tipo="municipio",
+            municipio_id=owner.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        frozen_now = datetime.now(timezone.utc).replace(microsecond=0)
+        with patch("routes.v2.tenants.datetime") as clock:
+            clock.now.return_value = frozen_now
+            first = self.client.post(
+                "/api/v2/demo/session",
+                json={
+                    "sector": "gobierno",
+                    "tenant_slug": tenant.slug,
+                    "rubro": "gobierno",
+                },
+            )
+            second = self.client.post(
+                "/api/v2/demo/session",
+                json={
+                    "sector": "gobierno",
+                    "tenant_slug": tenant.slug,
+                    "rubro": "gobierno",
+                },
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        first_payload = first.get_json()
+        second_payload = second.get_json()
+        self.assertNotEqual(
+            first_payload.get("demo_session_id"),
+            second_payload.get("demo_session_id"),
+        )
+        self.assertNotEqual(
+            first_payload.get("chat_session_id"),
+            second_payload.get("chat_session_id"),
+        )
+
+        first_claims = decode_demo_session_token(first_payload.get("demo_session_id"))
+        second_claims = decode_demo_session_token(second_payload.get("demo_session_id"))
+        self.assertIsNotNone(first_claims)
+        self.assertIsNotNone(second_claims)
+        self.assertRegex(first_claims.get("jti") or "", r"^[0-9a-f]{64}$")
+        self.assertRegex(second_claims.get("jti") or "", r"^[0-9a-f]{64}$")
+        self.assertNotEqual(first_claims.get("jti"), second_claims.get("jti"))
+
+    def test_demo_session_decoder_validates_new_jti_and_preserves_legacy_expiry_contract(self):
+        from routes.v2.tenants import _sign_demo_session, decode_demo_session_token
+
+        now = datetime.now(timezone.utc)
+        base_payload = {
+            "kind": "demo_session",
+            "tenant_slug": "municipio",
+            "sector": "gobierno",
+            "rubro": "gobierno",
+            "iat": now,
+            "exp": now + timedelta(hours=1),
+        }
+        legacy_token = _sign_demo_session(dict(base_payload))
+        malformed_jti_token = _sign_demo_session(
+            {**base_payload, "jti": "predictable-demo-session-id"}
+        )
+        expired_token = _sign_demo_session(
+            {
+                **base_payload,
+                "jti": "a" * 64,
+                "iat": now - timedelta(hours=2),
+                "exp": now - timedelta(hours=1),
+            }
+        )
+
+        self.assertEqual(
+            (decode_demo_session_token(legacy_token) or {}).get("tenant_slug"),
+            "municipio",
+        )
+        self.assertIsNone(decode_demo_session_token(malformed_jti_token))
+        self.assertIsNone(decode_demo_session_token(expired_token))
+
     def test_demo_session_canonical_and_legacy_aliases_delegate_to_v2_with_cors(self):
         owner = User(name="Colegio Demo", email="colegio-compat@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
@@ -437,9 +873,268 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("contract_version"), "demo.admin_preview.v1")
+        self.assertEqual(payload.get("title"), "Panel demo para gestión ciudadana")
         self.assertEqual(payload.get("metrics"), [])
         self.assertEqual((payload.get("map") or {}).get("enabled"), False)
         self.assertEqual((payload.get("map") or {}).get("points"), [])
+
+    def _demo_preview_ticket(self, *, tenant, owner, chat_session_id, ticket_number, address):
+        ticket = MunicipioTicket(
+            tenant_id=tenant.id,
+            municipio_id=owner.id,
+            user_id=owner.id,
+            nro_ticket=ticket_number,
+            consulta_pin=f"pin-{ticket_number}",
+            pregunta="Reclamo aislado de prueba",
+            asunto="Reclamo demo",
+            categoria="Alumbrado publico",
+            estado="nuevo",
+            canal_ingreso="web_demo_widget",
+            direccion=address,
+            latitud=-34.61,
+            longitud=-58.44,
+            detalles=json.dumps(
+                {
+                    "demo_runtime": True,
+                    "source": "demo_municipio_runtime",
+                    "chat_session_id": chat_session_id,
+                }
+            ),
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        return ticket
+
+    def _demo_preview_tenant(self, slug="municipio-preview-scope"):
+        owner = User(
+            name="Municipio Preview Scope",
+            email=f"{slug}@test.com",
+            password_hash="hash",
+            tipo_chat="municipio",
+            rol="admin",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug=slug,
+            nombre="Municipio Preview Scope",
+            tipo="municipio",
+            municipio_id=owner.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+        return owner, tenant
+
+    def test_demo_admin_preview_without_bound_session_is_empty(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-missing")
+        demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-missing",
+        )
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=_stable_demo_chat_session_id(demo_session_id),
+            ticket_number="710001",
+            address="Direccion privada de sesion",
+        )
+
+        response = self.client.get(
+            f"/api/v2/demo/admin-preview?sector=gobierno&tenant_slug={tenant.slug}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse((payload.get("session_activity") or {}).get("has_session_data"))
+        self.assertEqual((payload.get("session_activity") or {}).get("items"), [])
+        self.assertEqual((payload.get("map") or {}).get("points"), [])
+        self.assertNotIn("710001", str(payload))
+        self.assertNotIn("Direccion privada de sesion", str(payload))
+
+    def test_demo_admin_preview_rejects_foreign_or_invalid_session_binding(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-foreign")
+        own_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-own",
+        )
+        foreign_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-foreign",
+        )
+        foreign_tenant_demo_session_id = create_demo_session_token(
+            tenant_slug="otro-municipio",
+            sector="gobierno",
+            rubro="gobierno-foreign-tenant",
+        )
+        foreign_sector_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="empresas",
+            rubro="empresas-foreign-sector",
+        )
+        own_chat_session_id = _stable_demo_chat_session_id(own_demo_session_id)
+        foreign_chat_session_id = _stable_demo_chat_session_id(foreign_demo_session_id)
+        foreign_tenant_chat_session_id = _stable_demo_chat_session_id(foreign_tenant_demo_session_id)
+        foreign_sector_chat_session_id = _stable_demo_chat_session_id(foreign_sector_demo_session_id)
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=foreign_chat_session_id,
+            ticket_number="710002",
+            address="Direccion de otra sesion",
+        )
+
+        cases = (
+            (own_demo_session_id, foreign_chat_session_id),
+            (foreign_tenant_demo_session_id, foreign_tenant_chat_session_id),
+            (foreign_sector_demo_session_id, foreign_sector_chat_session_id),
+            ("demo-session-token-invalid", foreign_chat_session_id),
+            (own_demo_session_id, own_chat_session_id + "-tampered"),
+        )
+        for demo_session_id, chat_session_id in cases:
+            with self.subTest(demo_session_id=demo_session_id[:12], chat_session_id=chat_session_id):
+                response = self.client.get(
+                    "/api/v2/demo/admin-preview",
+                    query_string={
+                        "sector": "gobierno",
+                        "tenant_slug": tenant.slug,
+                        "demo_session_id": demo_session_id,
+                        "chat_session_id": chat_session_id,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertFalse((payload.get("session_activity") or {}).get("has_session_data"))
+                self.assertEqual((payload.get("session_activity") or {}).get("items"), [])
+                self.assertEqual((payload.get("map") or {}).get("points"), [])
+                self.assertNotIn("710002", str(payload))
+                self.assertNotIn("Direccion de otra sesion", str(payload))
+
+    def test_demo_admin_preview_returns_only_valid_bound_session_activity(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-valid")
+        valid_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-valid",
+        )
+        foreign_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-other",
+        )
+        valid_chat_session_id = _stable_demo_chat_session_id(valid_demo_session_id)
+        foreign_chat_session_id = _stable_demo_chat_session_id(foreign_demo_session_id)
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=valid_chat_session_id,
+            ticket_number="710003",
+            address="Direccion de la sesion valida",
+        )
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=foreign_chat_session_id,
+            ticket_number="710004",
+            address="Direccion de la sesion ajena",
+        )
+
+        response = self.client.get(
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": tenant.slug,
+                "demo_session_id": valid_demo_session_id,
+                "chat_session_id": valid_chat_session_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue((payload.get("session_activity") or {}).get("has_session_data"))
+        items = (payload.get("session_activity") or {}).get("items") or []
+        self.assertEqual([item.get("ticket_code") for item in items], ["710003"])
+        points = (payload.get("map") or {}).get("points") or []
+        self.assertEqual([point.get("ticket_code") for point in points], ["710003"])
+        self.assertNotIn("710004", str(payload))
+        self.assertNotIn("Direccion de la sesion ajena", str(payload))
+
+    def test_demo_admin_preview_binding_isolated_between_same_second_sessions(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-same-second")
+        frozen_now = datetime.now(timezone.utc).replace(microsecond=0)
+        with patch("routes.v2.tenants.datetime") as clock:
+            clock.now.return_value = frozen_now
+            first_demo_session_id = create_demo_session_token(
+                tenant_slug=tenant.slug,
+                sector="gobierno",
+                rubro="gobierno",
+            )
+            second_demo_session_id = create_demo_session_token(
+                tenant_slug=tenant.slug,
+                sector="gobierno",
+                rubro="gobierno",
+            )
+
+        first_chat_session_id = _stable_demo_chat_session_id(first_demo_session_id)
+        second_chat_session_id = _stable_demo_chat_session_id(second_demo_session_id)
+        self.assertNotEqual(first_demo_session_id, second_demo_session_id)
+        self.assertNotEqual(first_chat_session_id, second_chat_session_id)
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=first_chat_session_id,
+            ticket_number="710005",
+            address="Direccion aislada con reloj congelado",
+        )
+
+        foreign_binding = self.client.get(
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": tenant.slug,
+                "demo_session_id": second_demo_session_id,
+                "chat_session_id": first_chat_session_id,
+            },
+        )
+        own_binding = self.client.get(
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": tenant.slug,
+                "demo_session_id": first_demo_session_id,
+                "chat_session_id": first_chat_session_id,
+            },
+        )
+
+        self.assertEqual(foreign_binding.status_code, 200)
+        self.assertFalse(
+            (foreign_binding.get_json().get("session_activity") or {}).get(
+                "has_session_data"
+            )
+        )
+        self.assertNotIn("710005", str(foreign_binding.get_json()))
+        self.assertEqual(own_binding.status_code, 200)
+        self.assertTrue(
+            (own_binding.get_json().get("session_activity") or {}).get(
+                "has_session_data"
+            )
+        )
+        self.assertIn("710005", str(own_binding.get_json()))
 
     def test_v2_demo_catalog_asset_alias_serves_pdf(self):
         resp = self.client.get("/api/v2/demo/catalog-assets/colegio-demo.pdf")
@@ -886,7 +1581,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(enabled_tools["catalog"].get("items"))
         self.assertTrue(enabled_tools["price_list"].get("items"))
         self.assertTrue(enabled_tools["faq"].get("items"))
-        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catalogo")
+        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catálogo")
         self.assertTrue(enabled_tools["catalog"].get("action_url"))
         self.assertEqual(enabled_tools["price_list"].get("action_label"), "Ver lista de precios")
         self.assertTrue(enabled_tools["price_list"].get("action_url"))
@@ -953,7 +1648,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("contact", enabled_tools)
         self.assertIn("hours", enabled_tools)
         self.assertIn("price_list", enabled_tools)
-        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicacion")
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicación")
         self.assertEqual(enabled_tools["location"].get("tool_mode"), "chat_action")
         self.assertEqual(enabled_tools["location"].get("action_id"), "consultar_ubicacion")
         self.assertFalse(enabled_tools["location"].get("action_url"))
@@ -961,6 +1656,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(enabled_tools["contact"].get("tool_mode"), "chat_action")
         self.assertEqual(enabled_tools["contact"].get("action_id"), "consultar_contacto")
         self.assertFalse(enabled_tools["contact"].get("action_url"))
+        self.assertEqual(enabled_tools["hours"].get("description"), "Horarios de atención configurados para esta demostración.")
         self.assertIn("-32.8895%2C-68.8458", (tools.get("locations") or [{}])[0].get("maps_url") or "")
         self.assertEqual((tools.get("contact") or {}).get("phone"), "+5492611111111")
         self.assertEqual((tools.get("contact") or {}).get("email"), "ventas@ferreteria.example.com")
@@ -987,15 +1683,36 @@ class ApiV2FoundationTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
+        workspace = payload.get("workspace") or {}
         tools = ((payload.get("workspace") or {}).get("rubro_tools") or {})
         enabled_tools = {item.get("id"): item for item in tools.get("enabled_tools") or []}
         locations = tools.get("locations") or []
+        catalog_items = {item.get("id"): item for item in enabled_tools["catalog"].get("items") or []}
 
         self.assertEqual(tools.get("contract_version"), "demo.rubro_tools.v1")
+        self.assertEqual(
+            (((workspace.get("media_capabilities") or {}).get("composer") or {}).get("actions") or [])[2].get("label"),
+            "Ubicación",
+        )
         self.assertIn("location", enabled_tools)
         self.assertIn("contact", enabled_tools)
         self.assertTrue(locations)
-        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicacion")
+        self.assertEqual(enabled_tools["catalog"].get("label"), "Catálogo")
+        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catálogo")
+        self.assertEqual(enabled_tools["catalog"].get("description"), "Recursos disponibles para productos, servicios o trámites.")
+        self.assertEqual(enabled_tools["location"].get("label"), "Ubicación")
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicación")
+        self.assertEqual(
+            enabled_tools["location"].get("description"),
+            "Direcciones disponibles en la demostración; las nuevas ubicaciones se envían desde el chat.",
+        )
+        self.assertEqual(enabled_tools["contact"].get("label"), "Teléfono y contacto")
+        self.assertEqual(enabled_tools["contact"].get("description"), "Canales de contacto configurados para esta demostración.")
+        self.assertEqual((enabled_tools["contact"].get("fields") or [])[0].get("label"), "Teléfono")
+        self.assertEqual(catalog_items["tramites_web"].get("label"), "Trámites online")
+        self.assertEqual(catalog_items["tramites_web"].get("description"), "Portal público de trámites.")
+        self.assertEqual(catalog_items["tramites_web"].get("cta_label"), "Abrir trámites")
+        self.assertEqual(catalog_items["sitio_oficial"].get("description"), "Sitio público del organismo.")
         self.assertEqual(enabled_tools["location"].get("tool_mode"), "chat_action")
         self.assertEqual(enabled_tools["location"].get("action_id"), "consultar_ubicacion")
         self.assertFalse(enabled_tools["location"].get("action_url"))
@@ -1169,6 +1886,9 @@ class ApiV2FoundationTest(unittest.TestCase):
     def test_ask_demo_menu_surveys_returns_seeded_links(self):
         from routes.v2.tenants import create_demo_session_token
 
+        preview_frontend = "https://chatboc-r2-preview.vercel.app"
+        self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = preview_frontend
+
         owner = User(name="Municipio Surveys", email="municipio-surveys@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
         db.session.add(owner)
         db.session.flush()
@@ -1199,8 +1919,15 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(len(payload.get("demo_surveys") or []), 5)
         survey_contract = (payload.get("data") or {}).get("surveys_votings") or {}
         self.assertEqual(survey_contract.get("total_available"), 6)
-        self.assertIn("Abrir: https://www.chatboc.ar/e/", payload.get("message_body") or "")
+        self.assertIn(f"Abrir: {preview_frontend}/e/", payload.get("message_body") or "")
+        self.assertNotIn("https://www.chatboc.ar/e/", payload.get("message_body") or "")
         self.assertIn("Compartir por WhatsApp: https://wa.me/", payload.get("message_body") or "")
+        self.assertTrue(
+            all(
+                str(item.get("public_url") or "").startswith(f"{preview_frontend}/e/")
+                for item in payload.get("demo_surveys") or []
+            )
+        )
         self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in payload.get("demo_surveys") or []))
         self.assertEqual((payload.get("pagination") or {}).get("next_action_id"), "mostrar_menu_encuestas::2")
 
@@ -1300,7 +2027,13 @@ class ApiV2FoundationTest(unittest.TestCase):
 
         chat_session_id = (payload.get("session") or {}).get("chat_session_id")
         preview = self.client.get(
-            f"/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio&chat_session_id={chat_session_id}"
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": "municipio",
+                "chat_session_id": chat_session_id,
+                "demo_session_id": demo_session_id,
+            },
         )
         self.assertEqual(preview.status_code, 200)
         preview_payload = preview.get_json()
@@ -1412,6 +2145,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("request_id", payload)
 
     def test_demo_chat_alias_returns_chat_response_contract_with_lead_shape(self):
+        from routes.v2.tenants import create_demo_session_token
+        from utils.demo_session import stable_demo_chat_session_id
+
         owner = User(name="Colegio Demo", email="colegio-chat-contract@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
         db.session.flush()
@@ -1432,6 +2168,12 @@ class ApiV2FoundationTest(unittest.TestCase):
             "botones": [{"texto": "Ver seguimiento", "action_id": "tracking"}],
             "ticket_id": 456,
         }
+        demo_session_id = create_demo_session_token(
+            tenant_slug="colegio-demo",
+            sector="educacion",
+            rubro="colegios",
+        )
+        chat_session_id = stable_demo_chat_session_id(demo_session_id)
         with patch("services.pymes.responder_pyme", return_value=backend_payload):
             resp = self.client.post(
                 "/api/ask/pyme?tenant_slug=colegio-demo",
@@ -1443,8 +2185,8 @@ class ApiV2FoundationTest(unittest.TestCase):
                 },
                 headers={
                     "Origin": "https://www.chatboc.ar",
-                    "X-Chat-Session-Id": "demo-chat-contract-1",
-                    "X-Demo-Session-Id": "demo-chat-contract-1",
+                    "X-Chat-Session-Id": chat_session_id,
+                    "X-Demo-Session-Id": demo_session_id,
                     "X-Tenant-Slug": "colegio-demo",
                     "X-Request-Id": "chat-contract-1",
                 },
@@ -1455,7 +2197,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         payload = resp.get_json()
         self.assertEqual(payload.get("contract_version"), "chat.response.v1")
         self.assertEqual(payload.get("request_id"), "chat-contract-1")
-        self.assertEqual(payload.get("conversation_id"), "demo-chat-contract-1")
+        self.assertEqual(payload.get("conversation_id"), chat_session_id)
         self.assertEqual(payload.get("message"), "Perfecto, dejo el caso preparado para secretaria.")
         self.assertIsInstance(payload.get("messages"), list)
         self.assertEqual((payload.get("lead") or {}).get("ticket_id"), 456)

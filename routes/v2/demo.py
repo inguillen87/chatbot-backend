@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 import hashlib
+import hmac
 import ipaddress
 import json
 import uuid
@@ -11,6 +12,7 @@ import uuid
 from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
 from limits import parse
 
+from cutover_writer_fence import cutover_read_only_view
 from extensions import limiter
 from models import MunicipioTicket, TenantProfile, WhatsappNumero
 from routes.auth import (
@@ -21,6 +23,10 @@ from routes.auth import (
 from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.demo_experience_contract import build_demo_experience_contract
+from services.demo_executive_snapshot import (
+    apply_gobierno_executive_snapshot,
+    normalize_demo_presentation_mode,
+)
 from services.demo_registry import load_demo_rubros
 from services.demo_catalog_admission import admit_demo_catalog_full
 from services.public_survey_intake import public_survey_client_ip
@@ -36,7 +42,10 @@ from services.demo_pillar_catalog import (
     sector_for_rubro,
 )
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract
-from services.demo_surveys import build_demo_surveys_votings_contract
+from services.demo_surveys import (
+    build_demo_surveys_votings_contract,
+    resolve_demo_public_frontend_base_url,
+)
 from services.education_contracts import (
     build_education_admin_menu,
     build_education_profile,
@@ -44,7 +53,8 @@ from services.education_contracts import (
     fold_text,
     is_education_tenant,
 )
-from routes.v2.tenants import create_demo_session_token
+from routes.v2.tenants import create_demo_session_token, decode_demo_session_token
+from utils.demo_session import stable_demo_chat_session_id as _stable_demo_chat_session_id
 
 v2_demo_bp = Blueprint("v2_demo", __name__, url_prefix="/api/v2/demo")
 demo_compat_bp = Blueprint("demo_compat", __name__)
@@ -53,16 +63,6 @@ demo_compat_bp = Blueprint("demo_compat", __name__)
 def _request_id() -> str:
     incoming = (request.headers.get("X-Request-Id") or "").strip()
     return incoming or uuid.uuid4().hex
-
-
-def _stable_demo_chat_session_id(demo_session_id: str | None) -> str:
-    token = str(demo_session_id or "").strip()
-    if not token:
-        return str(uuid.uuid4())
-    if len(token) <= 36:
-        return token
-    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
-    return f"sid_{digest}"
 
 
 def _twilio_sandbox_number() -> str:
@@ -859,11 +859,11 @@ def _demo_rubro_tools_contract(
             government_links.append(
                 {
                     "id": "tramites_web",
-                    "label": "Tramites online",
+                    "label": "Trámites online",
                     "kind": "link",
                     "url": str(config.get("tramites_web_url")),
-                    "description": "Portal publico de tramites.",
-                    "cta_label": "Abrir tramites",
+                    "description": "Portal público de trámites.",
+                    "cta_label": "Abrir trámites",
                 }
             )
         if config.get("web_url"):
@@ -873,7 +873,7 @@ def _demo_rubro_tools_contract(
                     "label": "Sitio oficial",
                     "kind": "link",
                     "url": str(config.get("web_url")),
-                    "description": "Sitio publico del organismo.",
+                    "description": "Sitio público del organismo.",
                     "cta_label": "Abrir sitio",
                 }
             )
@@ -900,12 +900,12 @@ def _demo_rubro_tools_contract(
     tools = [
         _demo_tool_contract(
             key="catalog",
-            label="Catalogo",
-            description="Recursos publicados para productos, servicios o tramites.",
+            label="Catálogo",
+            description="Recursos disponibles para productos, servicios o trámites.",
             enabled=bool(resources),
             items=resources,
             intent="ver_catalogo",
-            action_label="Abrir catalogo" if resources else None,
+            action_label="Abrir catálogo" if resources else None,
             action_url=_first_demo_item_url(resources, "url", "href"),
             tool_mode="downloadable",
             fields=[{"label": "Recursos", "value": len(resources)}] if resources else [],
@@ -924,26 +924,26 @@ def _demo_rubro_tools_contract(
         ),
         _demo_tool_contract(
             key="location",
-            label="Ubicacion",
-            description="Direcciones publicadas por el rubro; las nuevas ubicaciones se envian dentro del chat.",
+            label="Ubicación",
+            description="Direcciones disponibles en la demostración; las nuevas ubicaciones se envían desde el chat.",
             enabled=bool(locations),
             items=locations,
             intent="consultar_ubicacion",
-            action_label="Consultar ubicacion" if locations else None,
+            action_label="Consultar ubicación" if locations else None,
             tool_mode="chat_action",
             fields=[{"label": "Ubicaciones", "value": len(locations)}] if locations else [],
         ),
         _demo_tool_contract(
             key="contact",
-            label="Telefono y contacto",
-            description="Canales reales o configurados para contacto.",
+            label="Teléfono y contacto",
+            description="Canales de contacto configurados para esta demostración.",
             enabled=contact_enabled,
             data=contact if contact_enabled else None,
             intent="consultar_contacto",
             action_label="Contactar" if contact_enabled else None,
             tool_mode="chat_action",
             fields=[
-                {"label": "Telefono", "value": contact.get("phone")},
+                {"label": "Teléfono", "value": contact.get("phone")},
                 {"label": "WhatsApp", "value": contact.get("whatsapp")},
                 {"label": "Email", "value": contact.get("email")},
                 {"label": "Web", "value": contact.get("website")},
@@ -952,7 +952,7 @@ def _demo_rubro_tools_contract(
         _demo_tool_contract(
             key="hours",
             label="Horarios",
-            description="Horarios de atencion publicados por el rubro.",
+            description="Horarios de atención configurados para esta demostración.",
             enabled=bool(hours),
             data=hours if hours else None,
             intent="consultar_horarios",
@@ -1284,7 +1284,36 @@ def _first_education_tenant_for_demo() -> TenantProfile | None:
     for tenant in candidates:
         if is_education_tenant(tenant):
             return tenant
-    return _first_active_tenant_for_demo("pyme")
+    return None
+
+
+def _active_education_tenant_for_demo_slug(tenant_slug: str) -> TenantProfile | None:
+    try:
+        tenant = resolve_tenant_only(
+            tenant_slug=tenant_slug,
+            require_explicit_slug=True,
+            allow_fallback=False,
+            allow_lazy_demo_creation=False,
+            allow_context_fallback=False,
+            register_widget_token=False,
+        )
+    except Exception:
+        return None
+    if not bool(getattr(tenant, "is_active", False)) or not is_education_tenant(tenant):
+        return None
+    return tenant
+
+
+def _is_education_demo_alias(value: Any) -> bool:
+    tenant_slug = _payload_tenant_slug(value)
+    rubro_slug = _payload_slug(value)
+    return tenant_slug in {
+        "colegio-demo",
+        "colegio_demo",
+        "colegios",
+        "colegio",
+        "educacion",
+    } or sector_for_rubro(rubro_slug) == "educacion"
 
 
 def _normalize_rubro(item: dict[str, Any]) -> dict[str, Any]:
@@ -1739,11 +1768,18 @@ def _openai_runtime_for_demo(sector: str, allowed_actions: list[dict[str, Any]])
     }
 
 
+def _demo_public_frontend_base_url() -> str:
+    """Resolve links for the deployment serving the current demo contract."""
+
+    return resolve_demo_public_frontend_base_url(current_app.config)
+
+
 def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector)
     demo_contract = build_demo_surveys_votings_contract(
         sector=normalized,
         tenant_slug=tenant_slug,
+        public_base_url=_demo_public_frontend_base_url(),
     )
     return {
         **demo_contract,
@@ -1772,6 +1808,47 @@ def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
             "empty_state_behavior": "render_demo_seeded_surveys",
         },
     }
+
+
+def _admin_preview_survey_voting(
+    survey_voting: dict[str, Any],
+) -> dict[str, Any]:
+    """Use the durable Preview read model when available, otherwise the seed.
+
+    This enrichment is deliberately optional and read-only for the executive
+    surface.  Public submission endpoints keep their stricter fail-closed
+    behavior, while an unavailable aggregate must not turn the admin Preview
+    GET into a 500 or relabel the deterministic seed as municipal evidence.
+    """
+
+    try:
+        from services.demo_survey_participation import (
+            durable_demo_survey_participation_enabled,
+            enrich_demo_survey_voting_with_durable_participation,
+        )
+
+        if not durable_demo_survey_participation_enabled():
+            return survey_voting
+        return enrich_demo_survey_voting_with_durable_participation(
+            survey_voting,
+            public_base_url=_demo_public_frontend_base_url(),
+        )
+    except Exception as exc:
+        # The baseline contract is deterministic, synthetic and already truth
+        # labeled.  Never leak database details or make this read surface fail
+        # because the optional Preview aggregate is unavailable.
+        current_app.logger.warning(
+            "Durable demo survey admin projection unavailable; preserving synthetic baseline (%s)",
+            type(exc).__name__,
+        )
+        fallback = dict(survey_voting)
+        fallback["durable_demo_participation"] = False
+        fallback["durable_demo_participation_state"] = (
+            "read_unavailable_synthetic_baseline"
+        )
+        fallback["municipal_truth"] = False
+        fallback["verified_citizen_responses"] = 0
+        return fallback
 
 
 def _commercial_demo_bundle(
@@ -2075,12 +2152,13 @@ def _demo_catalog_selector_rubro(rubro: dict[str, Any]) -> dict[str, Any]:
         or catalog_resources_for_rubro(slug, sector)
     )
     sample_prompts = rubro.get("sample_prompts") or category.get("sample_prompts") or []
-    return {
+    tenant_slug = rubro.get("tenant_slug") if "tenant_slug" in rubro else slug
+    payload = {
         "slug": slug,
         "key": rubro.get("key") or slug,
         "label": rubro.get("label") or category.get("label") or slug,
         "tipo_chat": rubro.get("tipo_chat") or category.get("tipo_chat"),
-        "tenant_slug": rubro.get("tenant_slug") or slug,
+        "tenant_slug": tenant_slug,
         "vertical": rubro.get("vertical") or category.get("vertical"),
         "subvertical": rubro.get("subvertical") or category.get("subvertical"),
         "sector": sector,
@@ -2088,16 +2166,20 @@ def _demo_catalog_selector_rubro(rubro: dict[str, Any]) -> dict[str, Any]:
         "resources": resources,
         "sample_prompts": sample_prompts,
     }
+    if "available" in rubro:
+        payload["available"] = bool(rubro.get("available") and tenant_slug)
+    return payload
 
 
 def _demo_catalog_selector_group(
     *,
     key: str,
     label: str,
-    tenant_slug: str,
+    tenant_slug: str | None,
     rubros: list[dict[str, Any]],
+    available: bool | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "key": key,
         "label": label,
         "tenant_slug": tenant_slug,
@@ -2108,6 +2190,9 @@ def _demo_catalog_selector_group(
             if str(rubro.get("slug") or rubro.get("key") or "").strip()
         ],
     }
+    if available is not None:
+        payload["available"] = available
+    return payload
 
 
 def _demo_catalog_selector_response(
@@ -2116,6 +2201,7 @@ def _demo_catalog_selector_response(
     gobierno: list[dict[str, Any]],
     empresas: list[dict[str, Any]],
     educacion: list[dict[str, Any]],
+    education_tenant_slug: str | None,
 ):
     selector_rubros = [_demo_catalog_selector_rubro(rubro) for rubro in rubros]
     resources_by_id: dict[str, dict[str, Any]] = {}
@@ -2153,8 +2239,9 @@ def _demo_catalog_selector_response(
             _demo_catalog_selector_group(
                 key="educacion",
                 label="Colegios",
-                tenant_slug="colegio-demo",
+                tenant_slug=education_tenant_slug,
                 rubros=educacion,
+                available=education_tenant_slug is not None,
             ),
         ],
     }
@@ -2339,11 +2426,17 @@ def demo_catalog_v2():
                 "key": "colegios",
                 "label": "Colegios",
                 "tipo_chat": "pyme",
-                "tenant_slug": "colegios",
+                "tenant_slug": None,
                 "vertical": "educacion",
                 "sector": "educacion",
             }
         ]
+
+    education_tenant = _first_education_tenant_for_demo()
+    education_tenant_slug = education_tenant.slug if education_tenant else None
+    for rubro_item in educacion:
+        rubro_item["tenant_slug"] = education_tenant_slug
+        rubro_item["available"] = education_tenant is not None
 
     if _payload_slug(request.args.get("response_profile")) == "selector":
         return _demo_catalog_selector_response(
@@ -2351,23 +2444,58 @@ def demo_catalog_v2():
             gobierno=gobierno,
             empresas=empresas,
             educacion=educacion,
+            education_tenant_slug=education_tenant_slug,
         )
 
     for rubro_item in rubros:
         rubro_sector = rubro_item.get("sector") or sector_for_rubro(rubro_item.get("slug") or rubro_item.get("key")) or "empresas"
-        bundle = _commercial_demo_bundle(
-            sector=rubro_sector,
-            tenant_slug=str(rubro_item.get("tenant_slug") or rubro_item.get("slug") or ""),
-            tenant_name=str(rubro_item.get("label") or rubro_item.get("slug") or "Demo Chatboc"),
-            allowed_actions=[],
-        )
+        tenant_slug = rubro_item.get("tenant_slug")
+        education_unavailable = rubro_sector == "educacion" and not tenant_slug
+        if education_unavailable:
+            bundle = {
+                "sales_story": _sales_story_for_demo(
+                    rubro_sector,
+                    str(rubro_item.get("label") or rubro_item.get("slug") or "Demo Chatboc"),
+                ),
+                "consulting_playbook": _consulting_playbook_for_demo(rubro_sector),
+                "wow_flows": _wow_flows_for_demo(rubro_sector),
+                "live_modules": _live_modules_for_demo(rubro_sector),
+                "openai_runtime": _openai_runtime_for_demo(rubro_sector, []),
+                "survey_voting": {
+                    "contract_version": "demo.survey_voting.v1",
+                    "enabled": False,
+                    "available": False,
+                    "tenant_slug": None,
+                    "primary_action_enabled": False,
+                    "availability_rule": "requires_active_education_tenant",
+                    "reason_code": "education_tenant_unavailable",
+                    "items": [],
+                    "frontend_contract": {
+                        "render_as": "survey_voting_module",
+                        "show_only_when_enabled": True,
+                        "empty_state_behavior": "render_unavailable",
+                    },
+                },
+            }
+        else:
+            bundle = _commercial_demo_bundle(
+                sector=rubro_sector,
+                tenant_slug=str(tenant_slug or rubro_item.get("slug") or ""),
+                tenant_name=str(rubro_item.get("label") or rubro_item.get("slug") or "Demo Chatboc"),
+                allowed_actions=[],
+            )
         rubro_item.setdefault("sales_story", bundle["sales_story"])
         rubro_item.setdefault("consulting_playbook", bundle["consulting_playbook"])
         rubro_item.setdefault("wow_flows", bundle["wow_flows"])
         rubro_item.setdefault("live_modules", bundle["live_modules"])
         rubro_item.setdefault("openai_runtime", bundle["openai_runtime"])
         rubro_item.setdefault("survey_voting", bundle["survey_voting"])
-        rubro_item.setdefault("admin_preview_endpoint", f"/api/v2/demo/admin-preview?sector={rubro_sector}&tenant_slug={rubro_item.get('tenant_slug') or rubro_item.get('slug')}")
+        rubro_item.setdefault(
+            "admin_preview_endpoint",
+            None
+            if education_unavailable
+            else f"/api/v2/demo/admin-preview?sector={rubro_sector}&tenant_slug={tenant_slug or rubro_item.get('slug')}",
+        )
 
     pillars = demo_pillars()
     pillar_categories = {pillar.get("key"): pillar.get("categories") or [] for pillar in pillars}
@@ -2408,7 +2536,8 @@ def demo_catalog_v2():
                 {
                     "key": "educacion",
                     "label": "Colegios",
-                    "tenant_slug": "colegio-demo",
+                    "tenant_slug": education_tenant_slug,
+                    "available": education_tenant is not None,
                     "default_rubro": default_rubro_for_sector("educacion"),
                     "rubros": educacion,
                     "categories": pillar_categories.get("educacion", []),
@@ -2446,10 +2575,15 @@ def _resolve_preview_tenant(tenant_slug: str) -> TenantProfile | None:
 
 
 def _recent_demo_municipio_tickets(tenant_slug: str, chat_session_id: str = "") -> list[MunicipioTicket]:
+    # Demo activity is private to the exact browser session that created it.
+    # Never fall back to a tenant-wide feed when session identity is absent.
+    session_filter = str(chat_session_id or "").strip()
+    if not session_filter:
+        return []
+
     tenant = _resolve_preview_tenant(tenant_slug)
     if tenant is None:
         return []
-    session_filter = str(chat_session_id or "").strip()
     query = (
         scoped_municipio_ticket_query(tenant)
         .order_by(MunicipioTicket.fecha.desc())
@@ -2464,6 +2598,46 @@ def _recent_demo_municipio_tickets(tenant_slug: str, chat_session_id: str = "") 
                     continue
             tickets.append(ticket)
     return tickets[:10]
+
+
+def _validated_demo_preview_chat_session_id(
+    *,
+    demo_session_id: str,
+    chat_session_id: str,
+    tenant_slug: str,
+    sector: str,
+) -> str:
+    """Return the bound chat session only for a valid signed demo session."""
+
+    demo_token = str(demo_session_id or "").strip()
+    candidate_chat_session_id = str(chat_session_id or "").strip()
+    requested_tenant_slug = str(tenant_slug or "").strip().lower()
+    if not demo_token or not candidate_chat_session_id or not requested_tenant_slug:
+        return ""
+
+    token_payload = decode_demo_session_token(demo_token)
+    if not token_payload:
+        return ""
+
+    token_tenant_slug = str(token_payload.get("tenant_slug") or "").strip().lower()
+    if not token_tenant_slug or not hmac.compare_digest(
+        token_tenant_slug.encode("utf-8"),
+        requested_tenant_slug.encode("utf-8"),
+    ):
+        return ""
+
+    token_sector = normalize_demo_sector(str(token_payload.get("sector") or ""))
+    requested_sector = normalize_demo_sector(sector or requested_tenant_slug)
+    if token_sector != requested_sector:
+        return ""
+
+    expected_chat_session_id = _stable_demo_chat_session_id(demo_token)
+    if not hmac.compare_digest(
+        expected_chat_session_id.encode("utf-8"),
+        candidate_chat_session_id.encode("utf-8"),
+    ):
+        return ""
+    return expected_chat_session_id
 
 
 def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, chat_session_id: str = "") -> dict[str, Any]:
@@ -2574,7 +2748,12 @@ def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, c
     }
 
 
-def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_id: str = "") -> dict[str, Any]:
+def _admin_preview_for_sector(
+    sector: str,
+    tenant_slug: str = "",
+    chat_session_id: str = "",
+    presentation_mode: str = "",
+) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector or tenant_slug or "empresas")
     if normalized not in {"educacion", "gobierno", "empresas"}:
         slug_hint = str(tenant_slug or normalized or "").lower()
@@ -2609,25 +2788,25 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_i
             "catalog_file": "colegio-demo.pdf",
         },
         "gobierno": {
-            "title": "Panel demo para gestion ciudadana",
+            "title": "Panel demo para gestión ciudadana",
             "subtitle": "Gobiernos y municipios",
             "modules": [
                 {"id": "summary", "label": "Resumen", "enabled": True},
                 {"id": "claims", "label": "Reclamos", "enabled": True},
-                {"id": "heatmap", "label": "Mapa operativo", "enabled": False, "empty_state": "Disponible cuando la sesion genere puntos con coordenadas."},
+                {"id": "heatmap", "label": "Mapa operativo", "enabled": False, "empty_state": "Disponible cuando la sesión genere puntos con coordenadas."},
                 {"id": "surveys", "label": "Encuestas", "enabled": True},
             ],
             "cards": [
-                {"label": "Reclamos creados en esta sesion", "value": "0", "detail": "se actualiza cuando el chat crea un ticket"},
+                {"label": "Reclamos creados en esta sesión", "value": "0", "detail": "se actualiza cuando el chat crea un ticket"},
                 {"label": "Ubicaciones capturadas", "value": "0", "detail": "mapa disponible cuando hay coordenadas"},
                 {"label": "Comentarios ciudadanos", "value": "0", "detail": "mensajes y actualizaciones del caso"},
             ],
             "timeline": [
-                {"label": "Vecino envia ubicacion", "status": "setup"},
+                {"label": "Vecino envía ubicación", "status": "setup"},
                 {"label": "IA clasifica y pide faltantes", "status": "waiting_for_session"},
                 {"label": "Equipo ve ticket y mapa", "status": "waiting_for_session"},
             ],
-            "catalog_title": "Guia demo gobiernos",
+            "catalog_title": "Guía demo para gobiernos",
             "catalog_file": "municipio-demo.pdf",
         },
         "empresas": {
@@ -2683,7 +2862,7 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_i
         tenant_name=preset["subtitle"],
         allowed_actions=allowed_actions,
     )
-    return {
+    payload = {
         "contract_version": "demo.admin_preview.v1",
         "sector": normalized,
         "tenant_slug": resolved_tenant_slug,
@@ -2705,7 +2884,11 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_i
         "wow_flows": commercial["wow_flows"],
         "live_modules": commercial["live_modules"],
         "openai_runtime": commercial["openai_runtime"],
-        "survey_voting": commercial["survey_voting"],
+        "survey_voting": (
+            _admin_preview_survey_voting(commercial["survey_voting"])
+            if normalized == "gobierno"
+            else commercial["survey_voting"]
+        ),
         "catalog": {
             "enabled": True,
             "title": preset["catalog_title"],
@@ -2713,6 +2896,13 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_i
         },
         "frontend_contract": {"render_as": "demo_admin_preview"},
     }
+    resolved_presentation_mode = normalize_demo_presentation_mode(presentation_mode)
+    if normalized == "gobierno" and resolved_presentation_mode:
+        return apply_gobierno_executive_snapshot(
+            payload,
+            tenant_slug=resolved_tenant_slug,
+        )
+    return payload
 
 
 @v2_demo_bp.route("/admin-preview", methods=["GET", "OPTIONS"])
@@ -2721,15 +2911,37 @@ def demo_admin_preview_v2():
         return _options_response()
 
     sector = request.args.get("sector") or request.args.get("pilar") or request.args.get("vertical") or ""
-    tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or ""
-    chat_session_id = request.args.get("chat_session_id") or request.headers.get("X-Chat-Session-Id") or ""
+    demo_session_id = (
+        request.args.get("demo_session_id")
+        or request.headers.get("X-Demo-Session-Id")
+        or request.headers.get("X-Demo-Session")
+        or ""
+    )
+    demo_session_payload = decode_demo_session_token(str(demo_session_id or "")) or {}
+    tenant_slug = (
+        request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or demo_session_payload.get("tenant_slug")
+        or ""
+    )
+    chat_session_id = _validated_demo_preview_chat_session_id(
+        demo_session_id=str(demo_session_id or ""),
+        chat_session_id=(
+            request.args.get("chat_session_id")
+            or request.headers.get("X-Chat-Session-Id")
+            or ""
+        ),
+        tenant_slug=str(tenant_slug or ""),
+        sector=str(sector or demo_session_payload.get("sector") or ""),
+    )
     if not sector:
-        sector = sector_for_rubro(tenant_slug) or tenant_slug or "empresas"
+        sector = demo_session_payload.get("sector") or sector_for_rubro(tenant_slug) or tenant_slug or "empresas"
     return _json_response(
         _admin_preview_for_sector(
             sector,
             tenant_slug=str(tenant_slug or "").strip().lower(),
             chat_session_id=str(chat_session_id or "").strip(),
+            presentation_mode=str(request.args.get("presentation_mode") or "").strip(),
         )
     )
 
@@ -2813,6 +3025,7 @@ def demo_whatsapp_sandbox_launcher_v2():
         provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
         whatsapp_playbook=education_whatsapp_playbook,
         education=education_payload,
+        public_base_url=_demo_public_frontend_base_url(),
     )
 
     return _json_response(
@@ -2852,6 +3065,7 @@ def demo_whatsapp_sandbox_launcher_v2():
 @demo_compat_bp.route("/v2/demo/session", methods=["POST", "OPTIONS"])
 @demo_compat_bp.route("/api/v1/demo/session", methods=["POST", "OPTIONS"])
 @demo_compat_bp.route("/v1/demo/session", methods=["POST", "OPTIONS"])
+@cutover_read_only_view
 def demo_session_v2():
     if request.method == "OPTIONS":
         return _options_response()
@@ -2909,6 +3123,20 @@ def demo_session_v2():
 
     if sector not in {"gobierno", "empresas", "educacion"}:
         return _error_response("sector debe ser 'gobierno', 'empresas' o 'educacion'", 400, "validation_error", "send_valid_sector")
+
+    requested_rubro_sector = sector_for_rubro(requested_rubro)
+    if (
+        requested_rubro
+        and requested_rubro not in set(demo_pillar_keys())
+        and requested_rubro_sector
+        and requested_rubro_sector != sector
+    ):
+        return _error_response(
+            "rubro no pertenece al sector solicitado",
+            400,
+            "validation_error",
+            "send_matching_sector_and_rubro",
+        )
 
     inferred_rubro = _infer_demo_rubro_from_payload(data, sector=sector)
     if inferred_rubro and (
@@ -3043,26 +3271,33 @@ def demo_session_v2():
 
     tenant = None
     if tenant_slug:
-        try:
-            tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
-        except Exception:
-            tenant = None
+        if sector == "educacion":
+            tenant = _active_education_tenant_for_demo_slug(tenant_slug)
+        else:
+            try:
+                tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
+            except Exception:
+                tenant = None
         if not tenant:
-            if sector == "educacion" or tenant_slug in {"colegio-demo", "colegios", "colegio"}:
-                tenant = _first_education_tenant_for_demo() or _first_active_tenant_for_demo("pyme")
-            elif sector == "gobierno" or tenant_slug in {"municipio", "municipios"}:
+            if sector == "educacion":
+                if _is_education_demo_alias(tenant_slug):
+                    tenant = _first_education_tenant_for_demo()
+            elif sector == "gobierno":
                 tenant = _first_active_tenant_for_demo("municipio")
-            elif sector == "empresas" or tenant_slug in {"bodega", "empresa", "pyme"}:
+            elif sector == "empresas":
                 tenant = _first_active_tenant_for_demo("pyme")
         if not tenant:
             return _error_response("Tenant no encontrado", 404, "tenant_not_found", "check_tenant_slug")
     else:
         candidate = _resolve_demo_tenant_slug(rubro)
         if candidate:
-            try:
-                tenant = resolve_tenant_only(tenant_slug=candidate, require_explicit_slug=True)
-            except Exception:
-                tenant = None
+            if sector == "educacion":
+                tenant = _active_education_tenant_for_demo_slug(candidate)
+            else:
+                try:
+                    tenant = resolve_tenant_only(tenant_slug=candidate, require_explicit_slug=True)
+                except Exception:
+                    tenant = None
         if not tenant:
             if sector == "educacion":
                 tenant = _first_education_tenant_for_demo()
@@ -3138,6 +3373,7 @@ def demo_session_v2():
         source="public_demo_session",
         provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
         whatsapp_playbook=education_whatsapp_playbook,
+        public_base_url=_demo_public_frontend_base_url(),
     )
     education_payload = None
     if education_profile.get("is_education"):

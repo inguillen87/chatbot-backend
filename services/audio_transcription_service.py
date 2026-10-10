@@ -1,5 +1,7 @@
 """Utility functions for transcribing audio clips."""
 
+from __future__ import annotations
+
 import hashlib
 import io
 import logging
@@ -9,13 +11,17 @@ from threading import Lock
 
 import re
 import requests
-import httpx
-from openai import OpenAI
+from typing import Any
 
 from collections import OrderedDict
 
 from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +29,16 @@ logger = logging.getLogger(__name__)
 # the real client only when STT is first used. This is important because app.py may
 # load dotenv after this module has been imported by another entrypoint.
 http_client: httpx.Client | None = None
-openai_client: OpenAI | None = None
+openai_client: Any | None = None
 _OPENAI_CLIENT_LOCK = Lock()
+
+
+def OpenAI(*args: Any, **kwargs: Any) -> Any:
+    """Compatibility constructor that defers importing the provider SDK."""
+
+    from openai import OpenAI as OpenAIClient
+
+    return OpenAIClient(*args, **kwargs)
 
 # Current OpenAI guidance recommends gpt-4o-transcribe for completed recordings.
 # Keep OPENAI_STT_MODEL as an explicit rollout/rollback boundary per deployment.
@@ -92,7 +106,7 @@ def _openai_api_key() -> str | None:
     return normalized or None
 
 
-def _get_openai_client() -> OpenAI | None:
+def _get_openai_client() -> Any | None:
     """Return the shared OpenAI client, creating it only on first real use."""
 
     global http_client, openai_client
@@ -342,6 +356,12 @@ def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
     client = _get_openai_client()
     if client is None:
         return None
+    bounded_timeout = outbox_io_timeout_seconds()
+    if bounded_timeout is not None:
+        client = client.with_options(
+            timeout=bounded_timeout,
+            max_retries=0,
+        )
 
     with io.BytesIO(audio_bytes) as audio_file:
         audio_file.name = filename
@@ -354,6 +374,75 @@ def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
         transcription = client.audio.transcriptions.create(**payload)
 
     return getattr(transcription, "text", None)
+
+
+class PrivateAudioTranscriptionError(RuntimeError):
+    """A fixed error code, never an SDK response, recording or transcript."""
+
+
+def transcribe_private_audio_bytes(audio_bytes: bytes, mime_type: str, *,
+                                  max_bytes: int, timeout_seconds: float) -> str:
+    """One bounded official OpenAI request; no cache, disk, fallback or retries.
+
+    The existing generic STT path intentionally caches transcriptions. An
+    institutional accessibility pilot must not put sensitive voice notes in
+    that shared cache, and must pin the provider rather than inherit a proxy or
+    user-configured gateway. The caller has already verified the Meta media.
+    The deadline checks admission/chunks and discards late results; HTTPX
+    timeouts are per I/O operation, so this is not hard wall-clock cancellation.
+    """
+    import json
+    if (not isinstance(audio_bytes, bytes) or not 0 < len(audio_bytes) <= max_bytes
+            or not 0 < timeout_seconds <= 25):
+        raise PrivateAudioTranscriptionError("private_audio_invalid")
+    api_key = _openai_api_key()
+    model = str(_runtime_setting("OPENAI_STT_MODEL", DEFAULT_STT_MODEL))
+    if (not api_key or not llm_provider_network_allowed("openai") or model not in {
+            "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-mini-transcribe-2025-12-15",
+            "gpt-transcribe", "whisper-1"}):
+        raise PrivateAudioTranscriptionError("private_audio_unavailable")
+    mime_type = _canonical_mime_type(mime_type)
+    deadline = time.monotonic() + timeout_seconds
+    timeout = httpx.Timeout(timeout_seconds, connect=min(3.0, timeout_seconds),
+                            read=min(5.0, timeout_seconds), write=min(3.0, timeout_seconds),
+                            pool=min(1.0, timeout_seconds))
+
+    def validate_response(response):
+        # The SDK reads error bodies before entering our streaming context.
+        # Reject them in the transport hook without consuming their contents.
+        size = response.headers.get("Content-Length")
+        if (time.monotonic() >= deadline or response.status_code != 200
+                or response.headers.get("Content-Encoding", "identity") != "identity"
+                or (size is not None and (not size.isascii() or not size.isdigit() or int(size) > 32 * 1024))):
+            response.close()
+            raise PrivateAudioTranscriptionError("private_audio_failed")
+
+    try:
+        with httpx.Client(proxy=None, trust_env=False, timeout=timeout,
+                          follow_redirects=False, headers={"Accept-Encoding": "identity"},
+                          event_hooks={"response": [validate_response]}) as transport:
+            with OpenAI(api_key=api_key, base_url="https://api.openai.com/v1",
+                        http_client=transport, timeout=timeout, max_retries=0) as client:
+                with io.BytesIO(audio_bytes) as audio_file:
+                    with client.audio.transcriptions.with_streaming_response.create(
+                            model=model, file=(_safe_audio_filename(mime_type), audio_file, mime_type),
+                            response_format="json") as response:
+                        body = bytearray()
+                        for chunk in response.iter_bytes(chunk_size=8192):
+                            if time.monotonic() >= deadline or len(body) + len(chunk) > 32 * 1024:
+                                raise PrivateAudioTranscriptionError("private_audio_failed")
+                            body.extend(chunk)
+                        if time.monotonic() >= deadline:
+                            raise PrivateAudioTranscriptionError("private_audio_failed")
+                        document = json.loads(body)
+                        text = document.get("text") if isinstance(document, dict) else None
+                        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+                            raise PrivateAudioTranscriptionError("private_audio_unintelligible")
+                        return text.strip()
+    except PrivateAudioTranscriptionError:
+        raise
+    except Exception:
+        raise PrivateAudioTranscriptionError("private_audio_failed") from None
 
 
 def transcribe_audio_bytes(
@@ -448,6 +537,13 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
 
     try:
         mime_type = _canonical_mime_type(mime_type)
+        from services.attachment_delivery import _sensitive_reference, read_authorized_attachment_bytes
+        if _sensitive_reference(url):
+            # Authorize even when an earlier request populated a transcript
+            # cache. Private storage references never reach HTTP/provider logs.
+            data = read_authorized_attachment_bytes(url, mime_type,
+                                                    max_bytes=min(_stt_max_audio_bytes(), 15 * 1024 * 1024))
+            return transcribe_audio_bytes(data, mime_type)
         url_cache_key = _stt_url_cache_key(url, mime_type)
         cached_text = _stt_cache_get(url_cache_key)
         if cached_text:

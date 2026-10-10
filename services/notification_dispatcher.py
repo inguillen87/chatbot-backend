@@ -247,6 +247,7 @@ def _dispatch_ticket_channels(
     tipo_ticket: str,
     comentario_reciente: Any = None,
     enable_whatsapp: bool = True,
+    enabled_channels: Optional[list[str] | tuple[str, ...] | set[str]] = None,
     archivos_adjuntos: Optional[list[Any]] = None,
 ) -> dict[str, bool]:
     """Send ticket updates through configured customer channels.
@@ -257,42 +258,51 @@ def _dispatch_ticket_channels(
     """
 
     results = {"email": False, "sms": False, "whatsapp": False}
+    normalized_channels = (
+        {str(channel or "").strip().lower() for channel in enabled_channels}
+        if enabled_channels is not None
+        else {"email", "sms", "whatsapp"}
+    )
     ticket_ref = getattr(ticket, "nro_ticket", None) or getattr(ticket, "id", "N/A")
     safe_message = (mensaje or "").strip() or f"Tu ticket {ticket_ref} tiene novedades."
 
-    try:
-        from services import email_service
+    if "email" in normalized_channels:
+        try:
+            from services import email_service
 
-        results["email"] = bool(
-            email_service.enviar_email_ticket_novedad(
-                ticket,
-                safe_message,
-                comentario_reciente=comentario_reciente,
+            results["email"] = bool(
+                email_service.enviar_email_ticket_novedad(
+                    ticket,
+                    safe_message,
+                    comentario_reciente=comentario_reciente,
+                )
             )
-        )
-    except Exception as exc:  # pragma: no cover - defensive logging
-        logger.error(
-            "Error sending ticket email notification ticket=%s tipo=%s: %s",
-            ticket_ref,
-            tipo_ticket,
-            exc,
-            exc_info=True,
-        )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(
+                "Error sending ticket email notification ticket=%s tipo=%s: %s",
+                ticket_ref,
+                tipo_ticket,
+                exc,
+                exc_info=True,
+            )
 
-    try:
-        from services import email_service
+    if "sms" in normalized_channels:
+        try:
+            from services import email_service
 
-        results["sms"] = bool(email_service.enviar_sms_ticket_novedad(ticket, safe_message))
-    except Exception as exc:  # pragma: no cover - defensive logging
-        logger.error(
-            "Error sending ticket SMS notification ticket=%s tipo=%s: %s",
-            ticket_ref,
-            tipo_ticket,
-            exc,
-            exc_info=True,
-        )
+            results["sms"] = bool(
+                email_service.enviar_sms_ticket_novedad(ticket, safe_message)
+            )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(
+                "Error sending ticket SMS notification ticket=%s tipo=%s: %s",
+                ticket_ref,
+                tipo_ticket,
+                exc,
+                exc_info=True,
+            )
 
-    if enable_whatsapp:
+    if enable_whatsapp and "whatsapp" in normalized_channels:
         try:
             from services import email_service
 
@@ -322,6 +332,7 @@ def dispatch_ticket_update(
     *,
     comentario_reciente: Any = None,
     enable_whatsapp: bool = True,
+    enabled_channels: Optional[list[str] | tuple[str, ...] | set[str]] = None,
     archivos_adjuntos: Optional[list[Any]] = None,
 ) -> dict[str, bool]:
     """Notify a citizen/customer that an agent replied or attached evidence."""
@@ -332,6 +343,7 @@ def dispatch_ticket_update(
         tipo_ticket=tipo_ticket,
         comentario_reciente=comentario_reciente,
         enable_whatsapp=enable_whatsapp,
+        enabled_channels=enabled_channels,
         archivos_adjuntos=archivos_adjuntos,
     )
 

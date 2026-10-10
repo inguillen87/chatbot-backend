@@ -15,14 +15,49 @@ from models import (
     ProviderConnection,
     ProviderSender,
     TenantProfile,
+    TenantTicket,
+    TenantTicketReplyEvent,
     db,
 )
 from services.tenant_twilio_messaging import (
     PreparedTenantTwilioMessage,
     build_tenant_twilio_sender_binding,
+    normalize_whatsapp_template_variables,
     prepare_bound_tenant_twilio_message,
     send_prepared_tenant_twilio_message,
 )
+from services.tenant_ticket_reply_delivery import (
+    TenantTicketReplyDeliveryError,
+    normalize_template_variables,
+)
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        {"2": "indice inicial ausente"},
+        {"1": "valor con espacio final "},
+        {"1": "linea\nnueva"},
+        {"1": ["tipo", "complejo"]},
+        {1: "clave no textual"},
+    ],
+)
+def test_ticket_reply_enqueue_and_worker_share_strict_template_variables(variables):
+    normalized, worker_error = normalize_whatsapp_template_variables(variables)
+
+    assert normalized is None
+    assert worker_error == "whatsapp_template_variables_invalid"
+    with pytest.raises(TenantTicketReplyDeliveryError) as enqueue_error:
+        normalize_template_variables(variables)
+    assert enqueue_error.value.code == worker_error
+
+
+def test_shared_template_variables_canonicalize_scalar_values_once():
+    variables = {"1": True, "2": 7, "3": 1.5}
+    expected = {"1": "true", "2": "7", "3": "1.5"}
+
+    assert normalize_whatsapp_template_variables(variables) == (expected, None)
+    assert normalize_template_variables(variables) == expected
 
 
 def _seed_twilio_tenant(
@@ -187,6 +222,71 @@ def test_prepares_approved_tenant_template_and_bound_attempt_callback(
     }
     assert "attacker.example.test" not in params["status_callback"]
     assert params["content_sid"] != sender.metadata_json["content_sid"]
+
+
+def test_ticket_reply_callback_is_bound_to_sender_tenant_and_pinned_recipient(
+    app, monkeypatch, init_database, owner_user
+):
+    tenant, _sender = _seed_twilio_tenant(
+        app=app,
+        monkeypatch=monkeypatch,
+        owner_user=owner_user,
+        slug="ticket-reply-callback",
+    )
+    ticket = TenantTicket(
+        tenant_id=tenant.id,
+        user_id=owner_user.id,
+        categoria="luminarias",
+        descripcion="Luminaria apagada",
+        estado="en_proceso",
+        origen="whatsapp",
+    )
+    db.session.add(ticket)
+    db.session.flush()
+    reply = TenantTicketReplyEvent(
+        tenant_id=tenant.id,
+        ticket_id=ticket.id,
+        event_id="reply-callback-bound-0001",
+        body="La cuadrilla recibió el reclamo.",
+        recipient_phone="+5492613168608",
+    )
+    db.session.add(reply)
+    db.session.flush()
+    binding = build_tenant_twilio_sender_binding(
+        tenant_id=tenant.id, channel="whatsapp"
+    )
+
+    preflight = prepare_bound_tenant_twilio_message(
+        tenant_id=tenant.id,
+        channel="whatsapp",
+        expected_sender_binding=binding,
+        recipient="+5492613168608",
+        body="La cuadrilla recibió el reclamo.",
+        tenant_ticket_reply_event_id=reply.id,
+    )
+    assert preflight.reason_code is None
+    assert preflight.prepared is not None
+    callback = urlparse(preflight.prepared.params["status_callback"])
+    assert (callback.scheme, callback.netloc, callback.path) == (
+        "https",
+        "api.example.test",
+        "/twilio/whatsapp/status",
+    )
+    assert dict(parse_qsl(callback.query)) == {
+        "source": "sender",
+        "tenant_ticket_reply_event_id": str(reply.id),
+    }
+
+    wrong_recipient = prepare_bound_tenant_twilio_message(
+        tenant_id=tenant.id,
+        channel="whatsapp",
+        expected_sender_binding=binding,
+        recipient="+5492613000000",
+        body="Este envío no debe prepararse.",
+        tenant_ticket_reply_event_id=reply.id,
+    )
+    assert wrong_recipient.prepared is None
+    assert wrong_recipient.reason_code == "tenant_ticket_reply_event_scope_mismatch"
 
 
 def test_rejects_cross_tenant_template_and_notification_attempt(

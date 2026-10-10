@@ -30,6 +30,7 @@ from models import (
     TicketSatisfaccion,
     Conversacion,
     ArchivoAdjunto,
+    CategoriaTicket,
     db,
 )
 from datetime import datetime, timedelta
@@ -39,6 +40,20 @@ from services.employee_ticket_access import (
     employee_ticket_category_access_allows,
     employee_ticket_category_scope,
 )
+from services.ticket_category_authority import (
+    build_municipio_category_authorities,
+    resolve_municipio_category_authority,
+)
+from services.ticket_workflow_policy import (
+    ALLOWED_STATES, ALLOWED_TRANSITIONS, TicketWorkflowError,
+    build_workflow_context, build_workflow_instance, lock_and_validate_workflow_command,
+    resolve_private_ticket_tenant, ticket_belongs_to_workflow_tenant,
+)
+from services.operational_heatmap_access import (
+    build_employee_legacy_heatmap_points,
+    is_employee_heatmap_viewer,
+)
+from services.operational_intelligence import observe_legacy_ticket_sla
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     municipio_ticket_belongs_to_tenant,
@@ -63,16 +78,17 @@ from services.gcs_service import (
     upload_to_gcs,
     validate_upload_size,
 )
-from services.attachment_delivery import serialize_attachment_for_delivery
+from services.attachment_delivery import serialize_attachment_for_delivery, resolve_attachment_delivery_url
 from services.geo.route import obtener_ruta
-from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido, _explicit_admin_request_tenant, auth_sin_escrituras_implicitas
 from utils.permissions import require_role
 from collections import defaultdict
-from sqlalchemy import or_, func, exists
+from sqlalchemy import case, or_, func, exists, false, literal_column, select
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from utils.upload_limits import set_upload_request_limit
-from utils.tenant import get_current_tenant, get_current_tenant_profile
+from utils.tenant import get_current_tenant, get_current_tenant_profile, TENANT_QUERY_KEYS, TENANT_HEADER_KEYS
+from utils.tenant_admin_access import resolve_consistent_user_tenant
 from utils.errors import ApiError
 from extensions import limiter
 from routes.tracking_ui import (
@@ -125,22 +141,10 @@ TICKET_READ_REQUIRED_CAPABILITIES = [
 ]
 
 # Estados válidos para los tickets que pueden ser utilizados por la UI.
-TICKET_ALLOWED_STATES = [
-    "nuevo",
-    "en_proceso",
-    "en_vivo",
-    "esperando_agente_en_vivo",
-    "cerrado",
-]
+TICKET_ALLOWED_STATES = list(ALLOWED_STATES)
 TICKET_WORKFLOW_CONTRACT_VERSION = "tickets.workflow.v1"
 
-TICKET_ALLOWED_TRANSITIONS = {
-    "nuevo": ["en_proceso", "cerrado"],
-    "en_proceso": ["en_vivo", "esperando_agente_en_vivo", "cerrado"],
-    "en_vivo": ["en_proceso", "cerrado"],
-    "esperando_agente_en_vivo": ["en_vivo", "en_proceso", "cerrado"],
-    "cerrado": [],
-}
+TICKET_ALLOWED_TRANSITIONS = {state: list(destinations) for state, destinations in ALLOWED_TRANSITIONS.items()}
 
 
 def _normalize_ticket_delivery_results(results: Mapping[str, Any] | None) -> dict[str, bool]:
@@ -300,12 +304,7 @@ def _build_agent_ticket_delivery_payload(
 
 
 def _build_ticket_operational_badges(ticket_obj) -> dict:
-    """Compute lightweight SLA/ops hints for frontend inboxes.
-
-    No reemplaza un SLA engine formal, pero da una base consistente para pintar
-    badges de priorización (`sin_asignar`, `por_vencer`, `vencido`,
-    `respuesta_pendiente`) en paneles y vistas de tracking.
-    """
+    """Keep operational age/assignment separate from evidence-backed SLA."""
 
     now = get_local_now()
     created_at = getattr(ticket_obj, "fecha", None) or now
@@ -325,10 +324,12 @@ def _build_ticket_operational_badges(ticket_obj) -> dict:
 
     age_hours = max((now - created_at).total_seconds() / 3600, 0)
     inactivity_hours = max((now - last_activity).total_seconds() / 3600, 0)
-    is_closed = estado in {"cerrado", "resuelto"}
+    is_closed = estado in {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
 
     badges: list[str] = []
-    sla_status = "ok"
+    observation = observe_legacy_ticket_sla(ticket_obj, as_of=now)
+    sla_status = {"breached": "vencido", "at_risk": "por_vencer", "healthy": "ok"}.get(
+        observation["state"], observation["state"])
 
     if is_closed:
         return {
@@ -340,27 +341,12 @@ def _build_ticket_operational_badges(ticket_obj) -> dict:
 
     if not assigned_user_id:
         badges.append("sin_asignar")
-        if age_hours >= 24:
-            badges.append("vencido")
-            sla_status = "vencido"
-        elif age_hours >= 8:
-            badges.append("por_vencer")
-            sla_status = "por_vencer"
-        else:
-            sla_status = "sin_asignar"
-    else:
-        if inactivity_hours >= 24:
-            badges.extend(["respuesta_pendiente", "vencido"])
-            sla_status = "vencido"
-        elif inactivity_hours >= 8:
-            badges.extend(["respuesta_pendiente", "por_vencer"])
-            sla_status = "por_vencer"
-        elif inactivity_hours >= 2:
-            badges.append("respuesta_pendiente")
-            sla_status = "seguimiento"
-
-    if not badges:
-        badges.append("ok")
+    elif inactivity_hours >= 2:
+        badges.append("respuesta_pendiente")
+    if sla_status in {"vencido", "por_vencer", "ok"}:
+        badges.append(sla_status)
+    elif sla_status == "unknown":
+        badges.append("sla_unknown")
 
     return {
         "sla_status": sla_status,
@@ -393,6 +379,58 @@ def _parse_ticket_details_payload(ticket_obj) -> dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _ticket_display_description(ticket_obj) -> str:
+    """Return operator-facing copy without leaking structured ticket metadata.
+
+    ``detalles`` is a legacy dual-purpose column: older tickets store a human
+    description while newer runtimes persist JSON metadata there. Returning
+    that JSON as ``description`` makes the CRM render implementation details as
+    the case summary. Prefer explicit human fields from structured details,
+    then the citizen question, while preserving plain-text legacy details.
+    """
+
+    raw_details = getattr(ticket_obj, "detalles", None)
+    details = _parse_ticket_details_payload(ticket_obj)
+
+    if details:
+        for key in (
+            "description",
+            "descripcion",
+            "summary",
+            "resumen",
+            "consulta",
+            "message",
+            "mensaje",
+        ):
+            value = _clean_display_value(details.get(key))
+            if isinstance(value, str) and value[:1] not in {"{", "["}:
+                return value
+
+        for value in (
+            getattr(ticket_obj, "pregunta", None),
+            getattr(ticket_obj, "asunto", None),
+            getattr(ticket_obj, "categoria", None),
+        ):
+            cleaned = _clean_display_value(value)
+            if isinstance(cleaned, str):
+                return cleaned
+        return "Sin descripción disponible"
+
+    cleaned_details = _clean_display_value(raw_details)
+    if isinstance(cleaned_details, str) and cleaned_details[:1] not in {"{", "["}:
+        return cleaned_details
+
+    for value in (
+        getattr(ticket_obj, "pregunta", None),
+        getattr(ticket_obj, "asunto", None),
+        getattr(ticket_obj, "categoria", None),
+    ):
+        cleaned = _clean_display_value(value)
+        if isinstance(cleaned, str):
+            return cleaned
+    return "Sin descripción disponible"
 
 
 def _ticket_priority_payload(ticket_obj) -> dict[str, Any]:
@@ -456,7 +494,7 @@ def _ticket_crm_queue_payload(
     unread_viewer_count = _safe_int(collaboration_state.get("unread_viewer_count"))
     active_viewers_count = _safe_int(collaboration_state.get("active_viewers_count"))
     has_unread = bool(collaboration_state.get("has_unread") or unread_count > 0 or unread_viewer_count > 0)
-    sla_status = str(operational_hints.get("sla_status") or "ok")
+    sla_status = str(operational_hints.get("sla_status") or "unknown")
     badges = list(operational_hints.get("badges") or [])
     priority = priority_payload.get("priority")
     priority_score = priority_payload.get("priority_score")
@@ -479,6 +517,8 @@ def _ticket_crm_queue_payload(
     if is_sla_risk:
         score += 60 if sla_status == "vencido" else 40
         queue_badges.append({"id": "sla_risk", "label": "SLA en riesgo", "tone": "warning"})
+    elif sla_status == "unknown" and not is_closed:
+        queue_badges.append({"id": "sla_unknown", "label": "SLA sin verificar", "tone": "info"})
     if is_high_priority:
         score += 35
         queue_badges.append({"id": "high_priority", "label": "Prioridad alta", "tone": "danger"})
@@ -502,7 +542,7 @@ def _ticket_crm_queue_payload(
     elif is_sla_risk:
         state = "sla_attention"
         label = "Revisar SLA"
-        reason = "El caso esta vencido o por vencer segun la ultima actividad."
+        reason = "El caso esta vencido o por vencer segun evidencia SLA registrada."
         next_team_action = "review_sla_and_update"
     elif is_unassigned:
         state = "unassigned"
@@ -511,8 +551,9 @@ def _ticket_crm_queue_payload(
         next_team_action = "assign_owner"
     else:
         state = "ready"
-        label = "Mesa al dia"
-        reason = "No hay senales criticas activas para este caso."
+        label = "SLA sin verificar" if sla_status == "unknown" else "Mesa al dia"
+        reason = ("El caso no tiene evidencia SLA verificable."
+            if sla_status == "unknown" else "No hay senales criticas activas para este caso.")
         next_team_action = "monitor_ticket"
 
     return {
@@ -580,56 +621,74 @@ def _ticket_priority_filter_condition(TicketModel, requested_priority):
     return or_(*conditions) if conditions else None
 
 
-def _ticket_sla_filter_condition(TicketModel, requested_sla):
+def _ticket_sla_evidence_ids(scoped_query, TicketModel):
+    """One metadata-only pass over authorized scope, before SQL pagination.
+
+    This exact cross-dialect fallback is O(n) in scoped tickets and matching SQL
+    size; it does not claim verified performance for very large organizations.
+    Invalid legacy JSON remains unknown through the shared Reports evaluator.
+    """
+    columns = [TicketModel.id, TicketModel.estado, TicketModel.datos_extra]
+    if TicketModel is MunicipioTicket:
+        columns.append(TicketModel.detalles)
+    now = get_local_now()
+    ids_by_state = defaultdict(list)
+    for row in scoped_query.enable_eagerloads(False).with_entities(*columns).order_by(None).yield_per(500):
+        if type(row.id) is not int or row.id <= 0:
+            raise ValueError("Invalid persisted ticket identity")
+        state = observe_legacy_ticket_sla(row, as_of=now, source_model=TicketModel.__name__)["state"]
+        if _normalize_ticket_filter_token(row.estado) in {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}:
+            state = "closed"
+        ids_by_state[state].append(row.id)
+    return ids_by_state
+
+
+def _ticket_persisted_id_condition(TicketModel, ids):
+    # Only exact positive integers already read from the scoped DB projection
+    # become literals. No caller input/JSON/string is accepted as SQL text.
+    if any(type(value) is not int or value <= 0 for value in ids):
+        raise ValueError("Invalid persisted ticket identity")
+    if not ids:
+        return false()
+    return or_(*(TicketModel.id.in_([literal_column(str(value)) for value in ids[offset:offset + 500]])
+        for offset in range(0, len(ids), 500)))
+
+
+def _ticket_sla_filter_condition(TicketModel, requested_sla, evidence_ids=None):
     normalized = _normalize_ticket_filter_token(requested_sla)
     if not _is_active_ticket_filter(normalized):
         return None
 
     now = get_local_now()
-    closed_condition = func.lower(func.coalesce(TicketModel.estado, "")).in_(["cerrado", "resuelto"])
+    closed_condition = func.lower(func.coalesce(TicketModel.estado, "")).in_(["cerrado", "closed", "resuelto", "resolved", "finalizado", "done"])
     open_condition = ~closed_condition
     assigned_column = getattr(TicketModel, "asignado_a_id", None)
     if assigned_column is None:
         return None
 
-    created_at = getattr(TicketModel, "fecha")
-    activity_at = getattr(TicketModel, "ultima_actividad", created_at)
-    activity_expr = func.coalesce(activity_at, created_at)
     assigned = assigned_column.isnot(None)
     unassigned = assigned_column.is_(None)
-    created_24h = created_at <= (now - timedelta(hours=24))
-    created_8h = created_at <= (now - timedelta(hours=8))
-    activity_24h = activity_expr <= (now - timedelta(hours=24))
-    activity_8h = activity_expr <= (now - timedelta(hours=8))
-    activity_2h = activity_expr <= (now - timedelta(hours=2))
-
-    vencido = open_condition & (
-        (unassigned & created_24h)
-        | (assigned & activity_24h)
-    )
-    por_vencer = open_condition & (
-        (unassigned & created_8h & ~created_24h)
-        | (assigned & activity_8h & ~activity_24h)
-    )
-    sin_asignar = open_condition & unassigned & ~created_8h
-    seguimiento = open_condition & assigned & activity_2h & ~activity_8h
-    ok = open_condition & assigned & ~activity_2h
-
-    if normalized in {"risk", "riesgo", "at_risk"}:
-        priority_condition = _ticket_priority_filter_condition(TicketModel, "alta")
-        return or_(vencido, por_vencer, priority_condition) if priority_condition is not None else or_(vencido, por_vencer)
-    if normalized in {"breached", "overdue", "vencido", "vencida"}:
-        return vencido
-    if normalized in {"por_vencer", "warning", "due_soon"}:
-        return por_vencer
     if normalized in {"sin_asignar", "unassigned"}:
-        return sin_asignar
+        return open_condition & unassigned
     if normalized in {"seguimiento", "follow_up"}:
-        return seguimiento
-    if normalized in {"ok", "healthy"}:
-        return ok
+        created_at = getattr(TicketModel, "fecha")
+        activity_at = getattr(TicketModel, "ultima_actividad", created_at)
+        return open_condition & assigned & (func.coalesce(activity_at, created_at) <= (now - timedelta(hours=2)))
     if normalized in {"resuelto", "cerrado", "closed", "resolved"}:
         return closed_condition
+    aliases = {
+        "risk": ("breached", "at_risk"), "riesgo": ("breached", "at_risk"),
+        "at_risk": ("at_risk",),
+        "breached": ("breached",), "overdue": ("breached",), "vencido": ("breached",), "vencida": ("breached",),
+        "por_vencer": ("at_risk",), "warning": ("at_risk",), "due_soon": ("at_risk",),
+        "ok": ("healthy",), "healthy": ("healthy",),
+        "unknown": ("unknown",), "desconocido": ("unknown",),
+        "not_eligible": ("not_eligible",), "paused": ("not_eligible",),
+    }
+    states = aliases.get(normalized)
+    if states is not None:
+        ids = [value for state in states for value in (evidence_ids or {}).get(state, [])]
+        return _ticket_persisted_id_condition(TicketModel, ids)
     return None
 
 
@@ -747,18 +806,48 @@ def _ticket_request_filter_payload() -> dict:
 
 def _apply_ticket_category_filter(query, TicketModel, category: Any = None, category_id: Any = None):
     if category_id is not None and hasattr(TicketModel, "categoria_id"):
+        if TicketModel is MunicipioTicket:
+            # An ID is a catalog filter only when this ticket proves ownership
+            # of that entry. A foreign ID cannot become tenant authority.
+            catalog_entry = exists().where(
+                CategoriaTicket.id == TicketModel.categoria_id,
+                CategoriaTicket.tenant_id == TicketModel.tenant_id,
+                func.trim(CategoriaTicket.nombre) != "",
+            )
+            return query.filter(TicketModel.categoria_id == category_id, catalog_entry)
         return query.filter(TicketModel.categoria_id == category_id)
 
     if not _ticket_filter_value_active(category):
         return query
 
     category_value = str(category).strip()
+    if TicketModel is MunicipioTicket:
+        from services.territorial_evidence import canonicalize_territorial_category
+
+        canonical = canonicalize_territorial_category(category_value)["category"]
+        aliases = (
+            ("alumbrado", "alumbrado publico", "alumbrado público", "luminaria", "luminarias")
+            if canonical == "luminarias"
+            else (category_value.lower(),)
+        )
+        catalog_entry = exists().where(
+            CategoriaTicket.id == TicketModel.categoria_id,
+            CategoriaTicket.tenant_id == TicketModel.tenant_id,
+            func.trim(CategoriaTicket.nombre) != "",
+        )
+        catalog_match = exists().where(
+            CategoriaTicket.id == TicketModel.categoria_id,
+            CategoriaTicket.tenant_id == TicketModel.tenant_id,
+            func.lower(func.trim(CategoriaTicket.nombre)).in_(aliases),
+        )
+        persisted_match = func.lower(func.trim(TicketModel.categoria)).in_(aliases)
+        return query.filter(or_(catalog_match, (~catalog_entry) & persisted_match))
     if category_value.lower() == "luminarias":
         return query.filter(TicketModel.categoria.ilike("%lumin%"))
     return query.filter(TicketModel.categoria == category_value)
 
 
-def _apply_ticket_filter_set(query, TicketModel, ticket_type: str, filters: Mapping[str, Any], exclude=None):
+def _apply_ticket_filter_set(query, TicketModel, ticket_type: str, filters: Mapping[str, Any], exclude=None, sla_evidence_ids=None):
     exclude = set(exclude or [])
 
     if "category" not in exclude:
@@ -835,7 +924,7 @@ def _apply_ticket_filter_set(query, TicketModel, ticket_type: str, filters: Mapp
             query = query.filter(priority_condition)
 
     if "sla" not in exclude:
-        sla_condition = _ticket_sla_filter_condition(TicketModel, filters.get("sla"))
+        sla_condition = _ticket_sla_filter_condition(TicketModel, filters.get("sla"), sla_evidence_ids)
         if sla_condition is not None:
             query = query.filter(sla_condition)
 
@@ -875,14 +964,26 @@ def _ticket_grouped_facet(query, TicketModel, column, *, label_map=None, fallbac
 def _ticket_category_facet(query, TicketModel):
     if not hasattr(TicketModel, "categoria"):
         return []
-    columns = [TicketModel.categoria, func.count(TicketModel.id)]
-    if hasattr(TicketModel, "categoria_id"):
+    if TicketModel is MunicipioTicket:
+        catalog_name = select(CategoriaTicket.nombre).where(
+            CategoriaTicket.id == TicketModel.categoria_id,
+            CategoriaTicket.tenant_id == TicketModel.tenant_id,
+            func.trim(CategoriaTicket.nombre) != "",
+        ).scalar_subquery()
+        category_label = func.coalesce(catalog_name, TicketModel.categoria)
+        verified_category_id = case((catalog_name.isnot(None), TicketModel.categoria_id), else_=None)
+        rows = query.with_entities(
+            verified_category_id, category_label, func.count(TicketModel.id),
+        ).group_by(verified_category_id, category_label).all()
+    elif hasattr(TicketModel, "categoria_id"):
+        columns = [TicketModel.categoria, func.count(TicketModel.id)]
         columns.insert(0, TicketModel.categoria_id)
         rows = query.with_entities(*columns).group_by(TicketModel.categoria_id, TicketModel.categoria).all()
     else:
+        columns = [TicketModel.categoria, func.count(TicketModel.id)]
         rows = query.with_entities(*columns).group_by(TicketModel.categoria).all()
 
-    items = []
+    items_by_key = {}
     for row in rows:
         if hasattr(TicketModel, "categoria_id"):
             category_id, category, count = row
@@ -892,6 +993,15 @@ def _ticket_category_facet(query, TicketModel):
         label = str(category or "").strip()
         if not label:
             continue
+        if TicketModel is MunicipioTicket and category_id is None:
+            from services.territorial_evidence import canonicalize_territorial_category
+
+            if canonicalize_territorial_category(label)["category"] == "luminarias":
+                label = "Luminarias"
+        key = (category_id, label)
+        if key in items_by_key:
+            items_by_key[key]["count"] += int(count or 0)
+            continue
         item = {
             "value": label,
             "label": label,
@@ -899,8 +1009,8 @@ def _ticket_category_facet(query, TicketModel):
         }
         if category_id is not None:
             item["category_id"] = category_id
-        items.append(item)
-    return sorted(items, key=lambda item: (-item["count"], item["label"]))
+        items_by_key[key] = item
+    return sorted(items_by_key.values(), key=lambda item: (-item["count"], item["label"]))
 
 
 def _ticket_agent_facet(query, TicketModel):
@@ -956,14 +1066,17 @@ def _ticket_condition_facet(query, TicketModel, specs, condition_builder):
     return items
 
 
-def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: Mapping[str, Any], filtered_total: int):
-    status_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"status"})
-    category_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"category"})
-    channel_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"channel"})
-    agent_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"agent"})
-    priority_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"priority"})
-    sla_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"sla"})
-    unread_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"unread"})
+def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: Mapping[str, Any], filtered_total: int, sla_evidence_ids):
+    def facet_query(exclude):
+        return _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters,
+            exclude={exclude}, sla_evidence_ids=sla_evidence_ids)
+    status_query = facet_query("status")
+    category_query = facet_query("category")
+    channel_query = facet_query("channel")
+    agent_query = facet_query("agent")
+    priority_query = facet_query("priority")
+    sla_query = facet_query("sla")
+    unread_query = facet_query("unread")
 
     priority_specs = [
         ("alta", "Alta"),
@@ -974,15 +1087,18 @@ def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: M
         ("risk", "Riesgo"),
         ("vencido", "Vencido"),
         ("por_vencer", "Por vencer"),
-        ("sin_asignar", "Sin asignar"),
-        ("seguimiento", "Seguimiento"),
-        ("ok", "Al dia"),
+        ("ok", "Dentro del SLA confirmado"),
+        ("unknown", "Sin SLA verificable"),
+        ("not_eligible", "SLA no aplicable"),
         ("resuelto", "Resuelto"),
     ]
     unread_specs = [
         ("unread", "No leidos"),
         ("read", "Leidos"),
     ]
+    sla_facets = _ticket_condition_facet(sla_query, TicketModel, sla_specs,
+        lambda model, value: _ticket_sla_filter_condition(model, value, sla_evidence_ids))
+    category_facets = _ticket_category_facet(category_query, TicketModel)
 
     return {
         "contract_version": "tickets.facets.v1",
@@ -991,13 +1107,13 @@ def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: M
         "total_scoped": int(scoped_query.count()),
         "total_filtered": int(filtered_total or 0),
         "statuses": _ticket_grouped_facet(status_query, TicketModel, TicketModel.estado),
-        "categories": _ticket_category_facet(category_query, TicketModel),
-        "areas": _ticket_category_facet(category_query, TicketModel),
+        "categories": category_facets,
+        "areas": category_facets,
         "channels": _ticket_grouped_facet(channel_query, TicketModel, _ticket_channel_column(TicketModel)),
         "agents": _ticket_agent_facet(agent_query, TicketModel),
         "priorities": _ticket_condition_facet(priority_query, TicketModel, priority_specs, _ticket_priority_filter_condition),
-        "sla": _ticket_condition_facet(sla_query, TicketModel, sla_specs, _ticket_sla_filter_condition),
-        "slaStatuses": _ticket_condition_facet(sla_query, TicketModel, sla_specs, _ticket_sla_filter_condition),
+        "sla": sla_facets,
+        "slaStatuses": sla_facets,
         "unread": _ticket_condition_facet(
             unread_query,
             TicketModel,
@@ -1230,6 +1346,21 @@ def _safe_ticket_realtime_summary(ticket_type: str, ticket_id: int, request_id: 
             ticket_id,
             reason_code="ticket_realtime_summary_unavailable",
         )
+
+
+def _is_internal_ticket_comment(comment: TicketComentario | None) -> bool:
+    """Treat whitespace/case variants of ``internal`` as private notes."""
+
+    return str(getattr(comment, "origen", None) or "").strip().casefold() == "internal"
+
+
+def _public_ticket_comment_filter():
+    """SQL predicate for comments safe to expose to a ticket owner or PIN viewer."""
+
+    return or_(
+        TicketComentario.origen.is_(None),
+        func.lower(func.trim(TicketComentario.origen)) != "internal",
+    )
 
 
 def _safe_ticket_comment_payload(comment: TicketComentario, request_id: Optional[str] = None) -> dict:
@@ -1505,88 +1636,22 @@ def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[in
 
 
 def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], Optional[int], Optional[int]]:
-    requested_slug = next(
-        (
-            str(value).strip()
-            for value in (
-                request.headers.get("X-Tenant-Slug"),
-                request.headers.get("X-Tenant"),
-                request.args.get("tenant_slug"),
-                request.args.get("tenant"),
-            )
-            if value and str(value).strip()
-        ),
-        "",
-    )
-    tenant = None
-    if requested_slug:
-        tenant = (
-            TenantProfile.query.filter(func.lower(TenantProfile.slug) == requested_slug.lower())
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "tenant_id", None):
-        tenant = db.session.get(TenantProfile, current_user.tenant_id)
-    if not tenant and getattr(current_user, "tenant_slug", None):
-        tenant = (
-            TenantProfile.query.filter(
-                func.lower(TenantProfile.slug) == str(current_user.tenant_slug).strip().lower()
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "municipio_id", None):
-        tenant = (
-            TenantProfile.query.filter(
-                TenantProfile.municipio_id == current_user.municipio_id
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "pyme_id", None):
-        tenant = (
-            TenantProfile.query.filter(
-                TenantProfile.pyme_id == current_user.pyme_id
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "empresa_id", None):
-        tenant = (
-            TenantProfile.query.filter(
-                TenantProfile.pyme_id == current_user.empresa_id
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant:
-        tenant = get_current_tenant_profile(allow_fallback=False)
-    if not tenant:
+    try:
+        body = request.get_json(silent=True) if request.is_json else None
+        tenant = resolve_private_ticket_tenant(current_user, body=body if isinstance(body, dict) else None)
+    except TicketWorkflowError:
         return None, None, None
     return tenant, tenant.municipio_id, tenant.pyme_id
 
 
 def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProfile]) -> bool:
-    user_role = getattr(current_user, "role", None) or getattr(current_user, "rol", None)
-    if not tenant or canonical_role(user_role) not in TICKET_BACKOFFICE_ROLES:
+    role = canonical_role(getattr(current_user, "rol", None))
+    if tenant is None or tenant.is_active is not True or role not in TICKET_BACKOFFICE_ROLES:
         return False
-    if current_user.tenant_id == tenant.id:
-        return True
-    if tenant.municipio_id and current_user.id == tenant.municipio_id:
-        return True
-    if tenant.municipio_id and current_user.municipio_id == tenant.municipio_id:
-        return True
-    if tenant.pyme_id and current_user.id == tenant.pyme_id:
-        return True
-    if tenant.pyme_id and current_user.pyme_id == tenant.pyme_id:
-        return True
-    if tenant.municipio_id and current_user.empresa_id == tenant.municipio_id:
-        return True
-    if getattr(current_user, "municipio_id", None) == tenant.id or current_user.id == tenant.id or getattr(current_user, "pyme_id", None) == tenant.id:
-        return True
-    if current_user.tenant_slug and tenant.slug and str(current_user.tenant_slug).strip().lower() == str(tenant.slug).strip().lower():
-        return True
-    return False
+    if role == ROLE_SUPERADMIN:
+        return is_authorized_superadmin_user(current_user)
+    membership = resolve_consistent_user_tenant(current_user)
+    return membership is not None and membership.id == tenant.id
 
 
 def _ticket_access_contract_response(
@@ -1672,19 +1737,20 @@ def _ticket_scope_access_allows(ticket_type: str, ticket_obj, current_user: Opti
     tenant, tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
     if not _authorized_for_tenant_scope(current_user, tenant):
         return False
-    if ticket_type == "municipio":
-        tenant_allows = municipio_ticket_belongs_to_tenant(ticket_obj, tenant)
-    else:
-        tenant_allows = _ticket_matches_tenant_scope(
-            ticket_obj,
-            tenant,
-            tenant_municipio_id if ticket_type == "municipio" else None,
-            tenant_pyme_id if ticket_type == "pyme" else None,
-        )
+    tenant_allows = ticket_belongs_to_workflow_tenant(ticket_obj, ticket_type, tenant)
     return bool(
         tenant_allows
         and employee_ticket_category_access_allows(current_user, ticket_obj)
     )
+
+
+def _private_ticket_workflow(ticket, ticket_type, *, context=None):
+    actor = getattr(g, "current_user", None)
+    payload = getattr(g, "token_payload", {}) or {}
+    if (actor is None or canonical_role(getattr(actor, "rol", None)) not in TICKET_BACKOFFICE_ROLES
+            or getattr(g, "widget_session", False) or payload.get("session_kind") in {"widget", "demo"}):
+        return None
+    return build_workflow_instance(ticket, ticket_type, actor=actor, context=context)
 
 
 def _authenticated_municipio_lookup_allows(
@@ -2029,6 +2095,9 @@ def serialize_ticket_to_json(
     collaboration_state_override: dict | None = None,
     contact_profile_user_override: Optional[User] = None,
     allow_profile_lookup: bool = True,
+    category_authority_override: dict[str, Any] | None = None,
+    publish_workflow: bool = False,
+    workflow_context=None,
 ):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
@@ -2076,8 +2145,9 @@ def serialize_ticket_to_json(
     )
     contact_identity_visual = _identity_visual_fields(contact_identity)
 
-    # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
-    description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
+    # ``detalles`` can contain structured runtime metadata. The operator-facing
+    # description must remain human-readable and never expose raw JSON.
+    description = _ticket_display_description(ticket)
 
     if compact:
         historial_chat = []
@@ -2136,8 +2206,20 @@ def serialize_ticket_to_json(
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
-    categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
-    categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
+    persisted_categoria = getattr(ticket, "categoria", None)
+    category_authority = None
+    if ticket_type == "municipio":
+        category_authority = category_authority_override or resolve_municipio_category_authority(ticket)
+    categoria_ticket = persisted_categoria or "Sin categoría"
+    categoria_normalizada = (
+        category_authority.get("authoritative_category")
+        if category_authority and category_authority.get("verified")
+        else (
+            categoria_ticket
+            if category_authority is not None
+            else normalize_category(categoria_ticket) or categoria_ticket
+        )
+    )
     location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
     priority_payload = _ticket_priority_payload(ticket)
     ai_payload = _ticket_ai_enrichment_payload(ticket)
@@ -2203,11 +2285,21 @@ def serialize_ticket_to_json(
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
+        # Publish the canonical backing model so the frontend can select the
+        # collision-safe, atomic inbox endpoints instead of guessing from an
+        # integer ID shared by multiple ticket tables.
+        "source_model": "MunicipioTicket" if ticket_type == "municipio" else "PymeTicket",
+        "ticket_type": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
         "estado": estado_serializado,
         "fecha": datetime_to_iso_utc(ticket.fecha),
         "categoria": categoria_normalizada,
+        "categoria_id": getattr(ticket, "categoria_id", None),
+        "authoritative_category": (
+            category_authority.get("authoritative_category") if category_authority else None
+        ),
+        "category_authority": category_authority,
         "direccion": location_payload["direccion"],
         "distrito": location_payload["distrito"],
         "latitud": location_payload["latitud"],
@@ -2280,6 +2372,11 @@ def serialize_ticket_to_json(
         "collaboration_state": collaboration_state,
         "meta": _ticket_degraded_meta(degraded_reasons),
     }
+    # Socket snapshots are shared between actors. Only the private HTTP list
+    # opts into an actor-specific workflow; broadcasts cannot carry grants.
+    workflow = _private_ticket_workflow(ticket, ticket_type, context=workflow_context) if publish_workflow else None
+    if workflow is not None:
+        serialized_data["workflow"] = workflow
     if compact:
         serialized_data.pop("identity", None)
     return serialized_data
@@ -2407,7 +2504,40 @@ def get_tickets_del_usuario_logic(current_user: User):
     g.current_user = current_user
 
     try:
-        tenant_for_query = get_current_tenant_profile(allow_fallback=False)
+        selected_tenant, has_explicit_selection = _explicit_admin_request_tenant()
+        slug_values = [value for key in TENANT_QUERY_KEYS for value in request.args.getlist(key)]
+        slug_values.extend(request.headers.get(key) for key in TENANT_HEADER_KEYS if key in request.headers)
+        id_values = [*request.args.getlist("tenant_id")]
+        if "X-Tenant-Id" in request.headers:
+            id_values.append(request.headers.get("X-Tenant-Id"))
+        has_explicit_selection = has_explicit_selection or bool(slug_values or id_values)
+        slugs = {str(value).strip().lower() for value in slug_values}
+        invalid_selection = any(not str(value).strip() for value in [*slug_values, *id_values]) or len(slugs) > 1
+        try:
+            selected_ids = {int(value) for value in id_values}
+            invalid_selection = invalid_selection or any(value <= 0 for value in selected_ids) or len(selected_ids) > 1
+        except (TypeError, ValueError):
+            invalid_selection = True
+        if has_explicit_selection:
+            if selected_tenant is None and not invalid_selection and slugs:
+                selected_tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == next(iter(slugs))).one_or_none()
+            if (invalid_selection or selected_tenant is None
+                    or (slugs and slugs != {selected_tenant.slug.strip().lower()})
+                    or (id_values and selected_ids != {selected_tenant.id})):
+                return _ticket_access_contract_response(current_user, reason_code="invalid_tenant_selector",
+                    message="La organización solicitada es desconocida o sus selectores no coinciden.",
+                    status_code=400, action_hint="check_tenant_slug")
+            tenant_for_query = selected_tenant
+        else:
+            tenant_for_query = get_current_tenant_profile(allow_fallback=False)
+        membership = resolve_consistent_user_tenant(current_user)
+        if not is_authorized_superadmin_user(current_user):
+            # A panel read belongs to the real account, never public/host state.
+            if not has_explicit_selection and membership is not None:
+                tenant_for_query = membership
+            if tenant_for_query is not None and (membership is None or membership.id != tenant_for_query.id):
+                return _ticket_access_contract_response(current_user, reason_code="tenant_forbidden",
+                    message="No tenés acceso a la organización solicitada.", tenant=tenant_for_query)
         tenant_slug = getattr(tenant_for_query, "slug", None)
 
         ticket_filters = _ticket_request_filter_payload()
@@ -2425,7 +2555,8 @@ def get_tickets_del_usuario_logic(current_user: User):
             tenant_owner_pyme_id = tenant_for_query.pyme_id
 
         def _authorized_for_tenant() -> bool:
-            return _authorized_for_tenant_scope(current_user, tenant_for_query)
+            return bool(tenant_for_query and (is_authorized_superadmin_user(current_user)
+                or (membership is not None and membership.id == tenant_for_query.id)))
 
         # Determinar el tipo de ticket usando tenant_slug primero y luego `tipo_chat`.
         if tenant_owner_municipio_id or (
@@ -2470,11 +2601,8 @@ def get_tickets_del_usuario_logic(current_user: User):
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
 
-            tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
             if tenant_for_query and _authorized_for_tenant():
                 query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_for_query.id)
-            elif tenant_pyme:
-                query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_pyme.id)
             else:
                 current_app.logger.warning("Usuario PYME %s sin tenant verificable intentando acceder a /tickets", current_user.id)
                 return _ticket_access_contract_response(
@@ -2504,6 +2632,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             current_user,
             TicketModel,
         )
+        sla_evidence_ids = _ticket_sla_evidence_ids(scoped_query, TicketModel)
 
         query_base = _apply_ticket_category_filter(
             scoped_query,
@@ -2557,6 +2686,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             TicketModel,
             tipo_ticket_str,
             ticket_filters,
+            sla_evidence_ids=sla_evidence_ids,
         )
 
         try:
@@ -2585,6 +2715,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             tipo_ticket_str,
             ticket_filters,
             filtered_total_tickets,
+            sla_evidence_ids,
         )
         ordered_query = final_tickets_query.order_by(TicketModel.fecha.desc())
         if per_page > 0:
@@ -2614,6 +2745,15 @@ def get_tickets_del_usuario_logic(current_user: User):
         collaboration_states = compact_prefetch.get("collaboration_states", {})
         contact_profile_users = compact_prefetch.get("contact_profile_users", {})
 
+        category_authorities = (
+            build_municipio_category_authorities(
+                tickets_for_list_page,
+                tenant_id=getattr(tenant_for_query, "id", None),
+            )
+            if tipo_ticket_str == "municipio"
+            else {}
+        )
+        workflow_context = build_workflow_context(current_user, tenant=tenant_for_query)
         serialized_tickets = [
             serialize_ticket_to_json(
                 t,
@@ -2623,6 +2763,9 @@ def get_tickets_del_usuario_logic(current_user: User):
                 collaboration_state_override=collaboration_states.get(t.id) if compact_view else None,
                 contact_profile_user_override=contact_profile_users.get(t.id) if compact_view else None,
                 allow_profile_lookup=not compact_view,
+                category_authority_override=category_authorities.get(t.id),
+                publish_workflow=True,
+                workflow_context=workflow_context,
             )
             for t in tickets_for_list_page
         ]
@@ -2933,7 +3076,7 @@ def _ticket_ai_enrichment_payload(ticket) -> dict[str, Any]:
     }
 
 
-def _serialize_ticket_details(ticket, ticket_type):
+def _serialize_ticket_details(ticket, ticket_type, *, include_internal: bool = True):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
     contact_identity = _ticket_contact_identity(ticket, ticket_type, user_data)
@@ -2941,10 +3084,14 @@ def _serialize_ticket_details(ticket, ticket_type):
     degraded_reasons: list[str] = []
 
     try:
-        comentarios_source = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+        comentarios_query = ticket.comentarios
+        if not include_internal:
+            comentarios_query = comentarios_query.filter(_public_ticket_comment_filter())
+        comentarios_source = comentarios_query.order_by(TicketComentario.fecha.asc()).all()
         comentarios = [
             _safe_ticket_comment_payload(c, request_id=getattr(g, "request_id", None))
             for c in comentarios_source
+            if include_internal or not _is_internal_ticket_comment(c)
         ]
     except Exception as exc:
         current_app.logger.warning(
@@ -2958,7 +3105,10 @@ def _serialize_ticket_details(ticket, ticket_type):
         degraded_reasons.append("ticket_comments_unavailable")
 
     try:
-        timeline = servicio_tickets.obtener_timeline_ticket(ticket)
+        timeline = servicio_tickets.obtener_timeline_ticket(
+            ticket,
+            include_internal=include_internal,
+        )
     except Exception as exc:
         current_app.logger.warning(
             "Ticket detail timeline degraded for %s ticket %s: %s",
@@ -2971,7 +3121,10 @@ def _serialize_ticket_details(ticket, ticket_type):
         degraded_reasons.append("ticket_timeline_unavailable")
 
     try:
-        progreso_estados = servicio_tickets.obtener_estado_progreso(ticket)
+        progreso_estados = servicio_tickets.obtener_estado_progreso(
+            ticket,
+            include_internal=include_internal,
+        )
     except Exception as exc:
         current_app.logger.warning(
             "Ticket detail progress degraded for %s ticket %s: %s",
@@ -2984,7 +3137,10 @@ def _serialize_ticket_details(ticket, ticket_type):
         degraded_reasons.append("ticket_progress_unavailable")
 
     try:
-        historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+        historial_chat = servicio_tickets.obtener_historial_chat(
+            ticket,
+            include_internal=include_internal,
+        )
     except Exception as exc:
         current_app.logger.warning(
             "Ticket detail chat history degraded for %s ticket %s: %s",
@@ -3001,6 +3157,11 @@ def _serialize_ticket_details(ticket, ticket_type):
         if hasattr(ticket, 'archivos'):
             archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
             for adj in archivos_list:
+                if (
+                    not include_internal
+                    and _is_internal_ticket_comment(getattr(adj, "comentario_asociado", None))
+                ):
+                    continue
                 analisis_data = None
                 if adj.analisis:
                     analisis = adj.analisis
@@ -3062,13 +3223,33 @@ def _serialize_ticket_details(ticket, ticket_type):
         collaboration_state=collaboration_state,
     )
 
+    category_authority = (
+        resolve_municipio_category_authority(ticket)
+        if ticket_type == "municipio"
+        else None
+    )
+    persisted_category = getattr(ticket, 'categoria', None)
+    display_category = (
+        category_authority.get("authoritative_category")
+        if category_authority and category_authority.get("verified")
+        else persisted_category
+    )
+
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "tipo": ticket_type,
+        "source_model": "MunicipioTicket" if ticket_type == "municipio" else "PymeTicket",
+        "ticket_type": ticket_type,
         "nro_ticket_original": ticket.nro_ticket, # Mantenemos el nro original por si acaso
         "asunto": getattr(ticket, 'asunto', ''),
-        "categoria_reclamo": getattr(ticket, 'categoria', ''),
+        "categoria_reclamo": display_category or '',
+        "categoria": display_category,
+        "categoria_id": getattr(ticket, "categoria_id", None),
+        "authoritative_category": (
+            category_authority.get("authoritative_category") if category_authority else None
+        ),
+        "category_authority": category_authority,
         "estado_ticket": ticket.estado,
         "fecha_hora_creacion": datetime_to_iso_utc(ticket.fecha),
         "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),
@@ -3174,6 +3355,9 @@ def _serialize_ticket_details(ticket, ticket_type):
             degraded_reasons.append("ticket_route_unavailable")
         ticket_data["ruta"] = ruta_data
         ticket_data["meta"] = _ticket_degraded_meta(degraded_reasons)
+    workflow = _private_ticket_workflow(ticket, ticket_type) if include_internal else None
+    if workflow is not None:
+        ticket_data["workflow"] = workflow
     return ticket_data
 
 
@@ -3255,7 +3439,12 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
             (jsonify({"error": "Ticket no encontrado."}), 404)
         )
 
-    ticket_data = _serialize_ticket_details(ticket, "municipio")
+    agent_access = _resolver_acceso_chat_ticket(ticket, actor_user)
+    ticket_data = _serialize_ticket_details(
+        ticket,
+        "municipio",
+        include_internal=bool(agent_access.get("es_agente")),
+    )
     return _ticket_private_no_store_response(
         _ticket_json(ticket_data, request_id=request_id)
     )
@@ -3947,38 +4136,21 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
 @token_requerido
 @admin_o_empleado_requerido
+@auth_sin_escrituras_implicitas
 def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if tipo not in {"municipio", "pyme"}:
         return jsonify({"error": "Tipo de ticket no válido."}), 400
-    data = request.get_json()
-    nuevo_estado = data.get("estado")
-    if not nuevo_estado:
-        return jsonify({"error": "Falta el nuevo estado."}), 400
-
-    # Permitir "resuelto" como alias de "cerrado" para la UI
-    if nuevo_estado == "resuelto":
-        nuevo_estado = "cerrado"
-
-    if nuevo_estado not in TICKET_ALLOWED_STATES:
-        return (
-            jsonify({
-                "error": f"Estado '{nuevo_estado}' no es válido. Permitidos: {', '.join(TICKET_ALLOWED_STATES + ['resuelto'])}",
-            }),
-            400,
-        )
-
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket_obj = db.session.get(TicketModel, ticket_id)
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    # Refuerzo de permisos:
-    if not _ticket_scope_access_allows(tipo, ticket_obj, current_user):
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
-    if error_response:
-        return error_response
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Se requiere un objeto JSON.", "reason_code": "workflow_command_invalid"}), 400
+    try:
+        tenant = resolve_private_ticket_tenant(current_user, body=data)
+        model = MunicipioTicket if tipo == "municipio" else PymeTicket
+        ticket_obj, nuevo_estado = lock_and_validate_workflow_command(
+            db.session, model, ticket_id, actor=current_user, tenant=tenant, ticket_type=tipo, data=data)
+    except TicketWorkflowError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error), "reason_code": error.code, "retryable": False}), error.status
 
     log_ticket_debug(
         "cambiar_estado",
@@ -3992,14 +4164,6 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         ticket_obj.estado_cliente = nuevo_estado
     if hasattr(ticket_obj, "ultima_actividad"):
         ticket_obj.ultima_actividad = get_local_now()
-    if nuevo_estado == "cerrado":
-        encuesta = TicketSatisfaccion(
-            ticket_id=ticket_obj.id,
-            tipo=tipo,
-            puntuacion=5,
-            comentario="Cierre automático",
-        )
-        db.session.add(encuesta)
     comentario_estado = TicketComentario(
         municipio_ticket_id=ticket_obj.id if tipo == "municipio" else None,
         pyme_ticket_id=ticket_obj.id if tipo == "pyme" else None,
@@ -4010,7 +4174,11 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         estado_ticket=nuevo_estado,
     )
     db.session.add(comentario_estado)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
     try:
         from services.notification_dispatcher import dispatch_ticket_state_change
 
@@ -4061,6 +4229,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         "latitud": getattr(ticket_obj, 'latitud', None),
         "longitud": getattr(ticket_obj, 'longitud', None)
     }
+    ticket_data["source_model"] = "MunicipioTicket" if tipo == "municipio" else "PymeTicket"
+    ticket_data["workflow"] = build_workflow_instance(ticket_obj, tipo, actor=current_user, tenant=tenant)
     return jsonify(ticket_data)
 
 # ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
@@ -4096,15 +4266,19 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
-        mensajes_nuevos = (
-            TicketComentario.query
-            .filter(
-                TicketComentario.municipio_ticket_id == ticket_id,
-                TicketComentario.id > ultimo_mensaje_id
-            )
-            .order_by(TicketComentario.fecha.asc())
-            .all()
+        mensajes_query = TicketComentario.query.filter(
+            TicketComentario.municipio_ticket_id == ticket_id,
+            TicketComentario.id > ultimo_mensaje_id,
         )
+        if not es_agente_municipal:
+            mensajes_query = mensajes_query.filter(_public_ticket_comment_filter())
+        mensajes_nuevos = mensajes_query.order_by(TicketComentario.fecha.asc()).all()
+        if not es_agente_municipal:
+            mensajes_nuevos = [
+                message
+                for message in mensajes_nuevos
+                if not _is_internal_ticket_comment(message)
+            ]
         mensajes_formateados = _format_ticket_chat_messages(mensajes_nuevos, request_id=request_id)
         realtime_state = _safe_ticket_realtime_summary("municipio", ticket_id, request_id=request_id)
         degraded_reasons = []
@@ -4165,15 +4339,19 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int, anon_id: str = No
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
-        mensajes_nuevos = (
-            TicketComentario.query
-            .filter(
-                TicketComentario.pyme_ticket_id == ticket_id,
-                TicketComentario.id > ultimo_mensaje_id
-            )
-            .order_by(TicketComentario.fecha.asc())
-            .all()
+        mensajes_query = TicketComentario.query.filter(
+            TicketComentario.pyme_ticket_id == ticket_id,
+            TicketComentario.id > ultimo_mensaje_id,
         )
+        if not es_agente_pyme:
+            mensajes_query = mensajes_query.filter(_public_ticket_comment_filter())
+        mensajes_nuevos = mensajes_query.order_by(TicketComentario.fecha.asc()).all()
+        if not es_agente_pyme:
+            mensajes_nuevos = [
+                message
+                for message in mensajes_nuevos
+                if not _is_internal_ticket_comment(message)
+            ]
         mensajes_formateados = _format_ticket_chat_messages(mensajes_nuevos, request_id=request_id)
         realtime_state = _safe_ticket_realtime_summary("pyme", ticket_id, request_id=request_id)
         degraded_reasons = []
@@ -4278,7 +4456,10 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     degraded_reasons: list[str] = []
     try:
         try:
-            timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
+            timeline = servicio_tickets.obtener_timeline_ticket(
+                ticket_obj,
+                include_internal=bool(access and access.get("es_agente")),
+            )
         except Exception as exc:
             current_app.logger.warning(
                 "Ticket timeline degraded for %s ticket %s request_id=%s: %s",
@@ -4292,7 +4473,10 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             degraded_reasons.append("ticket_timeline_unavailable")
 
         try:
-            historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
+            historial_chat = servicio_tickets.obtener_historial_chat(
+                ticket_obj,
+                include_internal=bool(access and access.get("es_agente")),
+            )
         except Exception as exc:
             current_app.logger.warning(
                 "Ticket chat history degraded for %s ticket %s request_id=%s: %s",
@@ -5160,6 +5344,13 @@ def mapa_de_tickets(current_user: User, tipo: str):
         datos[:3] if datos else [],
     )
 
+    employee_privacy = None
+    if is_employee_heatmap_viewer(current_user):
+        datos, employee_privacy = build_employee_legacy_heatmap_points(
+            datos,
+            current_user,
+        )
+
     # Convert the aggregated points to a GeoJSON FeatureCollection for MapLibre
     features = [
         {
@@ -5180,7 +5371,10 @@ def mapa_de_tickets(current_user: User, tipo: str):
         if punto.get("location")
     ]
 
-    return jsonify({"type": "FeatureCollection", "features": features})
+    payload = {"type": "FeatureCollection", "features": features}
+    if employee_privacy is not None:
+        payload["privacy"] = employee_privacy
+    return jsonify(payload)
 
 # ---------- ENVIAR HISTORIAL POR CORREO ----------
 def _format_datetime_safe(value) -> str:
@@ -5302,7 +5496,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
                 )
                 adjunto = {
                     "nombre": nombre_adjunto,
-                    "url": comentario.archivo_adjunto.url,
+                    "url": resolve_attachment_delivery_url(comentario.archivo_adjunto.url, comentario.archivo_adjunto.mime, attachment=comentario.archivo_adjunto).get('url'),
                 }
 
             comentarios_info.append({

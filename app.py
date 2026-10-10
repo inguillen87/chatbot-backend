@@ -56,7 +56,6 @@ _suppress_sensitive_third_party_info_logs()
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from flask_cors import CORS
-from flask_session import Session
 from sqlalchemy import event as sa_event
 
 from config import (
@@ -68,7 +67,7 @@ from config import (
 )
 from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
-from middleware import tenant_middleware
+from middleware import register_cutover_writer_fence, tenant_middleware
 from utils.errors import ApiError
 from utils.contact_identity import (
     request_path_allows_contact_identity_body,
@@ -76,6 +75,7 @@ from utils.contact_identity import (
 )
 from utils.safe_logging import describe_database_uri
 from utils.runtime_environment import is_production_runtime, is_render_runtime
+from utils.migration_managed_session import init_migration_managed_session
 
 
 def _truthy_env(name: str) -> bool:
@@ -104,7 +104,18 @@ _PUBLIC_CORS_EXACT_PATHS = {
 _PUBLIC_WIDGET_AUTH_PREFIXES = ("/auth/widget", "/api/auth/widget")
 
 
-def _is_public_cross_origin_path(path: str) -> bool:
+def _is_authenticated_rehearsal_path(path: str, method: str | None) -> bool:
+    """Only the two account-authenticated technical rehearsal endpoints."""
+    match = re.fullmatch(
+        r"/api/v2/public/tenants/[a-z0-9][a-z0-9-]{0,99}/survey-rehearsals/"
+        r"rehearsal_[a-f0-9]{32}/respond(?P<status>/status)?", str(path or "")
+    )
+    return bool(match and method in ({"GET", "OPTIONS"} if match.group("status") else {"POST", "OPTIONS"}))
+
+
+def _is_public_cross_origin_path(path: str, method: str | None = None) -> bool:
+    if _is_authenticated_rehearsal_path(path, method):
+        return False
     normalized = str(path or "").rstrip("/") or "/"
     if normalized in _PUBLIC_CORS_EXACT_PATHS:
         return True
@@ -216,6 +227,10 @@ def create_app(config_class=Config):
     def health():
         return jsonify({"status": "ok"})
 
+    # Opt-in cutover control. Register it before auth, tenant resolution and
+    # route handlers so no HTTP mutation reaches application or provider code.
+    register_cutover_writer_fence(app)
+
     # Error handling unificado JSON
     def _request_id() -> str:
         incoming = (
@@ -315,7 +330,6 @@ def create_app(config_class=Config):
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:
-        session_ext = Session()
         secret_key = app.config.get("SECRET_KEY")
         app.logger.info(
             "Session config: secret_key=%s secure=%s samesite=%s type=%s domain=%s",
@@ -361,7 +375,14 @@ def create_app(config_class=Config):
             from flask_login import current_user
 
             g.viewer = None
+            g.pop('_login_user', None)
+            g.current_user = None
+            g.token_payload = {}
+            g.auth_credential_source = None
             g.explicit_bearer_present = False
+            from services.auth_session_lifecycle import is_retirement_request
+            if is_retirement_request():
+                return
             authorization_header = request.headers.get("Authorization", "").strip()
             has_explicit_bearer = bool(
                 re.match(
@@ -402,6 +423,10 @@ def create_app(config_class=Config):
 
         @app.before_request
         def attach_contact_identity():
+            from services.auth_session_lifecycle import is_retirement_request
+            if is_retirement_request():
+                g.contact_identity = None
+                return
             g.contact_identity = resolve_contact_identity_from_request(
                 request,
                 include_body=request_path_allows_contact_identity_body(request.path),
@@ -444,6 +469,9 @@ def create_app(config_class=Config):
         @login_manager.user_loader
         def load_user(user_id):
             try:
+                from services.auth_session_lifecycle import is_retirement_request, cookie_lineage_for_user
+                if is_retirement_request():
+                    return None
                 from utils.auth_helpers import (
                     is_clerk_managed_user,
                     is_demo_user_account,
@@ -452,6 +480,8 @@ def create_app(config_class=Config):
                 from utils.roles import is_super_admin_role
 
                 user = User.query.get(int(user_id))
+                if cookie_lineage_for_user(user_id) is None:
+                    return None
                 if is_user_auth_disabled(user) or is_demo_user_account(user):
                     return None
                 if user and is_clerk_managed_user(user):
@@ -465,13 +495,18 @@ def create_app(config_class=Config):
     # Sesiones en servidor (solo runtime normal)
     if not MIGRATIONS_ONLY:
         app.config['SESSION_SQLALCHEMY'] = db
-        session_ext = Session()
         if app.config.get("TESTING"):
             from cachelib.simple import SimpleCache
 
             app.config['SESSION_TYPE'] = 'cachelib'
             app.config['SESSION_CACHELIB'] = SimpleCache(default_timeout=300)
-        session_ext.init_app(app)
+        init_migration_managed_session(app, db)
+        from utils.migration_managed_session import isolate_retirement_session
+        isolate_retirement_session(app)
+        from services.auth_session_lifecycle import attach_retirement_descriptor
+        app.after_request(attach_retirement_descriptor)
+        from services.attachment_delivery import register_attachment_delivery_redaction
+        register_attachment_delivery_redaction(app)
 
     # Logging de app
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -545,6 +580,7 @@ def create_app(config_class=Config):
             "Authorization",
             "Origin",
             "X-Chatboc-Token",
+            "X-Chatboc-Knowledge",
             "X-Entity-Token",
             "X-Chat-Session-Id",
             "X-Anon-Id",
@@ -639,7 +675,9 @@ def create_app(config_class=Config):
             "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
             "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id, "
             "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Window, "
-            "X-RateLimit-Reset-After, Retry-After"
+            "X-RateLimit-Reset-After, Retry-After, "
+            "X-Chat-Idempotency-Contract, X-Idempotency-Status, "
+            "Idempotency-Replayed, X-Chatboc-Knowledge-Revision, X-Chatboc-Tenant-ID"
         )
 
         @app.after_request
@@ -648,7 +686,7 @@ def create_app(config_class=Config):
             if not origin:
                 return resp
 
-            if _is_public_cross_origin_path(request.path):
+            if _is_public_cross_origin_path(request.path, request.method):
                 _clear_cors_headers(resp)
                 resp.headers.setdefault("X-Request-Id", _request_id())
                 _set_single_header(resp, "Access-Control-Allow-Origin", origin)
@@ -658,7 +696,12 @@ def create_app(config_class=Config):
                 _set_cors_vary(resp)
                 return resp
 
-            if not _credentialed_origin_is_allowed(origin):
+            if (not _credentialed_origin_is_allowed(origin)
+                or _is_authenticated_rehearsal_path(request.path, request.method)
+                and not is_same_site_credential_origin(
+                    origin, backend_url=app.config.get("BACKEND_URL"),
+                    public_root_domain=app.config.get("PUBLIC_ROOT_DOMAIN"),
+                )):
                 _clear_cors_headers(resp)
                 return resp
 
@@ -698,6 +741,11 @@ def create_app(config_class=Config):
                 "X-RateLimit-Window",
                 "X-RateLimit-Reset-After",
                 "Retry-After",
+                "X-Chat-Idempotency-Contract",
+                "X-Idempotency-Status",
+                "Idempotency-Replayed",
+                "X-Chatboc-Knowledge-Revision",
+                "X-Chatboc-Tenant-ID",
             ],
         )
 
@@ -770,6 +818,7 @@ def create_app(config_class=Config):
     from routes.pwa_misc import pwa_misc_bp
     from routes.webauthn import webauthn_bp
     from routes.admin_tenant import admin_tenant_bp
+    from routes.institutional_assistant import institutional_assistant_bp
     from routes.public_tenant import public_tenant_bp
     from routes.public_flow_runtime import public_flow_runtime_bp
     from routes.public_finance import public_finance_bp
@@ -777,7 +826,10 @@ def create_app(config_class=Config):
     from routes.pyme_catalog_fixes import pyme_catalog_fix_bp
     from routes.pyme_api import pyme_api_bp
     from routes.health import health_bp, runtime_readiness_bp
+    from routes.internal_cron import internal_cron_bp
+    from routes.internal_cutover import internal_cutover_bp
     from routes.voice_routes import voice_bp
+    from routes.browser_realtime import browser_realtime_bp
     from routes.catalog_routes import catalog_bp as catalog_v2_bp
     from routes.orders import orders_bp
     from routes.admin_fulfillment import admin_fulfillment_bp
@@ -787,6 +839,7 @@ def create_app(config_class=Config):
     from routes.access_control import access_control_bp
     from routes.whatsapp_rules import whatsapp_rules_bp
     from routes.meta_flow_data_exchange import meta_flow_data_exchange_bp
+    from routes.tdf_meta_sandbox import tdf_meta_sandbox_bp
     from routes.v2 import register_v2_blueprints
     from cli_commands import register_commands
 
@@ -947,6 +1000,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pwa_app_legacy_bp)
     app.register_blueprint(webauthn_bp)
     app.register_blueprint(admin_tenant_bp)
+    app.register_blueprint(institutional_assistant_bp)
     app.register_blueprint(public_tenant_bp)
     app.register_blueprint(public_flow_runtime_bp)
     app.register_blueprint(public_finance_bp)
@@ -958,7 +1012,10 @@ def create_app(config_class=Config):
     app.register_blueprint(pyme_api_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(runtime_readiness_bp)
+    app.register_blueprint(internal_cron_bp)
+    app.register_blueprint(internal_cutover_bp)
     app.register_blueprint(voice_bp)
+    app.register_blueprint(browser_realtime_bp)
     app.register_blueprint(catalog_v2_bp)
     app.register_blueprint(orders_bp)
     app.register_blueprint(admin_fulfillment_bp)
@@ -968,6 +1025,7 @@ def create_app(config_class=Config):
     app.register_blueprint(access_control_bp)
     app.register_blueprint(whatsapp_rules_bp)
     app.register_blueprint(meta_flow_data_exchange_bp)
+    app.register_blueprint(tdf_meta_sandbox_bp)
 
     from routes.tracking_ui import tracking_ui_bp
     app.register_blueprint(tracking_ui_bp)
@@ -1101,6 +1159,9 @@ def create_app(config_class=Config):
             None if process_role == "survey-effect-worker" else app,
             **socket_init_kwargs,
         )
+        if process_role != "survey-effect-worker":
+            from socket_service import install_auth_session_socket_guard
+            install_auth_session_socket_guard(app)
         if process_role == "survey-effect-worker":
             app.extensions["socketio_external_emitter"] = socketio
 

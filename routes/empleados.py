@@ -11,7 +11,7 @@ from models import (
     db,
 )
 from routes.auth import token_requerido, solo_admin_requerido
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 import uuid
 from datetime import datetime, timedelta
 from sqlalchemy import and_, false, func, or_

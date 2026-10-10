@@ -1,10 +1,14 @@
 # services/procesar_catalogo_excel.py
-import pandas as pd
+from __future__ import annotations
+
 import logging
 import os
 from typing import List, Dict, Any
 
 from .common_utils import limpiar_texto_base, crear_mapa_de_columnas_inteligente, KEYWORD_MAP, parse_unidad_y_cantidad_empaque
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 logger = logging.getLogger(__name__)
 

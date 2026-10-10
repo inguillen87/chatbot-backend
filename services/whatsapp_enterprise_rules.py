@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 import hashlib
 import re
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models import (
@@ -26,7 +27,7 @@ def _to_utc_naive(value):
     if value is None:
         return None
     if getattr(value, "tzinfo", None) is not None:
-        return value.astimezone().replace(tzinfo=None)
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
     return value
 
 
@@ -151,6 +152,22 @@ class WhatsAppEnterpriseRulesService:
             if str(word).strip().lower() and str(word).strip().lower() in body_l:
                 return False, "blocked_keyword"
 
+        quiet_start = rule.quiet_hours_start
+        quiet_end = rule.quiet_hours_end
+        if quiet_start is not None and quiet_end is not None:
+            # Rule hours are explicitly UTC until a governed tenant timezone
+            # becomes part of this contract.  Hidden server-local conversion
+            # would make the same policy behave differently after migration.
+            current_hour = int(get_local_now().hour)
+            in_quiet_hours = (
+                int(quiet_start) <= current_hour < int(quiet_end)
+                if int(quiet_start) < int(quiet_end)
+                else current_hour >= int(quiet_start)
+                or current_hour < int(quiet_end)
+            )
+            if in_quiet_hours:
+                return False, "quiet_hours"
+
         if rule.max_outbound_per_hour:
             since = get_local_now() - timedelta(hours=1)
             reservation_exists = bool(reservation_key) and self._reservation_exists(
@@ -167,10 +184,18 @@ class WhatsAppEnterpriseRulesService:
         if not within_24h_window and metadata.get("recipient"):
             normalized = self._normalize_recipient(metadata.get("recipient"))
             state = None
-            if normalized:
+            try:
+                provider_sender_id = int(metadata.get("provider_sender_id") or 0)
+            except (TypeError, ValueError, OverflowError):
+                provider_sender_id = 0
+            if normalized and provider_sender_id > 0:
                 state = (
                     session.query(WhatsAppContactState)
-                    .filter_by(tenant_id=self.tenant_id, recipient=normalized)
+                    .filter_by(
+                        tenant_id=self.tenant_id,
+                        provider_sender_id=provider_sender_id,
+                        recipient=normalized,
+                    )
                     .first()
                 )
             if state and state.last_inbound_at:
@@ -257,24 +282,75 @@ class WhatsAppEnterpriseRulesService:
         )
         return len(reservation_keys) + legacy_notification_count + legacy_flow_count
 
-    def get_contact_state(self, *, recipient: str | None) -> WhatsAppContactState | None:
+    def get_contact_state(
+        self,
+        *,
+        recipient: str | None,
+        provider_sender_id: int | None,
+    ) -> WhatsAppContactState | None:
         normalized = self._normalize_recipient(recipient)
-        if not normalized:
+        try:
+            normalized_sender_id = int(provider_sender_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            normalized_sender_id = 0
+        if not normalized or normalized_sender_id <= 0:
             return None
         return WhatsAppContactState.query.filter_by(
             tenant_id=self.tenant_id,
+            provider_sender_id=normalized_sender_id,
             recipient=normalized,
         ).first()
 
-    def register_inbound_activity(self, *, recipient: str | None, at=None) -> WhatsAppContactState | None:
+    def register_inbound_activity(
+        self,
+        *,
+        recipient: str | None,
+        provider_sender_id: int | None,
+        at=None,
+    ) -> WhatsAppContactState | None:
         normalized = self._normalize_recipient(recipient)
-        if not normalized:
+        try:
+            normalized_sender_id = int(provider_sender_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            normalized_sender_id = 0
+        if not normalized or normalized_sender_id <= 0:
             return None
-        state = self.get_contact_state(recipient=normalized)
-        if not state:
-            state = WhatsAppContactState(tenant_id=self.tenant_id, recipient=normalized)
-            db.session.add(state)
-        state.last_inbound_at = at or get_local_now()
+        state = self.get_contact_state(
+            recipient=normalized,
+            provider_sender_id=normalized_sender_id,
+        )
+        observed_at = at or get_local_now()
+        if state:
+            state.last_inbound_at = observed_at
+            db.session.flush()
+            return state
+
+        try:
+            with db.session.begin_nested():
+                candidate = WhatsAppContactState(
+                    tenant_id=self.tenant_id,
+                    provider_sender_id=normalized_sender_id,
+                    recipient=normalized,
+                    last_inbound_at=observed_at,
+                )
+                db.session.add(candidate)
+                db.session.flush()
+            state = candidate
+        except IntegrityError:
+            # Another inbound for this exact sender/contact may win the first
+            # insert.  The savepoint keeps the webhook transaction usable.
+            state = self.get_contact_state(
+                recipient=normalized,
+                provider_sender_id=normalized_sender_id,
+            )
+            if state is None:
+                raise
+            current_at = _to_utc_naive(state.last_inbound_at)
+            candidate_at = _to_utc_naive(observed_at)
+            if current_at is None or (
+                candidate_at is not None and candidate_at >= current_at
+            ):
+                state.last_inbound_at = observed_at
         db.session.flush()
         return state
 

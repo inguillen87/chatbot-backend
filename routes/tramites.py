@@ -1,7 +1,11 @@
-from flask import Blueprint, jsonify, request, send_from_directory
-from services.tramites import buscar_tramites
-from services.municipio_responder import MUNICIPIO_ID
 import os
+
+from flask import Blueprint, jsonify, request, send_from_directory
+
+from services.tramites import buscar_tramites
+
+
+MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 
 tramites_bp = Blueprint('tramites', __name__, url_prefix='/tramites')
 

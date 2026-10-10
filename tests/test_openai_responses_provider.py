@@ -1,9 +1,11 @@
+import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from providers.openai_responses import OpenAIResponsesProvider
 from schemas.ai_contracts import GatewayInputItem, GatewayRequest
+from services import openai_bridge
 
 
 class _FakeResponses:
@@ -22,6 +24,61 @@ class _FakeClient:
 
 
 class OpenAIResponsesProviderTestCase(unittest.TestCase):
+    def tearDown(self):
+        openai_bridge._reset_openai_client_for_tests()
+
+    def test_managed_client_uses_cloudflare_transport_model(self):
+        response = SimpleNamespace(
+            id="resp_gateway",
+            model="openai/gpt-5.6-sol",
+            status="completed",
+            output_text="ok",
+            output=[],
+            usage=None,
+        )
+        client = _FakeClient(response)
+        captured = {}
+
+        def _fake_openai(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        gateway_env = {
+            "CLOUDFLARE_AI_GATEWAY_ENABLED": "true",
+            "CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID": "b" * 32,
+            "CLOUDFLARE_AI_GATEWAY_API_TOKEN": "cloudflare-provider-test-token",
+            "CLOUDFLARE_AI_GATEWAY_ID": "default",
+            "OPENAI_ALLOW_NETWORK_IN_TESTS": "1",
+        }
+        openai_bridge._reset_openai_client_for_tests()
+        with (
+            patch.dict(os.environ, gateway_env, clear=False),
+            patch.object(openai_bridge, "OpenAI", _fake_openai),
+        ):
+            provider = OpenAIResponsesProvider()
+            result = provider.generate(
+                GatewayRequest(
+                    tenant_id=1,
+                    channel="web",
+                    model="gpt-5.6-sol",
+                    instructions="Respondé breve.",
+                    input_items=[GatewayInputItem(type="text", text="hola")],
+                )
+            )
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(client.responses.last_kwargs["model"], "openai/gpt-5.6-sol")
+        self.assertIs(client.responses.last_kwargs["store"], False)
+        self.assertEqual(
+            captured["base_url"],
+            "https://api.cloudflare.com/client/v4/accounts/"
+            f"{'b' * 32}/ai/v1",
+        )
+        self.assertEqual(
+            captured["default_headers"]["cf-aig-collect-log-payload"],
+            "false",
+        )
+
     def test_generate_stream_uses_responses_stream_and_preserves_typed_events(self):
         final_response = SimpleNamespace(
             id="resp_stream",

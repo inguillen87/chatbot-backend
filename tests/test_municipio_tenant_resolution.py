@@ -8,6 +8,7 @@ from services.municipio_responder import (
     _resolve_authoritative_municipio_tenant,
     responder_municipio,
 )
+from services.tenant_resolver import _tenant_by_number
 
 
 def _create_municipal_tenants(owner_id: int):
@@ -28,6 +29,30 @@ def _create_municipal_tenants(owner_id: int):
     db.session.add_all([first, second])
     db.session.commit()
     return first, second
+
+
+def test_junin_destination_uses_registered_sender_not_profile_or_sandbox(
+    client,
+    owner_user,
+):
+    junin_sender = "+17432643718"
+    profile_contact = "+5492615550101"
+    twilio_sandbox = "+14155238886"
+    owner_user.telefono = profile_contact
+    tenant = TenantProfile(
+        slug="junin-sender-scope",
+        nombre="Municipalidad de Junín",
+        tipo="municipio",
+        municipio_id=owner_user.id,
+        whatsapp_sender_id=f"whatsapp:{junin_sender}",
+        is_active=True,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    assert _tenant_by_number(f"whatsapp:{junin_sender}").id == tenant.id
+    assert _tenant_by_number(profile_contact) is None
+    assert _tenant_by_number(f"whatsapp:{twilio_sandbox}") is None
 
 
 def test_session_tenant_wins_when_owner_has_multiple_profiles(client, owner_user):

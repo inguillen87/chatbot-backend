@@ -91,6 +91,9 @@ def _format_catalog_product(item: CatalogoItem, tenant: TenantProfile) -> dict[s
     product["precio_valor"] = price_value
     product["disponible"] = _product_available(item)
     product["en_promocion"] = bool(item.promocion_info)
+    metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+    product["data_origin"] = metadata.get("data_origin") or "tenant_catalog"
+    product["synthetic_demo"] = metadata.get("synthetic_demo") is True
     return product
 
 
@@ -813,6 +816,7 @@ def build_public_market_catalog_contract(
     share_text = f"Catalogo de {tenant.nombre or tenant.slug}: {public_url}"
     assisted_intake = public_market_assisted_intake(tenant, total_products=len(all_products))
     public_api = public_market_api_contract(tenant, assisted_intake)
+    synthetic_count = sum(1 for product in all_products if product.get("synthetic_demo") is True)
     return {
         "contract_version": PUBLIC_MARKET_CATALOG_CONTRACT_VERSION,
         "tenant": tenant_public_summary(tenant),
@@ -823,6 +827,9 @@ def build_public_market_catalog_contract(
         "items": products,
         "total": len(products),
         "total_unfiltered": len(all_products),
+        "data_state": "configured" if all_products else "catalog_not_configured",
+        "contains_synthetic_demo_data": synthetic_count > 0,
+        "synthetic_demo_product_count": synthetic_count,
         "facets": _facets_from_products(all_products),
         "filters": {
             "categoria": categoria,

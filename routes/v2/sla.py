@@ -8,6 +8,7 @@ from flask import Blueprint, g, jsonify, request
 from extensions import db
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.v2.sla_service import (
+    SlaPolicyValidationError,
     detect_sla_breaches_for_tenant,
     get_policies_for_tenant,
     save_policies_for_tenant,
@@ -68,6 +69,18 @@ def _operator_error():
     return _error_response("Permisos insuficientes para operar SLA", 403, "operator_required", "ask_operator")
 
 
+def _policy_admin_error():
+    role = canonical_role(getattr(_viewer(), "rol", None))
+    if role in {ROLE_SUPERADMIN, ROLE_TENANT_ADMIN}:
+        return None
+    return _error_response(
+        "Solo un administrador del tenant puede modificar politicas SLA",
+        403,
+        "sla_policy_admin_required",
+        "ask_tenant_admin",
+    )
+
+
 def _resolve_tenant_or_error():
     explicit_slug = (request.headers.get("X-Tenant-Slug") or request.args.get("tenant_slug") or "").strip()
     if not explicit_slug:
@@ -100,12 +113,34 @@ def save_sla_policies_v2():
     access_error = _tenant_access_error(tenant)
     if access_error:
         return access_error
-    role_error = _operator_error()
+    role_error = _policy_admin_error()
     if role_error:
         return role_error
 
-    payload = request.get_json(silent=True) or {}
-    policies = save_policies_for_tenant(tenant, payload.get("policies") or payload)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+    policy_payload = payload.get("policies") if "policies" in payload else payload
+    try:
+        policies = save_policies_for_tenant(tenant, policy_payload)
+    except SlaPolicyValidationError as exc:
+        return _json_response(
+            {
+                "contract_version": "shared.error.v1",
+                "status_code": 422,
+                "reason_code": "invalid_sla_policy",
+                "retryable": False,
+                "action_hint": "fix_invalid_fields",
+                "error": {
+                    "code": 422,
+                    "message": "Politicas SLA invalidas",
+                    "fields": exc.errors,
+                },
+                "message": "Politicas SLA invalidas",
+                "field_errors": exc.errors,
+            },
+            422,
+        )
     db.session.commit()
     return _json_response({"contract_version": "sla.v2.policies", "policies": policies})
 

@@ -84,6 +84,16 @@ class AuthLoginPathRegressionTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertIn("token", payload)
+        self.assertEqual(payload['session_retirement']['actor_id'], str(self.user.id))
+
+    def test_chatuser_panel_login_emits_portal_lineage_proof(self):
+        from services.auth_session_lifecycle import descriptor_for_token
+        response = self.client.post('/auth/chatuserloginpanel', json={
+            'empresa_token': self.owner.token, 'email': self.user.email, 'password':'password123'})
+        self.assertEqual(response.status_code, 200)
+        value = response.get_json()
+        self.assertEqual(value['session_retirement'], descriptor_for_token(value['token']))
+        self.assertEqual(value['session_retirement']['actor_id'], str(self.user.id))
 
     def test_standard_login_uses_resolved_tenant_for_municipio_id(self):
         resp = self.client.post(
@@ -92,6 +102,7 @@ class AuthLoginPathRegressionTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
+        self.assertEqual(payload['session_retirement']['actor_id'], str(self.owner.id))
         self.assertEqual(payload.get("tenant_slug"), self.tenant.slug)
         self.assertEqual(payload.get("municipio_id"), self.owner.id)
 

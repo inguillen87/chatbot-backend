@@ -668,6 +668,124 @@ class WhatsAppInboundQueueWebhookTestCase(unittest.TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(WhatsAppInboundTurn.query.count(), 1)
 
+    def test_signed_twilio_retry_canary_persists_and_processes_same_sid_once(self):
+        payload = self._payload(
+            "SMqueuesignedretrycanary001",
+            body="Canario local de retry durable",
+        )
+        signature = self._signature(payload)
+        validator = RequestValidator(CHILD_AUTH_TOKEN)
+        self.assertTrue(
+            validator.validate(
+                "http://localhost/webhook/whatsapp",
+                payload,
+                signature,
+            )
+        )
+
+        provider_client = MagicMock()
+        bot_payload = {
+            "message_body": "Respuesta unica del canario durable.",
+            "message_type": "text",
+            "options_list": [],
+        }
+
+        def post_retry(idempotency_token: str):
+            return self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": signature,
+                    "I-Twilio-Idempotency-Token": idempotency_token,
+                },
+            )
+
+        with (
+            patch.object(
+                webhook_module,
+                "Client",
+                return_value=provider_client,
+            ),
+            patch.object(worker_module, "enqueue_whatsapp_inbound_stream") as enqueue,
+            patch.object(
+                webhook_module,
+                "responder_chatboc",
+                return_value=bot_payload,
+            ) as responder,
+        ):
+            self.app.config["CUTOVER_WRITER_FENCE_ENABLED"] = True
+            fenced = post_retry("retry-token-canary-fenced")
+
+            self.assertEqual(fenced.status_code, 503)
+            self.assertEqual(
+                fenced.get_json(),
+                {
+                    "contract_version": "cutover.writer_fence.v1",
+                    "status": "maintenance",
+                    "reason_code": "cutover_writer_fence_enabled",
+                    "retryable": True,
+                },
+            )
+            self.assertEqual(fenced.headers.get("Cache-Control"), "no-store")
+            self.assertEqual(fenced.headers.get("Retry-After"), "60")
+            self.assertEqual(WhatsAppInboundTurn.query.count(), 0)
+            enqueue.assert_not_called()
+            responder.assert_not_called()
+
+            self.app.config["CUTOVER_WRITER_FENCE_ENABLED"] = False
+            first = post_retry("retry-token-canary-accepted")
+            retry = post_retry("retry-token-canary-duplicate")
+
+            for response in (first, retry):
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_data(as_text=True), "OK")
+            responder.assert_not_called()
+
+            turns = WhatsAppInboundTurn.query.all()
+            self.assertEqual(len(turns), 1)
+            turn = turns[0]
+            self.assertEqual(turn.provider_message_sid, payload["MessageSid"])
+            self.assertNotIn("I-Twilio-Idempotency-Token", turn.payload_json)
+            self.assertNotIn("retry-token-canary-fenced", str(turn.payload_json))
+            self.assertNotIn("retry-token-canary-accepted", str(turn.payload_json))
+            self.assertNotIn("retry-token-canary-duplicate", str(turn.payload_json))
+            enqueue.assert_called_once_with(
+                tenant_id=self.tenant.id,
+                stream_key=turn.stream_key,
+            )
+
+            first_worker_run = worker_module.process_whatsapp_inbound_stream(
+                tenant_id=self.tenant.id,
+                stream_key=turn.stream_key,
+                limit=1,
+            )
+            second_worker_run = worker_module.process_whatsapp_inbound_stream(
+                tenant_id=self.tenant.id,
+                stream_key=turn.stream_key,
+                limit=1,
+            )
+
+        self.assertEqual(first_worker_run["processed"], 1, first_worker_run)
+        self.assertEqual(first_worker_run["completed"], 1, first_worker_run)
+        self.assertEqual(second_worker_run["processed"], 0, second_worker_run)
+        self.assertEqual(second_worker_run["completed"], 0, second_worker_run)
+        responder.assert_called_once()
+        provider_client.messages.create.assert_not_called()
+
+        db.session.expire_all()
+        completed_turn = WhatsAppInboundTurn.query.one()
+        self.assertEqual(
+            completed_turn.status,
+            WhatsAppInboundTurn.STATUS_COMPLETED,
+        )
+        matching_attempts = [
+            attempt
+            for attempt in WhatsAppOutboundAttempt.query.all()
+            if bot_payload["message_body"]
+            in str(attempt.payload_json.get("body") or "")
+        ]
+        self.assertEqual(len(matching_attempts), 1)
+
     def test_worker_replays_scoped_turn_and_stages_outbox_without_sending(self):
         payload = self._payload("SMqueueworker001")
         provider_client = MagicMock()

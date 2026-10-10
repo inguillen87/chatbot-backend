@@ -1,0 +1,15 @@
+# Control de participación de encuestas
+
+La garantía `surveys.participation_assurance.v1` se agrega a las respuestas administrativas y públicas como `participation_assurance`; el contrato público también la incluye en `frontend_contract`. El bloque `ui` contiene título, etiqueta, explicación y límite para mostrar sin deducir una identidad a partir del teléfono, IP o cookie.
+
+El comportamiento histórico permanece fuera del canario. `ENABLE_SURVEY_PARTICIPATION_ASSURANCE_V1=true` requiere una lista explícita de IDs canónicos positivos en `SURVEY_PARTICIPATION_ASSURANCE_TENANT_IDS`. Una configuración habilitada sin lista válida rechaza admisiones nuevas con 503. Esta implementación no habilita ninguna variable en producción.
+
+En el canario, `por_usuario` y sus aliases admiten una cuenta persistida autenticada y conservan la huella existente por cuenta/encuesta. Las demás políticas requieren una credencial opaca del contrato de elegibilidad ya existente: release activo, credencial validada en base, sujeto revisado, vigencia, bloqueo de fila y terminal único en la misma transacción. La huella usa el HMAC del sujeto y el ámbito tenant/encuesta/release, sin usar DNI, teléfono, IP o cookie declarados como autoridad. La garantía es por sujeto revisado y versión publicada; no certifica una persona entre cuentas o releases.
+
+No hay OTP ni verificación de propiedad de teléfono en este cambio. Una sesión verifica una cuenta; una credencial representa la atestación institucional existente. `unique_person_certified`, `phone_ownership_verified` y `result_certified` permanecen falsos. Las políticas débiles y el OR histórico combinado tienen avisos explícitos. No se corrigen huellas históricas, filas, conteos ni snapshots.
+
+`ENFORCE_PUBLIC_SURVEY_DISTRIBUTED_RATE_LIMIT=true` exige que el storage **real** de la estrategia sea Redis compartido (incluidos cluster/sentinel). Memory y fallback local se rechazan antes de consumir capacidad; errores de storage rechazan con 503. El límite por IP continúa como protección de volumen, no como identidad: dos cuentas distintas desde la misma IP pueden participar. No se activa este flag ni se consulta Redis en los tests offline.
+
+Los recibos ya comprometidos siguen siendo reproducibles con el mismo payload. Cambiar la clave no permite otra admisión de la misma cuenta/credencial. Respuesta, recibo, redención y efectos mantienen la transacción existente. La revisión de jurisdicción gubernamental y publicación no cambia ni se aprueba automáticamente.
+
+Validación local: tests HTTP con sesiones durables reales en SQLite, políticas débiles, credenciales emitidas/revisadas mediante el servicio existente, replay/conflicto, dos sujetos con mismos datos declarados, privacidad de origen y carrera de dos threads con claves distintas para la misma cuenta. Los tenants de admisión son sintéticos no gubernamentales; el negativo gubernamental confirma publicación bloqueada sin evidencia. No es aceptación pública, integración Redis real, prueba PostgreSQL concurrente ni certificación electoral.
