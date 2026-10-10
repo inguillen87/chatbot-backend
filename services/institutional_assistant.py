@@ -232,6 +232,19 @@ def _active_operational_context(context):
     return False
 
 
+def _institutional_reply_code(text):
+    """Accept only numeric menu input, including a single Unicode keycap digit."""
+    value = text.strip()
+    if value.isascii() and value.isdecimal():
+        return value
+    # Keyboards may emit the keycap with or without the emoji variation selector.
+    # This is an input format, not an inferred intent; advertised choices below
+    # remain the authority for the current tenant, node and revision.
+    if len(value) in (2, 3) and value[0] in '0123456789' and value[1:] in ('\u20e3', '\ufe0f\u20e3'):
+        return value[0]
+    return None
+
+
 def maybe_handle_institutional_question(question, owner, session=None):
     """Existing responder integration. Tenant comes from the resolved owner, not text."""
     if not isinstance(question, (str, dict)): return None
@@ -278,8 +291,8 @@ def maybe_handle_institutional_question(question, owner, session=None):
         # Text-only WhatsApp menus carry an explicit reply code. Resolve it
         # solely against the displayed node and current persisted revision;
         # free-form language still goes through the existing LLM selector.
-        reply_code = text.strip()
-        is_reply_code = reply_code.isascii() and reply_code.isdecimal()
+        reply_code = _institutional_reply_code(text)
+        is_reply_code = reply_code is not None
         known_context = previous.get('revision') == state['revision'] and previous.get('node_id') in state['bundle']['nodes']
         if is_reply_code:
             advertised = previous.get('reply_choices')

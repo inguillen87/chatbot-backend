@@ -21,7 +21,8 @@ def producer_functions():
     path = Path(__file__).resolve().parents[1] / 'services' / 'institutional_assistant.py'
     tree = ast.parse(path.read_text(encoding='utf-8'), filename=str(path))
     constants = {'UI', '_CHANNEL_UI_KEYS'}
-    functions = {'workspace', '_channel_source_label', 'maybe_handle_institutional_question'}
+    functions = {'workspace', '_channel_source_label', '_institutional_reply_code',
+                 'maybe_handle_institutional_question'}
     selected = [item for item in tree.body if (
         isinstance(item, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id in constants for target in item.targets)

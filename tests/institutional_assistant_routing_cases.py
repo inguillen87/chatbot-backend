@@ -52,6 +52,106 @@ class ExistingResponderCases:
                 session.context_data=valid
                 self.assertIsNone(maybe_handle_institutional_question('1',owner,session))
 
+    def test_keycap_reply_selects_only_the_displayed_menu_without_model(self):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        from services.response_formatter import build_interactive_response
+        from routes.whatsapp_webhook import _resolve_whatsapp_menu_selection
+        from models import AuditEvent
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            audit_before=AuditEvent.query.count()
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('keycap menu input must not call the model')):
+                for keycap in ('1\ufe0f\u20e3','1\u20e3'):
+                    with self.subTest(keycap=keycap):
+                        session=SimpleNamespace(tenant_id=tenant.id,context_data={})
+                        menu=maybe_handle_institutional_question('menu',owner,session)
+                        rendered=build_interactive_response(options=menu['botones'],body_text=menu['message_body'],
+                            channel='whatsapp',message_type=menu['message_type'],original_bot_response=menu)
+                        session.context_data.update(rendered['contexto_actualizado'])
+                        self.assertIn('*1*. Requisitos',rendered['text']['body'])
+                        self.assertEqual(_resolve_whatsapp_menu_selection(keycap,session.context_data),(None,None))
+                        response=maybe_handle_institutional_question(' '+keycap+' ',owner,session)
+                        self.assertEqual(response['fuente'],'institutional_knowledge')
+                        self.assertIn('Respuesta institucional de prueba.',response['message_body'])
+                        self.assertEqual(session.context_data['institutional_knowledge']['node_id'],'requirements')
+                        returned=maybe_handle_institutional_question('9\ufe0f\u20e3',owner,session)
+                        self.assertIn('Elegí una consulta.',returned['message_body'])
+                        self.assertEqual(session.context_data['institutional_knowledge']['node_id'],'start')
+            self.assertEqual(AuditEvent.query.count(),audit_before)
+
+    def test_keycap_zero_is_a_choice_only_when_it_was_advertised(self):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        from tests.test_institutional_assistant_content import sample
+        from models import TenantProfile,User
+        with self.app.app_context():
+            client=self.login()
+            bundle=sample(self.accounts['acceptance-a']['tenant_id'],'acceptance-a')
+            bundle['nodes']['requirements']['actions'][0]['code']='0'
+            state=self.put(client,'import',None,bundle).get_json()
+            state=self.put(client,'publish',state['revision']).get_json()
+            db=self.app.extensions['sqlalchemy'].session
+            tenant=db.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+            owner=db.get(User,tenant.municipio_id or tenant.pyme_id)
+            session=SimpleNamespace(tenant_id=tenant.id,context_data={})
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('zero requires the displayed choice')):
+                maybe_handle_institutional_question('menu',owner,session)
+                self.assertEqual(maybe_handle_institutional_question('0\ufe0f\u20e3',owner,session)['fuente'],'institutional_knowledge_unknown_choice')
+                maybe_handle_institutional_question('1\ufe0f\u20e3',owner,session)
+                returned=maybe_handle_institutional_question('0\u20e3',owner,session)
+                self.assertEqual(returned['fuente'],'institutional_knowledge')
+                self.assertEqual(session.context_data['institutional_knowledge']['node_id'],'start')
+
+    def test_keycap_reply_rejects_stale_unknown_foreign_and_unshown_menu(self):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        from copy import deepcopy
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            valid={'institutional_knowledge':{'revision':state['revision'],'node_id':'start','reply_node_id':'start','reply_choices':{'1':'requirements'}}}
+            session=SimpleNamespace(tenant_id=tenant.id,context_data=deepcopy(valid))
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('rejected keycaps must not call the model')):
+                for code in ('0\ufe0f\u20e3','9\u20e3'):
+                    self.assertEqual(maybe_handle_institutional_question(code,owner,session)['fuente'],'institutional_knowledge_unknown_choice')
+                    self.assertEqual(session.context_data,valid)
+                cases=(
+                    ({'revision':'0'*64},'institutional_knowledge_stale'),
+                    ({'reply_node_id':'requirements'},'institutional_knowledge_stale'),
+                    ({'reply_choices':{'1':'start'}},'institutional_knowledge_unknown_choice'),
+                    ({'reply_choices':{}},'institutional_knowledge_unknown_choice'),
+                    ({'reply_choices':None},'institutional_knowledge_stale'),
+                )
+                for change,expected in cases:
+                    context=deepcopy(valid)
+                    context['institutional_knowledge'].update(change)
+                    session.context_data=context
+                    self.assertEqual(maybe_handle_institutional_question('1\ufe0f\u20e3',owner,session)['fuente'],expected)
+                    self.assertEqual(session.context_data,context)
+                for context in ({},{'institutional_knowledge':{'revision':state['revision'],'node_id':'start'}}):
+                    session.context_data=context
+                    self.assertEqual(maybe_handle_institutional_question('1\ufe0f\u20e3',owner,session)['fuente'],'institutional_knowledge_stale')
+                    self.assertEqual(session.context_data,context)
+                session.tenant_id=self.accounts['acceptance-b']['tenant_id']
+                session.context_data=deepcopy(valid)
+                self.assertIsNone(maybe_handle_institutional_question('1\ufe0f\u20e3',owner,session))
+                self.assertEqual(session.context_data,valid)
+
+    def test_keycap_in_a_question_or_other_emoji_is_not_inferred_as_a_choice(self):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        import json
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            for text in ('1\ufe0f\u20e3 necesito requisitos','Necesito ayuda \U0001f91d','1\ufe0f\u20e3 9\ufe0f\u20e3',
+                         '#\ufe0f\u20e3','*\u20e3','\uff11','1\ufe0f'):
+                with self.subTest(text=text):
+                    session=SimpleNamespace(tenant_id=tenant.id,context_data={})
+                    maybe_handle_institutional_question('menu',owner,session)
+                    with patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value={'node_ids':['requirements']}) as selector:
+                        response=maybe_handle_institutional_question(text,owner,session)
+                    selector.assert_called_once()
+                    request=json.loads(selector.call_args.args[1])
+                    self.assertEqual(request['question'],text)
+                    self.assertEqual(request['current_node'],'start')
+                    self.assertEqual(response['fuente'],'institutional_knowledge')
+
     def test_number_reply_does_not_hijack_an_active_operational_flow(self):
         from services.institutional_assistant import maybe_handle_institutional_question
         from services.constants import CONTEXTO_MUNICIPIO
@@ -61,7 +161,8 @@ class ExistingResponderCases:
                 'institutional_knowledge':{'revision':state['revision'],'node_id':'start'},
                 CONTEXTO_MUNICIPIO:{'stage':'location'}})
             with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('active operational flow retains control')):
-                self.assertIsNone(maybe_handle_institutional_question('1',owner,session))
+                for text in ('1','1\ufe0f\u20e3'):
+                    self.assertIsNone(maybe_handle_institutional_question(text,owner,session))
 
     def test_multiple_selected_nodes_do_not_advertise_ambiguous_reply_codes(self):
         from services.institutional_assistant import maybe_handle_institutional_question
@@ -76,7 +177,7 @@ class ExistingResponderCases:
             previous=session.context_data.copy()
             self.assertIsNone(previous['institutional_knowledge']['reply_node_id'])
             with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('an ambiguous reply must not call the model')):
-                for code in ('1','9'):
+                for code in ('1','9','1\ufe0f\u20e3','9\u20e3'):
                     rejected=maybe_handle_institutional_question(code,owner,session)
                     self.assertEqual(rejected['fuente'],'institutional_knowledge_stale')
                     self.assertEqual(session.context_data,previous)
