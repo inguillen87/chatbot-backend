@@ -688,11 +688,14 @@ def formatear_ticket_respuesta(
             )
 
     participio_recepcion = "recibida" if tipo == "sugerencia" else "recibido"
+    nombre_saludo = nombre_usuario.strip() if isinstance(nombre_usuario, str) else ""
+    saludo_personal = f", {nombre_saludo}" if nombre_saludo else ""
     respuesta_lineas: list[str] = [
-        f"✅ *¡{texto_tipo} {participio_recepcion}, {nombre_usuario}!*"
+        f"✅ *¡{texto_tipo} {participio_recepcion}{saludo_personal}!*"
     ]
     if tipo == "reclamo" and id_ticket:
-        respuesta_lineas.append(f"Listo {nombre_usuario} ✅ Tu reclamo quedó cargado con el número `{id_ticket}`.")
+        nombre_confirmacion = f" {nombre_saludo}" if nombre_saludo else ""
+        respuesta_lineas.append(f"Listo{nombre_confirmacion} ✅ Tu reclamo quedó cargado con el número `{id_ticket}`.")
     if resumen_lineas:
         respuesta_lineas.append("")
         respuesta_lineas.append("📄 *Resumen:*")
