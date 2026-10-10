@@ -56,6 +56,58 @@ from services.user_merge import merge_anon_into_user
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
 
+
+@public_tenant_bp.route('/api/public/host-resolution', methods=['GET'])
+def public_host_resolution():
+    """Resolve one exact verified hostname, independent of ambient tenant/session hints."""
+    from services.organization_domain_binding import DomainBindingError, PUBLIC, resolve_active_host
+    from services.plan_access import tenant_allows_custom_domains
+    def reply(payload, status):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'no-store'
+        return result, status
+    if set(request.args) != {'host'} or len(request.args.getlist('host')) != 1:
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_invalid', 'tenant': None}, 400)
+    try:
+        payload = resolve_active_host(db.session, TenantProfile, request.args['host'],
+            entitlement=tenant_allows_custom_domains)
+    except DomainBindingError:
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_invalid', 'tenant': None}, 400)
+    except Exception:
+        # A registry/database fault cannot turn into an identity fallback or cached brand.
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_not_available', 'tenant': None}, 503)
+    if payload is None:
+        return reply({'contract_version': PUBLIC, 'reason_code': 'host_not_available', 'tenant': None}, 404)
+    return reply(payload, 200)
+
+
+@public_tenant_bp.route('/api/public/host-readiness', methods=['GET'])
+def public_host_readiness():
+    """Infrastructure-only nonce on an exact pending domain; no tenant publication."""
+    from services.organization_domain_binding import DomainBindingError, READINESS, build_host_readiness
+    from services.plan_access import tenant_allows_custom_domains
+    def reply(payload, status):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'no-store'
+        return result, status
+    empty = {'contract_version': READINESS, 'reason_code': 'host_not_available', 'tenant': None}
+    keys = {'host', 'tenant_id', 'tenant_slug', 'revision', 'nonce'}
+    if (set(request.args) != keys or any(len(request.args.getlist(key)) != 1 for key in keys)
+            or not re.fullmatch(r'[1-9][0-9]{0,9}', request.args.get('tenant_id', ''))):
+        return reply({**empty, 'reason_code': 'host_readiness_invalid'}, 400)
+    try:
+        payload = build_host_readiness(db.session, TenantProfile, host=request.args['host'],
+            tenant_id=int(request.args['tenant_id']), tenant_slug=request.args['tenant_slug'],
+            expected_revision=request.args['revision'], nonce=request.args['nonce'],
+            backend_source=current_app.config.get('BACKEND_VERSION'), entitlement=tenant_allows_custom_domains)
+    except DomainBindingError as error:
+        status = 503 if error.status == 503 else 400
+        return reply({**empty, 'reason_code': 'host_readiness_unavailable' if status == 503
+            else 'host_readiness_invalid'}, status)
+    except Exception:
+        return reply({**empty, 'reason_code': 'host_readiness_unavailable'}, 503)
+    return reply(payload, 200) if payload is not None else reply(empty, 404)
+
 RESERVED_PUBLIC_SLUGS = {
     "demo",
     "demo-catalogs",
