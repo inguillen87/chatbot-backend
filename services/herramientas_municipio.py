@@ -11,7 +11,7 @@ from services.config_loader import cargar_configuracion_municipio
 from services import location_service
 from utils.municipio_utils import get_numeric_municipio_id
 from services.tts_orchestrator import generar_audio
-from models import MunicipioTicket, MunicipioPost
+from models import MunicipioPost
 from database import db
 from services.openai_bridge import client as openai_client
 from services.openai_maps_service import geocodificar_inversa_llm, geocodificar_texto_llm
@@ -599,7 +599,7 @@ def consultar_recoleccion_por_direccion(direccion: str, context: dict | None = N
 
 KEYWORD_TO_CATEGORY_MAP = {
     # Luminaria
-    "luminaria": "Luminaria", "luz": "Luminaria", "poste": "Luminaria", "farol": "Luminaria", "farola": "Luminaria", "iluminacion": "Luminaria", "foco": "Luminaria", "lampara": "Luminaria", "poste caido": "Luminaria", "poste caído": "Luminaria", "sin luz": "Luminaria", "poste sin luz": "Luminaria", "farol apagado": "Luminaria",
+    "luminaria": "Luminaria", "alumbrado": "Luminaria", "luz": "Luminaria", "poste": "Luminaria", "farol": "Luminaria", "farola": "Luminaria", "iluminacion": "Luminaria", "foco": "Luminaria", "lampara": "Luminaria", "poste caido": "Luminaria", "poste caído": "Luminaria", "sin luz": "Luminaria", "poste sin luz": "Luminaria", "farol apagado": "Luminaria",
     # Arbol Caido
     "arbol": "Arbol Caido", "arbol caido": "Arbol Caido", "rama": "Arbol Caido", "ramas": "Arbol Caido", "gajo": "Arbol Caido", "tronco": "Arbol Caido", "poda": "Arbol Caido", "podar": "Arbol Caido", "medianera": "Arbol Caido", "arbol del vecino": "Arbol Caido", "raiz": "Arbol Caido",
     # Limpieza
@@ -625,9 +625,9 @@ KEYWORD_TO_CATEGORY_MAP = {
 }
 
 # --- CARGA DINÁMICA DE PALABRAS CLAVE DESDE LA BASE DE DATOS ---
-# Se aprovechan los reclamos ya cargados para ampliar el diccionario de
-# keywords con términos reales usados por los vecinos. Esto permite que el
-# sistema sea más proactivo y evite llamadas innecesarias al LLM.
+# Legacy hooks are retained for compatibility, but ticket text must never be
+# promoted into a process-global dictionary. That leaked one tenant's language
+# and classifications into every other government served by the worker.
 
 _DYNAMIC_KEYWORD_CACHE: dict[str, str] = {}
 _CACHE_LAST_LOAD: float = 0.0
@@ -635,37 +635,12 @@ _CACHE_TTL_SECONDS = 60 * 15  # 15 minutos
 
 
 def _cargar_keywords_desde_db() -> None:
-    """Refresca el cache de palabras clave consultando los tickets previos."""
+    """Clear the retired cross-tenant learner without reading citizen tickets."""
     from time import time
     global _DYNAMIC_KEYWORD_CACHE, _CACHE_LAST_LOAD
-    if not has_app_context():
-        _CACHE_LAST_LOAD = time()
-        logger.debug("Se pospone cache de keywords: no hay application context activo")
-        return
-    try:
-        rows = (
-            MunicipioTicket.query.with_entities(
-                MunicipioTicket.categoria, MunicipioTicket.detalles
-            )
-            .order_by(MunicipioTicket.id.desc())
-            .limit(200)
-            .all()
-        )
-        dynamic: dict[str, str] = {}
-        for categoria, descripcion in rows:
-            if not categoria or not descripcion:
-                continue
-            canon = categoria.strip().title()
-            if normalizar_texto(canon) == "luminaria":
-                canon = "Luminarias"
-            for token in normalizar_texto(descripcion).split():
-                if token and token not in KEYWORD_TO_CATEGORY_MAP:
-                    dynamic[token] = canon
-        _DYNAMIC_KEYWORD_CACHE = dynamic
-        _CACHE_LAST_LOAD = time()
-        logger.info("Cache de keywords cargado con %d términos", len(dynamic))
-    except Exception as exc:  # pragma: no cover - fallbacks no interrumpen ejecución
-        logger.warning("No se pudo cargar cache de keywords: %s", exc)
+    _DYNAMIC_KEYWORD_CACHE = {}
+    _CACHE_LAST_LOAD = time()
+    logger.debug("Aprendizaje global desde tickets deshabilitado por aislamiento tenant")
 
 
 def _ensure_keyword_cache_actualizado() -> None:
@@ -704,7 +679,6 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 
 
 from services.google_search import google_search
-from services.scraper_avanzado import extraer_noticias
 from datetime import datetime, timedelta, timezone
 from utils.time_utils import get_local_now
 

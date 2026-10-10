@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
+from copy import deepcopy
 import hashlib
+import hmac
 import json
 import os
 from urllib import error as urllib_error
@@ -7,6 +9,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote_plus, urlparse
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
+from cutover_writer_fence import cutover_writer_view
 from sqlalchemy import desc
 
 from models import AnalyticsEventV2, ChatSessionContext, Conversacion, TenantProfile, TenantTicket, User, WidgetSettings, Rubro, db
@@ -733,12 +736,35 @@ def _platform_widget_config_payload() -> dict:
 
 def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
     owner = tenant.pyme or tenant.municipio
-    whatsapp_number = (
-        cfg.get("support_whatsapp")
-        or cfg.get("whatsapp_phone")
-        or getattr(tenant, "whatsapp_sender_id", None)
-        or getattr(owner, "telefono", None)
+    support_whatsapp = str(cfg.get("support_whatsapp") or "").strip() or None
+    whatsapp_phone = str(cfg.get("whatsapp_phone") or "").strip() or None
+    configured_sender_id = str(cfg.get("whatsapp_sender_id") or "").strip() or None
+    tenant_sender_id = str(getattr(tenant, "whatsapp_sender_id", None) or "").strip() or None
+    owner_contact_number = str(getattr(owner, "telefono", None) or "").strip() or None
+
+    whatsapp_number = support_whatsapp or whatsapp_phone or configured_sender_id or tenant_sender_id
+    whatsapp_number_source = (
+        "support_whatsapp"
+        if support_whatsapp
+        else "whatsapp_phone"
+        if whatsapp_phone
+        else "config_sender_id"
+        if configured_sender_id
+        else "tenant_sender_id"
+        if tenant_sender_id
+        else None
     )
+    sender_bound = bool(configured_sender_id or tenant_sender_id)
+    whatsapp_digits = "".join(character for character in str(whatsapp_number or "") if character.isdigit())
+    whatsapp_url = f"https://wa.me/{whatsapp_digits}" if whatsapp_digits else None
+    if sender_bound:
+        whatsapp_reason_code = "whatsapp_sender_bound_delivery_unverified"
+    elif whatsapp_number:
+        whatsapp_reason_code = "whatsapp_contact_only"
+    elif owner_contact_number:
+        whatsapp_reason_code = "whatsapp_not_configured_owner_contact_only"
+    else:
+        whatsapp_reason_code = "whatsapp_not_configured"
     voice_enabled = _config_flag(cfg, "realtime_voice_enabled", default=True)
     realtime_voice = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
     realtime_voice["enabled"] = bool(voice_enabled)
@@ -772,8 +798,16 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
         "whatsapp": {
             "enabled": bool(whatsapp_number),
             "number": whatsapp_number,
+            "operational_number": whatsapp_number if sender_bound else None,
+            "contact_number": owner_contact_number,
+            "number_source": whatsapp_number_source,
+            "configured": bool(whatsapp_number),
+            "sender_bound": sender_bound,
+            "delivery_verified": False,
+            "reason_code": whatsapp_reason_code,
+            "url": whatsapp_url,
             "channel": "whatsapp",
-            "realtime_bridge": True,
+            "realtime_bridge": sender_bound,
             "trial_policy": _whatsapp_trial_policy(cfg),
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
@@ -1730,8 +1764,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     welcome_title = cfg.get("widget_welcome_title") or cfg.get("welcome_title") or tenant.nombre
     welcome_subtitle = cfg.get("widget_welcome_subtitle") or cfg.get("welcome_subtitle") or "Asistente Virtual"
 
-    position = cfg.get("widget_position") or cfg.get("position")
-    border_radius = cfg.get("widget_border_radius") or cfg.get("border_radius")
+    theme_config = cfg.get("theme_config") if isinstance(cfg.get("theme_config"), dict) else {}
+    behavior_config = theme_config.get("behavior") if isinstance(theme_config.get("behavior"), dict) else {}
+    advanced_config = theme_config.get("advanced") if isinstance(theme_config.get("advanced"), dict) else {}
+    position = cfg.get("widget_position") or cfg.get("position") or behavior_config.get("position")
+    border_radius = cfg.get("widget_border_radius") or cfg.get("border_radius") or theme_config.get("border_radius")
     launcher_text = cfg.get("widget_launcher_text") or cfg.get("launcher_text")
     header_title = cfg.get("widget_header_title") or cfg.get("header_title")
     header_subtitle = cfg.get("widget_header_subtitle") or cfg.get("header_subtitle")
@@ -1747,7 +1784,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         or "https://www.chatboc.ar/iframe"
     )
 
-    right_offset = cfg.get("widget_right", "20px")
+    right_offset = cfg.get("widget_right") or cfg.get("side_offset") or behavior_config.get("side_offset") or "20px"
     left_offset = cfg.get("widget_left", right_offset)
 
     ux = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
@@ -1777,8 +1814,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-height": height,
         "data-closed-width": closed_size,
         "data-closed-height": closed_size,
-        "data-bottom": cfg.get("widget_bottom", "20px"),
-        "data-z-index": cfg.get("widget_z_index", "100000"),
+        "data-bottom": cfg.get("widget_bottom") or cfg.get("bottom") or behavior_config.get("bottom_offset") or "20px",
+        "data-z-index": cfg.get("widget_z_index") or advanced_config.get("z_index") or "100000",
         "data-endpoint": cfg.get("widget_endpoint") or tenant.tipo or "municipio",
         "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
         "data-primary-color": cfg.get("primary_color") or theme.get("primary"),
@@ -1788,7 +1825,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-surface-color": theme.get("surface"),
         "data-launcher-color": theme.get("launcher"),
         "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
-        "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
+        "data-logo-animation": cfg.get("widget_logo_animation") or theme_config.get("animation") or theme.get("animation"),
         "data-widget-preset": widget_preset,
         "data-motion-level": motion_level,
         "data-glassmorphism": str(glassmorphism).lower(),
@@ -2564,6 +2601,7 @@ def landing_experience():
 @public_resolver_bp.route(
     "/widget-config", methods=["GET", "OPTIONS"], provide_automatic_options=False
 )
+@cutover_writer_view
 @cross_origin(origins="*", automatic_options=False)
 def widget_config():
     """Expose a SaaS-style embed configuration for builder/preview UIs.
@@ -2658,29 +2696,52 @@ def widget_config():
 
 
 def _resolve_tenant_for_lead_capture(payload: dict) -> TenantProfile | None:
-    tenant_slug = (
-        payload.get("tenant_slug")
-        or payload.get("tenant")
-        or request.args.get("tenant_slug")
-        or request.args.get("tenant")
-    )
-    tenant_slug = str(tenant_slug or "").strip().lower()
-
-    if tenant_slug in {"pyme", "municipio"}:
-        return (
-            TenantProfile.query.filter_by(tipo=tenant_slug)
-            .filter(TenantProfile.is_active.is_(True))
-            .order_by(TenantProfile.created_at.asc(), TenantProfile.id.asc())
-            .first()
-        )
+    tenant_slug = _public_lead_scope_value([
+        payload.get("tenant_slug"), payload.get("tenant"),
+        request.args.get("tenant_slug"), request.args.get("tenant"),
+        request.headers.get("X-Tenant-Slug"), request.headers.get("X-Tenant"),
+    ], lower=True)
 
     if tenant_slug:
         try:
-            return resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True)
+            return resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=True,
+                allow_fallback=False, allow_lazy_demo_creation=False,
+                allow_context_fallback=False, register_widget_token=False)
         except TenantResolutionError:
             return None
 
     return None
+
+
+def _public_lead_scope_value(values, *, lower: bool = False) -> str:
+    """Require agreeing explicit selectors; they are contact scope, never auth."""
+    selected = ""
+    for value in values:
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError("public_lead_capture_scope_conflict")
+        candidate = value.strip()
+        if lower:
+            candidate = candidate.lower()
+        if not candidate:
+            continue
+        if selected and not hmac.compare_digest(selected.encode(), candidate.encode()):
+            raise ValueError("public_lead_capture_scope_conflict")
+        selected = candidate
+    return selected
+
+
+def _public_lead_context(*, tenant: TenantProfile, session_id: str, anon_id: str):
+    """Lock the exact anonymous row before any contact DML; never claim it."""
+    context = ChatSessionContext.query.filter_by(chat_session_id=session_id).with_for_update().one_or_none()
+    if context is not None and (
+        context.tenant_id != tenant.id
+        or context.user_id is not None
+        or not hmac.compare_digest(str(context.anon_id or "").encode(), anon_id.encode())
+    ):
+        raise ValueError("public_lead_capture_scope_conflict")
+    return context
 
 
 def _build_lead_capture_ack(tenant: TenantProfile | None) -> dict:
@@ -2761,9 +2822,12 @@ def _lead_idempotency_key(
     interes: str,
     mensaje: str,
 ) -> str | None:
-    explicit = payload.get("idempotency_key") or payload.get("idempotencyKey") or request.headers.get("Idempotency-Key")
+    explicit = _public_lead_scope_value([
+        payload.get("idempotency_key"), payload.get("idempotencyKey"), request.headers.get("Idempotency-Key")])
     if explicit:
-        return str(explicit).strip()[:120] or None
+        if len(explicit) > 120:
+            raise ValueError("public_lead_capture_scope_conflict")
+        return explicit
     if not tenant:
         return None
     source = "|".join(
@@ -2781,38 +2845,9 @@ def _lead_idempotency_key(
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
-def _resolve_or_create_lead_user(
-    *,
-    tenant: TenantProfile | None,
-    anon_id: str,
-    nombre: str,
-    email: str,
-    telefono: str,
-) -> User:
-    user = User.query.filter_by(email=email).first() if email else None
-    if not user:
-        user = User.create_or_get_by_anon(anon_id or None, display_name=nombre or "Interesado")
-
-    if nombre:
-        user.name = nombre
-    if email and (not user.email or user.email.endswith("@passkey.chatboc")):
-        user.email = email
-    if telefono:
-        user.telefono = telefono
-    if tenant:
-        user.tenant_id = tenant.id
-        user.tenant_slug = tenant.slug
-        if not user.tipo_chat:
-            user.tipo_chat = (tenant.tipo or "pyme").lower()
-    db.session.add(user)
-    db.session.flush()
-    return user
-
-
 def _build_lead_ticket(
     *,
     tenant: TenantProfile,
-    user: User,
     payload: dict,
     request_id: str,
     idempotency_key: str,
@@ -2868,7 +2903,7 @@ def _build_lead_ticket(
     }
     ticket = TenantTicket(
         tenant_id=tenant.id,
-        user_id=user.id,
+        user_id=None,
         categoria="lead_capture",
         descripcion=mensaje or f"Lead capturado desde {channel}",
         estado="nuevo",
@@ -2937,7 +2972,6 @@ def capture_public_lead():
 
     payload = request.get_json(silent=True) or {}
     request_id = _public_request_id()
-    tenant = _resolve_tenant_for_lead_capture(payload)
 
     nombre = str(payload.get("nombre") or payload.get("name") or "").strip()
     email = str(payload.get("email") or "").strip().lower()
@@ -2963,65 +2997,59 @@ def capture_public_lead():
             field_errors=field_errors,
         )
 
-    anon_id = (
-        str(payload.get("anon_id") or "").strip()
-        or str(request.headers.get("X-Anon-Id") or "").strip()
-        or str(request.cookies.get("chatboc_anon_id") or "").strip()
-    )
+    try:
+        tenant = _resolve_tenant_for_lead_capture(payload)
+        anon_id = _public_lead_scope_value([
+            payload.get("anon_id"), request.headers.get("X-Anon-Id"), request.headers.get("Anon-Id")])
+        if not anon_id:
+            anon_id = str(request.cookies.get("chatboc_anon_id") or "").strip()
+        raw_session_id = _public_lead_scope_value([
+            payload.get("chat_session_id"), request.headers.get("X-Chat-Session-Id")])
+        session_id = _normalize_public_chat_session_id(raw_session_id)
+        if tenant is None or not tenant.is_active or not anon_id or len(anon_id) > 80 or not session_id:
+            return _lead_error_response("No se pudo validar el alcance del contacto.", 422,
+                "public_lead_capture_scope_unavailable", "send_exact_tenant_and_anonymous_session")
+        idempotency_key = _lead_idempotency_key(
+            payload=payload, tenant=tenant, anon_id=anon_id, email=email,
+            telefono=telefono, session_id=session_id, interes=interes, mensaje=mensaje)
+        # Serializes new-key captures as well as retries on this tenant, so a
+        # concurrent caller cannot insert a conflicting fingerprint after the
+        # scope check. This row lock is held only through local contact DML.
+        tenant = TenantProfile.query.filter_by(id=tenant.id).with_for_update().populate_existing().one()
+        if not tenant.is_active:
+            return _lead_error_response("No se pudo validar el alcance del contacto.", 422,
+                "public_lead_capture_scope_unavailable", "send_exact_tenant_and_anonymous_session")
+        context_obj = _public_lead_context(tenant=tenant, session_id=session_id, anon_id=anon_id)
+    except ValueError:
+        db.session.rollback()
+        return _lead_error_response("La sesion indicada no pertenece al alcance validado. No se realizo ninguna accion.",
+            409, "public_lead_capture_scope_conflict", "use_the_original_anonymous_session")
+    existing_lead = TenantTicket.query.filter_by(tenant_id=tenant.id, fingerprint=idempotency_key).with_for_update().first()
+    if existing_lead is not None:
+        existing_details = existing_lead.datos_extra if isinstance(existing_lead.datos_extra, dict) else {}
+        existing_profile = existing_details.get("lead_profile")
+        expected_scope = {"anon_id": anon_id, "chat_session_id": session_id, "tenant_slug": tenant.slug}
+        if not isinstance(existing_profile, dict) or existing_lead.user_id is not None or any(
+            existing_profile.get(key) != value for key, value in expected_scope.items()
+        ):
+            db.session.rollback()
+            return _lead_error_response("El contacto indicado no pertenece al alcance validado.", 409,
+                "public_lead_capture_scope_conflict", "use_the_original_contact_request")
+        if any(existing_profile.get(key) != value for key, value in {
+            "nombre": nombre, "email": email, "telefono": telefono, "interes": interes, "mensaje": mensaje,
+        }.items()):
+            db.session.rollback()
+            return _lead_error_response("La clave del contacto ya fue usada con otros datos.", 409,
+                "public_lead_capture_idempotency_conflict", "use_a_new_key_for_changed_contact_details")
 
-    user = _resolve_or_create_lead_user(
-        tenant=tenant,
-        anon_id=anon_id,
-        nombre=nombre,
-        email=email,
-        telefono=telefono,
-    )
-
-    raw_session_id = (
-        str(payload.get("chat_session_id") or "").strip()
-        or str(request.headers.get("X-Chat-Session-Id") or "").strip()
-    )
-    session_id = _normalize_public_chat_session_id(raw_session_id)
-    idempotency_key = _lead_idempotency_key(
-        payload=payload,
-        tenant=tenant,
-        anon_id=anon_id,
-        email=email,
-        telefono=telefono,
-        session_id=session_id,
-        interes=interes,
-        mensaje=mensaje,
-    )
-
-    context_obj = None
-    if session_id:
-        context_obj = ChatSessionContext.query.get(session_id)
-        if not context_obj:
-            context_obj = ChatSessionContext(
-                chat_session_id=session_id,
-                anon_id=anon_id or user.anon_id,
-                user_id=user.id,
-                context_data={"source_chat_session_id": raw_session_id}
-                if raw_session_id and raw_session_id != session_id
-                else {},
-            )
-    elif anon_id:
-        context_obj = (
-            ChatSessionContext.query
-            .filter(ChatSessionContext.anon_id == anon_id)
-            .order_by(desc(ChatSessionContext.last_updated))
-            .first()
-        )
+    if context_obj is None:
+        context_obj = ChatSessionContext(
+            chat_session_id=session_id, tenant_id=tenant.id, anon_id=anon_id, user_id=None,
+            context_data={"source_chat_session_id": raw_session_id}
+            if raw_session_id and raw_session_id != session_id else {})
 
     if context_obj:
-        if not context_obj.user_id:
-            context_obj.user_id = user.id
-        if anon_id and not context_obj.anon_id:
-            context_obj.anon_id = anon_id
-        if tenant and not context_obj.tenant_id:
-            context_obj.tenant_id = tenant.id
-
-        data = context_obj.context_data if isinstance(context_obj.context_data, dict) else {}
+        data = deepcopy(context_obj.context_data) if isinstance(context_obj.context_data, dict) else {}
         lead_profile = data.get("lead_profile") if isinstance(data.get("lead_profile"), dict) else {}
         if nombre:
             lead_profile["nombre"] = nombre
@@ -3060,13 +3088,13 @@ def capture_public_lead():
 
     lead_question = mensaje or f"Lead capturado ({interes or 'sin_interes'})"
     conv = Conversacion(
-        user_id=user.id,
+        user_id=None,
         pyme_id=(tenant.pyme_id if tenant else None) or (tenant.municipio_id if tenant else None),
         pregunta=lead_question,
         respuesta="Lead registrado",
         fuente="lead_capture",
         rubro=(tenant.tipo if tenant else None),
-        session_id=anon_id or user.anon_id or str(user.id),
+        session_id=session_id,
     )
     db.session.add(conv)
     lead_ticket = None
@@ -3074,7 +3102,6 @@ def capture_public_lead():
     if tenant and idempotency_key:
         lead_ticket, deduplicated = _build_lead_ticket(
             tenant=tenant,
-            user=user,
             payload=payload,
             request_id=request_id,
             idempotency_key=idempotency_key,
@@ -3090,11 +3117,11 @@ def capture_public_lead():
             AnalyticsEventV2(
                 tenant_id=tenant.id,
                 tenant_type=tenant.tipo,
-                user_id=user.id,
-                anon_id=anon_id or user.anon_id,
+                user_id=None,
+                anon_id=anon_id,
                 channel=str(payload.get("channel") or payload.get("source") or "web_widget").strip().lower() or "web_widget",
                 event_name="lead_capture_created",
-                session_id=session_id or anon_id or user.anon_id,
+                session_id=session_id,
                 metadata_payload={
                     "request_id": request_id,
                     "idempotency_key": idempotency_key,

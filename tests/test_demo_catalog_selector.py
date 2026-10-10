@@ -132,11 +132,15 @@ class DemoCatalogSelectorTest(unittest.TestCase):
         expected_tenants = {
             "gobierno": "municipio",
             "empresas": "bodega",
-            "educacion": "colegio-demo",
+            "educacion": None,
         }
         grouped_slugs = set()
         for group in payload.get("sector_groups") or []:
             self.assertEqual(group.get("tenant_slug"), expected_tenants[group.get("key")])
+            if group.get("key") == "educacion":
+                self.assertFalse(group.get("available"))
+            else:
+                self.assertNotIn("available", group)
             self.assertNotIn("rubros", group)
             self.assertTrue(group.get("rubro_slugs"))
             grouped_slugs.update(group.get("rubro_slugs") or [])

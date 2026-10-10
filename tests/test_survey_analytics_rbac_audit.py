@@ -390,11 +390,13 @@ def test_export_fails_closed_when_required_audit_cannot_be_persisted(
     def _fail_commit():
         raise RuntimeError("simulated audit storage failure")
 
+    # Create the local durable session before simulating an audit-storage failure.
+    headers = _user_headers(employee)
     monkeypatch.setattr(analytics_routes, "export_csv_stream", _export_sink)
     monkeypatch.setattr(analytics_routes.db.session, "commit", _fail_commit)
     response = client.get(
         f"/admin/encuestas/{survey.id}/analytics/export.csv",
-        headers=_user_headers(employee),
+        headers=headers,
     )
 
     assert response.status_code == 503

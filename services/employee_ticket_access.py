@@ -5,6 +5,7 @@ from typing import Any
 
 from sqlalchemy import false, func, or_
 
+from services.territorial_evidence import canonicalize_territorial_category
 from utils.roles import ROLE_EMPLEADO, ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role
 
 
@@ -23,6 +24,22 @@ class EmployeeTicketCategoryScope:
 
 def _normalized_name(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def _category_name_aliases(value: Any) -> frozenset[str]:
+    """Return the persisted label and its exact territorial alias.
+
+    Routing, territorial analytics and operator eligibility must not disagree
+    only because one surface says ``luminaria`` and another says
+    ``luminarias``.  The territorial canonicalizer is deliberately limited to
+    exact, auditable aliases; this does not infer a category from free text.
+    """
+
+    raw = _normalized_name(value)
+    if not raw:
+        return frozenset()
+    canonical = _normalized_name(canonicalize_territorial_category(raw)["category"])
+    return frozenset(item for item in (raw, canonical) if item)
 
 
 def _is_category_limited_employee(actor: Any) -> bool:
@@ -55,8 +72,12 @@ def employee_ticket_category_scope(actor: Any) -> EmployeeTicketCategoryScope:
     configured_csv = str(getattr(actor, "ticket_categorias", None) or "")
     names.extend(_normalized_name(item) for item in configured_csv.split(","))
 
+    expanded_names: set[str] = set()
+    for name in names:
+        expanded_names.update(_category_name_aliases(name))
+
     return EmployeeTicketCategoryScope(
-        names=frozenset(name for name in names if name),
+        names=frozenset(expanded_names),
         ids=frozenset(ids),
     )
 
@@ -93,8 +114,8 @@ def employee_ticket_category_values_allow(
         return True
 
     scope = employee_ticket_category_scope(actor)
-    ticket_name = _normalized_name(category)
-    if ticket_name and ticket_name in scope.names:
+    ticket_names = _category_name_aliases(category)
+    if ticket_names.intersection(scope.names):
         return True
 
     return bool(
@@ -120,6 +141,19 @@ def ticket_assignee_is_compatible(assignee: Any, ticket: Any) -> bool:
     )
 
 
+def ticket_assignee_is_operational(assignee: Any) -> bool:
+    """Return whether ``assignee`` is an actual ticket-working identity.
+
+    Tenant membership or an administrative role alone does not make a person
+    an operational destination. ``es_empleado`` is the authoritative marker;
+    a textual role must never make an identity assignable by itself.
+    """
+
+    if assignee is None:
+        return False
+    return bool(getattr(assignee, "es_empleado", False))
+
+
 def ticket_assignee_category_values_are_compatible(
     assignee: Any,
     *,
@@ -130,10 +164,7 @@ def ticket_assignee_category_values_are_compatible(
 
     if assignee is None:
         return False
-    role = canonical_role(getattr(assignee, "rol", None))
-    if role not in {ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, ROLE_EMPLEADO} and not bool(
-        getattr(assignee, "es_empleado", False)
-    ):
+    if not ticket_assignee_is_operational(assignee):
         return False
     return employee_ticket_category_values_allow(
         assignee,
@@ -157,7 +188,14 @@ def apply_employee_ticket_category_scope(query: Any, actor: Any, ticket_model: A
 
     category_column = getattr(ticket_model, "categoria", None)
     if category_column is not None and scope.names:
-        clauses.append(func.lower(func.trim(category_column)).in_(tuple(scope.names)))
+        # Include every exact alias that canonicalizes to an employee's scope.
+        # This keeps SQL list filtering aligned with the detail/assignment
+        # checks without introducing fuzzy classification.
+        query_aliases = set(scope.names)
+        for candidate in ("alumbrado", "alumbrado publico", "alumbrado público", "luminaria", "luminarias"):
+            if _category_name_aliases(candidate).intersection(scope.names):
+                query_aliases.add(candidate)
+        clauses.append(func.lower(func.trim(category_column)).in_(tuple(query_aliases)))
 
     category_id_column = getattr(ticket_model, "categoria_id", None)
     if category_id_column is not None and scope.ids:

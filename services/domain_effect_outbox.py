@@ -23,6 +23,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from models import DomainEffectOutbox, db
+from services.outbox_execution_budget import outbox_persistence_operation
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]*$")
@@ -273,6 +274,21 @@ def _validated_external_code(value: Any, *, field_name: str) -> str:
     if not _ERROR_CODE_FULL_RE.fullmatch(raw):
         raise DomainEffectValidationError(f"domain_effect_{field_name}_invalid")
     return raw
+
+
+def _exception_error_code(exc: BaseException) -> str:
+    """Prefer an explicit bounded domain code over a Python class name."""
+
+    external_code = getattr(exc, "code", None)
+    if external_code not in (None, ""):
+        try:
+            return _validated_external_code(
+                external_code,
+                field_name="exception_code",
+            )
+        except DomainEffectValidationError:
+            pass
+    return _safe_error_code(type(exc).__name__)
 
 
 def _error_digest(exc: BaseException | str) -> str:
@@ -631,13 +647,22 @@ def _retry_delay(attempt_count: int) -> timedelta:
 def recover_stale_domain_effects(
     *,
     tenant_id: Optional[int] = None,
+    effect_id: Optional[int] = None,
     now: Optional[datetime] = None,
     session: Any = None,
+    limit: int = 50,
+    should_continue: Optional[Callable[[], bool]] = None,
 ) -> dict[str, int]:
     """Recover expired leases; an expired post-I/O lease is always unknown."""
 
     session = session or db.session
     operation_now = now or _utcnow()
+    try:
+        normalized_limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DomainEffectValidationError("domain_effect_limit_invalid") from exc
+    if should_continue is not None and should_continue() is not True:
+        return {"unknown": 0, "retry_wait": 0, "dead": 0}
     query = select(DomainEffectOutbox).where(
         DomainEffectOutbox.status == DomainEffectOutbox.STATUS_PROCESSING,
         DomainEffectOutbox.leased_until.isnot(None),
@@ -645,9 +670,21 @@ def recover_stale_domain_effects(
     )
     if tenant_id is not None:
         query = query.where(DomainEffectOutbox.tenant_id == int(tenant_id))
-    rows = session.execute(query.order_by(DomainEffectOutbox.id.asc())).scalars().all()
+    if effect_id is not None:
+        query = query.where(DomainEffectOutbox.id == int(effect_id))
+    rows = (
+        session.execute(
+            query.order_by(DomainEffectOutbox.id.asc())
+            .limit(normalized_limit)
+            .with_for_update(skip_locked=True)
+        )
+        .scalars()
+        .all()
+    )
     counts: Counter[str] = Counter()
     for row in rows:
+        if should_continue is not None and should_continue() is not True:
+            break
         if row.io_started_at is not None:
             status = DomainEffectOutbox.STATUS_UNKNOWN
             values = {
@@ -773,6 +810,7 @@ def _claim_next_domain_effect(
     return None
 
 
+@outbox_persistence_operation
 def _fenced_transition(
     claim: DomainEffectClaim,
     *,
@@ -976,8 +1014,10 @@ def _dispatch_claim(
     ):
         recover_stale_domain_effects(
             tenant_id=claim.tenant_id,
+            effect_id=claim.effect_id,
             now=lease_now,
             session=session,
+            limit=1,
         )
         current_status = session.execute(
             select(DomainEffectOutbox.status).where(
@@ -1014,7 +1054,7 @@ def _dispatch_claim(
                 "lease_token": None,
                 "leased_until": None,
                 "processed_at": _utcnow(),
-                "last_error_code": _safe_error_code(type(exc).__name__),
+                "last_error_code": _exception_error_code(exc),
                 "last_error_digest": _error_digest(exc),
             },
             session=session,
@@ -1047,6 +1087,7 @@ def dispatch_domain_effects(
     lease_seconds: int = 120,
     now: Optional[datetime] = None,
     session: Any = None,
+    should_continue: Optional[Callable[[], bool]] = None,
 ) -> DomainEffectDispatchSummary:
     """Dispatch a bounded batch and never auto-retry an ambiguous send."""
 
@@ -1065,9 +1106,14 @@ def dispatch_domain_effects(
         tenant_id=tenant_id,
         now=operation_now,
         session=session,
+        limit=normalized_limit,
+        should_continue=should_continue,
     )
+    recovered_count = sum(recovered.values())
     counts: Counter[str] = Counter()
-    for _ in range(normalized_limit):
+    for _ in range(max(0, normalized_limit - recovered_count)):
+        if should_continue is not None and should_continue() is not True:
+            break
         claim = _claim_next_domain_effect(
             tenant_id=tenant_id,
             lease_seconds=int(lease_seconds),

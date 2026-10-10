@@ -1,4 +1,21 @@
+import pytest
+
+from database import db
+from models import EncEncuesta
 from services import encuestas_analytics_service as svc
+from tests.test_survey_admin_lifecycle_contract import _tenant
+
+
+@pytest.fixture(autouse=True)
+def persisted_survey_context(client):
+    """Local SQLite rows provide lifecycle authority for the mocked analytics."""
+    _, tenant = _tenant("bundle-local-fixture")
+    db.session.add_all([
+        EncEncuesta(id=survey_id, tenant_id=tenant.id, slug=f"bundle-{survey_id}",
+                    titulo="Local bundle fixture", estado="publicada", tipo="opinion")
+        for survey_id in (84, 100, 101, 77, 99)
+    ])
+    db.session.commit()
 
 
 def test_dashboard_bundle_includes_normalized_cards_and_states(monkeypatch):

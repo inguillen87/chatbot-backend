@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy import case, func, or_
+from sqlalchemy import and_, case, func, or_
+from sqlalchemy.orm import selectinload
 
 from extensions import db
 from models import (
@@ -33,6 +34,8 @@ from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     employee_ticket_category_scope,
 )
+from services.operational_intelligence import observe_legacy_ticket_sla
+from services.encuestas_service import build_survey_availability_contract
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
     SURVEY_RESPONSE_ORIGIN_REAL,
@@ -42,14 +45,21 @@ from services.survey_response_provenance import (
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     scoped_municipio_ticket_query,
+    tenant_unique_legacy_owner_id,
 )
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import (
+    _explicit_admin_request_tenant,
+    is_user_auth_disabled,
+    token_requerido,
+)
+from utils.tenant_admin_access import resolve_consistent_user_tenant
 from utils.roles import (
+    ROLE_ANALYTICS_VIEWER,
+    ROLE_CATALOG_MANAGER,
     ROLE_EMPLEADO,
     ROLE_SUPERADMIN,
     ROLE_TENANT_ADMIN,
     canonical_role,
-    first_specific_tenant_slug,
     is_authorized_superadmin_user,
     normalize_tenant_slug,
 )
@@ -89,6 +99,7 @@ _BACKOFFICE_OPERATION_CAPABILITIES = frozenset(
     }
 )
 _CAPABILITY_CONTAINER_KEYS = ("permissions", "permisos", "capabilities", "scopes")
+_TENANT_SELECTOR_ABSENT = object()
 
 
 def _request_id() -> str:
@@ -109,53 +120,32 @@ def _normalize_slug(value: Any) -> str:
     return normalize_tenant_slug(value)
 
 
+def _selected_request_tenant() -> tuple[TenantProfile | None, bool]:
+    # The shared resolver rejects unknown/conflicting selectors. Reject blank
+    # and repeated query hints as well, instead of falling back to membership.
+    for key in ("tenant_slug", "tenant", "tenant_id"):
+        if key in request.args:
+            values = request.args.getlist(key)
+            if len(values) != 1 or not str(values[0]).strip():
+                return None, True
+    for key in ("X-Tenant-Slug", "X-Tenant", "X-Tenant-Id"):
+        if key in request.headers and not request.headers[key].strip():
+            return None, True
+    return _explicit_admin_request_tenant()
+
+
 def _resolve_tenant(current_user: User) -> TenantProfile | None:
-    slug = first_specific_tenant_slug(
-        request.args.get("tenant_slug"),
-        request.args.get("tenant"),
-        request.headers.get("X-Tenant-Slug"),
-        request.headers.get("X-Tenant"),
-        getattr(current_user, "tenant_slug", None),
-    )
-    if slug:
-        tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug).first()
-        if tenant:
-            return tenant
-
-    tenant_id = getattr(current_user, "tenant_id", None)
-    if tenant_id:
-        tenant = db.session.get(TenantProfile, int(tenant_id))
-        if tenant:
-            return tenant
-
-    return (
-        TenantProfile.query.filter(
-            or_(
-                TenantProfile.municipio_id == current_user.id,
-                TenantProfile.pyme_id == current_user.id,
-            )
-        )
-        .order_by(TenantProfile.id.asc())
-        .first()
-    )
+    selected, has_selector = _selected_request_tenant()
+    if has_selector:
+        return selected
+    return resolve_consistent_user_tenant(current_user)
 
 
 def _is_authorized(current_user: User, tenant: TenantProfile) -> bool:
-    role = canonical_role(getattr(current_user, "rol", None))
     if is_authorized_superadmin_user(current_user):
         return True
-    if getattr(current_user, "tenant_id", None) == tenant.id:
-        return True
-    if _normalize_slug(getattr(current_user, "tenant_slug", None)) == _normalize_slug(tenant.slug):
-        return True
-    if tenant.municipio_id and tenant.municipio_id == current_user.id:
-        return True
-    if tenant.pyme_id and tenant.pyme_id == current_user.id:
-        return True
-    owner_id = tenant.municipio_id or tenant.pyme_id
-    if owner_id and getattr(current_user, "empresa_id", None) == owner_id:
-        return True
-    return False
+    resolved = resolve_consistent_user_tenant(current_user)
+    return resolved is not None and resolved.id == tenant.id
 
 
 def _tenant_scope(tenant: TenantProfile) -> str:
@@ -327,25 +317,32 @@ def _tenant_id_candidates(tenant: TenantProfile) -> list[int]:
 
 def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -> dict[str, Any]:
     tenant_ids = _tenant_id_candidates(tenant)
-    surveys_query = EncEncuesta.query.filter(EncEncuesta.tenant_id.in_(tenant_ids))
-    active_surveys = surveys_query.filter(EncEncuesta.estado == "publicada").count()
-
     responses_query = EncRespuesta.query.filter(EncRespuesta.tenant_id.in_(tenant_ids))
     if since is not None:
         responses_query = responses_query.filter(EncRespuesta.submitted_at >= since)
 
-    comments_pending_review = (
-        EncComentario.query.join(
-            EncEncuesta,
-            EncEncuesta.id == EncComentario.encuesta_id,
+    # Navigation and summary call this overview on every workspace entry. Keep
+    # the contract authoritative while collapsing three database round-trips
+    # into one statement; on serverless Postgres each extra round-trip is
+    # visible latency before the operator can start working.
+    published_surveys = (
+        db.session.query(func.count(EncEncuesta.id))
+        .filter(
+            EncEncuesta.tenant_id.in_(tenant_ids),
+            EncEncuesta.estado == "publicada",
         )
+        .scalar_subquery()
+    )
+    comments_pending_review = (
+        db.session.query(func.count(EncComentario.id))
+        .join(EncEncuesta, EncEncuesta.id == EncComentario.encuesta_id)
         .filter(
             EncEncuesta.tenant_id.in_(tenant_ids),
             or_(EncComentario.estado == "revision", EncComentario.report_count > 0),
         )
-        .count()
+        .scalar_subquery()
     )
-    aggregate = (
+    response_aggregate = (
         responses_query.with_entities(
             func.coalesce(
                 func.sum(
@@ -402,16 +399,37 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
             ).label("geo_count"),
         )
         .order_by(None)
+        .subquery()
+    )
+    aggregate = (
+        db.session.query(
+            published_surveys.label("published_surveys"),
+            comments_pending_review.label("comments_pending_review"),
+            response_aggregate.c.real_count,
+            response_aggregate.c.synthetic_count,
+            response_aggregate.c.unverified_count,
+            response_aggregate.c.geo_count,
+        )
+        .select_from(response_aggregate)
         .one()
     )
     real_count = int(aggregate.real_count or 0)
     synthetic_count = int(aggregate.synthetic_count or 0)
     unverified_count = int(aggregate.unverified_count or 0)
+    encuestas = EncEncuesta.query.filter(EncEncuesta.tenant_id.in_(tenant_ids)).options(
+        selectinload(EncEncuesta.links), selectinload(EncEncuesta.preguntas)
+    ).all()
+    active_count = sum(
+        build_survey_availability_contract(encuesta, tenant)["admin_lifecycle"]["accepts_responses"] is True
+        for encuesta in encuestas
+    )
 
     return {
-        "active_surveys": int(active_surveys),
+        "active_surveys": active_count,
+        "accepting_responses": active_count,
+        "published_surveys": int(aggregate.published_surveys or 0),
         "live_votes": real_count,
-        "comments_pending_review": int(comments_pending_review),
+        "comments_pending_review": int(aggregate.comments_pending_review or 0),
         "heatmap_available": bool(int(aggregate.geo_count or 0)),
         "responses_window_started_at": since.isoformat() if since else None,
         "response_provenance": build_survey_response_provenance(
@@ -453,22 +471,69 @@ def _operations_counts(tenant: TenantProfile, *, since: datetime) -> dict[str, i
     resolved = 0
     total = 0
     geo_points = 0
+
+    def aggregate_query(
+        query,
+        model,
+        *,
+        pending_states: set[str] = _PENDING_STATES,
+        closed_states: set[str] = _CLOSED_STATES,
+    ):
+        return (
+            query.with_entities(
+                func.count(model.id).label("total"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (func.lower(model.estado).in_([state.lower() for state in pending_states]), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("pending"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (func.lower(model.estado).in_([state.lower() for state in closed_states]), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("resolved"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            ((model.latitud.isnot(None)) & (model.longitud.isnot(None)), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("geo_points"),
+            )
+            .order_by(None)
+            .one()
+        )
+
     if scope == "pyme":
         ticket_query, pedidos_query = _case_queries(tenant, since=since)
-        pending += _count_states(ticket_query, PymeTicket, _PENDING_STATES)
-        resolved += _count_states(ticket_query, PymeTicket, _CLOSED_STATES)
-        total += int(ticket_query.count())
-        geo_points += int(ticket_query.filter(PymeTicket.latitud.isnot(None), PymeTicket.longitud.isnot(None)).count())
-        pending += _count_states(pedidos_query, PymePedido, {"pendiente", "nuevo", "en_progreso"})
-        resolved += _count_states(pedidos_query, PymePedido, {"finalizado", "completado", "entregado", "pagado"})
-        total += int(pedidos_query.count())
-        geo_points += int(pedidos_query.filter(PymePedido.latitud.isnot(None), PymePedido.longitud.isnot(None)).count())
+        ticket_counts = aggregate_query(ticket_query, PymeTicket)
+        pedido_counts = aggregate_query(
+            pedidos_query,
+            PymePedido,
+            pending_states={"pendiente", "nuevo", "en_progreso"},
+            closed_states={"finalizado", "completado", "entregado", "pagado"},
+        )
+        pending += int(ticket_counts.pending or 0) + int(pedido_counts.pending or 0)
+        resolved += int(ticket_counts.resolved or 0) + int(pedido_counts.resolved or 0)
+        total += int(ticket_counts.total or 0) + int(pedido_counts.total or 0)
+        geo_points += int(ticket_counts.geo_points or 0) + int(pedido_counts.geo_points or 0)
     else:
         query = _case_queries(tenant, since=since)[0]
-        pending += _count_states(query, MunicipioTicket, _PENDING_STATES)
-        resolved += _count_states(query, MunicipioTicket, _CLOSED_STATES)
-        total += int(query.count())
-        geo_points += int(query.filter(MunicipioTicket.latitud.isnot(None), MunicipioTicket.longitud.isnot(None)).count())
+        counts = aggregate_query(query, MunicipioTicket)
+        pending += int(counts.pending or 0)
+        resolved += int(counts.resolved or 0)
+        total += int(counts.total or 0)
+        geo_points += int(counts.geo_points or 0)
     return {"pending": pending, "resolved": resolved, "total": total, "geo_points": geo_points}
 
 
@@ -513,7 +578,13 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
     maps_access = _feature_access(access, "heatmaps")
     maps_enabled = bool(maps_access.get("enabled")) and _capability_enabled(capabilities, "maps", default=maps_default)
     analytics_access = _feature_access(access, "analytics_dashboard")
+    catalog_access = _feature_access(access, "catalog_management")
     comments_access = _feature_access(access, "comments_inbox")
+    catalog_enabled = bool(catalog_access.get("enabled")) and _capability_enabled(
+        capabilities,
+        "catalog",
+        default=_capability_enabled(capabilities, "catalog_management", default=True),
+    )
 
     modules = [
         {
@@ -569,7 +640,28 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "access": analytics_access,
             "priority": 6,
         },
+        {
+            "id": "catalog",
+            "label": "Catálogo e inventario",
+            "description": "Productos, precios, stock y publicación comercial.",
+            "route": "/perfil?tab=catalogo",
+            "enabled": role in {ROLE_TENANT_ADMIN, ROLE_SUPERADMIN, ROLE_CATALOG_MANAGER}
+            and catalog_enabled,
+            "access": catalog_access,
+            "priority": 7,
+        },
     ]
+    if role in {ROLE_TENANT_ADMIN, ROLE_SUPERADMIN}:
+        modules.append(
+            {
+                "id": "implementation",
+                "label": "Implementacion",
+                "description": "Marca, accesibilidad, territorio, canales y controles de salida a produccion.",
+                "route": "/implementacion",
+                "enabled": _capability_enabled(capabilities, "implementation", default=True),
+                "priority": 8,
+            }
+        )
     return sorted(modules, key=lambda item: int(item.get("priority") or 999))
 
 
@@ -608,7 +700,56 @@ def _backoffice_actions(tenant: TenantProfile, *, analytics_modes: dict[str, Any
 
 
 def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: str) -> dict[str, Any]:
+    role = canonical_role(getattr(current_user, "rol", None)) or "usuario"
     analytics_modes = _analytics_modes(tenant, current_user)
+
+    # These frontend roles are deliberately navigation-only here. Build their
+    # contracts without querying or serializing tickets, orders, surveys, or
+    # any other operational tenant data.
+    if role in {ROLE_ANALYTICS_VIEWER, ROLE_CATALOG_MANAGER}:
+        modules = _modules_for(
+            tenant,
+            current_user,
+            analytics_modes=analytics_modes,
+            surveys={},
+            counts={"geo_points": 0},
+        )
+        allowed_module_ids = (
+            {"reports", "advanced_analytics"}
+            if role == ROLE_ANALYTICS_VIEWER
+            else {"catalog"}
+        )
+        scoped_modules: list[dict[str, Any]] = []
+        for module in modules:
+            if module.get("id") not in allowed_module_ids:
+                continue
+            scoped_module = dict(module)
+            if role == ROLE_ANALYTICS_VIEWER and module.get("id") == "reports":
+                scoped_module["enabled"] = bool(
+                    module.get("enabled")
+                    and isinstance(module.get("access"), dict)
+                    and module["access"].get("enabled")
+                )
+            scoped_modules.append(scoped_module)
+        payload = {
+            "contract_version": "backoffice.navigation.v1",
+            "tenant_slug": tenant.slug,
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "name": tenant.nombre,
+                "scope": _tenant_scope(tenant),
+                "plan": tenant.plan,
+            },
+            "role": role,
+            "modules": scoped_modules,
+            "actions": [],
+            "request_id": request_id,
+        }
+        if role == ROLE_ANALYTICS_VIEWER:
+            payload["analytics_modes"] = analytics_modes
+        return payload
+
     surveys = _surveys_overview(
         tenant,
         since=datetime.now(timezone.utc) - timedelta(days=90),
@@ -625,7 +766,7 @@ def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: s
             "scope": _tenant_scope(tenant),
             "plan": tenant.plan,
         },
-        "role": canonical_role(getattr(current_user, "rol", None)) or "usuario",
+        "role": role,
         "modules": _modules_for(tenant, current_user, analytics_modes=analytics_modes, surveys=surveys, counts=counts),
         "analytics_modes": analytics_modes,
         "surveys_overview": surveys,
@@ -700,7 +841,7 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
 @token_requerido
 def backoffice_navigation(current_user: User):
     request_id = _request_id()
-    role_error = _operator_role_error(current_user, request_id)
+    role_error = _navigation_role_error(current_user, request_id)
     if role_error:
         return role_error
     tenant = _resolve_tenant(current_user)
@@ -783,20 +924,25 @@ _ORDER_CONFIRMED_REVENUE_STATES = {
 }
 
 
-def _resolve_tenant_for_v2(current_user: User, explicit_slug: str | None = None) -> TenantProfile | None:
-    slug = _normalize_slug(explicit_slug)
-    if slug:
-        tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug).first()
-        if tenant:
-            return tenant
-    return _resolve_tenant(current_user)
+def _resolve_tenant_for_v2(current_user: User, explicit_slug: Any = _TENANT_SELECTOR_ABSENT) -> TenantProfile | None:
+    if explicit_slug is _TENANT_SELECTOR_ABSENT:
+        return _resolve_tenant(current_user)
+    if not isinstance(explicit_slug, str) or not explicit_slug.strip():
+        return None
+    tenant = TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == _normalize_slug(explicit_slug)
+    ).one_or_none()
+    selected, has_selector = _selected_request_tenant()
+    if has_selector and (selected is None or tenant is None or selected.id != tenant.id):
+        return None
+    return tenant
 
 
 def _authorized_tenant_or_response(
     current_user: User,
     request_id: str,
     *,
-    explicit_slug: str | None = None,
+    explicit_slug: Any = _TENANT_SELECTOR_ABSENT,
 ) -> tuple[TenantProfile | None, Any | None]:
     tenant = _resolve_tenant_for_v2(current_user, explicit_slug=explicit_slug)
     if not tenant:
@@ -858,6 +1004,15 @@ def _operator_role_error(current_user: User, request_id: str):
     )
 
 
+def _navigation_role_error(current_user: User, request_id: str):
+    """Allow narrowly scoped frontend roles only on the navigation contract."""
+
+    role = canonical_role(getattr(current_user, "rol", None))
+    if role in {ROLE_ANALYTICS_VIEWER, ROLE_CATALOG_MANAGER}:
+        return None
+    return _operator_role_error(current_user, request_id)
+
+
 def _requested_scope(tenant: TenantProfile) -> str:
     requested = _normalize_slug(request.args.get("scope"))
     if requested in {"municipio", "pyme", "colegio"}:
@@ -897,32 +1052,46 @@ def _label(value: Any, *, fallback: str = "Sin dato") -> str:
     return text.replace("_", " ").capitalize()
 
 
-def _employees_for_tenant(tenant: TenantProfile) -> list[User]:
+def _users_for_tenant(tenant: TenantProfile, *, staff_only: bool = False) -> list[User]:
+    """Keep explicit membership authoritative and legacy links unambiguous.
+
+    Contacts include customers and owners. Staff retain the legacy employee
+    query's empresa association, without treating every associated user as an
+    employee. Conflicting membership is quarantined in either projection.
+    """
     clauses = [User.tenant_id == tenant.id]
-    if tenant.municipio_id:
-        clauses.extend(
-            [
-                User.id == tenant.municipio_id,
-                User.empresa_id == tenant.municipio_id,
-                User.municipio_id == tenant.municipio_id,
-            ]
+    legacy_owner_id = tenant_unique_legacy_owner_id(tenant)
+    if legacy_owner_id is not None:
+        legacy_links = [User.empresa_id == legacy_owner_id]
+        if not staff_only:
+            legacy_links.extend([
+                User.id == legacy_owner_id,
+                User.municipio_id == legacy_owner_id,
+                User.pyme_id == legacy_owner_id,
+            ])
+        clauses.append(
+            and_(User.tenant_id.is_(None), or_(*legacy_links))
         )
-    if tenant.pyme_id:
-        clauses.extend(
-            [
-                User.id == tenant.pyme_id,
-                User.empresa_id == tenant.pyme_id,
-                User.pyme_id == tenant.pyme_id,
-            ]
-        )
-    seen: set[int] = set()
-    employees: list[User] = []
+    users: list[User] = []
     for user in User.query.filter(or_(*clauses)).order_by(User.id.asc()).all():
-        if user.id in seen:
+        if staff_only and not (
+            canonical_role(user.rol) == ROLE_EMPLEADO or user.es_empleado is True
+        ):
             continue
-        seen.add(user.id)
-        employees.append(user)
-    return employees
+        resolved = resolve_consistent_user_tenant(user)
+        if resolved is None or resolved.id != tenant.id:
+            continue
+        users.append(user)
+    return users
+
+
+def _employees_for_tenant(tenant: TenantProfile) -> list[User]:
+    # User has no persisted "active" column. Honor the existing authentication
+    # disable flag instead of inventing activity from UserMixin.is_active.
+    return [
+        user for user in _users_for_tenant(tenant, staff_only=True)
+        if not is_user_auth_disabled(user)
+    ]
 
 
 def _agent_summary(user: User | None, *, workload: int | None = None) -> dict[str, Any] | None:
@@ -965,23 +1134,9 @@ def _ticket_priority(ticket: Any) -> str | None:
 def _ticket_sla_status(ticket: Any, now: datetime) -> str:
     if _is_closed_state(getattr(ticket, "estado", None)):
         return "closed"
-    references = [
-        value
-        for value in (
-            _as_utc(getattr(ticket, "fecha", None)),
-            _as_utc(getattr(ticket, "ultima_actividad", None)),
-        )
-        if value
-    ]
-    reference = min(references) if references else None
-    if not reference:
-        return "unknown"
-    age = now - reference
-    if age >= timedelta(hours=48):
-        return "overdue"
-    if age >= timedelta(hours=24):
-        return "risk"
-    return "ok"
+    state = observe_legacy_ticket_sla(ticket, as_of=now)["state"]
+    # Preserve the established inbox aliases while using Reports' evidence.
+    return {"breached": "overdue", "at_risk": "risk", "healthy": "ok"}.get(state, state)
 
 
 def _count_unread_tickets(ticket_type: str, tickets: list[Any], current_user: User) -> int:
@@ -1055,7 +1210,10 @@ def _ticket_recommended_action(ticket: Any, sla_status: str) -> dict[str, Any] |
     return {"id": "continue_case", "label": "Dar proximo paso", "reason": "El caso sigue abierto."}
 
 
-def _ticket_item(ticket_type: str, ticket: Any, *, now: datetime, request_id: str) -> dict[str, Any]:
+def _ticket_item(
+    ticket_type: str, ticket: Any, *, now: datetime, request_id: str,
+    eligible_assignee_ids: set[int],
+) -> dict[str, Any]:
     sla_status = _ticket_sla_status(ticket, now)
     number = getattr(ticket, "nro_ticket", None) or ticket.id
     detail_base = "municipio" if ticket_type == "municipio" else "pyme"
@@ -1073,7 +1231,11 @@ def _ticket_item(ticket_type: str, ticket: Any, *, now: datetime, request_id: st
         "allowed_actions": _ticket_allowed_actions(ticket),
         "sla_status": sla_status,
         "priority": _ticket_priority(ticket),
-        "assigned_agent": _agent_summary(getattr(ticket, "asignado_a", None)),
+        "assigned_agent": (
+            _agent_summary(getattr(ticket, "asignado_a", None))
+            if getattr(ticket, "asignado_a_id", None) in eligible_assignee_ids
+            else None
+        ),
         "recommended_next_action": _ticket_recommended_action(ticket, sla_status),
     }
 
@@ -1090,8 +1252,23 @@ def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id
         sla_counts[status] = sla_counts.get(status, 0) + 1
     unassigned = sum(1 for ticket in open_tickets if not getattr(ticket, "asignado_a_id", None))
     unread = _count_unread_tickets(ticket_type, tickets, current_user)
-    sla_risk = sum(1 for ticket in open_tickets if _ticket_sla_status(ticket, now) in {"risk", "overdue"})
+    open_sla_counts: dict[str, int] = {}
+    for ticket in open_tickets:
+        status = _ticket_sla_status(ticket, now)
+        open_sla_counts[status] = open_sla_counts.get(status, 0) + 1
+    sla_breached = open_sla_counts.get("overdue", 0)
+    sla_at_risk = open_sla_counts.get("risk", 0)
+    sla_risk = sla_breached + sla_at_risk
+    sla_known = sla_risk + open_sla_counts.get("ok", 0)
+    sla_unknown = open_sla_counts.get("unknown", 0)
     employees = _employees_for_tenant(tenant)
+    # Resolve membership once per response, not once per ticket. Historical
+    # own assignees remain visible even if they are no longer active staff.
+    eligible_assignee_ids = (
+        {user.id for user in _users_for_tenant(tenant)}
+        if any(getattr(ticket, "asignado_a_id", None) for ticket in open_tickets)
+        else set()
+    )
     workload_by_agent: dict[int, int] = {}
     for ticket in open_tickets:
         agent_id = getattr(ticket, "asignado_a_id", None)
@@ -1145,6 +1322,11 @@ def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id
             "open": len(open_tickets),
             "unread": unread,
             "sla_risk": sla_risk,
+            "sla_breached": sla_breached,
+            "sla_at_risk": sla_at_risk,
+            "sla_known": sla_known,
+            "sla_unknown": sla_unknown,
+            "sla_eligible": sla_known + sla_unknown,
             "resolved": resolved,
             "unassigned": unassigned,
         },
@@ -1167,14 +1349,29 @@ def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id
             ],
         },
         "recommended_views": recommended_views,
-        "items": [_ticket_item(ticket_type, ticket, now=now, request_id=request_id) for ticket in sorted_items[:25]],
+        "data_quality_notes": ([f"{sla_unknown} casos abiertos sin evidencia SLA verificable; no se clasifican como vencidos, en riesgo ni saludables."] if sla_unknown else []),
+        "items": [
+            _ticket_item(
+                ticket_type, ticket, now=now, request_id=request_id,
+                eligible_assignee_ids=eligible_assignee_ids,
+            )
+            for ticket in sorted_items[:25]
+        ],
     }
 
 
 def _orders_for_tenant(tenant: TenantProfile) -> list[PymePedido]:
     clauses = [PymePedido.tenant_id == tenant.id]
+    owner_tenant_count = 0
     if tenant.pyme_id:
-        clauses.append(PymePedido.pyme_id == tenant.pyme_id)
+        owner_tenant_count = TenantProfile.query.filter_by(pyme_id=tenant.pyme_id).count()
+    if tenant.pyme_id and owner_tenant_count == 1:
+        clauses.append(
+            and_(
+                PymePedido.tenant_id.is_(None),
+                PymePedido.pyme_id == tenant.pyme_id,
+            )
+        )
     return (
         PymePedido.query.filter(or_(*clauses))
         .order_by(PymePedido.fecha.desc(), PymePedido.id.desc())
@@ -1317,7 +1514,7 @@ def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]
             }
         )
 
-    for user in _employees_for_tenant(tenant):
+    for user in _users_for_tenant(tenant):
         add_contact(
             {
                 "source": "user",
@@ -1418,13 +1615,14 @@ def _team_coverage_payload(tenant: TenantProfile, actor: User, request_id: str) 
     ticket_type, tickets = _ticket_records_for(tenant, scope, actor)
     open_tickets = [ticket for ticket in tickets if not _is_closed_state(getattr(ticket, "estado", None))]
     employees = _employees_for_tenant(tenant)
+    employee_ids = {employee.id for employee in employees}
     workload_by_agent: dict[int, int] = {}
     categories_by_agent: dict[int, set[str]] = {}
     channels_by_agent: dict[int, set[str]] = {}
 
     for ticket in open_tickets:
         agent_id = getattr(ticket, "asignado_a_id", None)
-        if not agent_id:
+        if agent_id not in employee_ids:
             continue
         workload_by_agent[int(agent_id)] = workload_by_agent.get(int(agent_id), 0) + 1
         category = getattr(ticket, "categoria", None)
@@ -1439,7 +1637,7 @@ def _team_coverage_payload(tenant: TenantProfile, actor: User, request_id: str) 
     assigned_open_categories = {
         str(getattr(ticket, "categoria", "")).strip()
         for ticket in open_tickets
-        if getattr(ticket, "categoria", None) and getattr(ticket, "asignado_a_id", None)
+        if getattr(ticket, "categoria", None) and getattr(ticket, "asignado_a_id", None) in employee_ids
     }
     covered_categories = sorted((configured_categories | assigned_open_categories) & open_categories)
     uncovered_categories = sorted(open_categories - set(covered_categories))
@@ -1638,13 +1836,14 @@ def _executive_summary_payload(tenant: TenantProfile, current_user: User, reques
     data_quality_notes: list[str] = []
     if confidence == "low":
         data_quality_notes.append("Muestra insuficiente para conclusiones fuertes; mostrar como lectura inicial.")
+    data_quality_notes.extend(inbox.get("data_quality_notes") or [])
     data_quality_notes.extend(orders.get("data_quality_notes") or [])
 
     return {
         "contract_version": "backoffice.executive_summary.v1",
         "request_id": request_id,
         "tenant_slug": tenant.slug,
-        "headline": f"{inbox['summary']['open']} casos abiertos, {inbox['summary']['sla_risk']} en riesgo SLA y {orders['summary']['active']} pedidos activos.",
+        "headline": f"{inbox['summary']['open']} casos abiertos, {inbox['summary']['sla_risk']} en riesgo SLA confirmado, {inbox['summary']['sla_unknown']} sin SLA verificable y {orders['summary']['active']} pedidos activos.",
         "risks": risks,
         "opportunities": opportunities,
         "recommended_actions": recommended_actions,
@@ -1719,7 +1918,9 @@ def backoffice_v2_export(current_user: User):
     role_error = _operator_role_error(current_user, request_id)
     if role_error:
         return role_error
-    tenant, error = _authorized_tenant_or_response(current_user, request_id, explicit_slug=body.get("tenant_slug"))
+    tenant, error = _authorized_tenant_or_response(
+        current_user, request_id, explicit_slug=body.get("tenant_slug", _TENANT_SELECTOR_ABSENT),
+    )
     if error:
         return error
     if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):
@@ -1781,7 +1982,9 @@ def backoffice_v2_executive_summary(current_user: User):
     role_error = _operator_role_error(current_user, request_id)
     if role_error:
         return role_error
-    tenant, error = _authorized_tenant_or_response(current_user, request_id, explicit_slug=body.get("tenant_slug"))
+    tenant, error = _authorized_tenant_or_response(
+        current_user, request_id, explicit_slug=body.get("tenant_slug", _TENANT_SELECTOR_ABSENT),
+    )
     if error:
         return error
     if not _feature_enabled(_integration_access(tenant), "analytics_dashboard"):

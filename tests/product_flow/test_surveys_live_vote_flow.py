@@ -11,6 +11,11 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 from models import AnalyticsEventV2, EncRespuesta, TenantProfile, User
+from tests.junin_product_flow_support import (
+    JUNIN_QA_LAT,
+    JUNIN_QA_LNG,
+    publish_governed_junin_survey,
+)
 
 
 class ProductFlowSurveyConfig(Config):
@@ -31,20 +36,21 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.client = self.app.test_client()
 
         self.admin = User(
-            name="Flow Surveys",
+            name="Municipalidad de Junín QA",
             email="flow-surveys@test.com",
             rol="admin",
-            tenant_slug="flow-surveys",
+            tipo_chat="municipio",
+            tenant_slug="junin",
         )
         self.admin.set_password("secret123")
         db.session.add(self.admin)
         db.session.flush()
 
         self.tenant = TenantProfile(
-            slug="flow-surveys",
-            nombre="Flow Surveys",
+            slug="junin",
+            nombre="Municipalidad de Junín QA",
             tipo="municipio",
-            pyme_id=self.admin.id,
+            municipio_id=self.admin.id,
             plan="full",
         )
         db.session.add(self.tenant)
@@ -52,6 +58,7 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.admin.tenant_id = self.tenant.id
         db.session.add(self.admin)
         db.session.commit()
+        self._governed_response_contract = None
 
     def tearDown(self):
         db.session.remove()
@@ -95,15 +102,19 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(created.status_code, 201, created.get_json())
         survey_id = created.get_json()["id"]
 
-        published = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=self._auth())
-        self.assertEqual(published.status_code, 200, published.get_json())
-        token = published.get_json()["public_token"]
-
-        public = self.client.get(f"/api/v2/public/surveys/{token}")
-        self.assertEqual(public.status_code, 200, public.get_json())
-        published_payload = published.get_json()
+        publication = publish_governed_junin_survey(
+            self.client,
+            survey_id=survey_id,
+            tenant=self.tenant,
+            reviewer_user_id=self.admin.id,
+            headers=self._auth(),
+            idempotency_prefix=f"product-flow-survey-{survey_id}",
+        )
+        token = publication.public_token
+        published_payload = publication.public_payload
+        self._governed_response_contract = publication.response_contract
         self._assert_admin_operations(published_payload, token, survey_id, tenant_slug=self.tenant.slug)
-        question = public.get_json()["preguntas"][0]
+        question = published_payload["preguntas"][0]
         return survey_id, token, question["id"], question["opciones"][0]["id"]
 
     def _assert_admin_operations(self, payload, token, survey_id, tenant_slug=None):
@@ -129,6 +140,12 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
     def _post_public_response(self, endpoint, payload, submission_id, headers=None):
         request_headers = dict(headers or {})
         request_headers["Idempotency-Key"] = submission_id
+        governed_payload = dict(payload)
+        if self._governed_response_contract:
+            governed_payload = {
+                **self._governed_response_contract,
+                **governed_payload,
+            }
         # The Flask test client bypasses the Render edge/ProxyFix chain.  When
         # a scenario supplies a distinct XFF address to model a distinct
         # citizen, mirror it as the actual transport peer instead of relying
@@ -137,7 +154,7 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         remote_addr = forwarded.split(",", 1)[0].strip() if forwarded else None
         return self.client.post(
             endpoint,
-            json={**payload, "submission_id": submission_id},
+            json={**governed_payload, "submission_id": submission_id},
             headers=request_headers,
             environ_base={"REMOTE_ADDR": remote_addr} if remote_addr else None,
         )
@@ -315,9 +332,9 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
                 {
                     "anon_id": f"flow-voter-geo-{index + 1}",
                     "source": "whatsapp_webview",
-                    "lat": -33.08149 + (index * 0.00001),
-                    "lng": -68.46849 + (index * 0.00001),
-                    "barrio": "Centro",
+                    "lat": JUNIN_QA_LAT + (index * 0.00001),
+                    "lng": JUNIN_QA_LNG + (index * 0.00001),
+                    "barrio": "Muestra QA Centro",
                     "ciudad": "Junin",
                     "provincia": "Mendoza",
                     "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
@@ -342,8 +359,8 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(point["source"], "survey_heatmap_cell")
         self.assertEqual(point["lat"], round(point["lat"], 3))
         self.assertEqual(point["lng"], round(point["lng"], 3))
-        self.assertNotEqual(point["lat"], -33.08149)
-        self.assertNotEqual(point["lng"], -68.46849)
+        self.assertEqual(point["lat"], JUNIN_QA_LAT)
+        self.assertEqual(point["lng"], JUNIN_QA_LNG)
         self.assertNotIn("submitted_at", point)
         self.assertNotIn("barrio", point)
         self.assertNotIn("canal", point)
@@ -361,7 +378,13 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         survey_id, token, question_id, option_id = self._create_live_vote()
         fixed_now = datetime(2026, 7, 12, 15, 0, tzinfo=timezone.utc)
 
-        for index, (lat, lng) in enumerate(((-33.08149, -68.46849), (-33.09149, -68.47849)), start=1):
+        for index, (lat, lng) in enumerate(
+            (
+                (JUNIN_QA_LAT, JUNIN_QA_LNG),
+                (JUNIN_QA_LAT - 0.001, JUNIN_QA_LNG - 0.001),
+            ),
+            start=1,
+        ):
             response = self._post_public_response(
                 f"/api/v2/public/surveys/{token}/respond",
                 {
@@ -369,7 +392,7 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
                     "source": "web",
                     "lat": lat,
                     "lng": lng,
-                    "barrio": "Centro",
+                    "barrio": "Muestra QA Centro",
                     "ciudad": "Junin",
                     "provincia": "Mendoza",
                     "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],

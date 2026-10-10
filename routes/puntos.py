@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request, g
 from flask_cors import cross_origin
+from cutover_writer_fence import cutover_writer_view
 
 from services.rewards import recompensas_service
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
@@ -36,6 +37,7 @@ puntos_public_bp = Blueprint("puntos_public_bp", __name__, url_prefix="/puntos")
 
 
 @puntos_bp.route("/saldo", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def saldo():
     if request.method == "OPTIONS":
@@ -100,6 +102,7 @@ def saldo():
 
 
 @puntos_public_bp.route("/saldo", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def saldo_public():
     """Alias público para /api/puntos/saldo."""
@@ -108,6 +111,7 @@ def saldo_public():
 
 
 @puntos_bp.route("/historial", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def historial():
     if request.method == "OPTIONS":
@@ -184,6 +188,7 @@ def historial():
 
 
 @puntos_public_bp.route("/historial", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def historial_public():
     """Alias público para /api/puntos/historial."""
@@ -192,6 +197,7 @@ def historial_public():
 
 
 @puntos_bp.route("/movimientos", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def movimientos():
     """Alias más descriptivo para historial de puntos con límite configurable."""
@@ -200,6 +206,7 @@ def movimientos():
 
 
 @puntos_public_bp.route("/movimientos", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def movimientos_public():
     """Alias público para /api/puntos/movimientos."""

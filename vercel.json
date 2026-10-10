@@ -1,0 +1,30 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "release/vercel-neon-complete-20261001": false,
+      "release/tdf-accessible-meta-20261010": false
+    }
+  },
+  "framework": "container",
+  "fluid": true,
+  "regions": ["gru1"],
+  "crons": [
+    {
+      "path": "/api/internal/cron/outbox-reconciliation",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/internal/cron/whatsapp-payload-retention",
+      "schedule": "43 3 * * *"
+    },
+    {
+      "path": "/api/internal/cron/survey-privacy-retention",
+      "schedule": "17 3 * * *"
+    },
+    {
+      "path": "/api/internal/cron/weekly-analytics-report",
+      "schedule": "0 0 * * 0"
+    }
+  ]
+}

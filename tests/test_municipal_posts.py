@@ -1,10 +1,13 @@
 import json
 import io
+from unittest.mock import patch
 
 import pytest
+from werkzeug.datastructures import FileStorage
 
 from app import db
 from models import User, MunicipioPost, TenantProfile
+import services.gcs_service as gcs_service
 from services.municipio_responder import cargar_agenda_cultural
 from utils.auth_helpers import generar_token
 
@@ -81,6 +84,132 @@ def test_create_municipal_post_success(client):
     assert stored.tipo_post == 'evento'
     assert stored.descripcion == 'Celebraremos la llegada de la primavera con música y comida.'
     assert stored.fecha_publicacion is not None
+
+
+def test_create_municipal_post_persists_production_flyer_in_r2_without_local_write(
+    client,
+    monkeypatch,
+):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(
+            admin_user.id,
+            admin_user.rol,
+            admin_user.tipo_chat,
+            admin_user.municipio_id,
+            admin_user.pyme_id,
+        )
+
+    generated_keys = []
+    uploaded_objects = []
+
+    def fake_generate_key(filename, tenant_slug, context_type):
+        key = f"general/{context_type}/{tenant_slug}/{filename}"
+        generated_keys.append(
+            {
+                "filename": filename,
+                "tenant_slug": tenant_slug,
+                "context_type": context_type,
+                "key": key,
+            }
+        )
+        return key
+
+    def fake_r2_upload(file_stream, key, mimetype):
+        uploaded_objects.append(
+            {"body": file_stream.read(), "key": key, "mimetype": mimetype}
+        )
+        return f"https://cdn.chatboc.ar/{key}"
+
+    monkeypatch.setenv("FLASK_ENV", "production")
+    monkeypatch.setattr(gcs_service.r2_service, "generate_key", fake_generate_key)
+    monkeypatch.setattr(
+        gcs_service.r2_service,
+        "upload_file_with_key",
+        fake_r2_upload,
+    )
+
+    def reject_local_save(*_args, **_kwargs):
+        raise AssertionError("The municipal flyer must not be saved locally")
+
+    monkeypatch.setattr(FileStorage, "save", reject_local_save)
+    monkeypatch.setattr(gcs_service, "_save_to_local", reject_local_save)
+
+    response = client.post(
+        "/municipal/posts",
+        data={
+            "titulo": "Campaña de vacunación",
+            "contenido": "Cronograma municipal actualizado.",
+            "tipo_post": "informacion",
+            "flyer_image": (io.BytesIO(b"r2-object"), "flyer institucional.png"),
+        },
+        headers={"Authorization": f"Bearer {token}"},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 201
+    assert len(generated_keys) == 1
+    assert generated_keys[0]["tenant_slug"] == "municipio-posts-test"
+    assert generated_keys[0]["context_type"] == "eventos"
+    assert generated_keys[0]["filename"].endswith("_flyer_institucional.png")
+    assert uploaded_objects == [
+        {
+            "body": b"r2-object",
+            "key": generated_keys[0]["key"],
+            "mimetype": "image/png",
+        }
+    ]
+    assert response.get_json()["imagen_url"] == (
+        f"https://cdn.chatboc.ar/{generated_keys[0]['key']}"
+    )
+
+
+def test_create_municipal_post_fails_closed_when_production_r2_is_unavailable(
+    client,
+    monkeypatch,
+):
+    with app.app_context():
+        admin_user = User.query.filter_by(email="admin_muni@test.com").first()
+        token = generar_token(
+            admin_user.id,
+            admin_user.rol,
+            admin_user.tipo_chat,
+            admin_user.municipio_id,
+            admin_user.pyme_id,
+        )
+
+    monkeypatch.setenv("FLASK_ENV", "production")
+    local_save = patch(
+        "services.gcs_service._save_to_local",
+        side_effect=AssertionError("Production must not fall back to local storage"),
+    )
+    r2_upload = patch.object(
+        gcs_service.r2_service,
+        "upload_file_with_key",
+        return_value=None,
+    )
+
+    with local_save as local_save_mock, r2_upload as r2_upload_mock:
+        response = client.post(
+            "/municipal/posts",
+            data={
+                "titulo": "Flyer sin almacenamiento",
+                "contenido": "Este post no debe persistirse.",
+                "tipo_post": "evento",
+                "flyer_image": (io.BytesIO(b"flyer"), "flyer.png"),
+            },
+            headers={"Authorization": f"Bearer {token}"},
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "error": "No se pudo almacenar el flyer. Intentalo nuevamente.",
+        "code": "flyer_storage_unavailable",
+    }
+    r2_upload_mock.assert_called_once()
+    local_save_mock.assert_not_called()
+    assert _get_posts_for_testing(client) == []
 
 
 def test_create_municipal_post_no_data(client):

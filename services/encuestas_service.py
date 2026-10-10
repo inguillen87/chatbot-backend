@@ -22,7 +22,7 @@ from urllib.parse import quote_plus, urlsplit
 
 from flask import current_app, g, has_request_context, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from sqlalchemy import func, or_, inspect, text
+from sqlalchemy import func, or_, inspect, text, tuple_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload, load_only, selectinload
 
@@ -51,6 +51,7 @@ from models import (
     TenantProfile,
     User,
 )
+from models_survey_jurisdiction import SurveyContentReceipt
 from services.user_service import get_user_profile_identity
 from services.survey_refs import is_canonical_survey_logical_ref
 from services.survey_response_provenance import (
@@ -91,6 +92,10 @@ SURVEY_PUBLIC_MINIMUM_CELL_SIZE = 5
 SURVEY_ADMIN_CHANNEL_TOP_LIMIT = 20
 SURVEY_ADMIN_LIST_DEFAULT_LIMIT = 50
 SURVEY_ADMIN_LIST_MAX_LIMIT = 100
+SURVEY_ADMIN_SCOPE_CONTRACT_VERSION = "surveys.admin_scope.v1"
+SURVEY_ADMIN_JURISDICTION_SCOPE_CONTRACT_VERSION = (
+    "surveys.admin_jurisdiction_scope.v1"
+)
 SURVEY_INSTRUMENT_DEFAULT_MAX_QUESTIONS = 100
 SURVEY_INSTRUMENT_DEFAULT_MAX_OPTIONS_PER_QUESTION = 100
 SURVEY_INSTRUMENT_DEFAULT_MAX_TOTAL_OPTIONS = 2_000
@@ -5047,6 +5052,7 @@ def list_encuestas_page(
     limit: Any = None,
     cursor: Any = None,
     page: Any = None,
+    include_archived: bool = False,
 ) -> Dict[str, Any]:
     """Return a hard-bounded tenant page using stable descending ids."""
 
@@ -5065,6 +5071,8 @@ def list_encuestas_page(
         )
 
     base_query = EncEncuesta.query.filter(EncEncuesta.tenant_id == int(tenant_id))
+    if include_archived is not True:
+        base_query = base_query.filter(EncEncuesta.estado != "archivada")
     if estado:
         base_query = base_query.filter(EncEncuesta.estado == estado)
 
@@ -5114,6 +5122,7 @@ def list_encuestas(
     limit: Any = None,
     cursor: Any = None,
     page: Any = None,
+    include_archived: bool = False,
 ) -> List[EncEncuesta]:
     """Compatibility wrapper; even direct callers receive a bounded page."""
 
@@ -5123,6 +5132,7 @@ def list_encuestas(
         limit=limit,
         cursor=cursor,
         page=page,
+        include_archived=include_archived,
     )["items"]
 
 
@@ -7182,7 +7192,24 @@ def save_respuesta(
     anon_cookie = request_ctx.get("anon_id")
     ip = request_ctx.get("ip")
 
-    fingerprint = build_unique_fingerprint(
+    from services.survey_participation_assurance import (
+        ACCOUNT_POLICIES,
+        ParticipationAssuranceError,
+        reviewed_grant_fingerprint,
+        strict_participation_enabled,
+    )
+
+    try:
+        strict_participation = strict_participation_enabled(tenant_id)
+    except ParticipationAssuranceError as exc:
+        raise EncuestaError(
+            exc.message, status_code=exc.status_code, payload=exc.to_dict()
+        ) from exc
+    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
+    requires_reviewed_grant = strict_participation and policy not in ACCOUNT_POLICIES
+    # Weak client identifiers are never used as admission authority in strict
+    # mode. The actual grant is validated below before any response is staged.
+    fingerprint = None if requires_reviewed_grant else build_unique_fingerprint(
         encuesta,
         tenant_id,
         dni=dni,
@@ -7191,8 +7218,7 @@ def save_respuesta(
         ip=ip,
         anon_cookie=anon_cookie,
     )
-    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
-    if fingerprint is None and policy != "libre":
+    if fingerprint is None and policy != "libre" and not requires_reviewed_grant:
         required_identifiers = {
             "por_cookie": ["anon_id"],
             "cookie": ["anon_id"],
@@ -7346,6 +7372,24 @@ def save_respuesta(
                 status_code=exc.status_code,
                 payload=exc.to_dict(),
             ) from exc
+
+    if requires_reviewed_grant:
+        try:
+            fingerprint = reviewed_grant_fingerprint(
+                encuesta, governance_release, eligibility_grant
+            )
+        except ParticipationAssuranceError as exc:
+            if commit:
+                db.session.rollback()
+            raise EncuestaError(
+                exc.message, status_code=exc.status_code, payload=exc.to_dict()
+            ) from exc
+        if EncRespuesta.query.filter_by(
+            encuesta_id=encuesta.id,
+            huella_unica=fingerprint,
+            response_origin=SURVEY_RESPONSE_ORIGIN_REAL,
+        ).first():
+            raise _survey_duplicate_response_error()
 
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
@@ -8802,11 +8846,86 @@ def _admin_schedule_datetime(
     return value.astimezone(reference.tzinfo)
 
 
+def _build_admin_jurisdiction_scope(
+    encuesta: EncEncuesta,
+    tenant: Optional[TenantProfile],
+) -> Dict[str, Any]:
+    """Compare only persisted, server-owned jurisdiction references.
+
+    This intentionally avoids the full content-review readiness contract used
+    by publication.  Admin lists need a bounded classification that can be
+    computed from the survey row plus one bulk-loaded tenant row, without
+    inferring geography from titles, descriptions, slugs or question copy.
+    """
+
+    from services.survey_jurisdiction import tenant_verified_jurisdiction
+
+    tenant_verified_ref = (
+        tenant_verified_jurisdiction(tenant) if tenant is not None else None
+    )
+    survey_ref = str(getattr(encuesta, "jurisdiction_ref", None) or "").strip()
+    survey_ref = survey_ref or None
+
+    if tenant is None:
+        status = "unverified"
+        compatible: Optional[bool] = None
+        reason_code = "survey_tenant_not_found"
+        action_hint = "resolve_survey_tenant"
+    elif tenant_verified_ref is None:
+        status = "unverified"
+        compatible = None
+        reason_code = "survey_tenant_jurisdiction_unverified"
+        action_hint = "configure_verified_tenant_jurisdiction"
+    elif survey_ref is None:
+        status = "unverified"
+        compatible = None
+        reason_code = "survey_jurisdiction_unbound"
+        action_hint = "bind_verified_tenant_jurisdiction_then_review"
+    elif survey_ref != tenant_verified_ref:
+        status = "conflict"
+        compatible = False
+        reason_code = "survey_jurisdiction_binding_conflict"
+        action_hint = "duplicate_and_review_for_verified_jurisdiction"
+    else:
+        status = "compatible"
+        compatible = True
+        reason_code = "survey_jurisdiction_compatible"
+        action_hint = None
+
+    return {
+        "contract_version": SURVEY_ADMIN_SCOPE_CONTRACT_VERSION,
+        "jurisdiction": {
+            "contract_version": (
+                SURVEY_ADMIN_JURISDICTION_SCOPE_CONTRACT_VERSION
+            ),
+            "status": status,
+            "compatible": compatible,
+            "reason_code": reason_code,
+            "action_hint": action_hint,
+            "tenant_verified_ref": tenant_verified_ref,
+            "survey_ref": survey_ref,
+            "authoritative_source": "server_owned_persisted_refs",
+            "content_review_included": False,
+        },
+        "separation": {
+            "required": status == "conflict",
+            "reason_code": (
+                "survey_jurisdiction_binding_conflict"
+                if status == "conflict"
+                else None
+            ),
+        },
+    }
+
+
 def _build_admin_lifecycle_contract(
     encuesta: EncEncuesta,
     metricas: Mapping[str, Any],
     *,
     governed_release: bool,
+    jurisdiction_scope: Optional[Mapping[str, Any]] = None,
+    survey_evidence_gate: Optional[Mapping[str, Any]] = None,
+    public_access: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Describe the persisted lifecycle without deriving unavailable KPIs."""
 
@@ -8840,14 +8959,65 @@ def _build_admin_lifecycle_contract(
 
     has_questions = bool(encuesta.preguntas)
     response_count = int(metricas.get("total_respuestas") or 0)
-    can_publish = persisted_state == "borrador" and has_questions and not governed_release
+    jurisdiction = (
+        jurisdiction_scope.get("jurisdiction")
+        if isinstance(jurisdiction_scope, Mapping)
+        else None
+    )
+    jurisdiction_status = (
+        str(jurisdiction.get("status") or "unverified").strip().lower()
+        if isinstance(jurisdiction, Mapping)
+        else "unverified"
+    )
+    jurisdiction_reason = (
+        str(jurisdiction.get("reason_code") or "").strip() or None
+        if isinstance(jurisdiction, Mapping)
+        else None
+    )
+    jurisdiction_conflict = jurisdiction_status == "conflict"
+    evidence_required = bool(
+        isinstance(survey_evidence_gate, Mapping)
+        and survey_evidence_gate.get("required") is True
+    )
+    evidence_ready = bool(
+        not evidence_required
+        or (
+            isinstance(survey_evidence_gate, Mapping)
+            and survey_evidence_gate.get("ready") is True
+        )
+    )
+    evidence_reason = (
+        str(survey_evidence_gate.get("reason_code") or "").strip() or None
+        if isinstance(survey_evidence_gate, Mapping)
+        else None
+    )
+    evidence_next_action = (
+        str(survey_evidence_gate.get("next_action") or "").strip() or None
+        if isinstance(survey_evidence_gate, Mapping)
+        else None
+    )
+    can_publish = (
+        persisted_state == "borrador"
+        and has_questions
+        and not governed_release
+        and not jurisdiction_conflict
+        and evidence_ready
+    )
     can_close = persisted_state == "publicada" and not governed_release
     can_delete = persisted_state == "borrador" and response_count == 0 and not governed_release
-    accepts_responses = phase in {"collecting", "live_voting"}
+    accepts_responses = (
+        phase in {"collecting", "live_voting"}
+        and not jurisdiction_conflict
+        and (public_access is None or public_access.get("allowed") is True)
+    )
 
     publish_reason = None
     close_reason = None
-    if governed_release:
+    if evidence_required and not evidence_ready:
+        publish_reason = evidence_reason or "survey_jurisdiction_guard_blocked"
+    elif jurisdiction_conflict:
+        publish_reason = "survey_jurisdiction_binding_conflict"
+    elif governed_release:
         publish_reason = "survey_governance_release_required"
         close_reason = "survey_governance_release_required"
     elif not has_questions:
@@ -8863,10 +9033,30 @@ def _build_admin_lifecycle_contract(
         "phase": phase,
         "persisted_state": persisted_state,
         "accepts_responses": accepts_responses,
+        "operational_block": (
+            {
+                "reason_code": "survey_jurisdiction_binding_conflict",
+                "action_hint": "separate_and_review_foreign_jurisdiction_instrument",
+            }
+            if jurisdiction_conflict
+            else None
+        ),
         "schedule": {
             "opens_at": opens_at.isoformat() if opens_at else None,
             "closes_at": closes_at.isoformat() if closes_at else None,
             "evaluated_at": reference.isoformat(),
+        },
+        "jurisdiction": {
+            "status": jurisdiction_status,
+            "reason_code": jurisdiction_reason,
+            "content_review_included": False,
+        },
+        "government_survey_evidence_gate": {
+            "contract_version": "surveys.government_evidence_gate.v1",
+            "required": evidence_required,
+            "ready": evidence_ready,
+            "reason_code": evidence_reason,
+            "next_action": evidence_next_action,
         },
         "participation": {
             "responses": response_count,
@@ -8885,7 +9075,12 @@ def _build_admin_lifecycle_contract(
             "can_publish": can_publish,
             "can_close": can_close,
             "can_delete": can_delete,
-            "can_share": persisted_state == "publicada" and bool(_resolve_public_slug(encuesta)),
+            "can_share": (
+                persisted_state == "publicada"
+                and not jurisdiction_conflict
+                and (public_access is None or public_access.get("allowed") is True)
+                and bool(_resolve_public_slug(encuesta))
+            ),
             "can_view_results": response_count > 0,
         },
         "actions": {
@@ -8894,6 +9089,11 @@ def _build_admin_lifecycle_contract(
                 "endpoint": f"/api/v2/surveys/{encuesta.id}/publish",
                 "enabled": can_publish,
                 "disabled_reason_code": None if can_publish else publish_reason,
+                "next_action": (
+                    evidence_next_action
+                    if evidence_required and not evidence_ready
+                    else None
+                ),
             },
             "close": {
                 "method": "POST",
@@ -8901,9 +9101,84 @@ def _build_admin_lifecycle_contract(
                 "enabled": can_close,
                 "confirmation_required": True,
                 "irreversible": True,
+                "required_capabilities": ["survey.close"],
                 "disabled_reason_code": None if can_close else close_reason,
             },
         },
+    }
+
+
+def build_survey_availability_contract(
+    encuesta: EncEncuesta,
+    tenant: Optional[TenantProfile],
+    *,
+    metricas: Optional[Mapping[str, Any]] = None,
+    governed_release: bool = False,
+    admin_scope: Optional[Mapping[str, Any]] = None,
+    content_receipt_rows: Optional[Sequence[SurveyContentReceipt]] = None,
+) -> Dict[str, Any]:
+    """Read the same public guard and operational veto for every admin surface."""
+    from services.survey_jurisdiction import (
+        jurisdiction_contract,
+        survey_is_publicly_visible,
+        tenant_requires_government_survey_evidence,
+    )
+
+    scope = admin_scope or _build_admin_jurisdiction_scope(encuesta, tenant)
+    public_slug = _resolve_public_slug(encuesta)
+    evaluated = None
+    evidence_gate = None
+    if tenant_requires_government_survey_evidence(tenant):
+        evaluated = jurisdiction_contract(
+            encuesta, receipt_rows=content_receipt_rows
+        )
+        evidence_gate = evaluated.get("government_evidence_gate")
+    if evaluated is not None:
+        publicly_visible = bool(
+            not evaluated["visibility_enforced"]
+            or (evaluated["configuration_valid"] and evaluated["ready"])
+        )
+    else:
+        publicly_visible = survey_is_publicly_visible(
+            encuesta, receipt_rows=content_receipt_rows
+        )
+    reason = None
+    next_action = None
+    if not publicly_visible:
+        evaluated = evaluated or jurisdiction_contract(
+            encuesta, receipt_rows=content_receipt_rows
+        )
+        reason = (
+            evaluated.get("reason_code")
+            if evaluated.get("configuration_valid")
+            else "survey_jurisdiction_gate_configuration_invalid"
+        ) or "survey_jurisdiction_guard_blocked"
+        next_action = evaluated.get("next_action") or "review_survey_jurisdiction"
+    elif str(encuesta.estado or "").strip().lower() != "publicada":
+        reason = "survey_not_published"
+    elif not _is_encuesta_activa(encuesta):
+        reason = "survey_outside_active_window"
+    elif not public_slug:
+        reason = "survey_public_link_missing"
+    public_access = {
+        "contract_version": "surveys.public_access.v1",
+        "allowed": reason is None,
+        "reason_code": reason,
+        "next_action": next_action,
+    }
+    lifecycle = _build_admin_lifecycle_contract(
+        encuesta,
+        metricas or {},
+        governed_release=governed_release,
+        jurisdiction_scope=scope,
+        survey_evidence_gate=evidence_gate,
+        public_access=public_access,
+    )
+    return {
+        "admin_scope": scope,
+        "public_access": public_access,
+        "admin_lifecycle": lifecycle,
+        "public_slug": public_slug,
     }
 
 
@@ -8917,6 +9192,7 @@ def build_admin_list_payload(
     stats_map = _collect_admin_panel_stats(encuestas)
     geo_points = _collect_recent_geo_points(encuestas)
     governance_map = _bulk_survey_governance_contract_map(encuestas)
+    content_receipts_map = _bulk_survey_content_receipt_map(encuestas)
     encuestas_payload: List[Dict[str, Any]] = []
     estados = Counter()
     total_respuestas = 0
@@ -8928,6 +9204,17 @@ def build_admin_list_payload(
     con_respuestas = 0
     accepting_responses = 0
     instrument_kinds = Counter()
+    governed_instruments = 0
+    jurisdiction_statuses = Counter()
+    operational_instruments = 0
+    operational_responses = 0
+    operational_geo = 0
+    operational_24h = 0
+    operational_active = 0
+    operational_with_responses = 0
+    operational_accepting_responses = 0
+    operational_instrument_kinds = Counter()
+    operational_governed_instruments = 0
 
     seed_profiles_map = _geo_catalog()
     tenant_ids = {
@@ -8935,6 +9222,16 @@ def build_admin_list_payload(
         for encuesta in encuestas
         if encuesta.tenant_id is not None
     }
+    tenant_profiles_by_id = (
+        {
+            int(tenant.id): tenant
+            for tenant in TenantProfile.query.filter(
+                TenantProfile.id.in_(tenant_ids)
+            ).all()
+        }
+        if tenant_ids
+        else {}
+    )
     geo_metadata_by_tenant = {
         resolved_tenant_id: _resolve_geo_metadata_for_tenant(resolved_tenant_id)
         for resolved_tenant_id in tenant_ids
@@ -8977,15 +9274,46 @@ def build_admin_list_payload(
         )
         data["esta_activa"] = _is_encuesta_activa(encuesta)
         data["slug_publico"] = _resolve_public_slug(encuesta)
-        lifecycle = _build_admin_lifecycle_contract(
+        admin_scope = _build_admin_jurisdiction_scope(
             encuesta,
-            metricas,
+            tenant_profiles_by_id.get(int(encuesta.tenant_id)),
+        )
+        data["admin_scope"] = admin_scope
+        jurisdiction_scope = admin_scope["jurisdiction"]
+        jurisdiction_summary = dict(data.get("jurisdiction") or {})
+        jurisdiction_summary.update(
+            {
+                "scope_status": jurisdiction_scope["status"],
+                "scope_reason_code": jurisdiction_scope["reason_code"],
+                "tenant_verified_ref": jurisdiction_scope[
+                    "tenant_verified_ref"
+                ],
+                "content_review_included": False,
+            }
+        )
+        data["jurisdiction"] = jurisdiction_summary
+        availability = build_survey_availability_contract(
+            encuesta,
+            tenant_profiles_by_id.get(int(encuesta.tenant_id)),
+            metricas=metricas,
             governed_release=bool(
                 isinstance(data.get("governance"), Mapping)
                 and data["governance"].get("release_required") is True
             ),
+            admin_scope=admin_scope,
+            content_receipt_rows=content_receipts_map[
+                (int(encuesta.tenant_id), int(encuesta.id))
+            ],
         )
+        data["public_access"] = availability["public_access"]
+        lifecycle = availability["admin_lifecycle"]
         data["admin_lifecycle"] = lifecycle
+        data["esta_activa"] = bool(lifecycle["accepts_responses"])
+        if bool(
+            isinstance(data.get("governance"), Mapping)
+            and data["governance"].get("release_required") is True
+        ):
+            governed_instruments += 1
         geo_metadata = geo_metadata_by_tenant.get(int(encuesta.tenant_id))
         data["geo"] = {
             "points": geo_points.get(encuesta.id or -1, []),
@@ -9031,6 +9359,24 @@ def build_admin_list_payload(
         if lifecycle["accepts_responses"]:
             accepting_responses += 1
         instrument_kinds[lifecycle["instrument_kind"]] += 1
+        jurisdiction_statuses[jurisdiction_scope["status"]] += 1
+        if jurisdiction_scope["status"] != "conflict":
+            operational_instruments += 1
+            operational_responses += int(metricas["total_respuestas"] or 0)
+            operational_geo += int(metricas["respuestas_con_coordenadas"] or 0)
+            operational_24h += int(metricas["respuestas_ultimas_24h"] or 0)
+            if data["esta_activa"]:
+                operational_active += 1
+            if int(metricas["total_respuestas"] or 0) > 0:
+                operational_with_responses += 1
+            if lifecycle["accepts_responses"]:
+                operational_accepting_responses += 1
+            operational_instrument_kinds[lifecycle["instrument_kind"]] += 1
+            if bool(
+                isinstance(data.get("governance"), Mapping)
+                and data["governance"].get("release_required") is True
+            ):
+                operational_governed_instruments += 1
 
     resumen = {
         "total": len(encuestas_payload),
@@ -9101,6 +9447,194 @@ def build_admin_list_payload(
         }
     )
 
+    returned_items = int(
+        resolved_pagination.get("returned", len(encuestas_payload))
+        or 0
+    )
+    query_total_items = int(
+        resolved_pagination.get("total_items", returned_items)
+        or 0
+    )
+    first_page = (
+        resolved_pagination.get("cursor") in (None, "")
+        and resolved_pagination.get("page") in (None, 1)
+    )
+    complete_for_query = bool(
+        first_page
+        and not resolved_pagination.get("has_more")
+        and returned_items == query_total_items
+    )
+    geo_coverage_available = total_respuestas > 0
+    geolocation_coverage = {
+        "available": geo_coverage_available,
+        "numerator": total_geo,
+        "denominator": total_respuestas if geo_coverage_available else None,
+        "percentage": (
+            round((total_geo / total_respuestas) * 100, 2)
+            if geo_coverage_available
+            else None
+        ),
+        "reason_code": (
+            None
+            if geo_coverage_available
+            else "survey_response_denominator_empty"
+        ),
+    }
+    operational_geo_coverage_available = operational_responses > 0
+    operational_geolocation_coverage = {
+        "available": operational_geo_coverage_available,
+        "numerator": operational_geo,
+        "denominator": (
+            operational_responses
+            if operational_geo_coverage_available
+            else None
+        ),
+        "percentage": (
+            round((operational_geo / operational_responses) * 100, 2)
+            if operational_geo_coverage_available
+            else None
+        ),
+        "reason_code": (
+            None
+            if operational_geo_coverage_available
+            else "survey_response_denominator_empty"
+        ),
+    }
+    aggregation_scope = {
+        "mode": "returned_page",
+        "returned_items": returned_items,
+        "query_total_items": query_total_items,
+        "complete_for_query": complete_for_query,
+    }
+    jurisdiction_aggregate = {
+        "contract_version": "surveys.admin_jurisdiction_aggregate.v1",
+        "aggregation_scope": aggregation_scope,
+        "compatible": int(jurisdiction_statuses.get("compatible", 0)),
+        "conflict": int(jurisdiction_statuses.get("conflict", 0)),
+        "unverified": int(jurisdiction_statuses.get("unverified", 0)),
+        "separation_required": int(jurisdiction_statuses.get("conflict", 0)),
+        "review_required": int(
+            jurisdiction_statuses.get("conflict", 0)
+            + jurisdiction_statuses.get("unverified", 0)
+        ),
+        "authoritative_source": "server_owned_persisted_refs",
+        "title_inference_used": False,
+        "content_review_included": False,
+    }
+    aggregate_policy = {
+        "contract_version": "surveys.admin_aggregate_policy.v1",
+        "general_scope": {
+            "included_jurisdiction_statuses": [
+                "compatible",
+                "conflict",
+                "unverified",
+            ],
+            "conflict_instruments_included": jurisdiction_aggregate[
+                "conflict"
+            ],
+        },
+        "operational_scope": {
+            "included_jurisdiction_statuses": ["compatible", "unverified"],
+            "excluded_jurisdiction_statuses": ["conflict"],
+            "unverified_is_compatible": False,
+        },
+    }
+    operational_scope = {
+        "contract_version": "surveys.admin_operational_scope.v1",
+        "aggregation_scope": aggregation_scope,
+        "selection": aggregate_policy["operational_scope"],
+        "instruments": {
+            "included": operational_instruments,
+            "excluded_conflict": jurisdiction_aggregate["conflict"],
+            "active": operational_active,
+            "accepting_responses": operational_accepting_responses,
+            "with_responses": operational_with_responses,
+            "surveys": int(operational_instrument_kinds.get("survey", 0)),
+            "votings": int(operational_instrument_kinds.get("voting", 0)),
+            "governed": operational_governed_instruments,
+        },
+        "participation": {
+            "real_responses": operational_responses,
+            "responses_last_24h": operational_24h,
+            "eligible_population": None,
+            "participation_rate": None,
+        },
+        "territorial": {
+            "responses_with_coordinates": operational_geo,
+            "geolocation_coverage": operational_geolocation_coverage,
+        },
+    }
+    resumen["jurisdiccion"] = jurisdiction_aggregate
+    resumen["politica_agregacion"] = aggregate_policy
+    resumen["alcance_operativo"] = operational_scope
+    limitations = [
+        {
+            "reason_code": "survey_eligible_population_not_configured",
+            "impact": "participation_rate_and_abstentions_unavailable",
+        }
+    ]
+    if not complete_for_query:
+        limitations.append(
+            {
+                "reason_code": "survey_admin_aggregate_page_scoped",
+                "impact": "aggregate_counts_cover_returned_page_only",
+            }
+        )
+    if jurisdiction_aggregate["conflict"]:
+        limitations.append(
+            {
+                "reason_code": "survey_jurisdiction_binding_conflict",
+                "impact": "foreign_jurisdiction_instruments_require_separation",
+            }
+        )
+    if jurisdiction_aggregate["unverified"]:
+        limitations.append(
+            {
+                "reason_code": "survey_jurisdiction_scope_unverified",
+                "impact": "instruments_require_authoritative_jurisdiction_review",
+            }
+        )
+    executive_summary = {
+        "contract_version": "surveys.admin_executive_overview.v1",
+        "aggregation_scope": aggregation_scope,
+        "instruments": {
+            "returned": len(encuestas_payload),
+            "active": activas,
+            "accepting_responses": accepting_responses,
+            "with_responses": con_respuestas,
+            "surveys": int(instrument_kinds.get("survey", 0)),
+            "votings": int(instrument_kinds.get("voting", 0)),
+            "governed": governed_instruments,
+        },
+        "jurisdiction": jurisdiction_aggregate,
+        "aggregate_policy": aggregate_policy,
+        "operational_scope": operational_scope,
+        "participation": {
+            "real_responses": total_respuestas,
+            "responses_last_24h": total_24h,
+            "eligible_population": None,
+            "participation_rate": None,
+        },
+        "territorial": {
+            "responses_with_coordinates": total_geo,
+            "geolocation_coverage": geolocation_coverage,
+        },
+        "assurance": {
+            "regulated_election_certified": False,
+            "result_certified": False,
+            "external_verification": "not_performed",
+        },
+        "limitations": limitations,
+    }
+    data_quality = {
+        "contract_version": "surveys.admin_data_quality.v1",
+        "aggregation_scope": aggregation_scope,
+        "geolocation_coverage": geolocation_coverage,
+        "jurisdiction": jurisdiction_aggregate,
+        "response_provenance": data_provenance,
+        "limitations": limitations,
+    }
+
     return {
         "contract_version": "surveys.admin_list.v2",
         "tenant": {"id": tenant_id, "slug": tenant_slug},
@@ -9110,6 +9644,8 @@ def build_admin_list_payload(
             "synthetic": False,
         },
         "data_provenance": data_provenance,
+        "data_quality": data_quality,
+        "executive_summary": executive_summary,
         "encuestas": encuestas_payload,
         "resumen": resumen,
         "pagination": resolved_pagination,
@@ -9260,6 +9796,38 @@ def _legacy_survey_governance_contract() -> Dict[str, Any]:
         "regulated_election_certified": False,
         "result_certified": False,
     }
+
+
+def _bulk_survey_content_receipt_map(
+    encuestas: Sequence[EncEncuesta],
+) -> Dict[Tuple[int, int], List[SurveyContentReceipt]]:
+    """Load the exact receipt chains for a bounded page in one scoped query."""
+
+    keys = {
+        (int(encuesta.tenant_id), int(encuesta.id))
+        for encuesta in encuestas
+        if encuesta.id is not None and encuesta.tenant_id is not None
+    }
+    rows_by_key: Dict[Tuple[int, int], List[SurveyContentReceipt]] = {
+        key: [] for key in keys
+    }
+    if not keys:
+        return rows_by_key
+    rows = (
+        SurveyContentReceipt.query.filter(
+            tuple_(SurveyContentReceipt.tenant_id, SurveyContentReceipt.survey_id)
+            .in_(sorted(keys))
+        )
+        .order_by(
+            SurveyContentReceipt.tenant_id.asc(),
+            SurveyContentReceipt.survey_id.asc(),
+            SurveyContentReceipt.id.asc(),
+        )
+        .all()
+    )
+    for row in rows:
+        rows_by_key[(int(row.tenant_id), int(row.survey_id))].append(row)
+    return rows_by_key
 
 
 def _bulk_survey_governance_contract_map(
@@ -9471,6 +10039,8 @@ def serialize_encuesta(
 
         jurisdiction = jurisdiction_contract(encuesta)
 
+    from services.survey_participation_assurance import participation_assurance_contract
+
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
@@ -9543,6 +10113,7 @@ def serialize_encuesta(
             ),
         },
         "governance": governance,
+        "participation_assurance": participation_assurance_contract(encuesta, governance),
         "jurisdiction": jurisdiction,
         "tags": _collect_encuesta_tags(encuesta),
         "preguntas_count": len(encuesta.preguntas),
@@ -9601,6 +10172,7 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
             "provider": "chatboc_session",
         },
         "privacy": data["privacy"],
+        "participation_assurance": data["participation_assurance"],
         "eligibility": (
             data.get("governance", {}).get("eligibility")
             if isinstance(data.get("governance"), dict)
@@ -9758,17 +10330,51 @@ def _compute_live_results(encuesta: EncEncuesta) -> Dict[str, Any]:
     return results
 
 
+def normalize_survey_comment_mode(payload: Mapping[str, Any]) -> str:
+    mode = str(payload.get("mode") or payload.get("comment_mode") or payload.get("modo") or "anon").strip().lower()
+    if mode in {"anon", "anonimo", "anonymous"}:
+        return "anon"
+    if mode in {"social", "facebook", "google", "instagram"}:
+        return "social"
+    raise EncuestaError("Modo de comentario inválido", status_code=400, payload={"reason_code": "invalid_comment_mode"})
+
+
 def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[User]) -> EncComentario:
     encuesta = db.session.get(EncEncuesta, encuesta_id)
     if not encuesta or not encuesta.permitir_comentarios:
         raise EncuestaError("Comentarios no habilitados para esta encuesta", status_code=403)
 
-    texto = (payload.get("texto") or "").strip()
+    raw_text = payload.get("texto")
+    texto = raw_text.strip() if isinstance(raw_text, str) else ""
     if not texto:
         raise EncuestaError("El comentario no puede estar vacío")
+    if len(texto) > 500:
+        raise EncuestaError("El comentario no puede superar 500 caracteres", status_code=400, payload={"reason_code": "comment_too_long"})
 
-    comment_mode = str(payload.get("mode") or payload.get("comment_mode") or "").strip().lower()
-    comment_mode = "social" if comment_mode == "social" else "anon"
+    comment_mode = normalize_survey_comment_mode(payload)
+    payload = dict(payload)
+    if comment_mode == "social":
+        token = payload.get("social_token") or payload.get("auth_token")
+        if not token and has_request_context():
+            token = request.headers.get("X-Survey-Social-Token")
+        if not token:
+            raise EncuestaError("Se requiere token social válido para comentar", status_code=400, payload={"reason_code": "social_token_required"})
+        claims = verify_social_comment_token(str(token))
+        if not claims:
+            raise EncuestaError("Token social inválido o expirado", status_code=400, payload={"reason_code": "invalid_social_token"})
+        for claim_key, payload_key in (("provider", "auth_provider"), ("auth_user_id", "auth_user_id"), ("auth_email", "auth_email"), ("auth_first_name", "auth_first_name"), ("auth_last_name", "auth_last_name")):
+            claimed = str(claims.get(claim_key) or "").strip()
+            incoming = str(payload.get(payload_key) or "").strip()
+            if incoming and incoming.lower() != claimed.lower():
+                raise EncuestaError("Los datos sociales no coinciden con el token", status_code=400, payload={"reason_code": "social_identity_mismatch"})
+            payload[payload_key] = claimed
+        # Public display names must come from the signed profile, never a free field.
+        payload.pop("nombre", None)
+        payload.pop("nombre_autor", None)
+    else:
+        # An explicit anonymous choice never retains a session, name or social identifier.
+        user = None
+        payload = {"texto": texto, "mode": "anon", "channel": payload.get("channel")}
 
     auth_provider = (
         payload.get("auth_provider")
@@ -9798,7 +10404,7 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
     if not display_name:
         display_name = (payload.get("nombre") or payload.get("nombre_autor") or "").strip()
     if not display_name and comment_mode == "social":
-        display_name = auth_email or (f"Usuario {auth_provider.title()}" if auth_provider else "")
+        display_name = f"Usuario {auth_provider.title()}" if auth_provider else ""
 
     anon_id = payload.get("anon_id")
     if comment_mode == "social":
@@ -9921,6 +10527,8 @@ def serialize_public_comment(comentario: EncComentario) -> Dict[str, Any]:
 
 
 def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    limit = max(1, min(int(limit or 50), 100))
+    offset = max(0, int(offset or 0))
     base_query = (
         EncComentario.query.filter_by(encuesta_id=encuesta_id, estado="publicado")
         .order_by(EncComentario.created_at.desc())
@@ -10001,9 +10609,9 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
     return results
 
 
-def reportar_comentario(comentario_id: int) -> EncComentario:
+def reportar_comentario(comentario_id: int, *, encuesta_id: int) -> EncComentario:
     comentario = db.session.get(EncComentario, comentario_id)
-    if not comentario:
+    if not comentario or comentario.encuesta_id != encuesta_id:
         raise EncuestaError("Comentario no encontrado", status_code=404)
 
     comentario.report_count += 1

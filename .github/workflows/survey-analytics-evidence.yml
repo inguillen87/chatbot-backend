@@ -1,0 +1,255 @@
+name: Survey and organization evidence
+"on":
+  pull_request:
+    paths:
+      - services/survey_analytics_evidence.py
+      - services/survey_fieldwork_coverage.py
+      - services/encuestas_analytics_service.py
+      - routes/encuestas_analytics.py
+      - tests/test_survey_fieldwork_coverage.py
+      - tests/survey_fieldwork_coverage_http.py
+      - tests/test_survey_analytics_evidence.py
+      - tests/survey_analytics_evidence_http.py
+      - services/accessible_support_guide.py
+      - services/tenant_conversation_guide.py
+      - services/tenant_conversation_guide_control.py
+      - tests/private_conversation_guide_control_http.py
+      - tests/private_guide_control_postgres.py
+      - tests/run_private_guide_pair.py
+      - services/institutional_assistant*
+      - routes/institutional_assistant.py
+      - services/logic.py
+      - app.py
+      - tests/institutional_assistant*.py
+      - tests/test_institutional_assistant_content.py
+      - tests/guide_pair_frontend.json
+      - tests/guide-pair*
+      - services/tenant_factory.py
+      - services/organization_setup_journey.py
+      - services/channel_activation.py
+      - routes/admin_tenant.py
+      - routes/super_admin.py
+      - routes/auth.py
+      - routes/v2/saas.py
+      - services/analytics/rbac.py
+      - routes/backoffice.py
+      - routes/ticket.py
+      - services/operational_intelligence.py
+      - services/ticket_workflow_policy.py
+      - services/ticket_category_authority.py
+      - services/employee_routing.py
+      - tests/test_ticket_category_authority_routing.py
+      - tests/test_ticket_catalog_filter_authority.py
+      - tests/test_ticket_assignment_policy.py
+      - tests/test_crm_detail_category_rbac.py
+      - tests/test_v2_saas_contracts.py
+      - tests/ticket_workflow_http.py
+      - tests/ticket_workflow_postgres.py
+      - tests/test_ticket_state_sync.py
+      - tests/test_ticket_notifications.py
+      - tests/test_legacy_ticket_tenant_scope.py
+      - tests/test_backoffice_contracts.py
+      - tests/test_ticket_filters.py
+      - tests/test_ticket_operational_badges.py
+      - tests/test_v2_operational_analytics.py
+      - tests/test_v2_sla_truth.py
+      - services/twilio_tech_provider.py
+      - tests/v2_tenant_membership_http.py
+      - services/native_admin_membership.py
+      - tests/native_admin_membership_http.py
+      - tests/native_admin_membership_postgres.py
+      - tests/test_territorial_boundary_packaging.py
+      - data/municipios/junin/geo.json
+      - data/municipios/junin/official_department_boundary.geojson
+      - .gitattributes
+      - tests/twilio_provisioning_without_render_regression.py
+      - data/conversation_guides/**
+      - tests/private_conversation_guide_http.py
+      - tests/organization_access_regression.py
+      - tests/test_admin_tenant_verification.py
+      - .github/workflows/survey-analytics-evidence.yml
+permissions:
+  contents: read
+concurrency:
+  group: analytics-evidence-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: guide_control_acceptance
+          POSTGRES_USER: guide_test
+          POSTGRES_PASSWORD: guide_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U guide_test -d guide_control_acceptance"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Institutional knowledge persistence and routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/institutional-assistant
+          python -m unittest tests.test_institutional_assistant_content -v 2>&1 | tee .qa-artifacts/institutional-assistant/content.log
+          python -m tests.institutional_assistant_http 2>&1 | tee .qa-artifacts/institutional-assistant/http.log
+      - name: Private guide control HTTP acceptance
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p .qa-artifacts/private-guide-control
+          python -m tests.private_conversation_guide_control_http -v 2>&1 | tee .qa-artifacts/private-guide-control/http.log
+      - name: PostgreSQL locking and preservation
+        shell: bash
+        run: python -m tests.private_guide_control_postgres -v 2>&1 | tee .qa-artifacts/private-guide-control/postgres.log
+      - run: python -m unittest tests.test_survey_analytics_evidence -v
+      - run: python -m tests.survey_analytics_evidence_http
+      - run: python -m unittest tests.test_survey_fieldwork_coverage -v
+      - run: python -m tests.survey_fieldwork_coverage_http
+      - run: python -m tests.organization_access_regression
+      - name: Consistent tenant membership on real application routes
+        run: python -m tests.v2_tenant_membership_http
+      - name: Shared SLA evidence, scoped filters, and pagination
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/sla-evidence
+          python -m pytest tests/test_backoffice_contracts.py tests/test_ticket_filters.py tests/test_ticket_operational_badges.py tests/test_v2_operational_analytics.py tests/test_v2_sla_truth.py -q 2>&1 | tee .qa-artifacts/sla-evidence/tests.log
+      - name: Native administrator membership and PostgreSQL audit transactions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/native-admin-membership
+          python -m tests.native_admin_membership_http -v 2>&1 | tee .qa-artifacts/native-admin-membership/http.log
+          python -m tests.native_admin_membership_postgres -v 2>&1 | tee .qa-artifacts/native-admin-membership/postgres.log
+      - name: Actor-bound ticket workflow and PostgreSQL state compare-and-swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/ticket-workflow
+          python -m tests.ticket_workflow_http -v 2>&1 | tee .qa-artifacts/ticket-workflow/http.log
+          python -m tests.ticket_workflow_postgres -v 2>&1 | tee .qa-artifacts/ticket-workflow/postgres.log
+          python -m pytest tests/test_ticket_state_sync.py tests/test_ticket_notifications.py tests/test_ticket_tenant_scope_chat_access.py tests/test_legacy_ticket_tenant_scope.py tests/test_ticket_workflow_metadata_contract.py tests/test_crm_detail_category_rbac.py -q 2>&1 | tee .qa-artifacts/ticket-workflow/regression.log
+      - name: Official territorial boundary packaging
+        run: python -m pytest tests/test_territorial_boundary_packaging.py -q
+      - name: Tenant-bound category authority and assignment policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/category-authority
+          python -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_ticket_category_authority_routing.py', 'tests/test_ticket_operational_badges.py', 'tests/test_ticket_catalog_filter_authority.py', 'tests/test_ticket_assignment_policy.py', 'tests/test_crm_detail_category_rbac.py']))" 2>&1 | tee .qa-artifacts/category-authority/read-and-policy.log
+          python -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_v2_saas_contracts.py', '-k', 'routing or category_inventory']))" 2>&1 | tee .qa-artifacts/category-authority/routing-contract.log
+      - name: Provider provisioning requires durable credentials without Render
+        run: python -m tests.twilio_provisioning_without_render_regression
+      - run: python -m tests.private_conversation_guide_http
+      - name: Institutional knowledge evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: institutional-knowledge-evidence
+          path: .qa-artifacts/institutional-assistant/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Guide control evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: private-guide-control-evidence
+          path: .qa-artifacts/private-guide-control/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Native administrator membership evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-admin-membership-evidence
+          path: .qa-artifacts/native-admin-membership/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Scoped SLA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scoped-sla-evidence
+          path: .qa-artifacts/sla-evidence/tests.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Ticket workflow transaction evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ticket-workflow-evidence
+          path: .qa-artifacts/ticket-workflow/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Category authority evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: category-authority-evidence
+          path: .qa-artifacts/category-authority/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+  paired-guide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: inguillen87/chatboc-frontend
+          ref: 60fdccd825b4279698d85d54519ce8790aba15bf
+          path: .qa-artifacts/paired-frontend
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: .qa-artifacts/paired-frontend/package-lock.json
+      - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Install locked frontend dependencies
+        working-directory: .qa-artifacts/paired-frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install browser
+        working-directory: .qa-artifacts/paired-frontend
+        run: npx playwright install --with-deps chromium
+      - name: Real guide panel and Flask persistence
+        run: python -m tests.run_private_guide_pair --frontend .qa-artifacts/paired-frontend
+      - name: Paired guide evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: private-guide-paired-evidence
+          path: |
+            .qa-artifacts/private-guide-pair/*.json
+            .qa-artifacts/private-guide-pair/*.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7

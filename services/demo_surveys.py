@@ -3,17 +3,74 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from services.demo_pillar_catalog import normalize_demo_sector
+from services.institutional_demo_surveys import build_junin_demo_templates
+from services.survey_response_provenance import build_survey_response_provenance
 
 
 DEMO_SURVEY_CONTRACT_VERSION = "demo.surveys_votings.v1"
 DEMO_SURVEY_PAGE_SIZE = 5
 DEMO_SURVEY_RESPONSE_COUNT = 100
 _SUPPORTED_SECTORS = {"gobierno", "educacion", "empresas"}
+DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN = "https://www.chatboc.ar"
+
+
+def resolve_demo_public_frontend_base_url(
+    config: Mapping[str, Any] | None = None,
+    *,
+    fallback: str = DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN,
+) -> str:
+    """Resolve one safe frontend origin for every demo survey/share surface.
+
+    The backend can run in a different Vercel project, so request.host_url is
+    not a safe frontend fallback. Only exact HTTP(S) origins are accepted;
+    credentials, wildcards, paths, queries and fragments fail closed. Plain
+    HTTP is reserved for local development.
+    """
+
+    keys = (
+        "PUBLIC_ENCUESTAS_CANONICAL_BASE_URL",
+        "PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL",
+        "PUBLIC_FRONTEND_URL",
+        "FRONTEND_URL",
+        "APP_BASE_URL",
+        "PUBLIC_BASE_URL",
+    )
+    candidates = [config.get(key) for key in keys] if config is not None else []
+    candidates.append(fallback)
+
+    for raw in candidates:
+        value = str(raw or "").strip().rstrip("/")
+        if not value:
+            continue
+        parsed = urlparse(value)
+        hostname = str(parsed.hostname or "").strip().lower()
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not hostname
+            or "*" in hostname
+            or parsed.username
+            or parsed.password
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            continue
+        if parsed.scheme == "http" and hostname not in {"localhost", "127.0.0.1", "::1"}:
+            continue
+        try:
+            parsed.port
+        except ValueError:
+            continue
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    return DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN
 
 
 def _slug_part(value: Any, fallback: str = "demo") -> str:
@@ -62,7 +119,11 @@ def _split_counts(total: int, labels: list[str], seed_key: str) -> list[dict[str
     return [{"label": label, "count": count} for label, count in zip(labels, counts)]
 
 
-def _templates_for_sector(sector: str) -> list[dict[str, Any]]:
+def _templates_for_sector(
+    sector: str,
+    *,
+    tenant_slug: str | None = None,
+) -> list[dict[str, Any]]:
     normalized = normalize_demo_sector(sector)
     if normalized == "educacion":
         return [
@@ -116,56 +177,59 @@ def _templates_for_sector(sector: str) -> list[dict[str, Any]]:
             },
         ]
     if normalized == "gobierno":
-        return [
+        base_templates = [
             {
                 "id": "prioridades-barriales",
                 "tipo": "votacion",
-                "titulo": "Votacion de prioridades barriales",
-                "descripcion": "Vecinos priorizan reclamos y obras de los proximos 90 dias.",
-                "pregunta": "Que tema deberia resolverse primero?",
+                "titulo": "Votación de prioridades barriales",
+                "descripcion": "Vecinos priorizan reclamos y obras de los próximos 90 días.",
+                "pregunta": "¿Qué tema debería resolverse primero?",
                 "opciones": ["Luminarias", "Bacheo", "Limpieza", "Espacios verdes"],
             },
             {
                 "id": "servicios-municipales",
                 "tipo": "encuesta",
                 "titulo": "Encuesta de servicios municipales",
-                "descripcion": "Mide satisfaccion por canal, zona y categoria de servicio.",
-                "pregunta": "Como evaluas la atencion municipal?",
+                "descripcion": "Mide satisfacción por canal, zona y categoría de servicio.",
+                "pregunta": "¿Cómo evaluás la atención municipal?",
                 "opciones": ["Muy buena", "Buena", "Regular", "Mala"],
             },
             {
                 "id": "obras-90-dias",
                 "tipo": "votacion",
-                "titulo": "Consulta de obras a 90 dias",
+                "titulo": "Consulta de obras a 90 días",
                 "descripcion": "Ordena obras chicas de alto impacto ciudadano.",
-                "pregunta": "Que obra deberia avanzar antes?",
-                "opciones": ["Veredas", "Plazas", "Desagues", "Senalizacion"],
+                "pregunta": "¿Qué obra debería avanzar antes?",
+                "opciones": ["Veredas", "Plazas", "Desagües", "Señalización"],
             },
             {
                 "id": "atencion-ciudadana",
                 "tipo": "encuesta",
-                "titulo": "Encuesta de atencion ciudadana",
+                "titulo": "Encuesta de atención ciudadana",
                 "descripcion": "Analiza tiempos de respuesta y claridad del seguimiento.",
-                "pregunta": "Que canal te resulto mas util?",
-                "opciones": ["WhatsApp", "Web", "Telefono", "Presencial"],
+                "pregunta": "¿Qué canal te resultó más útil?",
+                "opciones": ["WhatsApp", "Web", "Teléfono", "Presencial"],
             },
             {
                 "id": "presupuesto-participativo",
                 "tipo": "votacion",
-                "titulo": "Votacion de presupuesto participativo",
-                "descripcion": "Simula seleccion de proyectos con resultados en vivo.",
-                "pregunta": "Que proyecto deberia financiarse?",
-                "opciones": ["Playon deportivo", "Iluminacion", "Punto verde", "Centro vecinal"],
+                "titulo": "Votación de presupuesto participativo",
+                "descripcion": "Simula la selección de proyectos con resultados en vivo.",
+                "pregunta": "¿Qué proyecto debería financiarse?",
+                "opciones": ["Playón deportivo", "Iluminación", "Punto verde", "Centro vecinal"],
             },
             {
                 "id": "espacios-verdes",
                 "tipo": "encuesta",
                 "titulo": "Encuesta de espacios verdes",
                 "descripcion": "Detecta zonas con mayor demanda de mantenimiento.",
-                "pregunta": "Que mejora esperas en plazas?",
+                "pregunta": "¿Qué mejora esperás en las plazas?",
                 "opciones": ["Juegos", "Limpieza", "Seguridad", "Arbolado"],
             },
         ]
+        if _slug_part(tenant_slug, fallback="") == "junin":
+            return [*build_junin_demo_templates(), *base_templates]
+        return base_templates
     return [
         {
             "id": "preferencias-productos",
@@ -253,6 +317,12 @@ def _geo_labels(sector: str, tenant_slug: str = "") -> list[str]:
 
 def _coordinate_base(sector: str, tenant_slug: str) -> tuple[float, float]:
     normalized = normalize_demo_sector(sector)
+    safe_tenant = _slug_part(tenant_slug, fallback="")
+    if normalized == "gobierno" and safe_tenant in {"junin", "junin-1"}:
+        # Synthetic demo points must still render inside the municipality being
+        # demonstrated. This is a display anchor, not a claim about real votes.
+        # The canonical Junin demo is Junin, Mendoza (juninmendoza.gov.ar).
+        return -33.144539, -68.485729
     if normalized == "empresas":
         return -32.8895, -68.8458  # Mendoza Ciudad
     if normalized == "educacion":
@@ -260,6 +330,32 @@ def _coordinate_base(sector: str, tenant_slug: str) -> tuple[float, float]:
     # Generic synthetic anchor. Exact municipal coordinates require a
     # server-owned, verified jurisdiction profile and are not inferred here.
     return -34.6037, -58.3816
+
+
+def _demo_jurisdiction_metadata(sector: str, tenant_slug: str) -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector)
+    safe_tenant = _slug_part(tenant_slug, fallback="")
+    if normalized == "gobierno" and safe_tenant in {"junin", "junin-1"}:
+        return {
+            "contract_version": "demo.jurisdiction.v1",
+            "country": "Argentina",
+            "province": "Mendoza",
+            "municipality": "Junín",
+            "display_name": "Junín, Mendoza",
+            "center": {"lat": -33.144539, "lng": -68.485729},
+            "coordinate_reference": "WGS84",
+            "coordinate_source": "tenant_demo_profile",
+        }
+    return {
+        "contract_version": "demo.jurisdiction.v1",
+        "country": "Argentina",
+        "province": None,
+        "municipality": None,
+        "display_name": "Escenario demostrativo",
+        "center": None,
+        "coordinate_reference": "WGS84",
+        "coordinate_source": "generic_demo_anchor",
+    }
 
 
 def _demo_public_state(*, is_live_vote: bool = True) -> dict[str, Any]:
@@ -279,8 +375,21 @@ def _demo_public_state(*, is_live_vote: bool = True) -> dict[str, Any]:
     }
 
 
+def _demo_response_provenance() -> dict[str, Any]:
+    """Truthfully classify deterministic demo aggregates as synthetic."""
+
+    return build_survey_response_provenance(
+        real_count=0,
+        synthetic_count=DEMO_SURVEY_RESPONSE_COUNT,
+        mode="synthetic",
+        synthetic_excluded=0,
+    )
+
+
 def _demo_survey_links(slug: str, public_base_url: str) -> dict[str, Any]:
-    public_base = str(public_base_url or "https://www.chatboc.ar").rstrip("/")
+    public_base = resolve_demo_public_frontend_base_url(
+        {"PUBLIC_ENCUESTAS_CANONICAL_BASE_URL": public_base_url}
+    )
     public_page_path = f"/e/{slug}"
     public_page_url = f"{public_base}{public_page_path}"
     qr_endpoint = f"/api/public/encuestas/v1/{slug}/qr?size=320"
@@ -391,7 +500,18 @@ def _demo_operational_next_steps(slug: str, public_base_url: str) -> dict[str, A
 
 def _results_for_template(template: dict[str, Any], *, sector: str, tenant_slug: str, slug: str) -> dict[str, Any]:
     total = DEMO_SURVEY_RESPONSE_COUNT
-    option_counts = _split_counts(total, list(template.get("opciones") or []), f"{slug}:options")
+    option_counts = [
+        {
+            **entry,
+            "votos": entry["count"],
+            "porcentaje": round((entry["count"] / total) * 100, 2) if total else 0,
+        }
+        for entry in _split_counts(
+            total,
+            list(template.get("opciones") or []),
+            f"{slug}:options",
+        )
+    ]
     gender_counts = _split_counts(total, ["mujer", "varon", "otro_prefiere_no_decir"], f"{slug}:gender")
     age_counts = _split_counts(total, ["18-29", "30-44", "45-60", "60+"], f"{slug}:age")
     zone_counts = _split_counts(total, _geo_labels(sector, tenant_slug), f"{slug}:zone")
@@ -410,10 +530,13 @@ def _results_for_template(template: dict[str, Any], *, sector: str, tenant_slug:
             }
         )
 
+    provenance = _demo_response_provenance()
     return {
         "contract_version": "demo.survey_results.v1",
         "seeded_responses": total,
         "total_respuestas": total,
+        "data_provenance": provenance,
+        "response_provenance": provenance,
         "options": option_counts,
         "segments": {
             "genero": gender_counts,
@@ -433,8 +556,9 @@ def _build_demo_item(
     public_base_url: str,
 ) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector)
-    safe_tenant = _slug_part(tenant_slug or normalized)
-    slug = f"demo-{normalized}-{safe_tenant}-{template['id']}"
+    safe_tenant = _slug_part(template.get("tenant_slug") or tenant_slug or normalized)
+    explicit_slug = str(template.get("slug") or "").strip().lower()
+    slug = explicit_slug or f"demo-{normalized}-{safe_tenant}-{template['id']}"
     links = _demo_survey_links(slug, public_base_url)
     public_url = links["public_page_url"]
     share = _demo_share_contract(str(template.get("titulo") or "esta encuesta"), slug, public_base_url)
@@ -460,6 +584,15 @@ def _build_demo_item(
         "public_state": public_state,
         "estado_publico": public_state,
         "demo_mode": True,
+        "institutional_demo": bool(template.get("institutional_demo", False)),
+        "official": False,
+        "municipal_truth": False,
+        "data_mode": template.get("data_mode") or "synthetic_demo_scenario",
+        "content_origin": template.get("content_origin") or "seed_demo",
+        "content_origin_ref": template.get("content_origin_ref") or "backend_demo_contract",
+        "disclaimer": template.get("disclaimer") or "Datos sintéticos de demostración; no son estadísticas oficiales.",
+        "data_provenance": results["data_provenance"],
+        "response_provenance": results["response_provenance"],
         "es_votacion_envivo": template.get("tipo") == "votacion",
         "mostrar_resultados_envivo": True,
         "permitir_comentarios": False,
@@ -470,7 +603,12 @@ def _build_demo_item(
             "responses": DEMO_SURVEY_RESPONSE_COUNT,
             "personas_random": DEMO_SURVEY_RESPONSE_COUNT,
             "deterministic": True,
-            "source": "backend_demo_contract",
+            "real_people": False,
+            "source": (
+                "qa_preview_institutional_manifest"
+                if template.get("institutional_demo")
+                else "backend_demo_contract"
+            ),
         },
         "results": results,
         "analytics_summary": {
@@ -515,7 +653,10 @@ def _all_demo_items(
             tenant_slug=tenant_slug or normalized,
             public_base_url=public_base_url,
         )
-        for template in _templates_for_sector(normalized)
+        for template in _templates_for_sector(
+            normalized,
+            tenant_slug=tenant_slug,
+        )
     ]
 
 
@@ -532,7 +673,11 @@ def infer_demo_survey_context(slug: str | None) -> tuple[str, str] | None:
         prefix = f"demo-{sector}-"
         if not normalized_slug.startswith(prefix):
             continue
-        for template in _templates_for_sector(sector):
+        scoped_templates = build_junin_demo_templates() if sector == "gobierno" else []
+        for template in [*scoped_templates, *_templates_for_sector(sector)]:
+            explicit_slug = str(template.get("slug") or "").strip().lower()
+            if explicit_slug and normalized_slug == explicit_slug:
+                return sector, str(template.get("tenant_slug") or "junin")
             suffix = f"-{template['id']}"
             if normalized_slug.endswith(suffix):
                 tenant_slug = normalized_slug[len(prefix) : -len(suffix)]
@@ -630,11 +775,21 @@ def build_demo_public_survey_payload(
         options = []
         for index, option in enumerate(item.get("options") or [], start=1):
             option_id = f"{question_id}_op_{index}"
-            votes = next(
-                (entry["count"] for entry in item["results"]["options"] if entry["label"] == option),
-                0,
+            option_result = next(
+                (entry for entry in item["results"]["options"] if entry["label"] == option),
+                {},
             )
-            options.append({"id": option_id, "texto": option, "label": option, "votos": votes})
+            votes = int(option_result.get("count") or 0)
+            percentage = float(option_result.get("porcentaje") or 0)
+            options.append(
+                {
+                    "id": option_id,
+                    "texto": option,
+                    "label": option,
+                    "votos": votes,
+                    "porcentaje": percentage,
+                }
+            )
         payload = {
             **item,
             "contract_version": "encuestas.public.v1",
@@ -692,10 +847,14 @@ def build_demo_live_results_payload(
         {
             "id": f"{question_id}_op_{index}",
             "texto": entry["label"],
+            "label": entry["label"],
             "votos": entry["count"],
+            "porcentaje": entry["porcentaje"],
         }
         for index, entry in enumerate(item["results"]["options"], start=1)
     ]
+    provenance = _demo_response_provenance()
+    heatmap_points = item["results"]["heatmap_points"]
     return {
         "contract_version": "encuestas.live_results.v1",
         "ok": True,
@@ -707,19 +866,31 @@ def build_demo_live_results_payload(
         "estado_publico": public_state,
         "total_respuestas": DEMO_SURVEY_RESPONSE_COUNT,
         "seeded_responses": DEMO_SURVEY_RESPONSE_COUNT,
+        "data_provenance": provenance,
+        "response_provenance": provenance,
         "result_version": DEMO_SURVEY_RESPONSE_COUNT,
         "snapshot_version": f"demo:{item['slug']}:{DEMO_SURVEY_RESPONSE_COUNT}",
         "preguntas": {
             question_id: {
                 "tipo": "opcion_unica",
                 "texto": item.get("question"),
+                "total_votos": DEMO_SURVEY_RESPONSE_COUNT,
                 "opciones": opciones,
             }
         },
         "segments": item["results"]["segments"],
         "heatmap": {
-            "points": item["results"]["heatmap_points"],
+            "points": heatmap_points,
             "source": "demo_seeded_responses",
+            "jurisdiction": _demo_jurisdiction_metadata(sector, tenant_slug),
+            "metadata": {
+                "contract_version": "surveys.demo_seeding.v1",
+                "source": "demo_seeded_responses",
+                "provider": "chatboc_demo_seed",
+                "using_synthetic_points": True,
+                "synthetic": True,
+                "point_count": len(heatmap_points),
+            },
         },
         "links": links,
         "share": share,
@@ -910,10 +1081,18 @@ def build_demo_survey_response_ack(
     request_fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:16]
     accepted = bool(answers)
     message = (
-        "Voto demo registrado. Ahora podes ver los resultados en vivo."
+        "Participacion de simulacion procesada. Se refleja solo en esta vista y no modifica datos ciudadanos."
         if accepted
-        else "No se detecto una opcion valida para registrar el voto demo."
+        else "No se detecto una opcion valida para procesar la participacion de simulacion."
     )
+    persistence = {
+        "contract_version": "demo.survey_persistence.v1",
+        "state": "not_persisted",
+        "durable": False,
+        "database_write": False,
+        "live_results_mutated": False,
+        "scope": "current_view",
+    }
     return {
         "contract_version": "demo.survey_response_ack.v1",
         "ok": True,
@@ -922,6 +1101,9 @@ def build_demo_survey_response_ack(
         "ignored": not accepted,
         "duplicate": False,
         "demo_mode": True,
+        "persisted": False,
+        "durable": False,
+        "persistence": persistence,
         "slug": public_payload["slug"],
         "canonical_slug": public_payload["canonical_slug"],
         "sector": public_payload["sector"],
@@ -933,7 +1115,13 @@ def build_demo_survey_response_ack(
         "answers": answers,
         "respuestas": answers,
         "seeded_responses_before": DEMO_SURVEY_RESPONSE_COUNT,
-        "seeded_responses_after": DEMO_SURVEY_RESPONSE_COUNT + 1,
+        # The deterministic fixture is immutable. The browser may append this
+        # interaction to the current view, but a reload must return the same
+        # clearly-labelled synthetic baseline.
+        "seeded_responses_after": DEMO_SURVEY_RESPONSE_COUNT,
+        "simulated_view_responses_after": (
+            DEMO_SURVEY_RESPONSE_COUNT + 1 if accepted else DEMO_SURVEY_RESPONSE_COUNT
+        ),
         "public_url": public_payload["public_url"],
         "public_page_url": public_payload.get("public_page_url"),
         "respond_endpoint": public_payload["respond_endpoint"],
@@ -954,7 +1142,8 @@ def build_demo_survey_response_ack(
         "analytics": {
             "accepted": accepted,
             "ignored": not accepted,
-            "source": "demo_survey_response_ack",
+            "persisted": False,
+            "source": "synthetic_ephemeral_demo",
         },
     }
 
@@ -977,6 +1166,28 @@ def build_demo_survey_chat_menu(
         page=page,
         page_size=page_size or DEMO_SURVEY_PAGE_SIZE,
     )
+    try:
+        from services.demo_survey_participation import (
+            durable_demo_survey_participation_enabled,
+            enrich_demo_survey_voting_with_durable_participation,
+        )
+
+        if durable_demo_survey_participation_enabled():
+            contract = enrich_demo_survey_voting_with_durable_participation(
+                contract,
+                public_base_url=public_base_url,
+            )
+    except Exception:
+        # The chat menu remains available with its deterministic and explicitly
+        # synthetic baseline if the optional Preview aggregate cannot be read.
+        # Public voting endpoints keep their stricter persistence gate.
+        contract = {
+            **contract,
+            "durable_demo_participation": False,
+            "durable_demo_participation_state": "read_unavailable_synthetic_baseline",
+            "municipal_truth": False,
+            "verified_citizen_responses": 0,
+        }
     labels = _sector_labels(contract["sector"])
     normalized_channel = str(channel or "").strip().lower()
     is_whatsapp = normalized_channel in {"wa", "whatsapp", "twilio", "twilio_whatsapp"} or "whatsapp" in normalized_channel
@@ -987,7 +1198,10 @@ def build_demo_survey_chat_menu(
             "y despues ves resultados demo."
         )
     else:
-        lines.append("Cada demo trae 100 respuestas sinteticas para ver resultados reales de UX.")
+        lines.append(
+            "Cada consulta parte de 100 respuestas sinteticas y separa las "
+            "participaciones interactivas de Preview."
+        )
     for index, item in enumerate(contract.get("items") or [], start=1):
         title = item.get("titulo") or item.get("slug")
         public_url = item.get("public_url")

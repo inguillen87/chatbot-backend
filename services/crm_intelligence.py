@@ -13,6 +13,11 @@ from extensions import db
 from models import TenantProfile, User
 from models_memory import Contact, ContactSnapshot, InteractionEvent
 from services.contact_intake import is_placeholder_email, normalize_email
+from services.crm_output_safety import (
+    contains_crm_sensitive_content,
+    redact_crm_sensitive_text,
+    redact_crm_sensitive_value,
+)
 
 
 MAX_SUMMARY_CHARS = 280
@@ -79,7 +84,7 @@ def _looks_like_message_name(value: Any) -> bool:
 
 def display_contact_name(raw_name: Any, *, phone: Any = None, email: Any = None) -> str:
     name = clean_text(raw_name, 90)
-    if name and not _looks_like_message_name(name):
+    if name and not _looks_like_message_name(name) and not contains_crm_sensitive_content(name):
         return name
     if phone:
         return "Contacto WhatsApp"
@@ -371,6 +376,8 @@ def serialize_crm_contact(
     raw_email = contact.email or getattr(legacy_user, "email", None) or ""
     real_email = normalize_email(raw_email)
     raw_name = contact.name or getattr(legacy_user, "name", None) or ""
+    name_is_sensitive = contains_crm_sensitive_content(raw_name)
+    serialized_raw_name = redact_crm_sensitive_text(raw_name)
     name = display_contact_name(raw_name, phone=phone, email=real_email)
     summary = prefs.get("last_summary") or (snapshot.summary_text if snapshot else None)
     intent = prefs.get("last_intent") or (snapshot.last_intent if snapshot else None)
@@ -380,9 +387,17 @@ def serialize_crm_contact(
         "id": getattr(legacy_user, "id", None) or f"contact:{contact.id}",
         "contact_id": contact.id,
         "name": name,
-        "raw_name": raw_name,
-        "name_quality": "message_excerpt" if _looks_like_message_name(raw_name) else "provided",
-        "profile_excerpt": raw_name if _looks_like_message_name(raw_name) else "",
+        "raw_name": serialized_raw_name,
+        "name_quality": (
+            "sensitive_redacted"
+            if name_is_sensitive
+            else ("message_excerpt" if _looks_like_message_name(raw_name) else "provided")
+        ),
+        "profile_excerpt": (
+            redact_crm_sensitive_text(raw_name)
+            if _looks_like_message_name(raw_name) or name_is_sensitive
+            else ""
+        ),
         "email": real_email or "",
         "email_raw": raw_email,
         "email_is_placeholder": is_placeholder_email(raw_email),
@@ -404,16 +419,16 @@ def serialize_crm_contact(
         "contact_type": contact.type,
         "ltv": float(contact.ltv_monetary or 0),
         "total_orders": int(contact.total_orders or 0),
-        "summary": summary,
-        "conversation_summary": summary,
-        "motivo": prefs.get("last_reason") or intent,
-        "last_intent": intent,
+        "summary": redact_crm_sensitive_text(summary),
+        "conversation_summary": redact_crm_sensitive_text(summary),
+        "motivo": redact_crm_sensitive_text(prefs.get("last_reason") or intent),
+        "last_intent": redact_crm_sensitive_text(intent),
         "lead_temperature": prefs.get("lead_temperature") or "cold",
         "lead_score": int(prefs.get("lead_score") or 0),
         "conversation_status": prefs.get("conversation_status"),
-        "suggested_actions": actions if isinstance(actions, list) else [],
+        "suggested_actions": redact_crm_sensitive_value(actions) if isinstance(actions, list) else [],
         "interaction_count": interaction_count,
-        "last_message_excerpt": prefs.get("last_message_excerpt"),
+        "last_message_excerpt": redact_crm_sensitive_text(prefs.get("last_message_excerpt")),
     }
 
 

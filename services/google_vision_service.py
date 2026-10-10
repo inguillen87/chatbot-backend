@@ -1,8 +1,10 @@
 import os
 import logging
-from google.cloud import vision
 from google.api_core import exceptions as core_exceptions
 from werkzeug.utils import secure_filename
+from utils.lazy_module import LazyModule
+
+vision = LazyModule("google.cloud.vision")
 
 # Configuración del logger
 logger = logging.getLogger(__name__)

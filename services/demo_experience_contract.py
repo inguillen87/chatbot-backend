@@ -373,11 +373,11 @@ def _media_capabilities_for_tipo(tipo: str) -> dict[str, Any]:
         "version": "media.capabilities.v1",
         "primary_business_action": primary_business_action,
         "composer": {
-            "placeholder": "Escribi, habla o adjunta algo para que el agente te ayude.",
+            "placeholder": "Escribí, hablá o adjuntá algo para que el agente te ayude.",
             "actions": [
                 {"id": "attach_image", "type": "image", "icon": "image", "label": "Imagen"},
                 {"id": "record_audio", "type": "audio", "icon": "mic", "label": "Audio"},
-                {"id": "share_location", "type": "location", "icon": "map-pin", "label": "Ubicacion"},
+                {"id": "share_location", "type": "location", "icon": "map-pin", "label": "Ubicación"},
                 {"id": "attach_file", "type": "file", "icon": "paperclip", "label": "Archivo"},
             ],
             "states": ["idle", "recording", "uploading", "transcribing", "thinking", "needs_confirmation", "success", "handoff"],

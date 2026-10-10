@@ -1,5 +1,8 @@
 import os
-import httpx
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 
 def _parse_google(data: dict) -> dict:
