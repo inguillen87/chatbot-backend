@@ -48,6 +48,24 @@ It never requests camera permission, sends tool calls or stores transcripts.
   or nominal user data are added to the session. Session defaults cap assistant
   output at 512 tokens per response.
 
+## Published instruction budget
+
+The exact configured `gpt-realtime-2.1` model has a documented 128,000-token
+context. Its complete UTF-8 instructions (policy, revision and every public
+node's ID, title, text and menu options) may occupy at most 65,536 bytes. The
+budget uses one UTF-8 byte per text token as a conservative byte-BPE upper
+bound, not the usual average bytes/token estimate or an exact tokenizer count.
+It reserves another 32,768 tokens for conversation, 2,048 for session framing
+and 512 for response output: 100,864 is below the documented context ceiling.
+The independent context check also fails closed if that budget no longer fits.
+
+Models without this exact verified contract keep the smaller 32,768-byte
+complete-instruction ceiling. Neither path truncates facts or automatically
+changes model. Source file paths, private source URLs and other source metadata
+remain outside the voice projection. Invalid UTF-8 fails with a fixed error.
+These are local admission bounds, not a provider spend limit, access check,
+quality evaluation or proof that the provider accepts a real voice session.
+
 ## Explicit limits before public rollout
 
 The 120-second client timer is an accessibility/UX limit, **not a hard provider
@@ -77,6 +95,8 @@ offline fixtures. Run separately from tests that import the application first:
 
 - [WebRTC and server SDP exchange](https://developers.openai.com/api/docs/guides/voice-webrtc)
 - [Create call schema, output limits, tools and tracing](https://developers.openai.com/api/reference/resources/realtime/subresources/calls/methods/create)
+- [Exact GPT-Realtime-2.1 context window](https://developers.openai.com/api/docs/models/gpt-realtime-2.1)
+- [OpenAI byte-BPE tokenizer properties](https://github.com/openai/tiktoken/blob/main/README.md#what-is-bpe-anyway)
 - [Server controls and Location call ID](https://developers.openai.com/api/docs/guides/voice-server-controls)
 - [WebRTC hangup](https://developers.openai.com/api/docs/guides/voice-sip?voice-api=realtime)
 - [Realtime transcript events](https://developers.openai.com/api/docs/guides/realtime-conversations)

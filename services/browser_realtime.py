@@ -20,6 +20,15 @@ from services.llm_provider_network_policy import llm_provider_network_allowed
 CONTRACT = 'browser.realtime.owner_trial.v1'
 EVENT = 'browser_realtime.'
 MAX_SDP = 48 * 1024
+# Only this exact model has a verified 128,000-token context contract. The
+# byte ceiling is a conservative bound for byte-BPE text tokens, not a measured
+# token count or a billing guarantee. Keep room for conversation and framing.
+VERIFIED_CONTEXT_TOKENS = {'gpt-realtime-2.1': 128000}
+MAX_INSTRUCTIONS_UTF8_BYTES = 64 * 1024
+LEGACY_MAX_INSTRUCTIONS_UTF8_BYTES = 32 * 1024
+CONVERSATION_RESERVE_TOKENS = 32 * 1024
+SESSION_OVERHEAD_RESERVE_TOKENS = 2048
+MAX_OUTPUT_TOKENS = 512
 UI = {
     'title': 'Conversación por voz · prueba del administrador',
     'description': 'Hablá con el asistente y leé los subtítulos. Podés volver al texto en cualquier momento.',
@@ -65,7 +74,7 @@ def limits(config):
     if type(cap) is not int or not 1 <= cap <= 3:
         raise VoiceError('browser_voice_cap_required')
     return {'max_sessions_per_hour': cap, 'client_duration_seconds': 120,
-            'max_output_tokens': 512, 'hard_duration_limit': False}
+            'max_output_tokens': MAX_OUTPUT_TOKENS, 'hard_duration_limit': False}
 
 
 def validate_offer(value):
@@ -79,7 +88,7 @@ def validate_offer(value):
     return value
 
 
-def public_instructions(state):
+def public_instructions(state, *, model='gpt-realtime-2.1'):
     from services.institutional_assistant_content import materialize_node
     nodes = state.get('bundle', {}).get('nodes', {})
     if not nodes or len(nodes) > 100:
@@ -88,9 +97,7 @@ def public_instructions(state):
                'options': node['actions']} for node in
               (materialize_node(node, public=True) for node in nodes.values())]
     text = json.dumps(corpus, ensure_ascii=False)
-    if len(text.encode('utf-8')) > 32 * 1024:
-        raise VoiceError('browser_voice_corpus_too_large')
-    return (
+    instructions = (
         'Sos un asistente de orientación institucional en español. Avisá que sos IA. '
         'Usá frases breves, una pregunta por vez y pausas; no supongas capacidades del usuario. '
         'Respondé únicamente con la información del corpus publicado que sigue. '
@@ -100,6 +107,19 @@ def public_instructions(state):
         'Este recorrido no reemplaza asistencia humana ni emergencias. '
         f'Revisión: {state["revision"]}. Corpus:\n{text}'
     )
+    try:
+        instruction_bytes = len(instructions.encode('utf-8'))
+    except UnicodeEncodeError:
+        raise VoiceError('browser_voice_corpus_unavailable') from None
+    context = VERIFIED_CONTEXT_TOKENS.get(model)
+    ceiling = MAX_INSTRUCTIONS_UTF8_BYTES if context is not None else LEGACY_MAX_INSTRUCTIONS_UTF8_BYTES
+    if (instruction_bytes > ceiling or (context is not None and
+            instruction_bytes + CONVERSATION_RESERVE_TOKENS +
+            SESSION_OVERHEAD_RESERVE_TOKENS + MAX_OUTPUT_TOKENS > context)):
+        # Do not truncate public facts, expose document metadata, or retry with
+        # a different model merely to fit an oversized published corpus.
+        raise VoiceError('browser_voice_corpus_too_large')
+    return instructions
 
 
 def session_config(tenant_config, app_config, state):
@@ -108,8 +128,8 @@ def session_config(tenant_config, app_config, state):
     if not re.fullmatch(r'[a-zA-Z0-9._-]{1,100}', model) or voice not in {
             'alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar'}:
         raise VoiceError('browser_voice_model_config_invalid')
-    return {'type': 'realtime', 'model': model, 'instructions': public_instructions(state),
-            'output_modalities': ['audio'], 'max_output_tokens': 512,
+    return {'type': 'realtime', 'model': model, 'instructions': public_instructions(state, model=model),
+            'output_modalities': ['audio'], 'max_output_tokens': MAX_OUTPUT_TOKENS,
             'tools': [], 'tool_choice': 'none', 'tracing': None,
             'audio': {'input': {'noise_reduction': {'type': 'near_field'},
                        'transcription': {'model': 'gpt-4o-transcribe', 'language': 'es'},

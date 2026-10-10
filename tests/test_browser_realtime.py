@@ -144,7 +144,74 @@ def test_bounded_session_uses_published_corpus_no_tools_or_tracing():
     assert config['tracing'] is None and 'published-revision' in config['instructions']
     assert 'Información pública' in config['instructions']
     with pytest.raises(voice.VoiceError, match='corpus_too_large'):
-        voice.session_config({}, {}, state('x'*33000))
+        voice.session_config({}, {}, state('x' * 65536))
+
+
+@pytest.mark.parametrize('model, ceiling', [('gpt-realtime-2.1', 65536),
+    ('gpt-realtime', 32768), ('gpt-realtime-2', 32768), ('unknown-valid-model', 32768)])
+@pytest.mark.parametrize('character', ['x', 'á', '🧭'])
+def test_complete_instruction_utf8_boundary_includes_policy_and_revision(model, ceiling, character):
+    base = voice.public_instructions(state(''), model=model)
+    available = ceiling - len(base.encode('utf-8'))
+    width = len(character.encode('utf-8'))
+    text = character * (available // width) + 'x' * (available % width)
+    accepted = voice.public_instructions(state(text), model=model)
+    assert len(accepted.encode('utf-8')) == ceiling
+    assert json.loads(accepted.split('Corpus:\n', 1)[1])[0]['text'] == text
+    with pytest.raises(voice.VoiceError, match='corpus_too_large') as rejected:
+        voice.public_instructions(state(text + 'x'), model=model)
+    assert str(rejected.value) == 'browser_voice_corpus_too_large'
+
+
+def test_current_model_keeps_all_72_public_nodes_in_46976_byte_corpus_without_private_metadata():
+    # Synthetic shape and size only: no real tenant documents or nominal data.
+    current = state('')
+    current['revision'] = 'a' * 64
+    nodes = current['bundle']['nodes'] = {}
+    for index in range(72):
+        identifier = f'topic-{index}'
+        nodes[identifier] = {'id': identifier, 'title': f'Tema {index}',
+            'text': 'Información pública 🧭 ' * 10,
+            'actions': [{'code': '1', 'label': 'Continuar', 'target': f'topic-{(index + 1) % 72}'}],
+            'sources': [{'title': 'Synthetic source', 'sha256': 'b' * 64,
+                'document_visibility': 'private', 'url': 'file:///private/source.pdf',
+                'origin_url': 'private-original-reference', 'local_file_ref': 'C:/private/doc.pdf'}],
+            'links': []}
+    projection = [{'id': node['id'], 'title': node['title'], 'text': node['text'],
+                   'options': node['actions']} for node in nodes.values()]
+    current_bytes = len(json.dumps(projection, ensure_ascii=False).encode('utf-8'))
+    assert current_bytes < 46976
+    nodes['topic-71']['text'] += 'x' * (46976 - current_bytes)
+    instructions = voice.session_config({}, {'OPENAI_REALTIME_MODEL': 'gpt-realtime-2.1'}, current)['instructions']
+    decoded = json.loads(instructions.split('Corpus:\n', 1)[1])
+    assert len(json.dumps(decoded, ensure_ascii=False).encode('utf-8')) == 46976
+    assert len(decoded) == 72
+    for original, projected in zip(nodes.values(), decoded):
+        assert projected == {key: original[key] for key in ('id', 'title', 'text')} | {'options': original['actions']}
+    assert 'private-original-reference' not in instructions
+    assert 'C:/private/doc.pdf' not in instructions and 'file:///private/source.pdf' not in instructions
+    assert 'local_file_ref' not in instructions and 'document_visibility' not in instructions
+    assert 'a' * 64 in instructions
+    with pytest.raises(voice.VoiceError, match='corpus_too_large'):
+        voice.session_config({}, {'OPENAI_REALTIME_MODEL': 'gpt-realtime'}, current)
+
+
+def test_context_reserve_is_enforced_independently_of_serialized_byte_ceiling(monkeypatch):
+    instructions = voice.public_instructions(state('Orientación pública'))
+    byte_count = len(instructions.encode('utf-8'))
+    assert voice.MAX_INSTRUCTIONS_UTF8_BYTES + voice.CONVERSATION_RESERVE_TOKENS + \
+        voice.SESSION_OVERHEAD_RESERVE_TOKENS + voice.MAX_OUTPUT_TOKENS <= 128000
+    monkeypatch.setattr(voice, 'VERIFIED_CONTEXT_TOKENS', {'gpt-realtime-2.1':
+        byte_count + voice.CONVERSATION_RESERVE_TOKENS + voice.SESSION_OVERHEAD_RESERVE_TOKENS +
+        voice.MAX_OUTPUT_TOKENS - 1})
+    with pytest.raises(voice.VoiceError, match='corpus_too_large'):
+        voice.public_instructions(state('Orientación pública'))
+
+
+def test_invalid_utf8_in_published_content_is_fixed_error_without_raw_content():
+    with pytest.raises(voice.VoiceError, match='corpus_unavailable') as rejected:
+        voice.public_instructions(state('private-corruption-marker\ud800'))
+    assert str(rejected.value) == 'browser_voice_corpus_unavailable'
 
 
 def test_provider_request_bounds_success_and_ignores_error_body(monkeypatch):
