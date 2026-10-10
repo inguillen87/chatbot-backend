@@ -9,11 +9,13 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import http.client
 import json
+import os
 import re
 from uuid import uuid4
 from sqlalchemy import select, exists
 from sqlalchemy.orm import aliased
 from services.realtime_voice_profiles import resolve_realtime_model, resolve_realtime_voice
+from services.llm_provider_network_policy import llm_provider_network_allowed
 
 CONTRACT = 'browser.realtime.owner_trial.v1'
 EVENT = 'browser_realtime.'
@@ -39,6 +41,13 @@ class VoiceError(Exception):
     def __init__(self, code, status=503):
         super().__init__(code)
         self.code, self.status = code, status
+
+
+def resolve_provider_key(app_config):
+    # Keep an explicitly injected blank/None config disabled; ordinary Config
+    # does not copy this environment variable into Flask's config dictionary.
+    value = app_config.get('OPENAI_API_KEY') if 'OPENAI_API_KEY' in app_config else os.getenv('OPENAI_API_KEY')
+    return str(value or '').strip() or None
 
 
 def limits(config):
@@ -111,6 +120,8 @@ def _call_id(location):
 
 def provider_request(key, actor_id, *, sdp=None, config=None, call_id=None):
     """One bounded HTTPS request. Error bodies are not consumed or logged."""
+    if not llm_provider_network_allowed('openai'):
+        raise VoiceError('browser_voice_test_network_disabled')
     connection = http.client.HTTPSConnection('api.openai.com', timeout=10)
     headers = {'Authorization': f'Bearer {key}', 'Accept-Encoding': 'identity',
                'OpenAI-Safety-Identifier': hashlib.sha256(f'chatboc-owner-{actor_id}'.encode()).hexdigest()}

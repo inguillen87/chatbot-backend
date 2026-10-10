@@ -23,6 +23,9 @@ It never requests camera permission, sends tool calls or stores transcripts.
   cap 1–3); this change does not apply that setting anywhere.
 - Existing OpenAI configuration and model resolver are reused. No new key,
   provider account, environment variable, app, database or migration is added.
+  Key resolution honors an explicit Flask setting, otherwise the existing
+  server-only `OPENAI_API_KEY` environment variable. Offline tests deny provider
+  network before constructing a connection unless the existing opt-in is set.
 - Only the tenant owner or allowlisted platform superadmin with a current
   authenticated session can issue a trial. Widget, demo, employee and foreign
   organization identities are denied. An internal ID cannot close another

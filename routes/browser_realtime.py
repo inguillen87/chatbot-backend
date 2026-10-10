@@ -11,7 +11,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from services.auth_session_lifecycle import request_auth_session_active
 from services.institutional_assistant import read_state
 from services.institutional_assistant_content import ContentError
-from services.browser_realtime import CONTRACT, UI, VoiceError, VoiceLedger, limits, validate_offer, session_config, provider_request
+from services.browser_realtime import CONTRACT, UI, VoiceError, VoiceLedger, limits, validate_offer, session_config, provider_request, resolve_provider_key
 
 browser_realtime_bp = Blueprint('browser_realtime', __name__)
 PREFIX = '/api/admin/tenants/<slug>/realtime/browser'
@@ -67,7 +67,7 @@ def capabilities(current_user, slug):
                    'generated_video': False, 'telephone_calls': False}
         try:
             payload['limits'] = limits(tenant.configuracion)
-            if not current_app.config.get('OPENAI_API_KEY'):
+            if not resolve_provider_key(current_app.config):
                 raise VoiceError('browser_voice_provider_not_configured')
             state = read_state(tenant, public=True)
             session_config(tenant.configuracion or {}, current_app.config, state)
@@ -97,7 +97,7 @@ def start(current_user, slug):
         if not isinstance(command, dict) or set(command) != {'sdp', 'revision', 'consent'} or command['consent'] is not True:
             raise VoiceError('browser_voice_explicit_consent_required', 400)
         offer = validate_offer(command['sdp'])
-        key = current_app.config.get('OPENAI_API_KEY')
+        key = resolve_provider_key(current_app.config)
         if not key:
             raise VoiceError('browser_voice_provider_not_configured')
         tenant = ledger.lock(tenant_id)
@@ -164,7 +164,7 @@ def stop(current_user, slug, identifier):
             raise VoiceError('browser_voice_session_not_found', 404)
         if cutover_writer_fence_enabled(current_app.config):
             raise VoiceError('browser_voice_writer_fenced')
-        key = current_app.config.get('OPENAI_API_KEY')
+        key = resolve_provider_key(current_app.config)
         if not key:
             raise VoiceError('browser_voice_provider_not_configured')
         result = VoiceLedger(db.session, TenantProfile, AuditEvent).stop(tenant.id, actor.id, identifier, key)

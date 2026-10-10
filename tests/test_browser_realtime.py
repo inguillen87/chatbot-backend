@@ -148,6 +148,7 @@ def test_bounded_session_uses_published_corpus_no_tools_or_tracing():
 
 
 def test_provider_request_bounds_success_and_ignores_error_body(monkeypatch):
+    monkeypatch.setattr(voice, 'llm_provider_network_allowed', lambda _: True)
     response = Mock(status=201)
     response.getheader.side_effect = lambda key, default=None: {
         'Location':'/v1/realtime/calls/rtc_fixture', 'Content-Encoding':'identity'}.get(key, default)
@@ -166,6 +167,27 @@ def test_provider_request_bounds_success_and_ignores_error_body(monkeypatch):
     with pytest.raises(voice.VoiceError, match='provider_rejected'):
         voice.provider_request('synthetic-key', 1, sdp=OFFER, config={})
     assert not response.read.called
+
+
+def test_existing_environment_key_is_used_without_overriding_explicit_disabled_config(monkeypatch):
+    monkeypatch.setenv('OPENAI_API_KEY', ' synthetic-environment-key ')
+    assert voice.resolve_provider_key({}) == 'synthetic-environment-key'
+    assert voice.resolve_provider_key({'OPENAI_API_KEY':'synthetic-injected-key'}) == 'synthetic-injected-key'
+    assert voice.resolve_provider_key({'OPENAI_API_KEY':None}) is None
+    assert voice.resolve_provider_key({'OPENAI_API_KEY':''}) is None
+    monkeypatch.delenv('OPENAI_API_KEY')
+    assert voice.resolve_provider_key({}) is None
+
+
+def test_test_network_fence_blocks_before_any_connection_is_constructed(monkeypatch):
+    from flask import Flask
+    factory=Mock()
+    monkeypatch.setattr(voice.http.client, 'HTTPSConnection', factory)
+    app=Flask('voice-network-denial');app.config.update(TESTING=True,OPENAI_ALLOW_NETWORK_IN_TESTS=False)
+    monkeypatch.setenv('OPENAI_ALLOW_NETWORK_IN_TESTS','false')
+    with app.app_context(),pytest.raises(voice.VoiceError,match='test_network_disabled'):
+        voice.provider_request('synthetic',1,sdp=OFFER,config={})
+    assert not factory.called
 
 
 @pytest.mark.parametrize('location', ['https://evil.test/v1/realtime/calls/rtc_x','/v1/realtime/calls/rtc_x?token=x','/v1/realtime/calls/a',''])
