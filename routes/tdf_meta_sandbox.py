@@ -11,6 +11,20 @@ CHALLENGE_KEYS = frozenset({"hub.mode", "hub.verify_token", "hub.challenge"})
 MAX_CHALLENGE_QUERY_BYTES = 4096
 MAX_CHALLENGE_PARAMETERS = 16
 MAX_CHALLENGE_KEY_BYTES = 128
+POST_DENIAL_REASONS = frozenset({
+    "tdf_sandbox_recipient_not_allowed", "tdf_sandbox_resource_mismatch",
+    "meta_webhook_signature_invalid", "meta_webhook_payload_invalid",
+    "meta_webhook_authority_unavailable", "meta_webhook_contact_adapter_required",
+    "meta_webhook_contact_unavailable", "meta_webhook_binding_unavailable",
+})
+
+
+def _log_post_denial(reason):
+    # Only fixed application codes may enter logs. No payload, signature,
+    # arbitrary exception text, contact or credential is disclosed.
+    if request.method == "POST":
+        code = reason if reason in POST_DENIAL_REASONS else "authentication_or_binding_denied"
+        current_app.logger.warning("Meta TDF incoming POST rejected reason=%s", code)
 
 
 def _challenge_query():
@@ -65,9 +79,12 @@ def callback():
         return jsonify(result), 200
     except pilot.PilotError as exc:
         db.session.rollback()
+        if exc.status == 403:
+            _log_post_denial(exc.code)
         return jsonify(reason_code=exc.code), exc.status
-    except (MetaContractError, ProviderCredentialError):
+    except (MetaContractError, ProviderCredentialError) as exc:
         db.session.rollback()
+        _log_post_denial(str(exc))
         return jsonify(reason_code="tdf_meta_authentication_or_binding_denied"), 403
     except Exception:
         db.session.rollback()

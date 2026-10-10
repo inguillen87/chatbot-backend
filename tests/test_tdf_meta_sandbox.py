@@ -81,6 +81,25 @@ def encoded(doc):
     return raw, "sha256=" + hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()
 
 
+@pytest.mark.parametrize("error,expected", [
+    (pilot.PilotError("tdf_sandbox_recipient_not_allowed", 403), "tdf_sandbox_recipient_not_allowed"),
+    (cloud.MetaContractError("meta_webhook_signature_invalid"), "meta_webhook_signature_invalid"),
+    (cloud.MetaContractError("meta_webhook_payload_invalid"), "meta_webhook_payload_invalid"),
+    (cloud.MetaContractError("private exception " + CONTACT + " " + TOKEN), "authentication_or_binding_denied"),
+])
+def test_post_denial_log_has_only_fixed_reason(environment, monkeypatch, caplog, error, expected):
+    def fail(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(pilot, "process", fail)
+    raw, signature = encoded(document())
+    response = environment.client.post(URL, data=raw, content_type="application/json",
+        headers={"X-Hub-Signature-256": signature})
+    assert response.status_code == 403
+    assert "Meta TDF incoming POST rejected reason=" + expected in caplog.text
+    assert CONTACT not in caplog.text and SECRET not in caplog.text and TOKEN not in caplog.text
+    assert signature not in caplog.text and "private exception" not in caplog.text
+
+
 def authority(sender, credential):
     return cloud.VerifiedMetaAuthority(sender, credential.revision, "v25.0", NOW, NOW + 60, True, True)
 
