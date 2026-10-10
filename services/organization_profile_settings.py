@@ -155,10 +155,12 @@ def save_profile_settings(session, tenant_model, user_model, audit_model, *, ten
             raise ProfileSettingsError('profile_revision_required',428,'Actualizá el perfil antes de guardar.')
         if session.get_bind().dialect.name=='postgresql':
             session.execute(text("SET LOCAL lock_timeout = '5s'"))
-        tenant=session.query(tenant_model).filter_by(id=tenant_id).populate_existing().with_for_update().one_or_none()
+        tenant=session.query(tenant_model).filter_by(id=tenant_id).populate_existing().with_for_update(of=tenant_model).one_or_none()
         if tenant is None or tenant.is_active is not True: raise ProfileSettingsError('tenant_unavailable',403)
         target_id=owner_id(tenant)
-        people=session.query(user_model).filter(user_model.id.in_({actor_id,target_id})).order_by(user_model.id).populate_existing().with_for_update().all()
+        # User eagerly joins optional ticket categories. PostgreSQL cannot lock
+        # their nullable outer-join side; only the actor/owner rows need locks.
+        people=session.query(user_model).filter(user_model.id.in_({actor_id,target_id})).order_by(user_model.id).populate_existing().with_for_update(of=user_model).all()
         people={person.id:person for person in people}
         actor,owner=people.get(actor_id),people.get(target_id)
         if actor is None or owner is None or not authorize(actor,tenant):
