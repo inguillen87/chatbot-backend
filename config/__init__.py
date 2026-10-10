@@ -1529,6 +1529,19 @@ class Config:
     # Dedicated AES-256 keyring; never reuse SECRET_KEY or a provider token.
     TENANT_PROVIDER_CREDENTIAL_KEYRING = os.getenv("TENANT_PROVIDER_CREDENTIAL_KEYRING")
     TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID = os.getenv("TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID")
+    # Dedicated, disabled-by-default TDF Meta test-number pilot. Access tokens
+    # remain in the existing tenant credential envelope, never a shared env key.
+    META_TDF_SANDBOX_ENABLED = os.getenv("META_TDF_SANDBOX_ENABLED", "").lower() == "true"
+    META_TDF_SANDBOX_APP_ID = os.getenv("META_TDF_SANDBOX_APP_ID", "")
+    META_TDF_SANDBOX_WABA_ID = os.getenv("META_TDF_SANDBOX_WABA_ID", "")
+    META_TDF_SANDBOX_PHONE_NUMBER_ID = os.getenv("META_TDF_SANDBOX_PHONE_NUMBER_ID", "")
+    META_TDF_SANDBOX_APP_SECRET = os.getenv("META_TDF_SANDBOX_APP_SECRET", "")
+    META_TDF_SANDBOX_VERIFY_TOKEN = os.getenv("META_TDF_SANDBOX_VERIFY_TOKEN", "")
+    META_TDF_SANDBOX_GRAPH_VERSION = os.getenv("META_TDF_SANDBOX_GRAPH_VERSION", "v25.0")
+    try:
+        META_TDF_SANDBOX_RECIPIENTS = json.loads(os.getenv("META_TDF_SANDBOX_RECIPIENTS_JSON", "[]"))
+    except (ValueError, TypeError):
+        META_TDF_SANDBOX_RECIPIENTS = []
     TWILIO_TECH_PROVIDER_LIVE_ENABLED = os.getenv(
         "TWILIO_TECH_PROVIDER_LIVE_ENABLED",
         "false",

@@ -838,6 +838,7 @@ def create_app(config_class=Config):
     from routes.access_control import access_control_bp
     from routes.whatsapp_rules import whatsapp_rules_bp
     from routes.meta_flow_data_exchange import meta_flow_data_exchange_bp
+    from routes.tdf_meta_sandbox import tdf_meta_sandbox_bp
     from routes.v2 import register_v2_blueprints
     from cli_commands import register_commands
 
@@ -1022,6 +1023,7 @@ def create_app(config_class=Config):
     app.register_blueprint(access_control_bp)
     app.register_blueprint(whatsapp_rules_bp)
     app.register_blueprint(meta_flow_data_exchange_bp)
+    app.register_blueprint(tdf_meta_sandbox_bp)
 
     from routes.tracking_ui import tracking_ui_bp
     app.register_blueprint(tracking_ui_bp)
