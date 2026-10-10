@@ -22,6 +22,7 @@ KEY = 'organization_domain_binding'
 CONTRACT = 'organization.domain.v1'
 STORE = 'organization.domain_store.v1'
 PUBLIC = 'public.tenant_host.v1'
+READINESS = 'public.tenant_host_readiness.v1'
 CHALLENGE_TTL = 86400
 VERIFICATION_TTL = 7 * 86400
 RESERVED = {'chatboc.ar', 'www.chatboc.ar', 'api.chatboc.ar', 'admin.chatboc.ar',
@@ -391,3 +392,47 @@ def resolve_active_host(session, tenant_model, host, *, entitlement, now=None):
         'paths': {'home': '/', 'login': '/login', 'workspace': '/perfil'},
         'binding': {'status': 'active', 'verified': True,
             'valid_until': min(record['dns_valid_until'], record['platform_valid_until'])}}
+
+
+def build_host_readiness(session, tenant_model, *, host, tenant_id, tenant_slug,
+        expected_revision, nonce, backend_source, entitlement, now=None, txt_reader=None):
+    """One pending-host infrastructure challenge, never public UX or authentication.
+
+    A fresh nonce is selected by the operator for each observation. The exact
+    owner-approved binding revision is required before any DNS lookup. The
+    endpoint only exposes the caller's matching identity and deployment revision;
+    it never issues a session, publishes a tenant, or activates a binding.
+    """
+    now = _now(now)
+    host = normalize_host(host)
+    if (type(tenant_id) is not int or tenant_id < 1
+            or not isinstance(tenant_slug, str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{0,79}', tenant_slug)
+            or not isinstance(expected_revision, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_revision)
+            or not isinstance(nonce, str) or not re.fullmatch(r'[0-9a-f]{64}', nonce)):
+        raise DomainBindingError('host_readiness_invalid')
+    tenant = session.query(tenant_model).filter_by(id=tenant_id, slug=tenant_slug).populate_existing().one_or_none()
+    if tenant is None or tenant.is_active is not True or entitlement(tenant) is not True:
+        return None
+    record = read_record(tenant)
+    if (record['host'] != host or record['status'] != 'pending_platform'
+            or revision(tenant, record) != expected_revision
+            or not record['dns_verified_at'] <= now < record['dns_valid_until']):
+        return None
+    try:
+        _collisions(session, tenant_model, tenant, host)
+    except DomainBindingError:
+        return None
+    if not isinstance(backend_source, str) or not re.fullmatch(r'[0-9a-f]{40}', backend_source):
+        raise DomainBindingError('host_readiness_runtime_unavailable', 503)
+    values = (txt_reader or read_dns_txt)(host)
+    if (not isinstance(values, (list, tuple)) or len(values) > 16
+            or any(not isinstance(value, str) or not value.isascii() or len(value) > 512 for value in values)):
+        raise DomainBindingError('domain_dns_unavailable', 503)
+    proof = 'chatboc-domain-verification=' + record['challenge']
+    if not any(secrets.compare_digest(proof, value) for value in values):
+        return None
+    return {'contract_version': READINESS, 'host': host, 'nonce': nonce,
+        'tenant': {'id': tenant.id, 'slug': tenant.slug}, 'revision': expected_revision,
+        'backend_source': backend_source, 'observed_at': now,
+        'scope': 'pending_domain_infrastructure_only', 'active': False,
+        'auth_e2e_verified': False, 'private_assets_included': False}

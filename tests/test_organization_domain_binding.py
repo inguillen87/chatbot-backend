@@ -390,3 +390,148 @@ class DomainLifecycleTests(unittest.TestCase):
     def test_branch_has_no_automatic_vercel_preview(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'vercel.json').read_text())
         self.assertIs(manifest['git']['deploymentEnabled']['feat/whitelabel-domain-lifecycle-20261010'], False)
+
+    def readiness_query(self, **changes):
+        row = {'host': 'conversa.gob.ar', 'tenant_id': self.tenant_id,
+            'tenant_slug': 'acceptance-a', 'revision': self.descriptor()['revision'], 'nonce': 'c' * 64}
+        row.update(changes)
+        return row
+
+    def test_pending_readiness_real_http_only_nonce_no_assets_no_writes_or_publication(self):
+        self.pending_platform()
+        proof = self.descriptor()['dns_proof']['value']
+        before = deepcopy(self.tenant().configuracion)
+        audits = self.Audit.query.count()
+        with patch.dict(self.app.config, BACKEND_VERSION='b' * 40), \
+                patch('services.organization_domain_binding.read_dns_txt', return_value=[proof]) as dns:
+            response = self.app.test_client().get('/api/public/host-readiness', query_string=self.readiness_query())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        row = response.json
+        self.assertEqual(row['tenant'], {'id': self.tenant_id, 'slug': 'acceptance-a'})
+        self.assertEqual(row['nonce'], 'c' * 64)
+        self.assertEqual(row['backend_source'], 'b' * 40)
+        self.assertFalse(row['active'] or row['auth_e2e_verified'] or row['private_assets_included'])
+        self.assertEqual(row['scope'], 'pending_domain_infrastructure_only')
+        self.assertNotIn(proof, response.get_data(as_text=True))
+        dns.assert_called_once_with('conversa.gob.ar')
+        self.assertEqual(self.tenant().configuracion, before)
+        self.assertEqual(self.Audit.query.count(), audits)
+        self.assertEqual(self.app.test_client().get('/api/public/host-resolution',
+            query_string={'host': 'conversa.gob.ar'}).status_code, 404)
+
+    def test_readiness_exact_tuple_revision_expiry_plan_and_dns_fail_closed(self):
+        self.pending_platform()
+        query = self.readiness_query()
+        cases = [{'host': 'other.gob.ar'}, {'tenant_id': self.accounts['acceptance-b']['tenant_id']},
+            {'tenant_slug': 'acceptance-b'}, {'revision': 'd' * 64}]
+        with patch.dict(self.app.config, BACKEND_VERSION='b' * 40), \
+                patch('services.organization_domain_binding.read_dns_txt') as dns:
+            for changes in cases:
+                with self.subTest(changes=changes):
+                    response = self.app.test_client().get('/api/public/host-readiness', query_string={**query, **changes})
+                    self.assertEqual(response.status_code, 404)
+                    self.assertIsNone(response.json['tenant'])
+            dns.assert_not_called()
+        with patch.dict(self.app.config, BACKEND_VERSION='b' * 40), \
+                patch('services.organization_domain_binding.read_dns_txt', return_value=['no match']):
+            self.assertEqual(self.app.test_client().get('/api/public/host-readiness', query_string=query).status_code, 404)
+        self.tenant().plan = 'free'; self.db.session.commit()
+        with patch('services.organization_domain_binding.read_dns_txt') as dns:
+            self.assertEqual(self.app.test_client().get('/api/public/host-readiness', query_string=query).status_code, 404)
+            dns.assert_not_called()
+        self.tenant().plan = 'pro'; self.db.session.commit()
+        from services.organization_domain_binding import build_host_readiness
+        with patch('services.organization_domain_binding.read_dns_txt') as dns:
+            self.assertIsNone(build_host_readiness(self.db.session, self.Tenant, host=query['host'],
+                tenant_id=query['tenant_id'], tenant_slug=query['tenant_slug'], expected_revision=query['revision'],
+                nonce=query['nonce'], backend_source='b' * 40, entitlement=self.entitlement,
+                now=self.now + VERIFICATION_TTL))
+            dns.assert_not_called()
+
+    def test_readiness_invalid_query_backend_fault_and_dns_bounds_return_no_identity(self):
+        self.pending_platform()
+        query = self.readiness_query()
+        for changes in [{'nonce': 'bad'}, {'nonce': ''}, {'tenant_id': '01'}, {'revision': []},
+                {'extra': 'no'}, {'host': 'https://conversa.gob.ar'}]:
+            with self.subTest(changes=changes), patch('services.organization_domain_binding.read_dns_txt') as dns:
+                response = self.app.test_client().get('/api/public/host-readiness', query_string={**query, **changes})
+                self.assertEqual(response.status_code, 400)
+                self.assertIsNone(response.json['tenant'])
+                dns.assert_not_called()
+        with patch.dict(self.app.config, BACKEND_VERSION='unknown'), \
+                patch('services.organization_domain_binding.read_dns_txt') as dns:
+            response = self.app.test_client().get('/api/public/host-readiness', query_string=query)
+            self.assertEqual(response.status_code, 503)
+            self.assertIsNone(response.json['tenant']); dns.assert_not_called()
+        for values in [['x' * 513], ['x'] * 17, ['no-ascii-ñ']]:
+            with patch.dict(self.app.config, BACKEND_VERSION='b' * 40), \
+                    patch('services.organization_domain_binding.read_dns_txt', return_value=values):
+                response = self.app.test_client().get('/api/public/host-readiness', query_string=query)
+                self.assertEqual(response.status_code, 503)
+                self.assertIsNone(response.json['tenant'])
+
+    def test_vercel_adapter_observation_then_activation_is_atomic_on_real_sql(self):
+        from tests.test_organization_domain_vercel import FakeVercel, probe, ROUTES
+        from services.organization_domain_vercel import DomainPlan, VercelDomainAdapter, activate_from_vercel, canonical
+        from hashlib import sha256
+        self.pending_platform()
+        fixed = DomainPlan('conversa.gob.ar', self.tenant_id, 'acceptance-a', self.descriptor()['revision'],
+            self.now + 3600, 'dpl_1234567890', 'a' * 40, 'b' * 40, sha256(canonical(ROUTES)).hexdigest())
+        provider = FakeVercel(fixed)
+        def live_shape(host, params):
+            result = probe(fixed)(host, params)
+            result.data['observed_at'] = self.now
+            return result
+        adapter = VercelDomainAdapter(provider, https_probe=live_shape, clock=lambda: self.now)
+        result = activate_from_vercel(adapter, fixed, self.db.session, self.Tenant, self.User, self.Audit,
+            actor_id=self.actor_id, authorize=self.authorize, entitlement=self.entitlement)
+        self.assertTrue(result['domain']['active'])
+        self.assertEqual(self.resolve()['tenant']['id'], self.tenant_id)
+        self.assertEqual(self.Audit.query.count(), 3)
+        self.assertTrue(all(row[0] == 'GET' for row in provider.calls))
+
+    def test_revoke_during_provider_observation_cannot_activate_stale_revision(self):
+        from tests.test_organization_domain_vercel import FakeVercel, probe, ROUTES
+        from services.organization_domain_vercel import DomainPlan, VercelDomainAdapter, activate_from_vercel, canonical
+        from hashlib import sha256
+        self.pending_platform()
+        fixed = DomainPlan('conversa.gob.ar', self.tenant_id, 'acceptance-a', self.descriptor()['revision'],
+            self.now + 3600, 'dpl_1234567890', 'a' * 40, 'b' * 40, sha256(canonical(ROUTES)).hexdigest())
+        provider = FakeVercel(fixed)
+        def retire(host, params):
+            self.save('revoke')
+            value = probe(fixed)(host, params); value.data['observed_at'] = self.now
+            return value
+        with self.assertRaises(DomainBindingError):
+            activate_from_vercel(VercelDomainAdapter(provider, https_probe=retire, clock=lambda: self.now),
+                fixed, self.db.session, self.Tenant, self.User, self.Audit, actor_id=self.actor_id,
+                authorize=self.authorize, entitlement=self.entitlement)
+        self.assertEqual(self.descriptor()['status'], 'revoked')
+        self.assertIsNone(self.resolve())
+        self.assertEqual(self.Audit.query.count(), 3)
+
+    def test_operator_owner_guard_uses_actual_authority_and_reloads_pending_sql(self):
+        from tests.test_organization_domain_vercel import FakeVercel, ROUTES
+        from services.organization_domain_vercel import (
+            DomainPlan, IntentJournal, ProvisioningError, VercelDomainAdapter, canonical, owner_scope_guard,
+        )
+        from hashlib import sha256
+        self.pending_platform()
+        fixed = DomainPlan('conversa.gob.ar', self.tenant_id, 'acceptance-a', self.descriptor()['revision'],
+            self.now + 3600, 'dpl_1234567890', 'a' * 40, 'b' * 40, sha256(canonical(ROUTES)).hexdigest())
+        provider = FakeVercel(fixed, assigned=False)
+        guard = owner_scope_guard(self.db.session, self.Tenant, self.User, actor_id=self.actor_id,
+            authorize=self.authorize, entitlement=self.entitlement, clock=lambda: self.now)
+        other = owner_scope_guard(self.db.session, self.Tenant, self.User,
+            actor_id=self.accounts['acceptance-b']['id'], authorize=self.authorize,
+            entitlement=self.entitlement, clock=lambda: self.now)
+        self.assertTrue(guard(fixed))
+        self.assertFalse(other(fixed))
+        with tempfile.TemporaryDirectory(prefix='chatboc-domain-guard-') as directory:
+            journal = IntentJournal(directory, fixed)
+            self.save('revoke')
+            with self.assertRaisesRegex(ProvisioningError, 'owner_approval'):
+                VercelDomainAdapter(provider, clock=lambda: self.now).attempt('add', fixed, journal, owner_guard=guard)
+            self.assertEqual(provider.calls, [])
+            self.assertEqual(list(Path(directory).iterdir()), [])
