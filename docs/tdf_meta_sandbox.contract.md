@@ -221,3 +221,31 @@ but before POST is checked again. Do not reset receipt rows or resend uncertain
 messages to force success. Preserve the encrypted connection for review or
 revoke it through the authorized credential procedure. No JUNÍ or Twilio
 configuration is affected by this pilot flag.
+
+## Progressive references in WhatsApp
+
+Only the pilot presentation omits the automatic source-metadata block. It
+keeps canonical node text, current verified-reference links and concise review
+warnings for public documents; the shared web/widget response is unchanged.
+The numbered menu and canonical action IDs remain the navigation authority.
+
+`FUENTES` (and `FUENTES N` for a following group) is an explicit read command,
+not an inferred intent. Its context stores only the exact tenant tuple,
+published revision and IDs of the last one to three answered nodes. A fresh
+public read and canonical answer reject a retired, replaced, missing or foreign
+scope; the send policy checks the revision again before the provider POST.
+Location responses, noncanonical actions and audio errors clear this scope.
+No model selection, document retrieval or private-source I/O is performed.
+
+Reference output includes only documents explicitly marked public and current
+node reference links. Private or unclassified originals expose no title,
+provenance, origin URL, review metadata or delivery link. A delivery descriptor
+does not prove that downloadable bytes exist. Long public reference lists use
+bounded text groups; out-of-range groups disclose no additional references.
+
+Interactive row titles remain within 24 characters and descriptions within 72,
+using whole-word elision rather than cutting a Unicode sequence. Reply codes,
+IDs and targets remain exact, and the body retains every full numbered label.
+Ambiguous abbreviated titles without distinct codes fall back to that complete
+text. These offline changes do not renew a credential or establish new provider
+delivery; a new real test still needs a valid authorized connection.
