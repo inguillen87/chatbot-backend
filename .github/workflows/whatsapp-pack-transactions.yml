@@ -23,6 +23,7 @@ name: WhatsApp draft transactions
       - routes/browser_realtime.py
       - tests/test_browser_realtime.py
       - tests/test_browser_realtime_http_acceptance.py
+      - tests/test_browser_realtime_postgres.py
       - routes/public_tenant.py
       - tests/test_organization_domain_binding.py
       - tests/test_organization_domain_vercel.py
@@ -172,6 +173,23 @@ jobs:
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
           import pytest; raise SystemExit(pytest.main(['-q', 'tests/test_browser_realtime.py',
           'tests/test_realtime_voice_profiles.py', 'tests/test_browser_realtime_http_acceptance.py']))"
+      - name: Verify voice trial admission with actual PostgreSQL contenders
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import os; os.environ['CHATBOC_VOICE_TEST_POSTGRES']='1';
+          from pathlib import Path; Path('.qa-artifacts/voice-admission').mkdir(parents=True, exist_ok=True);
+          from tests import test_browser_realtime_postgres as contract; assert contract.POSTGRES_OPT_IN;
+          import pytest; raise SystemExit(pytest.main(['--noconftest', '-q',
+          'tests/test_browser_realtime_postgres.py',
+          '--junitxml=.qa-artifacts/voice-admission/postgres.xml']))"
+      - name: Preserve the specific voice admission PostgreSQL evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: voice-trial-admission-postgres-evidence
+          path: .qa-artifacts/voice-admission/postgres.xml
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify survey editorial relocation, participation assurance and production rehearsal
         run: >-
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();

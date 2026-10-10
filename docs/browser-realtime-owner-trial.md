@@ -105,6 +105,20 @@ offline fixtures. Run separately from tests that import the application first:
 & 'C:/Temp/chatboc-scoped-testenv-20260930/Scripts/python.exe' -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q','tests/test_browser_realtime_http_acceptance.py']))"
 ```
 
+The separate `tests/test_browser_realtime_postgres.py` contract is mandatory in
+the workflow step **Verify voice trial admission with actual PostgreSQL
+contenders**. It uses the existing disposable loopback `vaultcredregression`
+service, refuses a nonempty fixture or any alternate/ambient DSN, creates only
+one random schema, and drops it afterwards. Two actual sessions must exhibit a
+PostgreSQL `pg_stat_activity.wait_event_type='Lock'` wait on the same tenant.
+The tests prove one remaining total slot cannot be admitted twice, subsequent
+actors/revisions/hourly windows do not reset it, expiry while waiting for the
+tenant lock denies admission, and Stop remains idempotent after expiry/cap.
+Only hangup acknowledgments are offline functions; no provider is contacted.
+The named JUnit artifact distinguishes these checks from the general PostgreSQL
+transaction job. Without the explicit opt-in, these three live-SQL cases skip;
+local guard checks passing alone are not concurrent PostgreSQL acceptance.
+
 ## Official API contracts checked on 2026-10-10
 
 - [WebRTC and server SDP exchange](https://developers.openai.com/api/docs/guides/voice-webrtc)
