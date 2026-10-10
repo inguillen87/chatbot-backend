@@ -14,20 +14,13 @@ from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
 logger = logging.getLogger(__name__)
 
-# Rubros que deben usar la lógica de municipio/ente público
-RUBROS_PUBLICOS = {
-    "municipio",
-    "municipios",
-    "municipio inteligente",
-    "ong",
-    "gobierno",
-    "hospital_publico",
-    "entidad_publica",
-    "municipal",
-    "publico",
-    "municipalidad",
-    # Agregá acá los que consideres públicos
-}
+# Backward-compatible re-exports for legacy callers. New startup-sensitive
+# consumers import these helpers from the dependency-free leaf module directly.
+from services.rubro_classification import (
+    RUBROS_PUBLICOS,
+    es_rubro_publico,
+    normalizar_rubro,
+)
 
 MENU_KEYWORDS = {
     "ver_estado_reclamo": {"estado", "reclamo", "seguimiento"},
@@ -54,24 +47,7 @@ MENU_KEYWORDS = {
     "consultar_deportes": {"deportes", "ejercicio", "gimnasio"},
 }
 
-def normalizar_rubro(rubro) -> str:
-    """Devuelve el nombre del rubro en minúsculas."""
-    if not rubro:
-        return ""
-    if isinstance(rubro, str):
-        return rubro.strip().lower()
-    if hasattr(rubro, "clave") and getattr(rubro, "clave"):
-        return str(rubro.clave).strip().lower()
-    if hasattr(rubro, "nombre") and getattr(rubro, "nombre"):
-        return str(rubro.nombre).strip().lower()
-    return str(rubro).strip().lower()
-
-
 from .herramientas_municipio import normalizar_texto
-
-def es_rubro_publico(rubro) -> bool:
-    """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
-    return normalizar_rubro(rubro) in RUBROS_PUBLICOS
 
 
 from services.demo_response_engine import maybe_handle_demo_interaction
@@ -172,6 +148,21 @@ def responder_chatboc(
     if catalog_share_response:
         return catalog_share_response
 
+    # Keep catalogue actions first. Matched institutional answers still traverse
+    # the existing audio/normalization path; an unmatched question falls through.
+    knowledge_response = None
+    if not kwargs.get('demo_metadata') and not kwargs.get('uploaded_file_info') and not kwargs.get('datos_interpretados_archivo'):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        knowledge_input = pregunta
+        separate_action = kwargs.get('action_id')
+        if isinstance(separate_action, str) and separate_action.strip():
+            # The shared widget sends its visible label as pregunta and the
+            # canonical action separately. Preserve that structured action for
+            # validation; never reinterpret its label as a new complaint.
+            knowledge_input = dict(pregunta) if isinstance(pregunta, dict) else {'pregunta': pregunta}
+            knowledge_input['action_id'] = separate_action
+        knowledge_response = maybe_handle_institutional_question(knowledge_input, effective_owner_user, chat_db_context)
+
     # 2. Detectar nombre de rubro (universal)
     rubro_nombre = ""
     fuente = ""
@@ -241,7 +232,7 @@ def responder_chatboc(
     pregunta_norm_check = normalizar_texto(pregunta_text_check)
     skip_confusion_check = any(k in pregunta_norm_check for k in ["catalogo", "catálogo", "carrito", "comprar", "pedido", "producto", "precio"])
 
-    if tipo_chat == "pyme" and not kwargs.get("demo_metadata") and not skip_confusion_check:
+    if tipo_chat == "pyme" and knowledge_response is None and not kwargs.get("demo_metadata") and not skip_confusion_check:
         # Check for municipal keywords in the user's query
         for action, keywords in MENU_KEYWORDS.items():
             if any(keyword in pregunta_norm_check for keyword in keywords):
@@ -520,7 +511,7 @@ def responder_chatboc(
 
     demo_metadata = kwargs.get("demo_metadata")
 
-    response_data = None
+    response_data = knowledge_response
     if demo_metadata:
         action_from_payload = None
         if isinstance(pregunta, dict):

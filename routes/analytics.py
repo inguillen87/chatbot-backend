@@ -13,6 +13,7 @@ from flask import Blueprint, abort, current_app, g, jsonify, render_template, re
 from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.exceptions import HTTPException
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 
 from services.analytics.cache import analytics_cache
@@ -1300,7 +1301,32 @@ def analytics_points():
     if not request_id:
         request_id = uuid.uuid4().hex
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
+    viewer = require_access(filters.tenant_id, "visor", required_capability="analytics.read")
+    # Exact/singleton coordinates are a privileged surface.  Employees are
+    # rejected by ``legacy_tenant_wide_analytics_admin_only`` before parsing;
+    # keep a second, route-local boundary for a read-only analytics viewer.
+    if viewer is not None and getattr(viewer, "role", None) != "admin":
+        response = _json_response(
+            {
+                "contract_version": "shared.error.v1",
+                "ok": False,
+                "status_code": 403,
+                "code": "geo_exact_points_privileged_only",
+                "reason_code": "geo_exact_points_privileged_only",
+                "retryable": False,
+                "message": "Los puntos geograficos exactos requieren acceso administrativo.",
+                "detail": (
+                    "Use el mapa operativo agregado para evitar exponer "
+                    "ubicaciones respaldadas por uno o pocos registros."
+                ),
+                "action_hint": "use_privacy_safe_heatmap",
+                "replacement_endpoint": "/api/v2/analytics/operations/heatmap",
+            },
+            status=403,
+            request_id=request_id,
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
     try:
         limit = _parse_positive_int_arg("limit", default=500, minimum=1, maximum=5000)
     except ValueError as exc:
@@ -1377,6 +1403,7 @@ def analytics_templates():
 
 
 @analytics_bp.route("/identity/coverage", methods=["GET"])
+@cutover_writer_view
 def analytics_identity_coverage():
     filters = parse_filters(request.args)
     event_tenant_id, tenant_resolution = _resolve_identity_event_tenant_id(filters)

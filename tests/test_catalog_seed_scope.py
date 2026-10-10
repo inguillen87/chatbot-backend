@@ -5,7 +5,7 @@ import sqlalchemy as sa
 
 from extensions import db
 from models import CatalogoItem, TenantProfile, User
-from services.catalog_seed import ensure_seed_catalog, seed_items_for
+from services.catalog_seed import ensure_seed_catalog, provision_demo_catalog, seed_items_for
 
 
 MIGRATION_PATH = (
@@ -24,7 +24,7 @@ def _load_migration():
     return module
 
 
-def test_seed_catalog_is_scoped_to_the_requested_tenant(app):
+def test_real_municipality_is_not_eligible_for_generic_demo_seed(app):
     with app.app_context():
         db.drop_all()
         db.create_all()
@@ -60,10 +60,45 @@ def test_seed_catalog_is_scoped_to_the_requested_tenant(app):
         )
         db.session.commit()
 
-        assert ensure_seed_catalog(owner, junin) is True
-        expected = len(seed_items_for(owner, junin))
-        assert CatalogoItem.query.filter_by(user_id=owner.id, tenant_id=junin.id).count() == expected
+        app.config["ENABLE_DEMO_MODE"] = True
+        assert ensure_seed_catalog(owner, junin) is False
+        assert provision_demo_catalog(owner, junin) is False
+        assert CatalogoItem.query.filter_by(user_id=owner.id, tenant_id=junin.id).count() == 0
         assert CatalogoItem.query.filter_by(user_id=owner.id, tenant_id=old_tenant.id).count() == 1
+
+
+def test_explicit_demo_seed_is_scoped_idempotent_and_disclosed(app):
+    with app.app_context():
+        db.drop_all()
+        db.create_all()
+        app.config["ENABLE_DEMO_MODE"] = True
+        owner = User(
+            name="Municipio demo",
+            email="catalog-demo-scope@example.com",
+            password_hash="test-hash",
+            tipo_chat="municipio",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="municipio-demo-scope",
+            nombre="Municipio demo",
+            tipo="municipio",
+            municipio_id=owner.id,
+            configuracion={"demo_mode": True, "demo_catalog_seed": True},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        assert provision_demo_catalog(owner, tenant) is True
+        assert provision_demo_catalog(owner, tenant) is False
+        items = CatalogoItem.query.filter_by(user_id=owner.id, tenant_id=tenant.id).all()
+        assert len(items) == len(seed_items_for(owner, tenant))
+        assert items
+        for item in items:
+            assert item.extra_metadata["data_origin"] == "synthetic_demo"
+            assert item.extra_metadata["synthetic_demo"] is True
+            assert item.extra_metadata["seed_contract_version"] == "catalog.demo_seed.v1"
 
 
 def test_migration_adopts_only_legacy_junin_seed_items(monkeypatch):

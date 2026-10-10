@@ -9,6 +9,8 @@ from alembic.script import ScriptDirectory
 from alembic.config import Config
 import sqlalchemy as sa
 
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = (
@@ -136,4 +138,4 @@ def test_tenant_reply_receipt_constraint_upgrade_is_additive_and_idempotent(tmp_
 def test_tenant_reply_receipt_migration_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20260820_survey_content_jurisdiction_v1"]
+    assert script.get_heads() == [REVIEWED_MIGRATION_HEAD]

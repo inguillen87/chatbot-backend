@@ -7,6 +7,7 @@ from services.plan_access import (
     integration_plan_required_payload,
     plan_allows_integration_feature,
     plan_allows_full_integrations,
+    tenant_allows_public_demo_uploads,
 )
 
 
@@ -31,6 +32,27 @@ def tenant_stub(
 
 
 class PlanAccessContractTest(unittest.TestCase):
+    def test_public_demo_uploads_require_an_explicit_server_side_grant(self):
+        self.assertFalse(tenant_allows_public_demo_uploads(tenant_stub()))
+        self.assertTrue(
+            tenant_allows_public_demo_uploads(
+                tenant_stub(configuracion={"public_demo_uploads_enabled": True})
+            )
+        )
+        self.assertTrue(
+            tenant_allows_public_demo_uploads(
+                tenant_stub(capabilities=["demo.public_uploads"])
+            )
+        )
+        self.assertFalse(
+            tenant_allows_public_demo_uploads(
+                tenant_stub(
+                    is_active=False,
+                    configuracion={"public_demo_uploads_enabled": True},
+                )
+            )
+        )
+
     def test_free_plan_enables_self_service_features_and_locks_productive_channels(self):
         payload = integration_access_payload(tenant_stub(plan="free"))
 

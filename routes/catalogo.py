@@ -1,5 +1,6 @@
 import os
 from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for, redirect
+from cutover_writer_fence import cutover_writer_view
 from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad, TenantProfile
 from routes.auth import token_requerido
 from socket_service import emit_tenant_update
@@ -30,7 +31,6 @@ from services.catalog_inventory import inventory_contract
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
 from werkzeug.utils import secure_filename
-from services.intelligent_catalog_processor import IntelligentCatalogProcessor
 import tempfile
 
 @catalogo_bp.route('/upload/form', methods=['GET'])
@@ -71,6 +71,10 @@ def upload_catalog(user):
 
             try:
                 # Llamar al nuevo servicio de procesamiento inteligente
+                from services.intelligent_catalog_processor import (
+                    IntelligentCatalogProcessor,
+                )
+
                 processor = IntelligentCatalogProcessor(user_id=user.id)
                 success = processor.process_file(filepath, original_filename)
 
@@ -484,6 +488,7 @@ def _agrupar_variantes(productos: list[dict]) -> list[dict]:
 
 
 @catalogo_bp.route('', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 def listar_catalogo(user, *args, **kwargs):
     categoria = request.args.get("categoria")
@@ -576,6 +581,7 @@ def buscar_en_catalogo(user):
         consulta,
         limite=limite,
         coleccion=coleccion,
+        tenant_id=getattr(user, "tenant_id", None),
     )
     productos = []
     for hit in resultados:

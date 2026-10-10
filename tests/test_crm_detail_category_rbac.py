@@ -5,12 +5,13 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
-import jwt
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
+from services.auth_session_lifecycle import issue_token
 from config import Config
 from models import (
     ArchivoAdjunto,
@@ -101,6 +102,8 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
         self.ctx.pop()
 
     def _user(self, name, email, role, tenant_slug, **kwargs):
+        if role == "empleado":
+            kwargs.setdefault("es_empleado", True)
         user = User(
             name=name,
             email=email,
@@ -115,7 +118,7 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
 
     def _auth(self, actor=None):
         actor = actor or self.employee
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": actor.id,
                 "rol": actor.rol,
@@ -123,8 +126,6 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
                 "tenant_id": actor.tenant_id,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         return {
             "Authorization": f"Bearer {token}",
@@ -360,7 +361,12 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
     def test_omnichannel_actions_do_not_mutate_out_of_scope_sources(self):
         tenant_response = self.client.post(
             f"/api/v2/inbox/omnichannel/{self.restricted_tenant.id}/actions",
-            json={"action": "set_priority", "priority": "high"},
+            json={
+                "action": "set_priority",
+                "source_model": "TenantTicket",
+                "ticket_id": self.restricted_tenant.id,
+                "priority": "high",
+            },
             headers=self._auth(),
         )
         municipio_response = self.client.post(
@@ -437,14 +443,19 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
             (
                 "patch",
                 f"/api/v2/tickets/{self.allowed_tenant.id}",
-                {"assignee_id": incompatible.id},
-                self._auth(),
+                {"assignee_id": incompatible.id, "expected_assignee_id": None},
+                self._auth(self.admin),
             ),
             (
                 "post",
                 f"/api/v2/inbox/omnichannel/{self.allowed_tenant.id}/actions",
-                {"action": "assign", "assignee_id": incompatible.id},
-                self._auth(),
+                {
+                    "action": "assign",
+                    "source_model": "TenantTicket",
+                    "assignee_id": incompatible.id,
+                    "expected_assignee_id": None,
+                },
+                self._auth(self.admin),
             ),
             (
                 "post",
@@ -453,8 +464,9 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
                     "action": "assign",
                     "source_model": "MunicipioTicket",
                     "assignee_id": incompatible.id,
+                    "expected_assignee_id": self.employee.id,
                 },
-                self._auth(),
+                self._auth(self.admin),
             ),
             (
                 "post",
@@ -491,8 +503,8 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
     def test_assignment_accepts_agent_with_matching_category_scope(self):
         response = self.client.patch(
             f"/api/v2/tickets/{self.allowed_tenant.id}",
-            json={"assignee_id": self.employee.id},
-            headers=self._auth(),
+            json={"assignee_id": self.employee.id, "expected_assignee_id": None},
+            headers=self._auth(self.admin),
         )
         self.assertEqual(response.status_code, 200, response.get_json())
         db.session.expire_all()
@@ -520,8 +532,9 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
                 "description": "No debe crearse",
                 "category": "tenant-allowed",
                 "assignee_id": incompatible.id,
+                "expected_assignee_id": None,
             },
-            headers=self._auth(),
+            headers=self._auth(self.admin),
         )
         self.assertEqual(create_response.status_code, 409, create_response.get_json())
         self.assertEqual(create_response.get_json().get("reason_code"), "assignee_category_scope_mismatch")
@@ -537,7 +550,7 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
         recategorize_response = self.client.patch(
             f"/api/v2/tickets/{self.allowed_tenant.id}",
             json={"category": "new-allowed"},
-            headers=self._auth(),
+            headers=self._auth(self.admin),
         )
         self.assertEqual(recategorize_response.status_code, 409, recategorize_response.get_json())
         self.assertEqual(
@@ -660,23 +673,76 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
         )
 
         with patch("routes.archivos.storage.Client") as storage_client:
+            legacy_download = self.client.get(
+                "/archivos/allowed-category.txt",
+                headers=self._auth(),
+            )
+        self.assertEqual(legacy_download.status_code, 503)
+        self.assertNotIn("https://files.test", legacy_download.get_data(as_text=True))
+        storage_client.assert_not_called()
+
+        private_bucket = "private-rbac-fixture"
+        private_access = "private-rbac-fixture-access"
+        private_secret = "private-rbac-fixture-secret"
+        endpoint = "https://" + "a" * 32 + ".r2.cloudflarestorage.com"
+        namespace = "private-attachments/" + "b" * 32 + "/tenants/rbac/attachments/"
+        private_key = namespace + "c" * 32 + ".txt"
+        self.app.config.update(
+            INSTITUTIONAL_KNOWLEDGE_R2_BUCKET_NAME=private_bucket,
+            INSTITUTIONAL_KNOWLEDGE_R2_ACCESS_KEY_ID=private_access,
+            INSTITUTIONAL_KNOWLEDGE_R2_SECRET_ACCESS_KEY=private_secret,
+            INSTITUTIONAL_KNOWLEDGE_R2_ENDPOINT_URL=endpoint,
+            INSTITUTIONAL_KNOWLEDGE_R2_PREFIX="knowledge-private/" + "b" * 32,
+            R2_BUCKET_NAME="public-rbac-fixture",
+            R2_ACCESS_KEY_ID="public-rbac-fixture-access",
+        )
+        allowed_attachment.url = f"r2-private://{private_bucket}/{private_key}"
+        restricted_attachment.url = f"r2-private://{private_bucket}/{namespace}" + "d" * 32 + ".txt"
+        db.session.commit()
+
+        with patch("boto3.client") as private_client_factory, patch("routes.archivos.storage.Client") as storage_client:
             restricted_download = self.client.get(
                 "/archivos/restricted-category.txt",
                 headers=self._auth(),
             )
         self.assertEqual(restricted_download.status_code, 404, restricted_download.get_json())
+        private_client_factory.assert_not_called()
         storage_client.assert_not_called()
 
-        with patch("routes.archivos.storage.Client") as storage_client:
-            blob = storage_client.return_value.bucket.return_value.blob.return_value
-            blob.exists.return_value = True
-            blob.download_as_bytes.return_value = b"allowed"
+        import boto3
+        from botocore.config import Config as BotoConfig
+        from botocore.stub import Stubber
+        private_client = boto3.client(
+            "s3", endpoint_url=endpoint, region_name="auto",
+            aws_access_key_id=private_access, aws_secret_access_key=private_secret,
+            config=BotoConfig(signature_version="s3v4"),
+        )
+        self.addCleanup(private_client.close)
+        private_stubber = Stubber(private_client)
+        private_stubber.add_response(
+            "head_object", {"ContentLength": 7, "ContentType": "text/plain"},
+            {"Bucket": private_bucket, "Key": private_key},
+        )
+        with private_stubber, patch("boto3.client", return_value=private_client) as private_client_factory:
             allowed_download = self.client.get(
                 "/archivos/allowed-category.txt",
                 headers=self._auth(),
             )
-        self.assertEqual(allowed_download.status_code, 200)
-        self.assertEqual(allowed_download.data, b"allowed")
+            private_stubber.assert_no_pending_responses()
+        self.assertEqual(allowed_download.status_code, 302, allowed_download.get_json())
+        private_client_factory.assert_called()
+        for client_call in private_client_factory.call_args_list:
+            self.assertEqual(client_call.kwargs["endpoint_url"], endpoint)
+            self.assertEqual(client_call.kwargs["aws_access_key_id"], private_access)
+            self.assertEqual(client_call.kwargs["aws_secret_access_key"], private_secret)
+        signed = urlsplit(allowed_download.headers["Location"])
+        query = parse_qs(signed.query)
+        self.assertEqual(query["X-Amz-Expires"], ["120"])
+        self.assertTrue(query["X-Amz-Credential"][0].startswith(private_access + "/"))
+        self.assertIn(private_bucket, signed.netloc + signed.path)
+        self.assertIn(private_key, signed.path)
+        self.assertEqual(allowed_download.headers["Cache-Control"], "private, no-store")
+        self.assertNotIn("r2-private://", allowed_download.get_data(as_text=True))
 
         comments_before = TicketComentario.query.count()
         attachments_before = ArchivoAdjunto.query.count()
@@ -879,3 +945,7 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
         self.assertIn("nombre-que-no-coincide", serialized)
         self.assertNotIn("restricted", serialized)
         self.assertNotIn("-35.7002", serialized)
+        self.assertEqual(
+            heatmap[0].get("categoria_id"),
+            self.allowed_municipio.categoria_id,
+        )

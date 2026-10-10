@@ -1,0 +1,160 @@
+"""Institution knowledge management and a separately published read-only surface."""
+import json
+import os
+import re
+from flask import Blueprint, request, jsonify, current_app, Response
+from models import TenantProfile
+from extensions import limiter
+from utils.auth_helpers import token_requerido, auth_sin_escrituras_implicitas
+from utils.tenant_admin_access import can_manage_tenant_control_plane
+from services.institutional_assistant import workspace, read_state, save_state, answer
+from services.institutional_assistant_content import ContentError, MAX_BYTES
+institutional_assistant_bp = Blueprint('institutional_assistant', __name__)
+
+def _reply(data, status=200): return jsonify(data), status
+
+@institutional_assistant_bp.after_request
+def _private(response):
+    response.headers['Cache-Control'] = 'private, no-store'
+    response.headers['Vary'] = 'Cookie, Authorization, Origin'
+    return response
+
+def _tenant(slug, actor=None, *, canonical_revision=None):
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None or not tenant.is_active: raise ContentError('knowledge_not_available', 404)
+    if actor is not None and not can_manage_tenant_control_plane(actor, tenant):
+        raise ContentError('knowledge_forbidden', 403)
+    expected = {'tenant': slug, 'tenant_slug': slug, 'tenant_id': str(tenant.id)}
+    if canonical_revision is not None:
+        expected['revision'] = canonical_revision
+    for key in request.args:
+        if key not in expected or request.args.getlist(key) != [expected[key]]:
+            raise ContentError('knowledge_scope_mismatch', 400)
+    for header, target in [('X-Tenant', slug), ('X-Tenant-Slug', slug), ('X-Tenant-ID', str(tenant.id))]:
+        if header in request.headers and request.headers[header] != target:
+            raise ContentError('knowledge_scope_mismatch', 400)
+    return tenant
+
+def _origin():
+    allowed = {s.strip() for s in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',') if s.strip() and s.strip() != '*'}
+    allowed.add(request.host_url.rstrip('/'))
+    if request.headers.get('Origin') is not None and request.headers['Origin'] not in allowed:
+        raise ContentError('knowledge_origin_forbidden', 403)
+
+def _json():
+    if not request.is_json or not request.content_length or request.content_length > MAX_BYTES + 8192:
+        raise ContentError('knowledge_json_required', 413)
+    def unique(pairs):
+        result = {}
+        for k, v in pairs:
+            if k in result: raise ContentError('knowledge_duplicate_key', 400)
+            result[k] = v
+        return result
+    try:
+        value = json.loads(request.get_data(), object_pairs_hook=unique)
+    except (ValueError, UnicodeError) as error:
+        raise ContentError('knowledge_json_invalid', 400) from error
+    if not isinstance(value, dict): raise ContentError('knowledge_command_invalid', 400)
+    return value
+
+def _canonical_revision():
+    revisions = request.args.getlist('revision')
+    if (request.content_length or len(revisions) != 1
+        or not re.fullmatch(r'[a-f0-9]{64}', revisions[0])):
+        raise ContentError('knowledge_command_invalid', 400)
+    return revisions[0]
+
+@institutional_assistant_bp.errorhandler(ContentError)
+def _error(error): return _reply({'reason_code': error.code}, error.status)
+
+@institutional_assistant_bp.route('/api/admin/tenants/<slug>/institutional-assistant', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def manage(actor, slug):
+    _origin()
+    tenant = _tenant(slug, actor)
+    if request.method == 'GET': return _reply(workspace(tenant, read_state(tenant), editable=True))
+    from cutover_writer_fence import cutover_writer_fence_enabled
+    if cutover_writer_fence_enabled(current_app.config): raise ContentError('knowledge_maintenance', 503)
+    if request.headers.get('X-Chatboc-Knowledge') != '1': raise ContentError('knowledge_confirmation_required', 400)
+    return _reply(save_state(tenant, actor, _json()))
+
+@institutional_assistant_bp.route('/api/admin/tenants/<slug>/institutional-assistant/answer', methods=['POST'])
+@limiter.limit('30 per minute')
+@token_requerido
+@auth_sin_escrituras_implicitas
+def private_answer(actor, slug):
+    _origin()
+    return _reply(answer(_tenant(slug, actor), _json(), actor=actor))
+
+@institutional_assistant_bp.route('/api/admin/tenants/<slug>/institutional-assistant/nodes/<node_id>', methods=['GET'])
+@limiter.limit('30 per minute')
+@token_requerido
+@auth_sin_escrituras_implicitas
+def private_canonical_node(actor, slug, node_id):
+    _origin()
+    revision = _canonical_revision()
+    tenant = _tenant(slug, actor, canonical_revision=revision)
+    return _reply(answer(tenant, {'revision': revision, 'node_id': node_id}, actor=actor))
+
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant', methods=['GET'])
+def public_workspace(slug):
+    tenant = _tenant(slug)
+    return _reply(workspace(tenant, read_state(tenant, public=True), public=True))
+
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/answer', methods=['POST'])
+@limiter.limit('20 per minute')
+def public_answer(slug):
+    # Same non-credentialed CORS surface as the public workspace. No session or
+    # caller identity is used; only explicitly published tenant content is read.
+    return _reply(answer(_tenant(slug), _json(), public=True))
+
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/nodes/<node_id>', methods=['GET'])
+@limiter.limit('20 per minute')
+def public_canonical_node(slug, node_id):
+    revision = _canonical_revision()
+    tenant = _tenant(slug, canonical_revision=revision)
+    return _reply(answer(tenant, {'revision': revision, 'node_id': node_id}, public=True))
+
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/audio', methods=['POST'])
+def public_audio(slug):
+    from services.institutional_assistant_audio import MAX_AUDIO_COMMAND_BYTES, synthesize_public_nodes
+    if not request.content_length or request.content_length > MAX_AUDIO_COMMAND_BYTES:
+        raise ContentError('knowledge_command_invalid', 400)
+    tenant = _tenant(slug)
+    audio, revision = synthesize_public_nodes(tenant, _json())
+    response = Response(audio, content_type='audio/mpeg')
+    response.headers['Content-Length'] = str(len(audio))
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Chatboc-Knowledge-Revision'] = revision
+    response.headers['X-Chatboc-Tenant-ID'] = str(tenant.id)
+    return response
+
+def _source_reply(tenant, source_id, revision, *, public=False, actor=None):
+    from services.institutional_assistant_sources import source_document
+    data, filename, mime = source_document(tenant, source_id, revision, public=public, actor=actor)
+    # The bounded buffer is completely verified before the first response byte.
+    response = Response((data[offset:offset + 65536] for offset in range(0, len(data), 65536)),
+                        content_type='text/plain; charset=utf-8' if mime == 'text/plain' else mime)
+    response.headers['Content-Length'] = str(len(data))
+    disposition = 'attachment' if mime == 'text/plain' else 'inline'
+    response.headers['Content-Disposition'] = f'{disposition}; filename="{filename}"'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    return response
+
+@institutional_assistant_bp.route('/api/admin/tenants/<slug>/institutional-assistant/sources/<source_id>', methods=['GET'])
+@limiter.limit('30 per minute')
+@token_requerido
+@auth_sin_escrituras_implicitas
+def private_source_pdf(actor, slug, source_id):
+    _origin()
+    revision = _canonical_revision()
+    tenant = _tenant(slug, actor, canonical_revision=revision)
+    return _source_reply(tenant, source_id, revision, actor=actor)
+
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/sources/<source_id>', methods=['GET'])
+@limiter.limit('20 per minute')
+def public_source_pdf(slug, source_id):
+    revision = _canonical_revision()
+    tenant = _tenant(slug, canonical_revision=revision)
+    return _source_reply(tenant, source_id, revision, public=True)

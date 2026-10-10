@@ -68,5 +68,59 @@ class TestLocationService(unittest.TestCase):
         self.assertEqual(kwargs["radius"], 16650)
         self.assertEqual(result[0]["description"], "San Martin, Mendoza, Argentina")
 
+    @patch.dict(
+        os.environ,
+        {"GOOGLE_MAPS_ALLOW_NETWORK_IN_TESTS": "1"},
+        clear=False,
+    )
+    @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
+    @patch("services.location_service.googlemaps.Client")
+    def test_geocode_receipt_distinguishes_client_failure_from_provider_attempt(
+        self, mock_client, *_
+    ):
+        from services import location_service as ls
+
+        mock_client.side_effect = RuntimeError("client setup failed")
+        payload, called = ls.geocode_address_with_receipt(
+            "San Martin",
+            {"provider_timeout_seconds": float("inf")},
+        )
+        self.assertIsNone(payload)
+        self.assertFalse(called)
+        mock_client.assert_called_once_with(key="test", timeout=5.0)
+
+        mock_client.reset_mock(side_effect=True)
+        mock_instance = mock_client.return_value
+        mock_instance.geocode.side_effect = RuntimeError("provider timeout")
+        payload, called = ls.geocode_address_with_receipt(
+            "San Martin",
+            {"provider_timeout_seconds": 99},
+        )
+        self.assertIsNone(payload)
+        self.assertTrue(called)
+        mock_client.assert_called_once_with(key="test", timeout=10.0)
+
+    @patch.dict(
+        os.environ,
+        {"GOOGLE_MAPS_ALLOW_NETWORK_IN_TESTS": "1"},
+        clear=False,
+    )
+    @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
+    @patch("services.location_service.googlemaps.Client")
+    def test_geocode_receipt_marks_request_preparation_failure_as_no_provider_call(
+        self, mock_client, *_
+    ):
+        from services import location_service as ls
+
+        with patch(
+            "services.location_service._resolve_geo_ctx",
+            side_effect=RuntimeError("request preparation failed"),
+        ):
+            payload, called = ls.geocode_address_with_receipt("San Martin", {})
+
+        self.assertIsNone(payload)
+        self.assertFalse(called)
+        mock_client.return_value.geocode.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

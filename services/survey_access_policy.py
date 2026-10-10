@@ -13,6 +13,7 @@ SURVEY_GOVERNANCE_MANAGE_CAPABILITY = "survey.governance.manage"
 SURVEY_ELIGIBILITY_MANAGE_CAPABILITY = "survey.eligibility.manage"
 SURVEY_CONTENT_REVIEW_CAPABILITY = "survey.content.review"
 SURVEY_PUBLISH_CAPABILITY = "survey.publish"
+SURVEY_CLOSE_CAPABILITY = "survey.close"
 
 
 def _flatten_capability_values(raw: Any) -> set[str]:

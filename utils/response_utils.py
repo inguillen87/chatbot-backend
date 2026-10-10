@@ -130,7 +130,14 @@ def ensure_buttons_compatibility(payload: Any) -> Any:
             elif opciones is None and isinstance(botones, list):
                 obj["options_list"] = botones
 
-            for value in obj.values():
+            for key, value in obj.items():
+                # These are canonical tenant/node/source contracts, not
+                # interactive buttons. Keep their identities intact while
+                # normalizing the ordinary botones/options_list alongside.
+                if obj.get('fuente') == 'institutional_knowledge' and key in (
+                    'knowledge_tenant', 'knowledge_nodes', 'knowledge_sources'
+                ):
+                    continue
                 _normalize(value)
         elif isinstance(obj, Sequence) and not isinstance(obj, (str, bytes, bytearray)):
             for item in obj:

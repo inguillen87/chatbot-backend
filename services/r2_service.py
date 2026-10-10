@@ -1,20 +1,82 @@
 import os
 import logging
 import re
+import threading
 import unicodedata
 import uuid
 from pathlib import PurePath
-import boto3
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, urlsplit
 
 from services.media_cache_policy import cache_control_for_key
+from services.outbox_execution_budget import (
+    outbox_execution_budget_active,
+    outbox_io_timeout_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_R2_SIGNED_URL_TTL_SECONDS = 900
+DEFAULT_R2_UPLOAD_URL_TTL_SECONDS = 600
+
+
+def is_valid_r2_bucket_name(value):
+    return isinstance(value, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", value) is not None
+
+
+def is_valid_private_r2_endpoint(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlsplit(value)
+        return (parsed.scheme == 'https' and parsed.netloc == parsed.hostname
+                and re.fullmatch(r'[a-f0-9]{32}\.r2\.cloudflarestorage\.com', parsed.hostname or '') is not None
+                and parsed.path in ('', '/') and not parsed.query and not parsed.fragment)
+    except ValueError:
+        return False
+
+
+class R2SourceObjectChangedError(RuntimeError):
+    """Raised when a conditional promotion observes a different source ETag."""
+
+
+class R2ObjectStorageUnavailableError(RuntimeError):
+    """Raised when R2 cannot give a definitive answer for an object operation."""
+
+
+class R2ObjectContentInvalidError(RuntimeError):
+    """Raised when a bounded private download fails its metadata checks."""
+
+
+_R2_DEFINITE_NOT_FOUND_CODES = {
+    "404",
+    "nosuchkey",
+    "nosuchobject",
+    "notfound",
+}
+_R2_COPY_PRECONDITION_CODES = {
+    "412",
+    "conditionalrequestconflict",
+    "preconditionfailed",
+}
+
+
+def _client_error_code_and_status(exc):
+    response = exc.response if isinstance(getattr(exc, "response", None), dict) else {}
+    error = response.get("Error") if isinstance(response.get("Error"), dict) else {}
+    response_metadata = (
+        response.get("ResponseMetadata")
+        if isinstance(response.get("ResponseMetadata"), dict)
+        else {}
+    )
+    error_code = str(error.get("Code") or "").strip().lower()
+    try:
+        status_code = int(response_metadata.get("HTTPStatusCode") or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    return error_code, status_code
+
 
 SENSITIVE_R2_CONTEXTS = {
     "adjunto",
@@ -131,19 +193,86 @@ class R2Service:
         self.region_name = os.environ.get("R2_REGION", "auto")
 
         self.client = None
-        if self.endpoint_url and self.access_key_id and self.secret_access_key:
+        self._client_initialization_attempted = False
+        self._client_lock = threading.Lock()
+
+    def _create_client(self, *, timeout_seconds=None, access_key_id=None, secret_access_key=None, endpoint_url=None):
+        """Import boto3 and build the client only for the first object operation."""
+
+        import boto3
+        from botocore.config import Config
+
+        if access_key_id is not None or secret_access_key is not None:
+            if not all(isinstance(value, str) and value.strip() for value in (access_key_id, secret_access_key)):
+                raise R2ObjectStorageUnavailableError("private_object_storage_unavailable")
+        else:
+            access_key_id, secret_access_key = self.access_key_id, self.secret_access_key
+
+        config_kwargs = {"signature_version": "s3v4"}
+        if timeout_seconds is not None:
+            config_kwargs.update(
+                connect_timeout=float(timeout_seconds),
+                read_timeout=float(timeout_seconds),
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            )
+
+        return boto3.client(
+            "s3",
+            endpoint_url=endpoint_url if endpoint_url is not None else self.endpoint_url,
+            aws_access_key_id=access_key_id,
+            aws_secret_access_key=secret_access_key,
+            region_name=self.region_name,
+            config=Config(**config_kwargs),
+        )
+
+    def _get_client(self):
+        bounded_timeout = outbox_io_timeout_seconds()
+        if bounded_timeout is not None:
+            if not (
+                self.endpoint_url
+                and self.access_key_id
+                and self.secret_access_key
+                and self.bucket_name
+            ):
+                return None
             try:
-                self.client = boto3.client(
-                    's3',
-                    endpoint_url=self.endpoint_url,
-                    aws_access_key_id=self.access_key_id,
-                    aws_secret_access_key=self.secret_access_key,
-                    region_name=self.region_name,
-                    config=Config(signature_version='s3v4')
+                # Never reuse a warm process client whose botocore socket and
+                # retry policy predates the cron execution budget.
+                return self._create_client(timeout_seconds=bounded_timeout)
+            except Exception as exc:
+                logger.error(
+                    "Failed to initialize bounded R2 client error_type=%s",
+                    type(exc).__name__,
                 )
-                logger.info("R2 Client initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize R2 client: {e}")
+                return None
+
+        client = self.client
+        if client is not None:
+            return client
+        if not (
+            self.endpoint_url
+            and self.access_key_id
+            and self.secret_access_key
+            and self.bucket_name
+        ):
+            return None
+
+        with self._client_lock:
+            if self.client is not None:
+                return self.client
+            if self._client_initialization_attempted:
+                return None
+            self._client_initialization_attempted = True
+            try:
+                self.client = self._create_client()
+                logger.info("R2 client initialized successfully")
+            except Exception as exc:
+                logger.error(
+                    "Failed to initialize R2 client error_type=%s",
+                    type(exc).__name__,
+                )
+                self.client = None
+            return self.client
 
     def generate_key(self, filename, tenant_slug, context_type="general"):
         """
@@ -167,6 +296,58 @@ class R2Service:
             return "/".join((context_segments[0], tenant_segment, *context_segments[1:], filename_segment))
 
         return "/".join((*context_segments, tenant_segment, filename_segment))
+
+    def read_object_bytes(self, key, *, max_bytes, content_type, bucket_name, access_key_id, secret_access_key, endpoint_url=None):
+        """Read a bounded object without generating any public or signed URL.
+
+        None means a definitive missing object. Provider errors and invalid
+        object metadata have separate, value-free errors for private callers.
+        The bucket is a trusted backend setting, never an incoming object
+        parameter. Private reads cannot use the general/public asset bucket.
+        """
+        safe_key = normalise_r2_object_key(key)
+        if (safe_key != key or type(max_bytes) is not int or max_bytes <= 0
+            or not is_valid_r2_bucket_name(bucket_name) or bucket_name == self.bucket_name
+            or access_key_id == self.access_key_id
+            or not all(isinstance(value, str) and value.strip() for value in (access_key_id, secret_access_key))
+            or (endpoint_url is not None and not is_valid_private_r2_endpoint(endpoint_url))
+            or not (endpoint_url if endpoint_url is not None else self.endpoint_url)):
+            raise R2ObjectStorageUnavailableError("private_object_storage_unavailable")
+        client = None
+        body = None
+        try:
+            # This download has a fixed I/O budget, independent of a cached
+            # upload client's default timeouts and retries.
+            explicit_endpoint = {'endpoint_url': endpoint_url} if endpoint_url is not None else {}
+            client = self._create_client(timeout_seconds=5, access_key_id=access_key_id, secret_access_key=secret_access_key, **explicit_endpoint)
+            result = client.get_object(Bucket=bucket_name, Key=safe_key)
+            body = result.get("Body")
+            size = result.get("ContentLength")
+            actual_type = str(result.get("ContentType") or "").split(";", 1)[0].strip().lower()
+            if (type(size) is not int or not 0 < size <= max_bytes
+                or actual_type != content_type or not callable(getattr(body, "read", None))):
+                raise R2ObjectContentInvalidError("private_object_metadata_invalid")
+            data = body.read(max_bytes + 1)
+            if not isinstance(data, bytes) or len(data) != size or len(data) > max_bytes:
+                raise R2ObjectContentInvalidError("private_object_size_invalid")
+            return data
+        except (R2ObjectContentInvalidError, R2ObjectStorageUnavailableError):
+            raise
+        except ClientError as error:
+            code, status = _client_error_code_and_status(error)
+            if status == 404 or code in _R2_DEFINITE_NOT_FOUND_CODES:
+                return None
+            raise R2ObjectStorageUnavailableError("private_object_storage_unavailable") from None
+        except Exception:
+            raise R2ObjectStorageUnavailableError("private_object_storage_unavailable") from None
+        finally:
+            for resource in (body, client):
+                close = getattr(resource, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
     def public_url_for_key(self, key):
         if not self.public_base_url:
@@ -210,8 +391,200 @@ class R2Service:
     def is_public_asset_key(self, key, content_type=None):
         return cache_control_for_key(key, content_type).startswith("public")
 
+    @property
+    def is_configured(self):
+        """Return whether object operations can be executed safely."""
+
+        return bool(self._get_client() and self.bucket_name)
+
+    def generate_presigned_upload_url(
+        self,
+        key,
+        content_type,
+        content_length,
+        expires_in=None,
+    ):
+        """Create a short-lived, MIME- and length-bound PUT URL."""
+
+        safe_key = normalise_r2_object_key(key)
+        normalized_content_type = str(content_type or "").split(";", 1)[0].strip().lower()
+        if isinstance(content_length, bool):
+            normalized_content_length = 0
+        else:
+            try:
+                normalized_content_length = int(content_length)
+            except (TypeError, ValueError):
+                normalized_content_length = 0
+        if (
+            not self.is_configured
+            or not safe_key
+            or not normalized_content_type
+            or normalized_content_length <= 0
+        ):
+            return None
+
+        try:
+            ttl = int(expires_in or DEFAULT_R2_UPLOAD_URL_TTL_SECONDS)
+        except (TypeError, ValueError):
+            ttl = DEFAULT_R2_UPLOAD_URL_TTL_SECONDS
+        ttl = max(60, min(ttl, 900))
+
+        try:
+            return self._get_client().generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": safe_key,
+                    "ContentType": normalized_content_type,
+                    "ContentLength": normalized_content_length,
+                },
+                ExpiresIn=ttl,
+            )
+        except (BotoCoreError, ClientError) as exc:
+            logger.error(
+                "R2 upload URL generation failed error_type=%s",
+                type(exc).__name__,
+            )
+            return None
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 upload URL generation failure error_type=%s",
+                type(exc).__name__,
+            )
+            return None
+
+    def head_object(self, key):
+        """Return metadata, ``None`` for definite absence, or a typed outage."""
+
+        safe_key = normalise_r2_object_key(key)
+        if not self.is_configured or not safe_key:
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD is unavailable because storage is not configured"
+            )
+        try:
+            return self._get_client().head_object(Bucket=self.bucket_name, Key=safe_key)
+        except ClientError as exc:
+            error_code, _ = _client_error_code_and_status(exc)
+            if error_code in _R2_DEFINITE_NOT_FOUND_CODES:
+                return None
+            logger.error(
+                "R2 HEAD unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD did not return a definitive result"
+            ) from exc
+        except BotoCoreError as exc:
+            logger.error(
+                "R2 HEAD unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD did not return a definitive result"
+            ) from exc
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 HEAD failure error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD did not return a definitive result"
+            ) from exc
+
+    def copy_object(
+        self,
+        source_key,
+        destination_key,
+        content_type,
+        *,
+        source_etag,
+    ):
+        """Promote a temporary object only if its trusted HEAD ETag still matches."""
+
+        safe_source = normalise_r2_object_key(source_key)
+        safe_destination = normalise_r2_object_key(destination_key)
+        normalized_content_type = str(content_type or "").split(";", 1)[0].strip().lower()
+        normalized_source_etag = str(source_etag or "").strip()
+        if (
+            not self.is_configured
+            or not safe_source
+            or not safe_destination
+            or not normalized_content_type
+            or not normalized_source_etag
+        ):
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY is unavailable because its contract is incomplete"
+            )
+
+        try:
+            self._get_client().copy_object(
+                Bucket=self.bucket_name,
+                Key=safe_destination,
+                CopySource={"Bucket": self.bucket_name, "Key": safe_source},
+                CopySourceIfMatch=normalized_source_etag,
+                MetadataDirective="REPLACE",
+                ContentType=normalized_content_type,
+                CacheControl=cache_control_for_key(
+                    safe_destination,
+                    normalized_content_type,
+                ),
+            )
+            return True
+        except ClientError as exc:
+            error_code, status_code = _client_error_code_and_status(exc)
+            if status_code == 412 or error_code in _R2_COPY_PRECONDITION_CODES:
+                raise R2SourceObjectChangedError(
+                    "R2 source object changed before conditional copy"
+                ) from exc
+            logger.error(
+                "R2 COPY unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY did not return a definitive result"
+            ) from exc
+        except BotoCoreError as exc:
+            logger.error(
+                "R2 COPY unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY did not return a definitive result"
+            ) from exc
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 copy failure error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY did not return a definitive result"
+            ) from exc
+
+    def delete_object(self, key):
+        """Best-effort deletion for temporary or superseded objects."""
+
+        safe_key = normalise_r2_object_key(key)
+        if not self.is_configured or not safe_key:
+            return False
+        try:
+            self._get_client().delete_object(Bucket=self.bucket_name, Key=safe_key)
+            return True
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning(
+                "R2 delete failed error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 delete failure error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+
     def generate_presigned_download_url(self, key, expires_in=None):
-        if not self.client or not self.bucket_name or not key:
+        client = self._get_client()
+        if not client or not self.bucket_name or not key:
             return None
 
         try:
@@ -221,7 +594,7 @@ class R2Service:
         ttl = max(60, min(ttl, 3600))
 
         try:
-            return self.client.generate_presigned_url(
+            return client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket_name, "Key": key},
                 ExpiresIn=ttl,
@@ -252,18 +625,22 @@ class R2Service:
         Returns:
             str: Public URL of the uploaded file, or None if upload fails.
         """
-        if not self.client or not self.bucket_name:
+        if not self.bucket_name:
             logger.warning("R2 is not configured or initialized.")
             return None
 
         key = self.generate_key(filename, tenant_slug, context_type=context_type)
-        return self.upload_file_with_key(file_obj, key, content_type)
+        result = self.upload_file_with_key(file_obj, key, content_type)
+        if result is None:
+            logger.warning("R2 is not configured or the upload failed.")
+        return result
 
     def upload_file_with_key(self, file_obj, key, content_type):
         """
         Uploads a file with a specific key.
         """
-        if not self.client or not self.bucket_name:
+        client = self._get_client()
+        if not client or not self.bucket_name:
             return None
 
         try:
@@ -272,11 +649,21 @@ class R2Service:
                 'CacheControl': cache_control_for_key(key, content_type),
             }
 
-            self.client.upload_fileobj(
+            upload_kwargs = {"ExtraArgs": extra_args}
+            if outbox_execution_budget_active():
+                from boto3.s3.transfer import TransferConfig
+
+                # The cron accepts at most one provider request per upload;
+                # multipart transfer would multiply the per-attempt timeout.
+                upload_kwargs["Config"] = TransferConfig(
+                    multipart_threshold=5 * 1024 * 1024 * 1024,
+                    use_threads=False,
+                )
+            client.upload_fileobj(
                 file_obj,
                 self.bucket_name,
                 key,
-                ExtraArgs=extra_args
+                **upload_kwargs,
             )
 
             # Existing callers expect the upload result to be the configured
@@ -290,6 +677,14 @@ class R2Service:
         except Exception as e:
             logger.error(f"Unexpected error uploading to R2: {e}")
             return None
+        finally:
+            if outbox_execution_budget_active():
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
 # Singleton instance
 r2_service = R2Service()

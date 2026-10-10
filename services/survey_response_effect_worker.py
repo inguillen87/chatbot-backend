@@ -14,7 +14,8 @@ import os
 from pathlib import Path
 import signal
 import threading
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 from flask import current_app, has_app_context
 from sqlalchemy import func
@@ -23,10 +24,18 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 
 from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+    log_background_writer_fence,
+)
 from models import SurveyResponseEffect, db
 from services.survey_response_effects import (
     dispatch_survey_response_effects,
     list_due_survey_response_effect_tenant_ids,
+)
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
 )
 
 
@@ -66,7 +75,10 @@ def _database_schema_heads() -> frozenset[str]:
         return frozenset(str(head) for head in context.get_current_heads())
 
 
-def assert_survey_response_effect_worker_schema_current() -> None:
+def assert_survey_response_effect_worker_schema_current(
+    *,
+    required: bool = False,
+) -> None:
     """Fail before polling when the database is not at this release's head."""
 
     if bool(current_app.config.get("TESTING")):
@@ -75,7 +87,7 @@ def assert_survey_response_effect_worker_schema_current() -> None:
         current_app.config.get("CHATBOC_PROCESS_ROLE")
         or os.getenv("CHATBOC_PROCESS_ROLE", "")
     ).strip().lower()
-    if process_role != "survey-effect-worker":
+    if not required and process_role != "survey-effect-worker":
         return
 
     expected = _repository_schema_heads()
@@ -187,13 +199,51 @@ def _select_fair_tenants(
 def dispatch_survey_response_effect_batch(
     *,
     limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
+    require_shared_realtime: bool = False,
 ) -> dict[str, Any]:
     """Discover tenants and process one bounded, fairly divided DB batch."""
 
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": SURVEY_RESPONSE_EFFECT_WORKER_BATCH_CONTRACT,
+            "status": "fenced",
+            "limit": 0,
+            "lease_seconds": 0,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+            "tenants": [],
+        }
     if not has_app_context():
         raise SurveyResponseEffectWorkerConfigurationError(
             "survey_response_effect_worker_app_context_required"
         )
+    authority_report = background_global_writer_authority_report(
+        "survey_response_effect_worker",
+        current_app.config,
+    )
+    if authority_report is not None:
+        return {
+            **authority_report,
+            "limit": 0,
+            "lease_seconds": 0,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+            "tenants": [],
+        }
 
     configured_limit = _configured_batch_size() if limit is None else int(limit)
     bounded_limit = max(1, min(configured_limit, 500))
@@ -219,15 +269,25 @@ def dispatch_survey_response_effect_batch(
     for tenant_index, tenant_id in enumerate(selected_tenants):
         if remaining <= 0:
             break
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         tenants_remaining = len(selected_tenants) - tenant_index
         tenant_limit = max(
             1,
             (remaining + tenants_remaining - 1) // tenants_remaining,
         )
+        dispatch_kwargs: dict[str, Any] = {}
+        if deadline_monotonic is not None:
+            dispatch_kwargs["should_continue"] = (
+                lambda: clock() < deadline_monotonic
+            )
+        if require_shared_realtime:
+            dispatch_kwargs["require_shared_realtime"] = True
         report = dispatch_survey_response_effects(
             tenant_id=tenant_id,
             limit=tenant_limit,
             lease_seconds=lease_seconds,
+            **dispatch_kwargs,
         )
         safe_report = {
             key: int(report.get(key) or 0)
@@ -286,6 +346,11 @@ def run_survey_response_effect_worker(
     *,
     once: bool = False,
     stop_event: Optional[threading.Event] = None,
+    batch_limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
+    require_current_schema: bool = False,
+    require_shared_realtime: bool = False,
 ) -> dict[str, Any]:
     """Run the standalone poller used by the Render background worker."""
 
@@ -294,14 +359,34 @@ def run_survey_response_effect_worker(
         "cycles": 0,
         "claimed": 0,
         "processed": 0,
+        "succeeded": 0,
+        "skipped": 0,
         "retry_wait": 0,
         "dead": 0,
+        "fenced": 0,
         "cycle_failures": 0,
     }
+    if cutover_writer_fence_enabled(app.config):
+        report = {
+            **background_writer_fence_report("survey_response_effect_worker"),
+            **totals,
+        }
+        log_background_writer_fence(logger, report)
+        if not once and not shutdown.is_set():
+            shutdown.wait()
+        return report
     with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "survey_response_effect_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {**authority_report, **totals}
         # Validate every bound at startup. The first health query also fails
         # loudly if the migration/table is missing.
-        assert_survey_response_effect_worker_schema_current()
+        assert_survey_response_effect_worker_schema_current(
+            required=require_current_schema,
+        )
         _configured_batch_size()
         _configured_max_tenants()
         _configured_lease_seconds()
@@ -309,10 +394,34 @@ def run_survey_response_effect_worker(
         summarize_survey_response_effect_worker()
 
         while not shutdown.is_set():
+            authority_report = background_global_writer_authority_report(
+                "survey_response_effect_worker",
+                current_app.config,
+            )
+            if authority_report is not None:
+                return {**authority_report, **totals}
             totals["cycles"] += 1
             try:
-                report = dispatch_survey_response_effect_batch()
-                for key in ("claimed", "processed", "retry_wait", "dead"):
+                dispatch_kwargs: dict[str, Any] = {}
+                if batch_limit is not None:
+                    dispatch_kwargs["limit"] = batch_limit
+                if deadline_monotonic is not None:
+                    dispatch_kwargs.update(
+                        deadline_monotonic=deadline_monotonic,
+                        clock=clock,
+                    )
+                if require_shared_realtime:
+                    dispatch_kwargs["require_shared_realtime"] = True
+                report = dispatch_survey_response_effect_batch(**dispatch_kwargs)
+                for key in (
+                    "claimed",
+                    "processed",
+                    "succeeded",
+                    "skipped",
+                    "retry_wait",
+                    "dead",
+                    "fenced",
+                ):
                     totals[key] += int(report.get(key) or 0)
                 did_work = bool(int(report.get("claimed") or 0))
                 db.session.remove()
@@ -346,6 +455,37 @@ def main() -> int:
 
     os.environ.setdefault("CHATBOC_PROCESS_ROLE", "survey-effect-worker")
     os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+    shutdown = threading.Event()
+
+    def _stop(*_args: Any) -> None:
+        shutdown.set()
+
+    for signal_name in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(signal_name, _stop)
+        except (AttributeError, ValueError):
+            pass
+
+    if cutover_writer_fence_enabled():
+        report = {
+            **background_writer_fence_report("survey_response_effect_worker"),
+            "cycles": 0,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+            "cycle_failures": 0,
+        }
+        log_background_writer_fence(logger, report)
+        if args.once or args.health:
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        elif not shutdown.is_set():
+            shutdown.wait()
+        return 0
+
     from app import create_app
     from config import Config
 
@@ -361,17 +501,6 @@ def main() -> int:
                 )
             )
         return 0
-
-    shutdown = threading.Event()
-
-    def _stop(*_args: Any) -> None:
-        shutdown.set()
-
-    for signal_name in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(signal_name, _stop)
-        except (AttributeError, ValueError):
-            pass
 
     run_survey_response_effect_worker(
         app,
