@@ -1538,6 +1538,9 @@ class Config:
     META_TDF_SANDBOX_APP_SECRET = os.getenv("META_TDF_SANDBOX_APP_SECRET", "")
     META_TDF_SANDBOX_VERIFY_TOKEN = os.getenv("META_TDF_SANDBOX_VERIFY_TOKEN", "")
     META_TDF_SANDBOX_GRAPH_VERSION = os.getenv("META_TDF_SANDBOX_GRAPH_VERSION", "v25.0")
+    # Optional explicit, provider-proven owner association for Meta's test list.
+    # Keep raw JSON for strict duplicate-key/shape validation in the pilot.
+    META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON = os.getenv("META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON")
     try:
         META_TDF_SANDBOX_RECIPIENTS = json.loads(os.getenv("META_TDF_SANDBOX_RECIPIENTS_JSON", "[]"))
     except (ValueError, TypeError):

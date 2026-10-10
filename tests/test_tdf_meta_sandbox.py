@@ -82,6 +82,7 @@ def encoded(doc):
 
 
 BSUID, PARENT_BSUID = "AR.SyntheticOwner123", "AR.ENT.SyntheticParent123"
+APPROVED_REPLY_INPUT = "11122233344"  # Synthetic provider input, no prefix rule.
 
 
 def bsuid_document(*, uid=BSUID, parent=None, **kwargs):
@@ -108,6 +109,103 @@ def bsuid_status(state, *, uid=BSUID, parent=None, phone=CONTACT):
         value["statuses"][0]["recipient_parent_user_id"] = parent
     value["contacts"][0]["wa_id"] = phone
     return doc
+
+
+def test_explicit_proven_owner_mapping_changes_only_outbound_to(environment):
+    environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({CONTACT: APPROVED_REPLY_INPUT})
+    raw, signature = encoded(bsuid_document(parent=PARENT_BSUID))
+    cfg = pilot.settings(environment.app.config)
+    loader = pilot.binding_loader(cfg, NOW, authority)
+    event, = pilot.webhook.parse_webhook(raw_body=raw, signature=signature, app_secret=SECRET,
+        app_id=pilot.TEST_APP, now=NOW, binding_resolver=lambda *_: loader(),
+        contact_identity_resolver=lambda item, kind, contacts, sender:
+            pilot.owner_contact_resolver(sender_scope=sender, recipients=cfg["RECIPIENTS"])(item, kind, contacts, sender))
+    key = pilot._contact_key(event, cfg)
+    calls = []
+    def post(url, **kwargs):
+        calls.append(kwargs["json"])
+        return accepted_post(url, **kwargs)
+    assert process(bsuid_document(parent=PARENT_BSUID), post=post)["accepted"] == 1
+    assert calls[0]["to"] == APPROVED_REPLY_INPUT
+    assert event.contact == CONTACT and event.contact_identity.user_id == BSUID
+    ledger = db.session.query(MessagingEventLedger).one()
+    assert ledger.request_id == key and ledger.payload is None
+    stored = str(ledger.metadata_json) + ledger.request_id + str(ledger.payload)
+    for private in (CONTACT, APPROVED_REPLY_INPUT, BSUID, PARENT_BSUID):
+        assert private not in stored
+    assert process(bsuid_document(parent=PARENT_BSUID), post=post)["replayed"] == 1
+    assert len(calls) == 1
+    assert process(bsuid_status("delivered", parent=PARENT_BSUID))["statuses"] == 1
+    assert ledger.external_status == "delivered"
+
+
+@pytest.mark.parametrize("raw", [
+    "", "{}", "[]", "null", "false", "broken", "x" * 513,
+    json.dumps({CONTACT: "+11122233344"}), json.dumps({CONTACT: 11122233344}),
+    json.dumps({CONTACT: None}), json.dumps({"11122233344": APPROVED_REPLY_INPUT}),
+    json.dumps({CONTACT: APPROVED_REPLY_INPUT, "11122233344": APPROVED_REPLY_INPUT}),
+    '{"'+CONTACT+'":"11122233344","'+CONTACT+'":"22233344455"}',
+])
+def test_invalid_reply_mapping_has_no_claim_or_provider_post(environment, raw):
+    environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = raw
+    calls = []
+    with pytest.raises(pilot.PilotError, match="tdf_sandbox_reply_mapping_invalid"):
+        process(bsuid_document(), post=lambda *a, **kw: calls.append(1))
+    assert calls == [] and db.session.query(WebhookDelivery).count() == 0
+    assert db.session.query(MessagingEventLedger).count() == 0
+
+
+def test_reply_mapping_requires_single_canonical_allowlist(environment):
+    environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({CONTACT: APPROVED_REPLY_INPUT})
+    environment.app.config["META_TDF_SANDBOX_RECIPIENTS"] = [CONTACT, "22233344455"]
+    with pytest.raises(pilot.PilotError, match="tdf_sandbox_reply_mapping_invalid"):
+        pilot.settings(environment.app.config)
+
+
+@pytest.mark.parametrize("change", ["target", "removed", "allowlist"])
+def test_mapping_changed_after_durable_intent_cannot_send(environment, monkeypatch, change):
+    environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({CONTACT: APPROVED_REPLY_INPUT})
+    original = cloud.send_once
+    calls = []
+    def send_once(**kwargs):
+        assert db.session.query(MessagingEventLedger).one().external_status == "send_uncertain"
+        if change == "target":
+            environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({CONTACT: "22233344455"})
+        elif change == "removed":
+            environment.app.config.pop("META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON")
+        else:
+            environment.app.config["META_TDF_SANDBOX_RECIPIENTS"] = ["22233344455"]
+            environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({"22233344455": APPROVED_REPLY_INPUT})
+        return original(**kwargs)
+    monkeypatch.setattr(cloud, "send_once", send_once)
+    result = process(bsuid_document(), post=lambda *a, **kw: calls.append(1))
+    assert result["accepted"] == 0 and calls == []
+    assert db.session.query(MessagingEventLedger).one().external_status == "send_uncertain"
+    assert db.session.query(WebhookDelivery).one().status == "failed"
+
+
+def test_reply_mapping_never_authorizes_original_input_as_inbound(environment):
+    environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({CONTACT: APPROVED_REPLY_INPUT})
+    calls = []
+    with pytest.raises(cloud.MetaContractError, match="phone_not_allowed"):
+        process(bsuid_document(contact=APPROVED_REPLY_INPUT), post=lambda *a, **kw: calls.append(1))
+    assert calls == [] and db.session.query(WebhookDelivery).count() == 0
+
+
+def test_adding_reply_mapping_does_not_retry_historical_rejected_message(environment):
+    calls = []
+    def rejected(url, **kwargs):
+        calls.append(kwargs["json"])
+        return SimpleNamespace(status_code=400,content=b'{"error":{"code":131030}}')
+    old = bsuid_document(mid="wamid.synthetic-rejected-history")
+    assert process(old, post=rejected)["accepted"] == 0
+    ledger = db.session.query(MessagingEventLedger).one()
+    assert ledger.external_status == "rejected" and ledger.error_code == "131030"
+    environment.app.config["META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON"] = json.dumps({CONTACT: APPROVED_REPLY_INPUT})
+    assert process(old, post=accepted_post)["replayed"] == 1
+    assert len(calls) == 1 and db.session.query(MessagingEventLedger).count() == 1
+    assert process(bsuid_document(mid="wamid.synthetic-new-after-mapping"), post=accepted_post)["accepted"] == 1
+    assert db.session.query(MessagingEventLedger).count() == 2
 
 
 @pytest.mark.parametrize("parent", [None, PARENT_BSUID])

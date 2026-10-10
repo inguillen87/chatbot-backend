@@ -62,7 +62,39 @@ def settings(config):
             or any(not isinstance(value, str) or not _CONTACT.fullmatch(value) for value in values["RECIPIENTS"])
             or len(set(values["RECIPIENTS"])) != len(values["RECIPIENTS"])):
         raise PilotError("tdf_sandbox_configuration_incomplete")
+    raw_mapping = config.get("META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON")
+    mapping = {}
+    if raw_mapping is not None:
+        try:
+            def unique(pairs):
+                result = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError("duplicate key")
+                    result[key] = value
+                return result
+            if not isinstance(raw_mapping, str) or not 0 < len(raw_mapping.encode("utf-8")) <= 512:
+                raise ValueError("bounded JSON required")
+            mapping = json.loads(raw_mapping, object_pairs_hook=unique)
+            if (not isinstance(mapping, dict) or len(values["RECIPIENTS"]) != 1
+                    or set(mapping) != set(values["RECIPIENTS"]) or len(mapping) != 1
+                    or any(not isinstance(target, str) or not _CONTACT.fullmatch(target) for target in mapping.values())):
+                raise ValueError("one exact owner association required")
+        except (ValueError, TypeError, UnicodeError):
+            raise PilotError("tdf_sandbox_reply_mapping_invalid") from None
+    values["REPLY_RECIPIENTS"] = mapping
     return values
+
+
+def _reply_recipient(contact, cfg):
+    """Inbound canonical identity stays strict; outbound uses only explicit config.
+
+    Deployment prepares this private mapping from Meta's accepted contacts.input
+    association. No prefix conversion or inference is performed by the pilot.
+    """
+    if contact not in cfg["RECIPIENTS"]:
+        raise PilotError("tdf_sandbox_recipient_not_allowed", 403)
+    return cfg["REPLY_RECIPIENTS"].get(contact, contact)
 
 
 def _graph_request(method, url, **kwargs):
@@ -412,7 +444,8 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
                         raise PilotError("tdf_audio_knowledge_changed")
             else:
                 body, context, revision, buttons = _answer(event, previous)
-            outbound = _reply_payload(event.contact, body, buttons, revision)
+            outbound_recipient = _reply_recipient(event.contact, cfg)
+            outbound = _reply_payload(outbound_recipient, body, buttons, revision)
             # This intent is durable before I/O, and remains uncertain on interruption.
             receipt = MessagingEventLedger(tenant_id=TENANT_ID,
                 provider_connection_id=event.sender.connection_id,
@@ -426,7 +459,10 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
             def policy(sender, payload):
                 live_cfg = settings(current_app.config)
                 return (sender == event.sender and payload == outbound
-                        and payload.get("to") == event.contact and event.contact in live_cfg["RECIPIENTS"]
+                        and live_cfg["REPLY_RECIPIENTS"] == cfg["REPLY_RECIPIENTS"]
+                        and live_cfg["RECIPIENTS"] == cfg["RECIPIENTS"]
+                        and event.contact in live_cfg["RECIPIENTS"]
+                        and payload.get("to") == outbound_recipient == _reply_recipient(event.contact, live_cfg)
                         and 0 <= clock() - event.timestamp < 24 * 3600
                         and not cutover_writer_fence_enabled(current_app.config)
                         and _knowledge_revision_current(revision))
