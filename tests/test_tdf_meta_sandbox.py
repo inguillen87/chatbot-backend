@@ -283,13 +283,77 @@ def test_invalid_location_is_before_receipt(environment, latitude, longitude):
     assert db.session.query(WebhookDelivery).count() == 0
 
 
-def test_audio_does_not_promise_or_attempt_transcription(environment):
+def test_audio_transcription_failure_preserves_text_and_person_help(environment, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise pilot.TdfAudioError("tdf_audio_unavailable")
+    monkeypatch.setattr(pilot, "transcribe_meta_voice_note", unavailable)
     bodies = []
     def post(url, **kwargs):
         bodies.append(sent_body(kwargs["json"])); return accepted_post()
     process(document(content={"type": "audio", "audio": {"id": "555555", "mime_type": "audio/ogg"}}), post=post)
-    assert "todavía no transcribe audio" in bodies[0]
+    assert "No pude leer esta nota de voz" in bodies[0]
     assert "persona" in bodies[0]
+
+
+def test_audio_uses_published_menu_context_and_never_persists_transcript(environment, monkeypatch):
+    # The first real knowledge reply advertises canonical code 1. A voice note
+    # containing that code must resolve through the same persisted menu context.
+    process(document())
+    bodies, calls = [], []
+    def transcribe(event, **kwargs):
+        calls.append(event.media_id)
+        assert event.media_id == "555555" and event.media_mime_type == "audio/ogg"
+        return "1"
+    monkeypatch.setattr(pilot, "transcribe_meta_voice_note", transcribe)
+    def post(url, **kwargs):
+        bodies.append(sent_body(kwargs["json"])); return accepted_post()
+    doc = document(mid="wamid.voice1", content={"type": "audio", "audio": {
+        "id": "555555", "mime_type": "audio/ogg"}})
+    assert process(doc, post=post)["accepted"] == 1
+    assert "Respuesta institucional de prueba" in bodies[0]
+    assert "9." in bodies[0] and "PRIVATE" not in bodies[0]
+    assert process(doc, post=post)["replayed"] == 1 and calls == ["555555"] and len(bodies) == 1
+    for row in db.session.query(MessagingEventLedger):
+        assert row.payload is None and set(row.metadata_json) == {"contract", "knowledge_context"}
+        assert "555555" not in json.dumps(row.metadata_json)
+    assert all("555555" not in row.payload_digest for row in db.session.query(WebhookDelivery))
+    changed = deepcopy(doc); changed["entry"][0]["changes"][0]["value"]["messages"][0]["audio"]["id"] = "666666"
+    with pytest.raises(pilot.PilotError, match="event_conflict"):
+        process(changed, post=post)
+    assert calls == ["555555"] and len(bodies) == 1
+
+
+def test_audio_revision_retired_during_transcription_cannot_send(environment, monkeypatch):
+    process(document())
+    def transcribe(event, **kwargs):
+        record = db.session.query(TenantConfig).filter_by(tenant_id=46, key="institutional_assistant").one()
+        state = deepcopy(record.json_value); state["visibility"] = "private"
+        state["generation"] += 1
+        state["revision"] = digest({key: state[key] for key in ("bundle_hash", "generation", "visibility")})
+        record.json_value = state
+        db.session.commit()
+        return "1"
+    monkeypatch.setattr(pilot, "transcribe_meta_voice_note", transcribe)
+    before = db.session.query(MessagingEventLedger).count()
+    result = process(document(mid="wamid.retiredvoice", content={"type": "audio", "audio": {
+        "id": "555555", "mime_type": "audio/ogg"}}), post=lambda *a, **k: pytest.fail("retired content must not send"))
+    assert result["accepted"] == 0 and db.session.query(MessagingEventLedger).count() == before
+
+
+def test_audio_allowlist_window_signature_and_batch_dedupe_precede_transcription(environment, monkeypatch):
+    monkeypatch.setattr(pilot, "transcribe_meta_voice_note", lambda *a, **k: pytest.fail("STT must not start"))
+    content = {"type": "audio", "audio": {"id": "555555", "mime_type": "audio/ogg"}}
+    with pytest.raises(pilot.PilotError, match="recipient_not_allowed"):
+        process(document(contact="5491112345688", content=content))
+    raw, signature = encoded(document(content=content))
+    with pytest.raises(cloud.MetaContractError, match="signature_invalid"):
+        pilot.process(raw, "sha256=" + "0" * 64, now=NOW, authority=authority)
+    assert process(document(content=content, timestamp=NOW - 86400))["accepted"] == 0
+    doc = document(mid="wamid.batchvoice", content=content)
+    message = deepcopy(doc["entry"][0]["changes"][0]["value"]["messages"][0]); message["audio"]["id"] = "666666"
+    doc["entry"][0]["changes"][0]["value"]["messages"].append(message)
+    with pytest.raises(cloud.MetaContractError, match="duplicate_conflict"):
+        process(doc)
 
 
 def test_knowledge_list_preserves_complete_text_and_falls_back_without_hiding_choices(environment):

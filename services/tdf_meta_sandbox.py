@@ -28,6 +28,7 @@ from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
 from services.tenant_provider_credentials import ProviderCredentialError
 from cutover_writer_fence import cutover_writer_fence_enabled
+from services.tdf_meta_audio import TdfAudioError, audio_error_message, transcribe_meta_voice_note
 
 TENANT_ID, TENANT_SLUG = 46, "tierra-del-fuego"
 # Exact Meta test resources observed on 2026-10-10; never the JUNI/shared WABA.
@@ -189,8 +190,11 @@ def _pseudonym(value, cfg):
 
 
 def _semantic_digest(event, cfg):
-    material = json.dumps([event.message_id, event.contact, event.content_type,
-        event.text, event.selection, event.location, event.status, event.error_codes],
+    values = [event.message_id, event.contact, event.content_type,
+        event.text, event.selection, event.location, event.status, event.error_codes]
+    if event.content_type == "audio":
+        values.extend(["meta_audio_v1", event.media_id, event.media_mime_type, event.media_sha256])
+    material = json.dumps(values,
         separators=(",", ":"), ensure_ascii=False)
     return _pseudonym(material, cfg)
 
@@ -234,7 +238,7 @@ def _previous_context(contact_key, sender_id):
     return (row.metadata_json or {}).get("knowledge_context", {}) if row else {}
 
 
-def _answer(event, context):
+def _answer(event, context, *, audio_text=None):
     tenant = db.session.get(TenantProfile, TENANT_ID)
     if tenant is None or tenant.slug != TENANT_SLUG or tenant.is_active is not True:
         raise PilotError("tdf_sandbox_tenant_unavailable")
@@ -245,10 +249,10 @@ def _answer(event, context):
     if event.content_type == "location":
         return ("📍 Recibí tu ubicación. No la guardaré en esta prueba.\n"
                 "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", context, None, ())
-    if event.content_type == "audio":
-        return ("🎙️ Recibí una nota de voz. Esta prueba todavía no transcribe audio.\n"
-                "Podés escribir una palabra o un número del menú. También podés pedir ayuda de una persona.", context, None, ())
-    question = event.selection if event.content_type == "interactive" else event.text
+    question = audio_text if event.content_type == "audio" else (
+        event.selection if event.content_type == "interactive" else event.text)
+    if event.content_type == "audio" and not isinstance(audio_text, str):
+        raise PilotError("tdf_audio_unavailable")
     if event.content_type == "interactive" and not question.startswith("knowledge:"):
         # The pilot has no operational dispatch, ticket creation or flow submit.
         return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", context, None, ())
@@ -369,7 +373,28 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
             continue
         try:
             contact_key = _pseudonym(event.contact, cfg)
-            body, context, revision, buttons = _answer(event, _previous_context(contact_key, event.sender.sender_id))
+            previous = _previous_context(contact_key, event.sender.sender_id)
+            if event.content_type == "audio":
+                audio_revision = read_state(db.session.get(TenantProfile, TENANT_ID), public=True)["revision"]
+                def audio_binding():
+                    live_cfg = settings(current_app.config)
+                    if (event.contact not in live_cfg["RECIPIENTS"]
+                            or cutover_writer_fence_enabled(current_app.config)):
+                        raise TdfAudioError("tdf_audio_binding_invalid")
+                    return load()
+                try:
+                    transcript = transcribe_meta_voice_note(event, cfg=cfg, binding_loader=audio_binding, now=clock,
+                        metadata_request=_graph_request, metadata_parser=_json_response)
+                except TdfAudioError as error:
+                    body, context, revision, buttons = audio_error_message(str(error)), previous, None, ()
+                else:
+                    if not _knowledge_revision_current(audio_revision):
+                        raise PilotError("tdf_audio_knowledge_changed")
+                    body, context, revision, buttons = _answer(event, previous, audio_text=transcript)
+                    if revision != audio_revision:
+                        raise PilotError("tdf_audio_knowledge_changed")
+            else:
+                body, context, revision, buttons = _answer(event, previous)
             outbound = _reply_payload(event.contact, body, buttons, revision)
             # This intent is durable before I/O, and remains uncertain on interruption.
             receipt = MessagingEventLedger(tenant_id=TENANT_ID,

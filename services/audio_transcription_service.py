@@ -376,6 +376,75 @@ def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
     return getattr(transcription, "text", None)
 
 
+class PrivateAudioTranscriptionError(RuntimeError):
+    """A fixed error code, never an SDK response, recording or transcript."""
+
+
+def transcribe_private_audio_bytes(audio_bytes: bytes, mime_type: str, *,
+                                  max_bytes: int, timeout_seconds: float) -> str:
+    """One bounded official OpenAI request; no cache, disk, fallback or retries.
+
+    The existing generic STT path intentionally caches transcriptions. An
+    institutional accessibility pilot must not put sensitive voice notes in
+    that shared cache, and must pin the provider rather than inherit a proxy or
+    user-configured gateway. The caller has already verified the Meta media.
+    The deadline checks admission/chunks and discards late results; HTTPX
+    timeouts are per I/O operation, so this is not hard wall-clock cancellation.
+    """
+    import json
+    if (not isinstance(audio_bytes, bytes) or not 0 < len(audio_bytes) <= max_bytes
+            or not 0 < timeout_seconds <= 25):
+        raise PrivateAudioTranscriptionError("private_audio_invalid")
+    api_key = _openai_api_key()
+    model = str(_runtime_setting("OPENAI_STT_MODEL", DEFAULT_STT_MODEL))
+    if (not api_key or not llm_provider_network_allowed("openai") or model not in {
+            "gpt-4o-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-mini-transcribe-2025-12-15",
+            "gpt-transcribe", "whisper-1"}):
+        raise PrivateAudioTranscriptionError("private_audio_unavailable")
+    mime_type = _canonical_mime_type(mime_type)
+    deadline = time.monotonic() + timeout_seconds
+    timeout = httpx.Timeout(timeout_seconds, connect=min(3.0, timeout_seconds),
+                            read=min(5.0, timeout_seconds), write=min(3.0, timeout_seconds),
+                            pool=min(1.0, timeout_seconds))
+
+    def validate_response(response):
+        # The SDK reads error bodies before entering our streaming context.
+        # Reject them in the transport hook without consuming their contents.
+        size = response.headers.get("Content-Length")
+        if (time.monotonic() >= deadline or response.status_code != 200
+                or response.headers.get("Content-Encoding", "identity") != "identity"
+                or (size is not None and (not size.isascii() or not size.isdigit() or int(size) > 32 * 1024))):
+            response.close()
+            raise PrivateAudioTranscriptionError("private_audio_failed")
+
+    try:
+        with httpx.Client(proxy=None, trust_env=False, timeout=timeout,
+                          follow_redirects=False, headers={"Accept-Encoding": "identity"},
+                          event_hooks={"response": [validate_response]}) as transport:
+            with OpenAI(api_key=api_key, base_url="https://api.openai.com/v1",
+                        http_client=transport, timeout=timeout, max_retries=0) as client:
+                with io.BytesIO(audio_bytes) as audio_file:
+                    with client.audio.transcriptions.with_streaming_response.create(
+                            model=model, file=(_safe_audio_filename(mime_type), audio_file, mime_type),
+                            response_format="json") as response:
+                        body = bytearray()
+                        for chunk in response.iter_bytes(chunk_size=8192):
+                            if time.monotonic() >= deadline or len(body) + len(chunk) > 32 * 1024:
+                                raise PrivateAudioTranscriptionError("private_audio_failed")
+                            body.extend(chunk)
+                        if time.monotonic() >= deadline:
+                            raise PrivateAudioTranscriptionError("private_audio_failed")
+                        document = json.loads(body)
+                        text = document.get("text") if isinstance(document, dict) else None
+                        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+                            raise PrivateAudioTranscriptionError("private_audio_unintelligible")
+                        return text.strip()
+    except PrivateAudioTranscriptionError:
+        raise
+    except Exception:
+        raise PrivateAudioTranscriptionError("private_audio_failed") from None
+
+
 def transcribe_audio_bytes(
     audio_bytes: bytes,
     mime_type: str,

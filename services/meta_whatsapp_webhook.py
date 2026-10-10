@@ -40,6 +40,9 @@ class MetaWebhookEvent:
     content_type: str = "text"
     selection: str | None = field(default=None, repr=False)
     location: tuple[float, float] | None = field(default=None, repr=False)
+    media_id: str | None = field(default=None, repr=False)
+    media_mime_type: str | None = field(default=None, repr=False)
+    media_sha256: str | None = field(default=None, repr=False)
 
 
 def verify_challenge(*, mode: str, token: str, challenge: str, verify_token: str) -> str:
@@ -153,6 +156,7 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                             raise ValueError
                         text, status, codes = None, None, ()
                         content_type, selection, location = "text", None, None
+                        media_id, media_mime_type, media_sha256 = None, None, None
                         if kind == "message":
                             content_type = item.get("type")
                             if content_type == "text":
@@ -175,9 +179,16 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                                     raise ValueError
                                 location = (float(latitude), float(longitude))
                             elif allow_sandbox_content is True and content_type == "audio":
-                                # Acknowledge the unsupported modality without downloading media.
-                                # Media retrieval/transcription is a separately bounded adapter.
-                                meta_id(item["audio"]["id"])
+                                audio = item["audio"]
+                                media_id = meta_id(audio["id"])
+                                media_mime_type = audio.get("mime_type")
+                                if (not isinstance(media_mime_type, str) or not 1 <= len(media_mime_type) <= 128
+                                        or not re.fullmatch(r"audio/[a-zA-Z0-9.+-]+(?:; *codecs=opus)?", media_mime_type)):
+                                    raise ValueError
+                                media_sha256 = audio.get("sha256")
+                                if media_sha256 is not None and (not isinstance(media_sha256, str)
+                                        or not re.fullmatch(r"[A-Za-z0-9+/]{43}=|[0-9a-fA-F]{64}", media_sha256)):
+                                    raise ValueError
                             else:
                                 raise MetaContractError("meta_webhook_message_type_unsupported")
                         else:
@@ -193,7 +204,7 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                         event_key = "meta:" + hashlib.sha256(json.dumps(material, separators=(",", ":")).encode()).hexdigest()
                         events.append(MetaWebhookEvent(binding.sender, kind, event_key,
                                                        int(timestamp), message_id, contact, text, status, codes,
-                                                       content_type, selection, location))
+                                                       content_type, selection, location, media_id, media_mime_type, media_sha256))
                         if len(events) > MAX_EVENTS:
                             raise ValueError
         # Delivery timestamps vary across retries; semantic key dedupes within batch.
@@ -201,8 +212,10 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
         for event in events:
             previous = unique.get(event.event_key)
             if previous is not None and (previous.text, previous.contact, previous.error_codes,
-                    previous.content_type, previous.selection, previous.location) != (event.text,
-                    event.contact, event.error_codes, event.content_type, event.selection, event.location):
+                    previous.content_type, previous.selection, previous.location, previous.media_id,
+                    previous.media_mime_type, previous.media_sha256) != (event.text,
+                    event.contact, event.error_codes, event.content_type, event.selection, event.location,
+                    event.media_id, event.media_mime_type, event.media_sha256):
                 raise MetaContractError("meta_webhook_duplicate_conflict")
             unique.setdefault(event.event_key, event)
         return tuple(unique.values())

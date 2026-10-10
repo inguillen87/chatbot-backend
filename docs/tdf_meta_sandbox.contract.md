@@ -130,9 +130,29 @@ Text, numeric menu replies and `knowledge:` list/button selections use the
 existing published public institutional knowledge responder. Free text keeps
 its existing LLM routing; exact menu navigation needs no LLM. Locations are
 range-checked, used only to acknowledge and ask the city, and not stored. Audio
-is acknowledged with an explicit statement that this pilot does not transcribe
-it yet. No media download, recording transcription, WhatsApp Calling, case,
-appointment or health-document mutation is implemented in this increment.
+voice notes (Ogg/Opus only in this pilot) use an authenticated media-ID lookup
+with the exact test phone ID, then the exact Meta HTTPS attachment host and
+path. MIME, declared and streamed size, container prefix, metadata SHA-256 and
+the webhook checksum when present are checked before one OpenAI transcription.
+The recording cap is 2 MiB. Admission and streamed chunks share a 35-second
+budget, and results returned after that budget are discarded. HTTPX timeouts
+bound individual I/O operations, so the SDK does not guarantee absolute
+wall-clock cancellation at 35 seconds. No recording duration is measured. The private STT
+adapter pins the official OpenAI endpoint with the existing configured key and
+model, disables environment proxies, redirects, retries and provider fallback,
+and bounds successful responses. A transport response hook closes errors,
+encoded bodies and excessive declared response lengths before the SDK can read
+them. No recording or transcript is stored in files, shared
+cache, receipts or context. The transcript only selects published TDF knowledge
+with unchanged canonical menu codes; that revision must survive transcription
+and the existing final send guard. Credential revision, window, pilot flag and
+recipient allowance are checked again before each media stage. Unsupported or
+failed audio offers shorter WhatsApp voice notes, text/menu codes and human
+help without claiming a successful transcription. See the official
+[OpenAI transcription reference](https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create)
+and [Meta media lookup](https://www.postman.com/meta/whatsapp-business-platform/request/fpj02x0/retrieve-media-url).
+No outbound voice-note upload, WhatsApp Calling, case, appointment or
+health-document mutation is implemented in this increment.
 
 Menus with at most ten canonical choices and a body within Meta's 1024-character
 list limit use a native list (`Elegir un tema`) plus the complete numbered text

@@ -4,8 +4,13 @@ on:
     paths:
       - 'routes/institutional_assistant.py'
       - 'routes/meta_tdf_sandbox.py'
+      - 'routes/tdf_meta_sandbox.py'
       - 'services/institutional_assistant_*.py'
       - 'services/meta_tdf_sandbox.py'
+      - 'services/tdf_meta_sandbox.py'
+      - 'services/tdf_meta_audio.py'
+      - 'services/meta_whatsapp_webhook.py'
+      - 'services/audio_transcription_service.py'
       - 'services/meta_whatsapp_direct.py'
       - 'services/tenant_provider_credentials.py'
       - 'integrations/openai_tts.py'
@@ -13,6 +18,7 @@ on:
       - 'app/__init__.py'
       - 'tests/*institutional_assistant*'
       - 'tests/test_tdf_meta_sandbox.py'
+      - 'tests/test_tdf_meta_audio.py'
       - 'tests/test_meta_whatsapp_direct_foundation.py'
       - 'tests/test_openai_tts_bridge.py'
       - '.github/workflows/tdf-accessible-channel.yml'
@@ -41,6 +47,7 @@ jobs:
         run: >-
           python -X utf8 -m pytest -q
           tests/test_tdf_meta_sandbox.py
+          tests/test_tdf_meta_audio.py
           tests/test_meta_whatsapp_direct_foundation.py
           tests/test_openai_tts_bridge.py
           tests/test_institutional_assistant_ui_contract.py
