@@ -36,6 +36,9 @@ It never requests camera permission, sends tool calls or stores transcripts.
   unknown requests block creation even after the hourly admission window.
 - The provider creation is not retried. Normal hangup commits a stop intent
   before its one attempt; unknown closure does not retry or claim success.
+  A validated provider call ID survives an invalid, oversized, compressed or
+  interrupted SDP answer. The backend records that private acceptance and a
+  durable stop intent, then closes once without returning SDP or call ID.
   If receipt storage fails after a provider acknowledgment, one compensating
   hangup is attempted using the known ID. During database failure that cleanup
   cannot promise a durable stop intent. A failed receipt write leaves the

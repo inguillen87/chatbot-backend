@@ -169,6 +169,36 @@ def test_provider_request_bounds_success_and_ignores_error_body(monkeypatch):
     assert not response.read.called
 
 
+@pytest.mark.parametrize('kind', ['invalid', 'oversized', 'encoding', 'utf8', 'read_timeout'])
+def test_accepted_provider_response_error_retains_only_validated_private_call_id(monkeypatch, kind):
+    monkeypatch.setattr(voice, 'llm_provider_network_allowed', lambda _: True)
+    response = Mock(status=201)
+    response.getheader.side_effect = lambda key, default=None: {
+        'Location': '/v1/realtime/calls/rtc_fixture',
+        'Content-Encoding': 'gzip' if kind == 'encoding' else 'identity'}.get(key, default)
+    response.read.return_value = {'invalid': b'not-sdp', 'oversized': b'x' * (voice.MAX_SDP+1),
+                                 'utf8': b'\xff'}.get(kind, OFFER.encode())
+    if kind == 'read_timeout': response.read.side_effect = TimeoutError('must not escape')
+    connection = Mock(); connection.getresponse.return_value = response
+    monkeypatch.setattr(voice.http.client, 'HTTPSConnection', Mock(return_value=connection))
+    with pytest.raises(voice.AcceptedCallError) as failure:
+        voice.provider_request('synthetic-key', 1, sdp=OFFER, config={})
+    assert failure.value.call_id == 'rtc_fixture'
+    assert 'rtc_fixture' not in str(failure.value) and 'synthetic-key' not in str(failure.value)
+    assert connection.request.call_count == 1 and connection.close.call_count == 1
+    if kind == 'encoding': assert not response.read.called
+
+
+def test_unknown_provider_location_never_becomes_an_accepted_call(monkeypatch):
+    monkeypatch.setattr(voice, 'llm_provider_network_allowed', lambda _: True)
+    response = Mock(status=201); response.getheader.return_value = 'https://foreign.test/rtc_fixture'
+    connection = Mock(); connection.getresponse.return_value = response
+    monkeypatch.setattr(voice.http.client, 'HTTPSConnection', Mock(return_value=connection))
+    with pytest.raises(voice.VoiceError) as failure:
+        voice.provider_request('synthetic-key', 1, sdp=OFFER, config={})
+    assert not isinstance(failure.value, voice.AcceptedCallError) and not response.read.called
+
+
 def test_existing_environment_key_is_used_without_overriding_explicit_disabled_config(monkeypatch):
     monkeypatch.setenv('OPENAI_API_KEY', ' synthetic-environment-key ')
     assert voice.resolve_provider_key({}) == 'synthetic-environment-key'
@@ -291,6 +321,34 @@ def test_provider_timeout_has_durable_intent_and_cannot_issue_a_second_call(rout
     assert provider.call_count==1 and session.query(Audit).count()==1
 
 
+@pytest.mark.parametrize('closure_success', [True, False])
+def test_accepted_unusable_sdp_is_closed_once_with_durable_private_receipts(route_client, closure_success):
+    client, session, routes, provider = route_client
+    def request(key, actor_id, **kwargs):
+        if kwargs.get('call_id'):
+            assert kwargs['call_id'] == 'rtc_fixture'
+            if not closure_success: raise voice.VoiceError('browser_voice_provider_unknown')
+            return {'stopped': True}
+        raise voice.AcceptedCallError('browser_voice_provider_response_invalid', 'rtc_fixture')
+    provider.side_effect = request
+    command = {'sdp': OFFER, 'revision': 'published-revision', 'consent': True}
+    response = client.post('/a/sessions', json=command)
+    assert response.status_code == (503 if closure_success else 409)
+    assert 'sdp' not in response.json and 'rtc_fixture' not in response.get_data(as_text=True)
+    assert provider.call_count == 2
+    assert 'call_id' not in provider.call_args_list[0].kwargs
+    assert provider.call_args_list[1].kwargs == {'call_id': 'rtc_fixture'}
+    rows = session.query(Audit).order_by(Audit.id).all()
+    assert [row.event_type for row in rows] == [voice.EVENT + name for name in
+        (['intent', 'accepted', 'stop_intent', 'stopped'] if closure_success else ['intent', 'accepted', 'stop_intent'])]
+    assert OFFER not in json.dumps([row.details for row in rows])
+    if not closure_success:
+        assert client.post('/a/sessions', json=command).status_code == 409
+        with pytest.raises(voice.VoiceError, match='close_pending'):
+            voice.VoiceLedger(session, Tenant, Audit).stop(1, 1, rows[0].resource_id, 'synthetic', provider=provider)
+        assert provider.call_count == 2
+
+
 def test_retired_session_after_provider_ack_is_closed_before_delivering_sdp(route_client,monkeypatch):
     client,session,routes,provider=route_client
     closure=Mock(return_value={'provider_close_accepted':True})
@@ -338,7 +396,8 @@ def test_real_decorator_rejects_absent_widget_and_demo_credentials_before_handle
 
 
 @pytest.mark.parametrize('closure_success', [True,False])
-def test_failed_ack_commit_closes_known_call_once_never_recreates_or_returns_sdp(route_client,monkeypatch,closure_success):
+@pytest.mark.parametrize('unusable_sdp', [True,False])
+def test_failed_ack_commit_closes_known_call_once_never_recreates_or_returns_sdp(route_client,monkeypatch,closure_success,unusable_sdp):
     client,session,routes,provider=route_client
     original_commit=session.commit
     commits=[]
@@ -352,6 +411,7 @@ def test_failed_ack_commit_closes_known_call_once_never_recreates_or_returns_sdp
             assert kwargs['call_id']=='rtc_fixture'
             if not closure_success:raise voice.VoiceError('browser_voice_provider_unknown')
             return {'stopped':True}
+        if unusable_sdp:raise voice.AcceptedCallError('browser_voice_provider_response_invalid','rtc_fixture')
         return {'call_id':'rtc_fixture','sdp':OFFER}
     provider.side_effect=request
     response=client.post('/a/sessions',json={'sdp':OFFER,'revision':'published-revision','consent':True})

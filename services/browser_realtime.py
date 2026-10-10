@@ -43,6 +43,13 @@ class VoiceError(Exception):
         self.code, self.status = code, status
 
 
+class AcceptedCallError(VoiceError):
+    """A private acknowledged call ID survives a rejected SDP response."""
+    def __init__(self, code, call_id):
+        super().__init__(code)
+        self.call_id = _call_id('/v1/realtime/calls/' + call_id)
+
+
 def resolve_provider_key(app_config):
     # Keep an explicitly injected blank/None config disabled; ordinary Config
     # does not copy this environment variable into Flask's config dictionary.
@@ -123,6 +130,7 @@ def provider_request(key, actor_id, *, sdp=None, config=None, call_id=None):
     if not llm_provider_network_allowed('openai'):
         raise VoiceError('browser_voice_test_network_disabled')
     connection = http.client.HTTPSConnection('api.openai.com', timeout=10)
+    accepted_id = None
     headers = {'Authorization': f'Bearer {key}', 'Accept-Encoding': 'identity',
                'OpenAI-Safety-Identifier': hashlib.sha256(f'chatboc-owner-{actor_id}'.encode()).hexdigest()}
     path, body = '/v1/realtime/calls', b''
@@ -145,15 +153,20 @@ def provider_request(key, actor_id, *, sdp=None, config=None, call_id=None):
         if call_id:
             return {'stopped': True}
         identifier = _call_id(response.getheader('Location'))
+        accepted_id = identifier
         if response.getheader('Content-Encoding', 'identity') != 'identity':
             raise VoiceError('browser_voice_provider_response_invalid')
         answer = response.read(MAX_SDP + 1)
         if len(answer) > MAX_SDP:
             raise VoiceError('browser_voice_provider_response_invalid')
         return {'call_id': identifier, 'sdp': validate_offer(answer.decode('utf-8'))}
-    except VoiceError:
+    except VoiceError as error:
+        if accepted_id is not None:
+            raise AcceptedCallError(error.code, accepted_id) from None
         raise
     except Exception:
+        if accepted_id is not None:
+            raise AcceptedCallError('browser_voice_provider_response_invalid', accepted_id) from None
         raise VoiceError('browser_voice_provider_unknown') from None
     finally:
         connection.close()

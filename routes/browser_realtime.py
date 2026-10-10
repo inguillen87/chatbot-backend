@@ -11,7 +11,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from services.auth_session_lifecycle import request_auth_session_active
 from services.institutional_assistant import read_state
 from services.institutional_assistant_content import ContentError
-from services.browser_realtime import CONTRACT, UI, VoiceError, VoiceLedger, limits, validate_offer, session_config, provider_request, resolve_provider_key
+from services.browser_realtime import CONTRACT, UI, VoiceError, AcceptedCallError, VoiceLedger, limits, validate_offer, session_config, provider_request, resolve_provider_key
 
 browser_realtime_bp = Blueprint('browser_realtime', __name__)
 PREFIX = '/api/admin/tenants/<slug>/realtime/browser'
@@ -53,6 +53,25 @@ def _fail(error):
     db.session.rollback()
     return _response({'contract_version': CONTRACT, 'reason_code': error.code,
                       'message': UI['pending'] if error.status == 409 else UI['error']}, error.status)
+
+
+def _record_accepted(ledger, tenant_id, actor_id, identifier, call_id, key):
+    try:
+        ledger.append(tenant_id, actor_id, identifier, 'accepted', {'call_id': call_id})
+    except SQLAlchemyError:
+        # The reservation is durable. Never retry creation or expose the SDP.
+        # If its receipt cannot be stored, close the known call once; database
+        # failure cannot guarantee a durable stop intent for this compensation.
+        db.session.rollback()
+        try:
+            provider_request(key, actor_id, call_id=call_id)
+        except VoiceError:
+            raise VoiceError('browser_voice_close_pending', 409) from None
+        try:
+            ledger.append(tenant_id, actor_id, identifier, 'stopped', {'provider_close_accepted': True})
+        except SQLAlchemyError:
+            db.session.rollback()
+        raise VoiceError('browser_voice_ledger_unavailable') from None
 
 
 @browser_realtime_bp.get(PREFIX + '/capabilities')
@@ -110,25 +129,16 @@ def start(current_user, slug):
         identifier = ledger.reserve(tenant_id, actor_id, state['revision'], quota['max_sessions_per_hour'])
         try:
             result = provider_request(key, actor_id, sdp=offer, config=config)
+        except AcceptedCallError as error:
+            # Location already acknowledged creation, even though its SDP is
+            # unusable. Preserve the private ID and durably close exactly once.
+            _record_accepted(ledger, tenant_id, actor_id, identifier, error.call_id, key)
+            ledger.stop(tenant_id, actor_id, identifier, key, provider=provider_request)
+            raise VoiceError(error.code) from None
         except VoiceError:
             # Intent remains durable/uncertain: no second call on timeout or error.
             raise
-        try:
-            ledger.append(tenant_id, actor_id, identifier, 'accepted', {'call_id': result['call_id']})
-        except SQLAlchemyError:
-            # The reservation is already durable. Never retry creation. Close
-            # the known call once even if its receipt could not be committed;
-            # no SDP/ID is delivered to the browser on this failure path.
-            db.session.rollback()
-            try:
-                provider_request(key, actor_id, call_id=result['call_id'])
-            except VoiceError:
-                raise VoiceError('browser_voice_close_pending', 409) from None
-            try:
-                ledger.append(tenant_id, actor_id, identifier, 'stopped', {'provider_close_accepted': True})
-            except SQLAlchemyError:
-                db.session.rollback()  # Durable intent still blocks further creation.
-            raise VoiceError('browser_voice_ledger_unavailable') from None
+        _record_accepted(ledger, tenant_id, actor_id, identifier, result['call_id'], key)
         db.session.expire_all()
         fresh_actor = db.session.get(User, actor_id, populate_existing=True)
         fresh_tenant = db.session.get(TenantProfile, tenant_id, populate_existing=True)
