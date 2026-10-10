@@ -413,6 +413,248 @@ def sent_body(payload):
     return payload["interactive"]["body"]["text"] if payload["type"] == "interactive" else payload["text"]["body"]
 
 
+def publish_presentation_fixture(environment, raw):
+    """Synthetic in-memory published content, never a provider/production write."""
+    bundle = normalize_bundle(raw, 46, pilot.TENANT_SLUG)
+    state = {"bundle": bundle, "bundle_hash": digest(bundle), "generation": 2, "visibility": "public"}
+    state["revision"] = digest({key: state[key] for key in ("bundle_hash", "generation", "visibility")})
+    row = TenantConfig.query.filter_by(tenant_id=46, key="institutional_assistant", channel="knowledge").one()
+    row.json_value = state
+    db.session.commit()
+    environment.state = state
+    return state
+
+
+def public_presentation_fixture():
+    raw = sample(46, pilot.TENANT_SLUG)
+    raw["sources"]["a"].update(document_visibility="public", review_status="needs_review",
+        official_url="https://example.org/public-document.pdf", provenance="INTERNAL PROVENANCE",
+        native_revision="INTERNAL REVISION", origin_url="https://drive.google.com/file/d/private/view")
+    raw["reference_links"] = {"tenant": raw["tenant"], "entries": [
+        {"id": "official", "label": "Contacto oficial", "status": "verified_reference",
+         "url": "https://example.org/contact", "review_after": "2099-01-01T00:00:00Z", "node_ids": ["requirements"]}]}
+    return raw
+
+
+def test_progressive_greeting_preserves_six_choices_and_shared_web_body(environment, monkeypatch):
+    raw = public_presentation_fixture()
+    original = deepcopy(raw["nodes"]["requirements"])
+    for index in range(2, 7):
+        node_id = "topic" + str(index)
+        node = deepcopy(original); node["id"] = node_id
+        raw["nodes"][node_id] = node
+        raw["node_evidence"][node_id] = deepcopy(raw["node_evidence"]["requirements"])
+        raw["nodes"]["start"]["actions"].append({"code": str(index), "label": "Tema " + str(index), "target": node_id})
+    state = publish_presentation_fixture(environment, raw)
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("Explicit menus need no selector"))
+    sent = []
+    process(document(), post=lambda url, **kw: sent.append(deepcopy(kw["json"])) or accepted_post())
+    body = sent_body(sent[0])
+    assert "Elegí una consulta." in body and "FUENTES" in body and "revisión pendiente" in body
+    assert "Documento de prueba" not in body and "Documentos y fuentes" not in body
+    assert sent[0]["type"] == "interactive" and len(body) <= 1024
+    rows = sent[0]["interactive"]["action"]["sections"][0]["rows"]
+    assert len(rows) == 6
+    for index, row in enumerate(rows, 1):
+        assert row["title"].startswith(str(index) + ". ") and str(index) + ". " in body
+        expected_target = "requirements" if index == 1 else "topic" + str(index)
+        assert row["id"] == "knowledge:" + state["revision"][:16] + ":" + expected_target
+    from services.institutional_assistant import maybe_handle_institutional_question
+    shared = maybe_handle_institutional_question("menu", environment.owner,
+        SimpleNamespace(tenant_id=46, context_data={}))
+    assert "Documentos y fuentes" in shared["message_body"] and "Documento de prueba" in shared["message_body"]
+
+
+def test_explicit_sources_keep_current_scope_links_and_numeric_navigation(environment, monkeypatch):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("No selector for FUENTES"))
+    sent = []
+    def post(url, **kw):
+        sent.append(deepcopy(kw["json"])); return accepted_post()
+    process(document(), post=post)
+    process(document(mid="wamid.choose", content={"type": "text", "text": {"body": "1"}}), post=post)
+    assert "Respuesta institucional de prueba" in sent_body(sent[-1])
+    assert "https://example.org/contact" in sent_body(sent[-1])
+    assert "Documento de prueba" not in sent_body(sent[-1])
+    source_doc = document(mid="wamid.sources", content={"type": "text", "text": {"body": " FUENTES "}})
+    assert process(source_doc, post=post)["accepted"] == 1
+    body = sent_body(sent[-1])
+    assert "Documento de prueba" in body and "páginas 2" in body and "revisión pendiente" in body
+    assert "https://example.org/public-document.pdf" in body and "https://example.org/contact" in body
+    for private in ("INTERNAL PROVENANCE", "INTERNAL REVISION", "drive.google.com", "a" * 64):
+        assert private not in body
+    assert sent[-1]["type"] == "text"
+    assert process(source_doc, post=lambda *a, **k: pytest.fail("Sources replay must not POST"))["replayed"] == 1
+    process(document(mid="wamid.return", content={"type": "text", "text": {"body": "9"}}), post=post)
+    assert "Elegí una consulta." in sent_body(sent[-1]) and "1. Requisitos" in sent_body(sent[-1])
+    context = db.session.query(MessagingEventLedger).order_by(MessagingEventLedger.id.desc()).first().metadata_json["knowledge_context"]
+    from services.institutional_assistant_whatsapp import SOURCE_SCOPE
+    assert context[SOURCE_SCOPE] == {"tenant": {"id": 46, "slug": pilot.TENANT_SLUG},
+                                    "revision": environment.state["revision"], "node_ids": ["start"]}
+    assert CONTACT not in json.dumps(context) and "Documento de prueba" not in json.dumps(context)
+
+
+@pytest.mark.parametrize("visibility", ["private", None])
+def test_sources_never_expose_private_or_unclassified_original_metadata(environment, visibility):
+    raw = public_presentation_fixture()
+    raw["sources"]["a"].update(title="PRIVATE ORIGINAL TITLE", review_status="conflict")
+    if visibility is None:
+        raw["sources"]["a"].pop("document_visibility")
+    else:
+        raw["sources"]["a"]["document_visibility"] = visibility
+    publish_presentation_fixture(environment, raw)
+    event = SimpleNamespace(content_type="text", text="menu")
+    body, context, _, _ = pilot._answer(event, {})
+    assert "PRIVATE ORIGINAL TITLE" not in body and "diferencias" not in body
+    event.text = "FUENTES"
+    body, _, revision, _ = pilot._answer(event, context)
+    assert "No hay referencias públicas" in body and revision == environment.state["revision"]
+    for private in ("PRIVATE ORIGINAL TITLE", "conflict", "provenance", "drive.google.com", "public-document.pdf"):
+        assert private not in body
+
+
+@pytest.mark.parametrize("change", ["no_context", "foreign_tenant", "foreign_slug", "unknown_node", "wrong_last_node", "extra_node", "revision", "retired", "replaced"])
+def test_sources_fail_closed_for_stale_foreign_or_missing_current_scope(environment, change):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    event = SimpleNamespace(content_type="text", text="menu")
+    _, context, _, _ = pilot._answer(event, {})
+    from services.institutional_assistant_whatsapp import SOURCE_SCOPE
+    if change == "no_context": context = {}
+    if change == "foreign_tenant": context[SOURCE_SCOPE]["tenant"]["id"] = 47
+    if change == "foreign_slug": context[SOURCE_SCOPE]["tenant"]["slug"] = "foreign"
+    if change == "unknown_node": context[SOURCE_SCOPE]["node_ids"] = ["foreign"]
+    if change == "wrong_last_node": context[SOURCE_SCOPE]["node_ids"] = ["requirements"]
+    if change == "extra_node": context[SOURCE_SCOPE]["node_ids"] = ["requirements", "start", "requirements", "start"]
+    if change == "revision": context[SOURCE_SCOPE]["revision"] = "0" * 64
+    if change in ("retired", "replaced"):
+        row = TenantConfig.query.filter_by(tenant_id=46, key="institutional_assistant", channel="knowledge").one()
+        state = deepcopy(row.json_value); state["generation"] += 1
+        if change == "retired": state["visibility"] = "private"
+        state["revision"] = digest({key: state[key] for key in ("bundle_hash", "generation", "visibility")})
+        row.json_value = state; db.session.commit()
+    event.text = "FUENTES"
+    body, next_context, revision, choices = pilot._answer(event, context)
+    assert "Escribí MENÚ para elegir" in body and revision is None and choices == ()
+    assert SOURCE_SCOPE not in next_context
+    assert "Documento de prueba" not in body and "public-document.pdf" not in body
+
+
+@pytest.mark.parametrize("change", ["retired", "replaced"])
+def test_sources_revision_change_before_post_never_sends_or_retries(environment, monkeypatch, change):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    process(document())
+    original = pilot._answer
+    def withdraw(event, context, **kwargs):
+        result = original(event, context, **kwargs)
+        row = TenantConfig.query.filter_by(tenant_id=46, key="institutional_assistant", channel="knowledge").one()
+        state = deepcopy(row.json_value); state["generation"] += 1
+        if change == "retired": state["visibility"] = "private"
+        state["revision"] = digest({key: state[key] for key in ("bundle_hash", "generation", "visibility")})
+        row.json_value = state; db.session.commit()
+        return result
+    monkeypatch.setattr(pilot, "_answer", withdraw)
+    source_doc = document(mid="wamid.latesources", content={"type": "text", "text": {"body": "FUENTES"}})
+    assert process(source_doc, post=lambda *a, **k: pytest.fail("Withdrawn sources must never send"))["accepted"] == 0
+    last = db.session.query(MessagingEventLedger).order_by(MessagingEventLedger.id.desc()).first()
+    assert last.external_status == "send_uncertain"
+    assert process(source_doc, post=lambda *a, **k: pytest.fail("No replay of withdrawn sources"))["replayed"] == 1
+
+
+def test_location_and_noncanonical_actions_clear_source_scope(environment):
+    event = SimpleNamespace(content_type="text", text="menu")
+    _, context, _, _ = pilot._answer(event, {})
+    from services.institutional_assistant_whatsapp import SOURCE_SCOPE
+    assert SOURCE_SCOPE in context
+    for event in (SimpleNamespace(content_type="location"),
+                  SimpleNamespace(content_type="interactive", selection="create_ticket")):
+        _, next_context, revision, _ = pilot._answer(event, context)
+        assert SOURCE_SCOPE not in next_context and revision is None
+
+
+@pytest.mark.parametrize("question", ["FUENTES requisitos", "FUENTES 0", "FUENTES 1000", "FUENTES 1 extra", "knowledge:sources:start"])
+def test_source_command_is_explicit_without_node_ids_or_intent_inference(question):
+    from services.institutional_assistant_whatsapp import sources_page
+    assert sources_page(question) is None
+
+
+def test_sources_cover_only_all_nodes_of_last_multi_node_answer(environment, monkeypatch):
+    raw = public_presentation_fixture()
+    raw["sources"]["b"] = {"id": "b", "title": "Segunda referencia pública", "sha256": "b" * 64,
+        "page_count": 1, "document_visibility": "public"}
+    raw["node_evidence"]["requirements"] = [{"source_id": "b", "page": 1}]
+    publish_presentation_fixture(environment, raw)
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda bundle, *a:
+        [deepcopy(bundle["nodes"]["start"]), deepcopy(bundle["nodes"]["requirements"])])
+    event = SimpleNamespace(content_type="text", text="Consulta sintética de dos temas")
+    _, context, _, _ = pilot._answer(event, {})
+    from services.institutional_assistant_whatsapp import SOURCE_SCOPE
+    assert context[SOURCE_SCOPE]["node_ids"] == ["start", "requirements"]
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("FUENTES must reread IDs"))
+    event.text = "FUENTES"
+    body, _, revision, _ = pilot._answer(event, context)
+    assert "Documento de prueba" in body and "Segunda referencia pública" in body
+    assert revision == environment.state["revision"]
+
+
+def test_sources_merge_every_page_when_last_nodes_cite_the_same_public_document(environment, monkeypatch):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    persisted_before = deepcopy(environment.state)
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda bundle, *a:
+        [deepcopy(bundle["nodes"]["start"]), deepcopy(bundle["nodes"]["requirements"])])
+    event = SimpleNamespace(content_type="text", text="Dos temas documentados")
+    _, context, _, _ = pilot._answer(event, {})
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("No new selection"))
+    event.text = "FUENTES"
+    body, _, revision, _ = pilot._answer(event, context)
+    assert body.count("Documento de prueba") == 1 and "páginas 1, 2" in body
+    assert revision == environment.state["revision"]
+    row = TenantConfig.query.filter_by(tenant_id=46, key="institutional_assistant", channel="knowledge").one()
+    assert row.json_value == persisted_before  # Presentation cannot mutate stored evidence.
+
+
+def test_sources_paginate_without_truncating_public_references(environment):
+    raw = public_presentation_fixture()
+    raw["node_evidence"]["start"] = []
+    raw["node_evidence"]["requirements"] = [{"source_id": "a", "page": 1}]
+    for index, key in enumerate(("a", "b", "c"), 1):
+        raw["sources"][key] = {"id": key, "title": "Referencia pública " + str(index), "sha256": key * 64,
+            "page_count": 1, "document_visibility": "public", "official_url": "https://example.org/" + key * 1600}
+        raw["node_evidence"]["start"].append({"source_id": key, "page": 1})
+    publish_presentation_fixture(environment, raw)
+    event = SimpleNamespace(content_type="text", text="menu")
+    _, context, _, _ = pilot._answer(event, {})
+    for index, key in enumerate(("a", "b", "c"), 1):
+        event.text = "FUENTES" if index == 1 else "FUENTES " + str(index)
+        body, context, revision, _ = pilot._answer(event, context)
+        assert len(body) <= 3500 and "Referencia pública " + str(index) in body
+        assert "https://example.org/" + key * 1600 in body and revision == environment.state["revision"]
+        if index < 3: assert "FUENTES " + str(index + 1) in body
+    event.text = "FUENTES 4"
+    body, _, _, _ = pilot._answer(event, context)
+    assert "Ese grupo de referencias no está disponible" in body
+
+
+def test_list_titles_preserve_codes_whole_words_and_complete_text_alternative(environment):
+    revision = environment.state["revision"]
+    labels = ["Certificado de discapacidad y vigencia", "Certificado de discapacidad y renovación",
+              "👩🏽‍🦽" * 8 + " orientación", "A\u0301" * 40 + " documento"]
+    buttons = tuple({"action_id": "knowledge:" + revision[:16] + ":topic" + str(index),
+        "texto": label, "reply_code": str(index)} for index, label in enumerate(labels, 1))
+    body = "\n".join(str(index) + ". " + label for index, label in enumerate(labels, 1))
+    result = pilot._reply_payload(CONTACT, body, buttons, revision)
+    rows = result["interactive"]["action"]["sections"][0]["rows"]
+    assert sent_body(result) == body and len({row["title"] for row in rows}) == 4
+    for index, row in enumerate(rows, 1):
+        assert row["id"] == buttons[index - 1]["action_id"] and row["title"].startswith(str(index) + ". ")
+        assert len(row["title"]) <= 24 and len(row["description"]) <= 72
+        assert row["title"].endswith("…")
+    assert rows[0]["title"] == "1. Certificado de…" and rows[0]["description"] == labels[0]
+    assert rows[2]["title"] == "3. …" and rows[3]["title"] == "4. …"
+    unnumbered = tuple({key: value for key, value in button.items() if key != "reply_code"} for button in buttons[:2])
+    fallback = pilot._reply_payload(CONTACT, body, unnumbered, revision)
+    assert fallback["type"] == "text" and fallback["text"]["body"] == body
+
+
 def test_default_disabled_and_challenge_is_strict(environment):
     env = environment
     env.app.config["META_TDF_SANDBOX_ENABLED"] = False

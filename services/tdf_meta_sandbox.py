@@ -26,6 +26,9 @@ from models import db, MessagingEventLedger, TenantProfile, User, WebhookDeliver
 from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
+from services.institutional_assistant_whatsapp import (
+    clear_source_scope, present_answer, short_label, sources_answer, sources_page,
+)
 from services.tenant_provider_credentials import ProviderCredentialError
 from cutover_writer_fence import cutover_writer_fence_enabled
 from services.tdf_meta_audio import TdfAudioError, audio_error_message, transcribe_meta_voice_note
@@ -295,20 +298,25 @@ def _answer(event, context, *, audio_text=None):
     session = SimpleNamespace(tenant_id=TENANT_ID, context_data=context)
     if event.content_type == "location":
         return ("📍 Recibí tu ubicación. No la guardaré en esta prueba.\n"
-                "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", context, None, ())
+                "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", clear_source_scope(context), None, ())
     question = audio_text if event.content_type == "audio" else (
         event.selection if event.content_type == "interactive" else event.text)
     if event.content_type == "audio" and not isinstance(audio_text, str):
         raise PilotError("tdf_audio_unavailable")
     if event.content_type == "interactive" and not question.startswith("knowledge:"):
         # The pilot has no operational dispatch, ticket creation or flow submit.
-        return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", context, None, ())
+        return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", clear_source_scope(context), None, ())
+    page = sources_page(question)
+    if page is not None:
+        body, next_context, revision = sources_answer(tenant, context, page)
+        return body + "\n\nEscribí MENÚ para volver a los temas.", next_context, revision, ()
     if isinstance(question, str) and question.strip().casefold() in {"hola", "buenas", "buen día", "buen dia"}:
         question = "menu"
     result = maybe_handle_institutional_question(question, owner, session)
     if not isinstance(result, dict) or not result.get("message_body"):
         raise PilotError("tdf_sandbox_knowledge_unavailable")
-    body = result["message_body"]
+    body, session.context_data = present_answer(result, session.context_data,
+        tenant_id=TENANT_ID, tenant_slug=TENANT_SLUG)
     buttons = result.get("botones", [])
     for button in buttons:
         code = button.get("reply_code")
@@ -325,7 +333,7 @@ def _reply_payload(recipient, body, buttons, revision):
 
     Long/multi-page menus remain text rather than silently hiding options.
     """
-    rows = []
+    rows, titles = [], set()
     if revision and 0 < len(buttons) <= 10 and len(body) <= 1024:
         for choice in buttons:
             action, label = choice.get("action_id"), choice.get("texto")
@@ -334,10 +342,18 @@ def _reply_payload(recipient, body, buttons, revision):
                 return cloud.text_payload(recipient=recipient, body=body)
             label = " ".join(label.split())
             code = choice.get("reply_code")
-            title = (str(code) + ". " if code else "") + label
-            row = {"id": action, "title": title[:24]}
+            prefix = str(code) + ". " if code else ""
+            if len(prefix) >= 24:
+                return cloud.text_payload(recipient=recipient, body=body)
+            title = prefix + label
+            row = {"id": action, "title": prefix + short_label(label, 24 - len(prefix))}
+            if row["title"] in titles:
+                # The complete numbered body remains unambiguous when two
+                # unnumbered labels shorten to the same title.
+                return cloud.text_payload(recipient=recipient, body=body)
+            titles.add(row["title"])
             if len(title) > 24:
-                row["description"] = label[:72]
+                row["description"] = short_label(label, 72)
             rows.append(row)
         try:
             return cloud.list_payload(recipient=recipient, body=body, rows=tuple(rows))
@@ -435,7 +451,7 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
                     transcript = transcribe_meta_voice_note(event, cfg=cfg, binding_loader=audio_binding, now=clock,
                         metadata_request=_graph_request, metadata_parser=_json_response)
                 except TdfAudioError as error:
-                    body, context, revision, buttons = audio_error_message(str(error)), previous, None, ()
+                    body, context, revision, buttons = audio_error_message(str(error)), clear_source_scope(previous), None, ()
                 else:
                     if not _knowledge_revision_current(audio_revision):
                         raise PilotError("tdf_audio_knowledge_changed")
