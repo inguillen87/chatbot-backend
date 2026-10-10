@@ -2,7 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": {
-      "release/vercel-neon-complete-20261001": false
+      "release/vercel-neon-complete-20261001": false,
+      "release/tdf-accessible-meta-20261010": false
     }
   },
   "framework": "container",
