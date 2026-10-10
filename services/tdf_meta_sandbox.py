@@ -244,28 +244,55 @@ def _answer(event, context):
     session = SimpleNamespace(tenant_id=TENANT_ID, context_data=context)
     if event.content_type == "location":
         return ("📍 Recibí tu ubicación. No la guardaré en esta prueba.\n"
-                "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", context, None)
+                "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", context, None, ())
     if event.content_type == "audio":
         return ("🎙️ Recibí una nota de voz. Esta prueba todavía no transcribe audio.\n"
-                "Podés escribir una palabra o un número del menú. También podés pedir ayuda de una persona.", context, None)
+                "Podés escribir una palabra o un número del menú. También podés pedir ayuda de una persona.", context, None, ())
     question = event.selection if event.content_type == "interactive" else event.text
     if event.content_type == "interactive" and not question.startswith("knowledge:"):
         # The pilot has no operational dispatch, ticket creation or flow submit.
-        return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", context, None)
+        return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", context, None, ())
     if isinstance(question, str) and question.strip().casefold() in {"hola", "buenas", "buen día", "buen dia"}:
         question = "menu"
     result = maybe_handle_institutional_question(question, owner, session)
     if not isinstance(result, dict) or not result.get("message_body"):
         raise PilotError("tdf_sandbox_knowledge_unavailable")
     body = result["message_body"]
-    for button in result.get("botones", []):
+    buttons = result.get("botones", [])
+    for button in buttons:
         code = button.get("reply_code")
         if code:
             body += "\n" + str(code) + ". " + str(button.get("texto") or "Opción")
     if len(body) > 3500:
         body = body[:3400].rsplit("\n", 1)[0] + "\nInformación completa: https://www.chatboc.ar/t/tierra-del-fuego"
     body += "\n\nPodés responder con el número o tus palabras. Escribí MENÚ para volver."
-    return body, session.context_data, result.get("context_revision")
+    return body, session.context_data, result.get("context_revision"), tuple(buttons)
+
+
+def _reply_payload(recipient, body, buttons, revision):
+    """Canonical choices only, with the same numbered text alternative.
+
+    Long/multi-page menus remain text rather than silently hiding options.
+    """
+    rows = []
+    if revision and 0 < len(buttons) <= 10 and len(body) <= 1024:
+        for choice in buttons:
+            action, label = choice.get("action_id"), choice.get("texto")
+            if (not isinstance(action, str) or not action.startswith("knowledge:" + revision[:16] + ":")
+                    or not isinstance(label, str) or not label.strip()):
+                return cloud.text_payload(recipient=recipient, body=body)
+            label = " ".join(label.split())
+            code = choice.get("reply_code")
+            title = (str(code) + ". " if code else "") + label
+            row = {"id": action, "title": title[:24]}
+            if len(title) > 24:
+                row["description"] = label[:72]
+            rows.append(row)
+        try:
+            return cloud.list_payload(recipient=recipient, body=body, rows=tuple(rows))
+        except cloud.MetaContractError:
+            pass  # The complete text keeps the published options available.
+    return cloud.text_payload(recipient=recipient, body=body)
 
 
 def _knowledge_revision_current(revision):
@@ -342,7 +369,8 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
             continue
         try:
             contact_key = _pseudonym(event.contact, cfg)
-            body, context, revision = _answer(event, _previous_context(contact_key, event.sender.sender_id))
+            body, context, revision, buttons = _answer(event, _previous_context(contact_key, event.sender.sender_id))
+            outbound = _reply_payload(event.contact, body, buttons, revision)
             # This intent is durable before I/O, and remains uncertain on interruption.
             receipt = MessagingEventLedger(tenant_id=TENANT_ID,
                 provider_connection_id=event.sender.connection_id,
@@ -355,13 +383,13 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
             db.session.commit()
             def policy(sender, payload):
                 live_cfg = settings(current_app.config)
-                return (sender == event.sender and payload.get("type") == "text"
+                return (sender == event.sender and payload == outbound
                         and payload.get("to") == event.contact and event.contact in live_cfg["RECIPIENTS"]
                         and 0 <= clock() - event.timestamp < 24 * 3600
                         and not cutover_writer_fence_enabled(current_app.config)
                         and _knowledge_revision_current(revision))
             result = cloud.send_once(binding_loader=load,
-                payload=cloud.text_payload(recipient=event.contact, body=body), now=clock(),
+                payload=outbound, now=clock(),
                 policy_check=policy, post=post or (lambda url, **kw: _graph_request("POST", url, **kw)))
             receipt.external_status = result.state
             receipt.external_message_sid = result.message_id

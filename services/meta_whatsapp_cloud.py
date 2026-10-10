@@ -139,6 +139,31 @@ def text_payload(*, recipient: str, body: str) -> dict:
                 type="text", text={"preview_url": False, "body": body})
 
 
+def list_payload(*, recipient: str, body: str, rows: tuple[dict, ...],
+                 button: str = "Elegir un tema", section: str = "Opciones") -> dict:
+    """One section, at most ten detached rows. No URLs or operational dispatch."""
+    def label(value, limit):
+        return (isinstance(value, str) and bool(value.strip()) and len(value) <= limit
+                and not any(ord(char) < 32 for char in value))
+    if (not isinstance(recipient, str) or not _RECIPIENT.fullmatch(recipient)
+            or not isinstance(body, str) or not body.strip() or len(body) > 1024
+            or not label(button, 20) or not label(section, 24)
+            or not isinstance(rows, tuple) or not 1 <= len(rows) <= 10):
+        raise MetaContractError("meta_list_payload_invalid")
+    safe_rows, ids = [], set()
+    for row in rows:
+        if (not isinstance(row, dict) or set(row) - {"id", "title", "description"}
+                or not label(row.get("id"), 200) or not label(row.get("title"), 24)
+                or ("description" in row and not label(row["description"], 72))
+                or row["id"] in ids):
+            raise MetaContractError("meta_list_payload_invalid")
+        ids.add(row["id"])
+        safe_rows.append({key: row[key] for key in ("id", "title", "description") if key in row})
+    return dict(messaging_product="whatsapp", recipient_type="individual", to=recipient,
+        type="interactive", interactive={"type": "list", "body": {"text": body},
+            "action": {"button": button, "sections": [{"title": section, "rows": safe_rows}]}})
+
+
 def template_payload(*, recipient: str, name: str, language: str,
                      body_parameters: tuple[str, ...] = ()) -> dict:
     """Text-body templates only; approval/consent are separately required to send."""
@@ -191,6 +216,14 @@ def send_once(*, binding_loader: Callable[[], VerifiedMetaBinding], payload: dic
     try:
         if payload.get("type") == "text":
             safe = text_payload(recipient=payload["to"], body=payload["text"]["body"])
+        elif payload.get("type") == "interactive":
+            item = payload["interactive"]
+            sections = item["action"]["sections"]
+            if len(sections) != 1 or item["type"] != "list":
+                raise ValueError
+            safe = list_payload(recipient=payload["to"], body=item["body"]["text"],
+                rows=tuple(sections[0]["rows"]), button=item["action"]["button"],
+                section=sections[0]["title"])
         elif payload.get("type") == "template":
             tpl = payload["template"]
             parts = tpl.get("components", [])

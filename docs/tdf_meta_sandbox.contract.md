@@ -134,6 +134,14 @@ is acknowledged with an explicit statement that this pilot does not transcribe
 it yet. No media download, recording transcription, WhatsApp Calling, case,
 appointment or health-document mutation is implemented in this increment.
 
+Menus with at most ten canonical choices and a body within Meta's 1024-character
+list limit use a native list (`Elegir un tema`) plus the complete numbered text
+in the same message. Row IDs keep the exact `knowledge:revision:target` action.
+Titles are at most 24 characters; long labels also get a bounded description.
+Unsupported sizes remain text instead of hiding options or switching to a
+pending template. The transport rebuilds the list allowlist and rejects extra
+keys, duplicate row IDs, control characters or excess limits before any POST.
+
 `WebhookDelivery` uses the existing unique provider/event key with provider
 namespace `meta_tdf_sandbox_v1`. HMAC-pseudonymous contact and semantic digest
 avoid storing raw inbound text, coordinates or recipient in these pilot rows.

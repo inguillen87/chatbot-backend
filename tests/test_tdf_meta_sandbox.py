@@ -95,6 +95,10 @@ def accepted_post(*args, **kwargs):
         content=b'{"messaging_product":"whatsapp","messages":[{"id":"wamid.reply1"}]}')
 
 
+def sent_body(payload):
+    return payload["interactive"]["body"]["text"] if payload["type"] == "interactive" else payload["text"]["body"]
+
+
 def test_default_disabled_and_challenge_is_strict(environment):
     env = environment
     env.app.config["META_TDF_SANDBOX_ENABLED"] = False
@@ -233,11 +237,15 @@ def test_real_knowledge_menu_replay_and_numeric_choice(environment, monkeypatch)
     first = process(document(), post=post)
     assert first["accepted"] == 1 and first["delivery_verified"] is False
     assert len(sent) == 1 and sent[0][0] == "https://graph.facebook.com/v25.0/" + pilot.TEST_PHONE + "/messages"
-    assert "1. " in sent[0][1]["text"]["body"] and "MENÚ" in sent[0][1]["text"]["body"]
+    assert "1. " in sent_body(sent[0][1]) and "MENÚ" in sent_body(sent[0][1])
+    assert sent[0][1]["type"] == "interactive"
+    row = sent[0][1]["interactive"]["action"]["sections"][0]["rows"][0]
+    assert row["id"] == "knowledge:" + environment.state["revision"][:16] + ":requirements"
+    assert row["title"].startswith("1. ")
     assert process(document(), post=post)["replayed"] == 1 and len(sent) == 1
     choice = document(mid="wamid.inbound2", content={"type": "text", "text": {"body": "1"}})
     assert process(choice, post=post)["accepted"] == 1
-    assert "Respuesta institucional de prueba" in sent[-1][1]["text"]["body"]
+    assert "Respuesta institucional de prueba" in sent_body(sent[-1][1])
     assert db.session.query(WebhookDelivery).count() == 2
     assert db.session.query(MessagingEventLedger).count() == 2
     serialized = json.dumps([row.metadata_json for row in db.session.query(MessagingEventLedger)])
@@ -254,7 +262,7 @@ def test_same_message_id_changed_content_conflicts_without_second_post(environme
 def test_interactive_and_location_are_normalized_without_operational_mutation(environment):
     sent = []
     def post(url, **kwargs):
-        sent.append(kwargs["json"]["text"]["body"]); return accepted_post()
+        sent.append(sent_body(kwargs["json"])); return accepted_post()
     action = "knowledge:" + environment.state["revision"][:16] + ":requirements"
     process(document(content={"type": "interactive", "interactive": {"type": "list_reply", "list_reply": {"id": action}}}), post=post)
     assert "Respuesta institucional de prueba" in sent[-1]
@@ -278,10 +286,38 @@ def test_invalid_location_is_before_receipt(environment, latitude, longitude):
 def test_audio_does_not_promise_or_attempt_transcription(environment):
     bodies = []
     def post(url, **kwargs):
-        bodies.append(kwargs["json"]["text"]["body"]); return accepted_post()
+        bodies.append(sent_body(kwargs["json"])); return accepted_post()
     process(document(content={"type": "audio", "audio": {"id": "555555", "mime_type": "audio/ogg"}}), post=post)
     assert "todavía no transcribe audio" in bodies[0]
     assert "persona" in bodies[0]
+
+
+def test_knowledge_list_preserves_complete_text_and_falls_back_without_hiding_choices(environment):
+    revision = environment.state["revision"]
+    buttons = tuple({"action_id": "knowledge:" + revision[:16] + ":topic" + str(i),
+        "texto": "Tema " + str(i), "reply_code": str(i)} for i in range(1, 11))
+    result = pilot._reply_payload(CONTACT, "Menú. Respondé un número o abrí la lista.", buttons, revision)
+    assert result["type"] == "interactive"
+    rows = result["interactive"]["action"]["sections"][0]["rows"]
+    assert len(rows) == 10 and rows[-1]["id"] == buttons[-1]["action_id"]
+    for body, choices in [("x" * 1025, buttons), ("Menú", buttons + (buttons[0],))]:
+        fallback = pilot._reply_payload(CONTACT, body, choices, revision)
+        assert fallback["type"] == "text" and fallback["text"]["body"] == body
+    foreign = ({"action_id": "crear_reclamo", "texto": "Reclamo", "reply_code": "1"},)
+    assert pilot._reply_payload(CONTACT, "Menú", foreign, revision)["type"] == "text"
+
+
+@pytest.mark.parametrize("change", ["too_many", "duplicate_id", "long_title", "long_description", "foreign_key", "control_id"])
+def test_cloud_list_contract_rejects_invalid_rows(change):
+    rows = [{"id": "knowledge:synthetic:start", "title": "1. Tema"}]
+    if change == "too_many": rows = [{"id": str(i), "title": "Tema"} for i in range(11)]
+    elif change == "duplicate_id": rows.append(deepcopy(rows[0]))
+    elif change == "long_title": rows[0]["title"] = "x" * 25
+    elif change == "long_description": rows[0]["description"] = "x" * 73
+    elif change == "foreign_key": rows[0]["url"] = "https://untrusted.invalid"
+    elif change == "control_id": rows[0]["id"] = "knowledge:\nstart"
+    with pytest.raises(cloud.MetaContractError, match="list_payload_invalid"):
+        cloud.list_payload(recipient=CONTACT, body="Menú", rows=tuple(rows))
 
 
 def test_timeout_is_durable_uncertain_and_never_retried(environment):
