@@ -111,6 +111,34 @@ def _web_audio_error_response(reason_code: str, message: str, status: int):
         "reason_code": reason_code,
     }), status
 
+
+def _web_audio_live_context():
+    """Read only the existing live-room envelope from multipart audio.
+
+    Do not make form data a global JSON/session/tenant routing source. The
+    signed room credential remains the authority; these fields only select
+    the same live-chat path already used by JSON messages.
+    """
+    names = ("ticket_id", "tipo_ticket", "live_chat_access_token", "access_token")
+    present = {name for name in names if name in request.form}
+    if not present:
+        return None, None, {}
+    if not {"ticket_id", "tipo_ticket"}.issubset(present):
+        raise ValueError("audio_live_context_invalid")
+    if any(len(request.form.getlist(name)) != 1 for name in present):
+        raise ValueError("audio_live_context_invalid")
+    ticket_id, ticket_type = request.form["ticket_id"], request.form["tipo_ticket"]
+    if (not re.fullmatch(r"[0-9]{1,19}", ticket_id)
+            or not 0 < int(ticket_id) <= 9223372036854775807
+            or ticket_type not in {"municipio", "pyme"}):
+        raise ValueError("audio_live_context_invalid")
+    payload = {name: request.form[name] for name in present
+               if name in {"live_chat_access_token", "access_token"}}
+    if (any(len(token) > 4096 for token in payload.values())
+            or (len(payload) == 2 and payload["live_chat_access_token"] != payload["access_token"])):
+        raise ValueError("audio_live_context_invalid")
+    return int(ticket_id), ticket_type, payload
+
 _SAFE_LOG_INTERNAL_ID_KEYS = frozenset(
     {
         "attachment_id",
@@ -3614,6 +3642,7 @@ def _procesar_chat(
 ): 
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
+    audio_live_payload = None
     # --- Session and Context Initialization ---
     invalid_demo_session_token = _invalid_demo_session_token_from_request(
         include_bearer=getattr(g, "owner_resolution_source", None) != "jwt_widget_owner"
@@ -3797,6 +3826,20 @@ def _procesar_chat(
         if mime_type not in _WEB_AUDIO_MIME_TYPES:
             return _web_audio_error_response(
                 "audio_type_unsupported", "Ese formato de audio no es compatible. Grabá uno nuevo o escribí tu consulta.", 415)
+        try:
+            ticket_id, tipo_ticket, audio_live_payload = _web_audio_live_context()
+        except ValueError:
+            return _web_audio_error_response(
+                "audio_live_context_invalid", "No pude confirmar el chat de destino. Volvé al chat e intentá de nuevo.", 400)
+        if ticket_id is not None:
+            live_chat_token = audio_live_payload.get("live_chat_access_token") or audio_live_payload.get("access_token")
+            try:
+                verify_ticket_room_token(str(live_chat_token or ""),
+                    expected_room=build_ticket_room(tipo_ticket, ticket_id))
+            except LiveChatAccessError:
+                # Do not send an invalid human-chat recording to the STT
+                # provider or silently turn it into a bot question.
+                return jsonify({"error": {"code": 403, "message": "Acceso al chat no valido."}}), 403
         max_audio_bytes = _stt_max_audio_bytes()
         try:
             # Read at most one byte beyond the real adapter's clamped limit.
@@ -3824,8 +3867,8 @@ def _procesar_chat(
             chat_context_obj.context_data = {}
         chat_context_obj.context_data['source_is_audio'] = True
 
-        # Neutral defaults must cover every shared parser output, including
-        # the live-chat and profile checks after this branch.
+        # Other form metadata retains neutral defaults. The signed live-room
+        # envelope above is the only additional multipart parser contract.
         contexto_previo = None
         tipo_chat = tipo_chat_fijo or 'municipio'
         rubro_id = request.form.get('rubro_id')
@@ -3834,8 +3877,6 @@ def _procesar_chat(
         uploaded_file_info = None
         archivo_adjunto_id = None
         location = None
-        ticket_id = None
-        tipo_ticket = None
         profile_name = (request.cookies.get("nombre_usuario") or request.cookies.get("profile_name")
                         or chat_context_obj.context_data.get("profile_name"))
         action_id = None
@@ -3910,7 +3951,7 @@ def _procesar_chat(
             return jsonify({"error": {"code": 400, "message": "Tipo de ticket invalido."}}), 400
 
         expected_room = build_ticket_room(tipo_ticket, ticket_id)
-        request_payload = _request_json_payload()
+        request_payload = audio_live_payload if audio_live_payload is not None else _request_json_payload()
         live_chat_token = request_payload.get("live_chat_access_token") or request_payload.get("access_token")
         try:
             verify_ticket_room_token(str(live_chat_token or ""), expected_room=expected_room)

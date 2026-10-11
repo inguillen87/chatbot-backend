@@ -22,6 +22,7 @@ on:
       - 'tests/test_tdf_meta_sandbox.py'
       - 'tests/test_tdf_meta_audio.py'
       - 'tests/test_web_audio_multipart.py'
+      - 'tests/test_web_audio_live_chat.py'
       - 'tests/test_audio_transcription.py'
       - 'tests/test_meta_whatsapp_direct_foundation.py'
       - 'tests/test_openai_tts_bridge.py'
@@ -63,7 +64,7 @@ jobs:
           set -euo pipefail
           mkdir -p .qa-artifacts/web-audio-multipart
           git rev-parse HEAD > .qa-artifacts/web-audio-multipart/checkout.txt
-          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/test_web_audio_multipart.py', 'tests/test_audio_transcription.py', '--junitxml=.qa-artifacts/web-audio-multipart/tests.xml']))" 2>&1 | tee .qa-artifacts/web-audio-multipart/tests.log
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/test_web_audio_multipart.py', 'tests/test_web_audio_live_chat.py', 'tests/test_audio_transcription.py', '--junitxml=.qa-artifacts/web-audio-multipart/tests.xml']))" 2>&1 | tee .qa-artifacts/web-audio-multipart/tests.log
       - name: Preserve web audio regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
