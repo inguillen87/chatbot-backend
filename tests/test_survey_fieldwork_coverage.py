@@ -11,6 +11,7 @@ SURVEY = SimpleNamespace(id=301, tenant_id=7)
 
 def counts(total=200, recorded=1, mode="real"):
     return {"survey_id": 301, "tenant_id": 7, "mode": mode,
+            "tenant_scope_consistent": True,
             "selected_records": total, "recorded": {key: recorded for key, *_ in DIMENSIONS}}
 
 
@@ -50,6 +51,19 @@ class FieldworkCoverageTests(unittest.TestCase):
         rendered = json.dumps(result)
         for value in ("private-phone-value", "private-filter-value", "private-token"):
             self.assertNotIn(value, rendered)
+        self.assertNotIn("tenant_scope_consistent", rendered)
+
+    def test_missing_false_or_invalid_tenant_scope_is_withheld(self):
+        for total in (0, 200):
+            summary = summary_fixture(total, complete=0)
+            missing = counts(total, 0)
+            del missing["tenant_scope_consistent"]
+            self.assertIsNone(build_fieldwork_coverage(SURVEY, summary, missing))
+            for signal in (False, None, 0, 1, "true", "false", {}, []):
+                with self.subTest(total=total, signal=signal):
+                    aggregate = counts(total, 0)
+                    aggregate["tenant_scope_consistent"] = signal
+                    self.assertIsNone(build_fieldwork_coverage(SURVEY, summary, aggregate))
 
     def test_data_mode_is_not_a_segmentation_filter(self):
         result = build_fieldwork_coverage(SURVEY, summary_fixture(), counts(), {"data_mode": "real", "desde": ""})

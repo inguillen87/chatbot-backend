@@ -425,6 +425,9 @@ def test_dashboard_summary_snapshot_and_export_exclude_foreign_response_rows(
     survey = dashboard_channel_rows
     baseline = svc._get_response_snapshot(survey, filters)
     baseline_summary = svc.get_summary(survey.id, filters)
+    baseline_coverage = svc.get_fieldwork_coverage_counts(survey, filters)
+    assert baseline_coverage["tenant_scope_consistent"] is True
+    assert baseline_coverage["selected_records"] == expected_total
     baseline_export = "".join(svc.export_csv(survey.id, filters))
     baseline_base_ids = {row.id for row in baseline["base_query"].all()}
     baseline_sample_ids = {row.id for row in baseline["sample"]}
@@ -440,6 +443,11 @@ def test_dashboard_summary_snapshot_and_export_exclude_foreign_response_rows(
     assert bundle["modules"]["summary"]["total_respuestas"] == expected_total
     assert summary["preguntas"] == baseline_summary["preguntas"]
     assert summary["data_provenance"] == baseline_summary["data_provenance"]
+    coverage = svc.get_fieldwork_coverage_counts(survey, filters)
+    assert coverage["tenant_scope_consistent"] is False
+    assert coverage["selected_records"] == expected_total
+    from services.survey_fieldwork_coverage import build_fieldwork_coverage
+    assert build_fieldwork_coverage(survey, summary, coverage, filters) is None
     for key in (
         "population_size", "real_count", "synthetic_count",
         "unverified_count", "result_version",
@@ -496,3 +504,51 @@ def test_live_results_and_cache_ignore_foreign_response_rows(
         assert after[key] == before[key]
     assert aggregate.call_count == 1
     assert all(db.session.get(EncRespuesta, row.id) is row for row in foreign_rows)
+
+
+@pytest.mark.parametrize("origin", ["real", "synthetic_demo", "legacy_unverified"])
+def test_fieldwork_scope_signal_checks_associations_outside_selected_cohort(
+    dashboard_channel_rows, origin,
+):
+    from models import TenantProfile
+    from sqlalchemy import event
+    from sqlalchemy.dialects import postgresql
+
+    survey = dashboard_channel_rows
+    filters = {"canal": "whatsapp_chat"}
+    baseline = svc.get_fieldwork_coverage_counts(survey, filters)
+    assert baseline["tenant_scope_consistent"] is True
+    foreign = TenantProfile.query.filter_by(slug="bundle-channel-foreign").one()
+    row = EncRespuesta(
+        encuesta_id=survey.id, tenant_id=foreign.id,
+        canal="outside-selected-channel", response_origin=origin,
+    )
+    db.session.add(row)
+    db.session.commit()
+    # Hydrate the instrument before observing the aggregate, as route callers
+    # already do; commit expires ORM objects in this fixture.
+    db.session.refresh(survey)
+    statements = []
+
+    def capture(state):
+        statements.append(str(state.statement.compile(dialect=postgresql.dialect())))
+
+    session = db.session()
+    event.listen(session, "do_orm_execute", capture)
+    try:
+        aggregate = svc.get_fieldwork_coverage_counts(survey, filters)
+    finally:
+        event.remove(session, "do_orm_execute", capture)
+
+    assert aggregate["selected_records"] == baseline["selected_records"] == 2
+    assert aggregate["recorded"] == baseline["recorded"]
+    assert aggregate["tenant_scope_consistent"] is False
+    assert len(statements) == 1
+    sql = statements[0].lower()
+    assert "exists" in sql
+    assert "coverage_response_scope.tenant_id is null" in sql
+    assert sql.count("sum(case when") == 9
+    assert "enc_respuesta_detalle" not in sql
+    assert "group by" not in sql
+    assert "limit" not in sql
+    assert db.session.get(EncRespuesta, row.id) is row

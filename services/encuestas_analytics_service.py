@@ -21,7 +21,7 @@ from urllib.parse import quote, quote_plus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import Numeric, String, and_, case, cast, literal, or_
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import aliased, selectinload
 
 from database import db
 from models import EncEncuesta, EncRespuesta, EncPregunta, EncRespuestaDetalle, EncLink, TenantProfile
@@ -1021,6 +1021,16 @@ def get_fieldwork_coverage_counts(
     """
     _base_query, selected_query, mode = _response_queries(encuesta, filtros)
     selected_query = selected_query.filter(EncRespuesta.tenant_id == encuesta.tenant_id)
+    scope_response = aliased(EncRespuesta, name="coverage_response_scope")
+    # Scope integrity applies to the instrument's stored associations, even
+    # when an inconsistent row is outside the selected origin or filters.
+    tenant_scope_consistent = ~db.session.query(scope_response.id).filter(
+        scope_response.encuesta_id == encuesta.id,
+        or_(
+            scope_response.tenant_id != encuesta.tenant_id,
+            scope_response.tenant_id.is_(None),
+        ),
+    ).correlate(None).exists()
     expressions = {}
     for key, column in (
         ("channel", EncRespuesta.canal),
@@ -1043,12 +1053,14 @@ def get_fieldwork_coverage_counts(
     )
     row = selected_query.with_entities(
         db.func.count(EncRespuesta.id).label("selected_records"),
+        tenant_scope_consistent.label("tenant_scope_consistent"),
         *(db.func.coalesce(db.func.sum(case((condition, 1), else_=0)), 0).label(key)
           for key, condition in expressions.items()),
     ).order_by(None).one()
     return {
         "survey_id": int(encuesta.id), "tenant_id": int(encuesta.tenant_id),
         "mode": mode, "selected_records": int(row.selected_records),
+        "tenant_scope_consistent": row.tenant_scope_consistent is True,
         "recorded": {key: int(getattr(row, key)) for key in expressions},
     }
 

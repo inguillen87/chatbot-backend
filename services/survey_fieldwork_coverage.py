@@ -35,6 +35,7 @@ def build_fieldwork_coverage(
     sid, tid = getattr(survey, "id", None), getattr(survey, "tenant_id", None)
     if (not _count(sid) or not sid or not _count(tid) or not tid
             or not isinstance(summary, dict) or not isinstance(aggregates, dict)
+            or aggregates.get("tenant_scope_consistent") is not True
             or type(summary.get("encuesta_id")) is not int or summary["encuesta_id"] != sid):
         return None
     provenance = summary.get("data_provenance")
