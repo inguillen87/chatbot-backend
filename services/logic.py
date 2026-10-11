@@ -161,7 +161,8 @@ def responder_chatboc(
             # validation; never reinterpret its label as a new complaint.
             knowledge_input = dict(pregunta) if isinstance(pregunta, dict) else {'pregunta': pregunta}
             knowledge_input['action_id'] = separate_action
-        knowledge_response = maybe_handle_institutional_question(knowledge_input, effective_owner_user, chat_db_context)
+        knowledge_response = maybe_handle_institutional_question(knowledge_input, effective_owner_user, chat_db_context,
+            audio_question=kwargs.get('source_is_audio_request') is True)
 
     # 2. Detectar nombre de rubro (universal)
     rubro_nombre = ""

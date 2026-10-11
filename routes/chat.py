@@ -5338,6 +5338,7 @@ def _procesar_chat(
                 channel=channel,
                 action_id=action_id,
                 anon_id=anon_id,
+                source_is_audio_request=audio_live_payload is not None,
                 idempotency_key=_idempotency_effect_key,
                 tenant_id=_idempotency_tenant_id,
                 demo_metadata=demo_metadata_for_responder or None,
@@ -5357,6 +5358,12 @@ def _procesar_chat(
             # Handle error cases where responder_chatboc returns a tuple
             error_message, status_code = resultado
             return jsonify(error_message), status_code
+
+        if (audio_live_payload is not None and isinstance(resultado, dict)
+            and resultado.get('fuente') == 'audio_transcription_failed'
+            and resultado.get('reason_code') == 'tdf_audio_question_too_long'):
+            return _web_audio_error_response('tdf_audio_question_too_long',
+                resultado['message_body'], 400)
 
         if not isinstance(resultado, dict):
             # Fallback for unexpected response types

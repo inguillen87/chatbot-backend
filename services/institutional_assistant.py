@@ -9,7 +9,7 @@ from services.source_event_context import SOURCE_EVENT_CONTEXT_FIELDS, normalize
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
-    ContentError, CONTRACT, normalize_bundle, overview, digest, select_nodes, materialize_node,
+    ContentError, CONTRACT, MAX_QUESTION_CHARS, normalize_bundle, overview, digest, select_nodes, materialize_node,
 )
 KEY, CHANNEL = 'institutional_assistant', 'knowledge'
 UI = {
@@ -249,7 +249,7 @@ def _institutional_reply_code(text):
     return None
 
 
-def maybe_handle_institutional_question(question, owner, session=None):
+def maybe_handle_institutional_question(question, owner, session=None, *, audio_question=False):
     """Existing responder integration. Tenant comes from the resolved owner, not text."""
     if not isinstance(question, (str, dict)): return None
     owner_id, tenant_id = getattr(owner, 'id', None), getattr(owner, 'tenant_id', None)
@@ -283,6 +283,15 @@ def maybe_handle_institutional_question(question, owner, session=None):
     context = getattr(session, 'context_data', None) or {}
     if _active_operational_context(context) and not text.startswith('knowledge:'):
         return None
+    # The byte adapter has already transcribed this web note. Only a resolved,
+    # published informational corpus applies the question limit; human rooms,
+    # operational flows and generic chat retain their existing contracts.
+    # Never truncate a transcript or suggest retrying the identical long note.
+    if audio_question is True and len(text.strip()) > MAX_QUESTION_CHARS:
+        from services.tdf_meta_audio import audio_error_message
+        return {'message_body': audio_error_message('tdf_audio_question_too_long'),
+            'message_type': 'text', 'fuente': 'audio_transcription_failed',
+            'reason_code': 'tdf_audio_question_too_long', 'skip_audio_generation': True}
     command = {'revision': state['revision'], 'node_id': state['bundle']['start']}
     previous = context.get('institutional_knowledge', {}) if isinstance(context, dict) else {}
     if not isinstance(previous, dict): previous = {}
