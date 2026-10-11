@@ -381,7 +381,8 @@ class PrivateAudioTranscriptionError(RuntimeError):
 
 
 def transcribe_private_audio_bytes(audio_bytes: bytes, mime_type: str, *,
-                                  max_bytes: int, timeout_seconds: float) -> str:
+                                  max_bytes: int, timeout_seconds: float,
+                                  max_text_chars: int = 2000) -> str:
     """One bounded official OpenAI request; no cache, disk, fallback or retries.
 
     The existing generic STT path intentionally caches transcriptions. An
@@ -393,7 +394,8 @@ def transcribe_private_audio_bytes(audio_bytes: bytes, mime_type: str, *,
     """
     import json
     if (not isinstance(audio_bytes, bytes) or not 0 < len(audio_bytes) <= max_bytes
-            or not 0 < timeout_seconds <= 25):
+            or not 0 < timeout_seconds <= 25
+            or type(max_text_chars) is not int or not 1 <= max_text_chars <= 2000):
         raise PrivateAudioTranscriptionError("private_audio_invalid")
     api_key = _openai_api_key()
     model = str(_runtime_setting("OPENAI_STT_MODEL", DEFAULT_STT_MODEL))
@@ -436,9 +438,12 @@ def transcribe_private_audio_bytes(audio_bytes: bytes, mime_type: str, *,
                             raise PrivateAudioTranscriptionError("private_audio_failed")
                         document = json.loads(body)
                         text = document.get("text") if isinstance(document, dict) else None
-                        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+                        if not isinstance(text, str) or not text.strip():
                             raise PrivateAudioTranscriptionError("private_audio_unintelligible")
-                        return text.strip()
+                        text = text.strip()
+                        if len(text) > max_text_chars:
+                            raise PrivateAudioTranscriptionError("private_audio_question_too_long")
+                        return text
     except PrivateAudioTranscriptionError:
         raise
     except Exception:

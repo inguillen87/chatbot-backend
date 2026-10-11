@@ -16,6 +16,8 @@ import re
 import ssl
 import time
 from urllib.parse import urlsplit
+from services.audio_transcription_service import PrivateAudioTranscriptionError
+from services.institutional_assistant_content import MAX_QUESTION_CHARS
 
 MAX_AUDIO_BYTES = 2 * 1024 * 1024
 TOTAL_SECONDS = 35.0
@@ -157,19 +159,31 @@ def transcribe_meta_voice_note(event, *, cfg, binding_loader, now,
             from services.audio_transcription_service import transcribe_private_audio_bytes
             transcriber = transcribe_private_audio_bytes
         text = transcriber(data, _MIME, max_bytes=MAX_AUDIO_BYTES,
-                           timeout_seconds=min(20.0, deadline - time.monotonic()))
+                           timeout_seconds=min(20.0, deadline - time.monotonic()),
+                           max_text_chars=MAX_QUESTION_CHARS)
         live()
-        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+        if not isinstance(text, str) or not text.strip():
             raise TdfAudioError("tdf_audio_unintelligible")
-        return text.strip()
+        text = text.strip()
+        if len(text) > MAX_QUESTION_CHARS:
+            raise TdfAudioError("tdf_audio_question_too_long")
+        return text
     except TdfAudioError:
         raise
+    except PrivateAudioTranscriptionError as error:
+        if str(error) == "private_audio_question_too_long":
+            # No transcript, provider response or recording leaves this boundary.
+            raise TdfAudioError("tdf_audio_question_too_long") from None
+        raise TdfAudioError("tdf_audio_unavailable") from None
     except Exception:
         raise TdfAudioError("tdf_audio_unavailable") from None
 
 
 def audio_error_message(code):
-    if code == "tdf_audio_format_unsupported":
+    if code == "tdf_audio_question_too_long":
+        reason = ("La consulta de esta nota de voz es demasiado extensa para responderla en una sola vez. "
+                  "Podés dividirla en varias preguntas o enviar una pregunta más corta.")
+    elif code == "tdf_audio_format_unsupported":
         reason = "En esta prueba puedo leer las notas de voz grabadas con el micrófono de WhatsApp."
     elif code == "tdf_audio_too_large":
         reason = "La nota supera el límite de 2 MB. Probá con una nota más corta."

@@ -11,6 +11,7 @@ from werkzeug.utils import secure_filename
 CONTRACT = 'chatboc.institutional_assistant.v1'
 BUNDLE_CONTRACT = 'chatboc.institutional_guide.composed.v1'
 MAX_BYTES = 1_000_000
+MAX_QUESTION_CHARS = 1800
 _ID = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,119}$')
 _HASH = re.compile(r'^[a-f0-9]{64}$')
 _STAMP = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$')
@@ -227,7 +228,7 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
     # An import must support any allowed question without exceeding the same
     # selector budget checked at read time. Evidence bytes do not enter it.
     largest_id = max(nodes, key=len)
-    _require(len(_selection_request(bundle, '\U0010ffff' * 1800, largest_id).encode()) <= 120000,
+    _require(len(_selection_request(bundle, '\U0010ffff' * MAX_QUESTION_CHARS, largest_id).encode()) <= 120000,
              'knowledge_context_too_large')
     return bundle
 
@@ -271,7 +272,7 @@ def _selection_request(bundle, question, current_node):
     return json.dumps({'question': question, 'current_node': current_node, 'knowledge': candidates}, ensure_ascii=False)
 
 def select_nodes(bundle, question, current_node, selector):
-    question = _text(question, 1800)
+    question = _text(question, MAX_QUESTION_CHARS)
     _require(current_node in bundle['nodes'])
     request = _selection_request(bundle, question, current_node)
     _require(len(request.encode()) <= 120000, 'knowledge_context_too_large')
