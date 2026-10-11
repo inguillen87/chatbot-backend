@@ -61,6 +61,10 @@ from services.demo_surveys import (
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
+from services.audio_transcription_service import (
+    _stt_max_audio_bytes,
+    transcribe_audio_bytes,
+)
 from services.tenant_ticket_scope import (
     normalize_municipio_ticket_write_scope,
     resolve_unique_tenant_for_owner,
@@ -87,6 +91,25 @@ DEMO_MENU_HOME_ACTION = f"{DEMO_MENU_PREFIX}:home"
 DEMO_MENU_ROOT_ID = "demo_menu_root"
 DEMO_SEGMENT_PREFIX = "demo_segment"
 DEMO_LEAD_ACTION_ID = "open_demo_form"
+
+# The five advertised web-audio families, including their audio MIME aliases.
+# Browser codec parameters are stripped before this allowlist is consulted.
+_WEB_AUDIO_MIME_TYPES = frozenset({
+    "audio/webm", "audio/ogg", "audio/opus", "audio/mpeg", "audio/mp3",
+    "audio/mpga", "audio/wav", "audio/wave", "audio/x-wav", "audio/mp4",
+    "audio/m4a", "audio/x-m4a",
+})
+
+
+def _web_audio_error_response(reason_code: str, message: str, status: int):
+    """Keep upload/STT failures actionable without exposing file/provider data."""
+    return jsonify({
+        "error": {"code": status, "message": message},
+        "message_body": message,
+        "message_type": "text",
+        "fuente": "audio_transcription_failed",
+        "reason_code": reason_code,
+    }), status
 
 _SAFE_LOG_INTERNAL_ID_KEYS = frozenset(
     {
@@ -3767,42 +3790,56 @@ def _procesar_chat(
     # --- Request Parsing (Audio or JSON) ---
     if 'audio_file' in request.files:
         audio_file = request.files['audio_file']
-        if audio_file.filename != '':
-            from services.google_speech_to_text import SpeechToTextService
-            import tempfile
+        if not audio_file.filename:
+            return _web_audio_error_response(
+                "audio_file_empty", "El audio está vacío. Grabá uno nuevo o escribí tu consulta.", 400)
+        mime_type = str(audio_file.content_type or "").split(';', 1)[0].strip().lower()
+        if mime_type not in _WEB_AUDIO_MIME_TYPES:
+            return _web_audio_error_response(
+                "audio_type_unsupported", "Ese formato de audio no es compatible. Grabá uno nuevo o escribí tu consulta.", 415)
+        max_audio_bytes = _stt_max_audio_bytes()
+        try:
+            # Read at most one byte beyond the real adapter's clamped limit.
+            # Werkzeug may spool multipart data; this handler creates no named
+            # file and never uses the client filename for disk/provider paths.
+            audio_bytes = audio_file.stream.read(max_audio_bytes + 1)
+            if not audio_bytes:
+                return _web_audio_error_response(
+                    "audio_file_empty", "El audio está vacío. Grabá uno nuevo o escribí tu consulta.", 400)
+            if len(audio_bytes) > max_audio_bytes:
+                return _web_audio_error_response(
+                    "audio_file_too_large", "El audio es demasiado grande. Grabá uno más corto o escribí tu consulta.", 413)
+            # Generic web uploads deliberately retain the existing configured
+            # content cache and provider fallback. This is not the private Meta
+            # pilot contract and does not grant access to that admission path.
+            pregunta = transcribe_audio_bytes(audio_bytes, mime_type)
+        except Exception as exc:
+            current_app.logger.warning("Web audio transcription failed error_type=%s", type(exc).__name__)
+            pregunta = None
+        if not isinstance(pregunta, str) or not pregunta.strip():
+            return _web_audio_error_response(
+                "audio_transcription_failed", "No pude transcribir el audio. Grabá uno nuevo o escribí tu consulta.", 400)
+        pregunta = pregunta.strip()
+        if not isinstance(chat_context_obj.context_data, dict):
+            chat_context_obj.context_data = {}
+        chat_context_obj.context_data['source_is_audio'] = True
 
-            chat_context_obj.context_data['source_is_audio'] = True
-
-            # Use a more unique filename to avoid collisions
-            temp_filename = f"{uuid.uuid4()}_{audio_file.filename}"
-            temp_path = os.path.join(tempfile.gettempdir(), temp_filename)
-            audio_file.save(temp_path)
-
-            stt_service = SpeechToTextService()
-            pregunta = stt_service.transcribe_audio_file(file_path=temp_path, mime_type=audio_file.mimetype)
-
-            os.remove(temp_path)
-
-            if not pregunta:
-                return jsonify({
-                    "message_body": "Lo siento, no pude entender lo que dijiste en el audio. ¿Podrías intentarlo de nuevo o escribir tu consulta?",
-                    "message_type": "text",
-                    "fuente": "audio_transcription_failed"
-                }), 400
-
-            # Set default values for other parameters when processing audio
-            contexto_previo = None
-            tipo_chat = tipo_chat_fijo or 'municipio'
-            rubro_id = request.form.get('rubro_id')
-            rubro_clave = request.form.get('rubro_clave')
-            attachment_info = None
-            uploaded_file_info = None
-            archivo_adjunto_id = None
-            location = None
-            action_id = None
-            original_user_payload = pregunta
-        else:
-            return jsonify({"error": {"code": 400, "message": "Audio file is empty."}}), 400 # NEW FORMAT
+        # Neutral defaults must cover every shared parser output, including
+        # the live-chat and profile checks after this branch.
+        contexto_previo = None
+        tipo_chat = tipo_chat_fijo or 'municipio'
+        rubro_id = request.form.get('rubro_id')
+        rubro_clave = request.form.get('rubro_clave')
+        attachment_info = None
+        uploaded_file_info = None
+        archivo_adjunto_id = None
+        location = None
+        ticket_id = None
+        tipo_ticket = None
+        profile_name = (request.cookies.get("nombre_usuario") or request.cookies.get("profile_name")
+                        or chat_context_obj.context_data.get("profile_name"))
+        action_id = None
+        original_user_payload = pregunta
     else:
         # chat_context_obj.context_data.pop('source_is_audio', None) # This was moved to after the check
         try:

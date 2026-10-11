@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'routes/institutional_assistant.py'
+      - 'routes/chat.py'
       - 'routes/meta_tdf_sandbox.py'
       - 'routes/tdf_meta_sandbox.py'
       - 'services/institutional_assistant_*.py'
@@ -20,6 +21,8 @@ on:
       - 'tests/*institutional_assistant*'
       - 'tests/test_tdf_meta_sandbox.py'
       - 'tests/test_tdf_meta_audio.py'
+      - 'tests/test_web_audio_multipart.py'
+      - 'tests/test_audio_transcription.py'
       - 'tests/test_meta_whatsapp_direct_foundation.py'
       - 'tests/test_openai_tts_bridge.py'
       - '.github/workflows/tdf-accessible-channel.yml'
@@ -36,6 +39,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12.14'
@@ -53,3 +57,18 @@ jobs:
           tests/test_openai_tts_bridge.py
           tests/test_institutional_assistant_ui_contract.py
           tests/test_institutional_assistant_content.py
+      - name: Verify multipart web audio without external providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/web-audio-multipart
+          git rev-parse HEAD > .qa-artifacts/web-audio-multipart/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/test_web_audio_multipart.py', 'tests/test_audio_transcription.py', '--junitxml=.qa-artifacts/web-audio-multipart/tests.xml']))" 2>&1 | tee .qa-artifacts/web-audio-multipart/tests.log
+      - name: Preserve web audio regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: web-audio-multipart-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/web-audio-multipart
+          if-no-files-found: error
+          retention-days: 7
