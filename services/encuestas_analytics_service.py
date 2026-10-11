@@ -4144,7 +4144,9 @@ def _get_dashboard_bundle_impl(
             encuesta_id,
             filtros=filtros,
             segment_a={"canal": "web"},
-            segment_b={"canal": "whatsapp"},
+            # Include the persisted channels of both native WhatsApp transports.
+            # Explicit caller filters and comparisons retain their exact values.
+            segment_b={"canal": ["whatsapp", "whatsapp_chat", "whatsapp_flow"]},
         )
 
     from services.encuestas_service import build_survey_availability_contract

@@ -1,7 +1,7 @@
 import pytest
 
 from database import db
-from models import EncEncuesta
+from models import EncEncuesta, EncOpcion, EncPregunta, EncRespuesta, EncRespuestaDetalle
 from services import encuestas_analytics_service as svc
 from tests.test_survey_admin_lifecycle_contract import _tenant
 
@@ -230,3 +230,157 @@ def test_dashboard_bundle_marks_latest_responses_degraded_on_error(monkeypatch):
     assert bundle["modules"]["latest_responses"] == []
     assert bundle["modules"]["latest_responses_meta"]["state"] == "degraded"
     assert "latest broken" in (bundle["modules"]["latest_responses_meta"].get("error") or "")
+
+
+@pytest.fixture
+def dashboard_channel_rows(monkeypatch):
+    """Persist transport channel names and run the original SQL comparison."""
+    survey = db.session.get(EncEncuesta, 84)
+    question = EncPregunta(encuesta_id=survey.id, texto="Prioridad", tipo="opcion_unica", orden=0)
+    db.session.add(question)
+    db.session.flush()
+    option = EncOpcion(pregunta_id=question.id, texto="Atención", orden=0)
+    db.session.add(option)
+    db.session.flush()
+    rows = [
+        *(('web', 'real') for _ in range(3)),
+        ('whatsapp', 'real'),
+        ('whatsapp_chat', 'real'),
+        ('whatsapp_chat', 'real'),
+        ('whatsapp_flow', 'real'),
+        ('whatsapp_other', 'real'),
+        ('whatsapp_chat', 'synthetic_demo'),
+        ('whatsapp_flow', 'legacy_unverified'),
+    ]
+    for index, (channel, origin) in enumerate(rows):
+        response = EncRespuesta(
+            encuesta_id=survey.id, tenant_id=survey.tenant_id,
+            canal=channel, response_origin=origin,
+            huella_unica=f"bundle-channel-{index}",
+        )
+        db.session.add(response)
+        db.session.flush()
+        db.session.add(EncRespuestaDetalle(
+            respuesta_id=response.id, pregunta_id=question.id, opcion_id=option.id,
+        ))
+    _, foreign_tenant = _tenant("bundle-channel-foreign")
+    foreign_survey = EncEncuesta(
+        tenant_id=foreign_tenant.id, slug="bundle-channel-foreign",
+        titulo="Otra organización", estado="publicada", tipo="opinion",
+    )
+    db.session.add(foreign_survey)
+    db.session.flush()
+    db.session.add(EncRespuesta(
+        encuesta_id=foreign_survey.id, tenant_id=foreign_tenant.id,
+        canal="whatsapp_chat", response_origin="real",
+    ))
+    db.session.commit()
+
+    # Only unrelated dashboard modules are replaced. Channel totals and
+    # option bases still use get_segment_compare and its persisted SQL rows.
+    monkeypatch.setattr(svc, "get_timeseries", lambda *args, **kwargs: [])
+    monkeypatch.setattr(svc, "get_heatmap", lambda *args, **kwargs: {"points": []})
+    monkeypatch.setattr(svc, "get_forecast", lambda *args, **kwargs: {"projected_total": 0})
+    monkeypatch.setattr(svc, "get_alerts", lambda *args, **kwargs: {"alerts": []})
+    monkeypatch.setattr(svc, "get_executive_brief", lambda *args, **kwargs: {"headline": "Local"})
+    monkeypatch.setattr(svc, "get_anomaly_report", lambda *args, **kwargs: {"risk_score": 0})
+    monkeypatch.setattr(svc, "_build_latest_responses_preview", lambda *args, **kwargs: [])
+    monkeypatch.setattr(svc, "_build_survey_publication_contract", lambda *args, **kwargs: {
+        "public_state": "published", "links": {}, "actions": [],
+    })
+    return survey
+
+
+def test_dashboard_default_whatsapp_segment_includes_native_chat_and_flow(
+    monkeypatch, dashboard_channel_rows,
+):
+    original_compare = svc.get_segment_compare
+    comparisons = []
+
+    def capture_comparison(*args, **kwargs):
+        result = original_compare(*args, **kwargs)
+        comparisons.append(result)
+        return result
+
+    monkeypatch.setattr(svc, "get_segment_compare", capture_comparison)
+    bundle = svc.get_dashboard_bundle(dashboard_channel_rows.id)
+
+    assert bundle["modules"]["summary"]["total_respuestas"] == 8
+    assert len(comparisons) == 1
+    comparison = comparisons[0]
+    assert comparison["segment_a"]["stats"]["total_respuestas"] == 3
+    assert comparison["segment_b"]["stats"]["total_respuestas"] == 4
+    assert comparison["segment_b"]["stats"]["canales"] == [
+        {"label": "whatsapp_chat", "value": 2},
+        {"label": "whatsapp", "value": 1},
+        {"label": "whatsapp_flow", "value": 1},
+    ]
+    assert bundle["kpis_executive"]["brecha_segmento_max"]["value"] == 1
+
+
+def test_explicit_whatsapp_segment_and_global_channel_filter_stay_exact(
+    monkeypatch, dashboard_channel_rows,
+):
+    exact = svc.get_segment_compare(
+        dashboard_channel_rows.id,
+        segment_a={"canal": "web"}, segment_b={"canal": "whatsapp"},
+    )
+    assert exact["segment_b"]["stats"]["total_respuestas"] == 1
+
+    original_compare = svc.get_segment_compare
+    comparisons = []
+
+    def capture_comparison(*args, **kwargs):
+        result = original_compare(*args, **kwargs)
+        comparisons.append(result)
+        return result
+
+    monkeypatch.setattr(svc, "get_segment_compare", capture_comparison)
+    bundle = svc.get_dashboard_bundle(dashboard_channel_rows.id, {"canal": "whatsapp_chat"})
+
+    assert bundle["meta"]["filters"] == {"canal": "whatsapp_chat"}
+    assert bundle["modules"]["summary"]["total_respuestas"] == 2
+    assert len(comparisons) == 1
+    assert comparisons[0]["segment_a"]["stats"]["total_respuestas"] == 0
+    assert comparisons[0]["segment_b"]["stats"]["total_respuestas"] == 2
+
+
+@pytest.mark.parametrize("channel,origin,foreign_scope", [
+    ("whatsapp_unrecognized", "real", False),
+    ("whatsapp_chat", "synthetic_demo", False),
+    ("whatsapp_flow", "legacy_unverified", False),
+    ("whatsapp_chat", "real", True),
+])
+def test_dashboard_default_whatsapp_segment_does_not_expand_channel_origin_or_scope(
+    monkeypatch, dashboard_channel_rows, channel, origin, foreign_scope,
+):
+    from models import TenantProfile
+
+    survey = dashboard_channel_rows
+    tenant_id = (
+        TenantProfile.query.filter_by(slug="bundle-channel-foreign").one().id
+        if foreign_scope else survey.tenant_id
+    )
+    # The foreign-scope case deliberately injects an inconsistent response row
+    # for the same survey. The original comparison's tenant predicate must still
+    # exclude it; changing the default channel group never grants another scope.
+    db.session.add(EncRespuesta(
+        encuesta_id=survey.id, tenant_id=tenant_id,
+        canal=channel, response_origin=origin,
+    ))
+    db.session.commit()
+    original_compare = svc.get_segment_compare
+    comparisons = []
+
+    def capture_comparison(*args, **kwargs):
+        result = original_compare(*args, **kwargs)
+        comparisons.append(result)
+        return result
+
+    monkeypatch.setattr(svc, "get_segment_compare", capture_comparison)
+    bundle = svc.get_dashboard_bundle(survey.id)
+
+    assert len(comparisons) == 1
+    assert comparisons[0]["segment_a"]["stats"]["total_respuestas"] == 3
+    assert comparisons[0]["segment_b"]["stats"]["total_respuestas"] == 4
+    assert bundle["kpis_executive"]["brecha_segmento_max"]["value"] == 1
