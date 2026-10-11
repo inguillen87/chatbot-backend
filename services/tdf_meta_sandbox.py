@@ -27,7 +27,7 @@ from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
 from services.institutional_assistant_whatsapp import (
-    clear_source_scope, present_answer, short_label, sources_answer, sources_page,
+    clear_source_scope, present_answer_parts, short_label, sources_answer, sources_page,
 )
 from services.tenant_provider_credentials import ProviderCredentialError
 from cutover_writer_fence import cutover_writer_fence_enabled
@@ -288,6 +288,34 @@ def _previous_context(contact_key, sender_id):
     return (row.metadata_json or {}).get("knowledge_context", {}) if row else {}
 
 
+def _compose_menu_answer(parts, buttons):
+    """Reserve complete choices/notices before shortening explanatory text."""
+    choices = []
+    for button in buttons:
+        code = button.get("reply_code")
+        prefix = str(code) + ". " if code else "- "
+        choices.append(prefix + str(button.get("texto") or "Opción"))
+    instructions = ("Podés responder con el número o tus palabras. Escribí MENÚ para volver."
+                    if any(button.get("reply_code") for button in buttons) else
+                    "Podés escribir tu consulta con tus palabras. Escribí MENÚ para volver.")
+    reserved = "\n\n".join(part for part in (parts["notices"], "\n".join(choices), instructions) if part)
+    if len(reserved) > 4096:
+        return None
+    complete = "\n\n".join(part for part in (parts["text"], *parts["links"], reserved) if part)
+    if len(complete) <= 4096:
+        return complete
+    # Links are atomic: none can become a partial URL after abbreviation.
+    more = "Información completa: https://www.chatboc.ar/t/tierra-del-fuego"
+    suffix = more + "\n\n" + reserved
+    budget = 4096 - len(suffix) - 2
+    if budget < 0:
+        return None
+    text = parts["text"][:budget]
+    if len(text) < len(parts["text"]) and text and not text[-1].isspace():
+        text = re.sub(r"\S+$", "", text)
+    return "\n\n".join(part for part in (text.rstrip(), suffix) if part)
+
+
 def _answer(event, context, *, audio_text=None):
     tenant = db.session.get(TenantProfile, TENANT_ID)
     if tenant is None or tenant.slug != TENANT_SLUG or tenant.is_active is not True:
@@ -315,16 +343,16 @@ def _answer(event, context, *, audio_text=None):
     result = maybe_handle_institutional_question(question, owner, session)
     if not isinstance(result, dict) or not result.get("message_body"):
         raise PilotError("tdf_sandbox_knowledge_unavailable")
-    body, session.context_data = present_answer(result, session.context_data,
+    parts, session.context_data = present_answer_parts(result, session.context_data,
         tenant_id=TENANT_ID, tenant_slug=TENANT_SLUG)
     buttons = result.get("botones", [])
-    for button in buttons:
-        code = button.get("reply_code")
-        if code:
-            body += "\n" + str(code) + ". " + str(button.get("texto") or "Opción")
-    if len(body) > 3500:
-        body = body[:3400].rsplit("\n", 1)[0] + "\nInformación completa: https://www.chatboc.ar/t/tierra-del-fuego"
-    body += "\n\nPodés responder con el número o tus palabras. Escribí MENÚ para volver."
+    body = _compose_menu_answer(parts, buttons)
+    if body is None:
+        session.context_data = clear_source_scope(session.context_data)
+        session.context_data.pop("institutional_knowledge", None)
+        return ("No pude mostrar todas las opciones de esta orientación en un solo mensaje. "
+                "Escribí MENÚ para elegir un tema nuevamente.", session.context_data,
+                result.get("context_revision"), ())
     return body, session.context_data, result.get("context_revision"), tuple(buttons)
 
 

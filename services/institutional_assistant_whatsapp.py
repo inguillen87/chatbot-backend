@@ -62,23 +62,30 @@ def _links(nodes):
     return values
 
 
-def present_answer(result, context, *, tenant_id, tenant_slug):
-    """Remove only automatic source metadata, preserving canonical text/links."""
+def present_answer_parts(result, context, *, tenant_id, tenant_slug):
+    """Separate bounded-channel notices from text, without parsing free prose."""
     value = clear_source_scope(context)
     nodes, revision = result.get('knowledge_nodes'), result.get('context_revision')
     tenant = {'id': tenant_id, 'slug': tenant_slug}
     if (not isinstance(nodes, list) or not 1 <= len(nodes) <= 3
             or result.get('knowledge_tenant') != tenant
             or not isinstance(revision, str) or not _REVISION.fullmatch(revision)):
-        return result['message_body'], value
+        return {'text': result['message_body'], 'links': [], 'notices': ''}, value
     value[SOURCE_SCOPE] = {'tenant': tenant, 'revision': revision,
                           'node_ids': [node['id'] for node in nodes]}
-    parts = [node['text'] for node in nodes] + _links(nodes)
+    notices = []
     notice = _review_notice(_public_sources(nodes))
     if notice:
-        parts.append(notice)
-    parts.append('Para consultar las referencias de esta orientación, escribí FUENTES.')
-    return '\n\n'.join(parts), value
+        notices.append(notice)
+    notices.append('Para consultar las referencias de esta orientación, escribí FUENTES.')
+    return {'text': '\n\n'.join(node['text'] for node in nodes), 'links': _links(nodes),
+            'notices': '\n\n'.join(notices)}, value
+
+
+def present_answer(result, context, *, tenant_id, tenant_slug):
+    """Remove only automatic source metadata, preserving canonical text/links."""
+    parts, value = present_answer_parts(result, context, tenant_id=tenant_id, tenant_slug=tenant_slug)
+    return '\n\n'.join(part for part in [parts['text'], *parts['links'], parts['notices']] if part), value
 
 
 def _source_entries(nodes):
