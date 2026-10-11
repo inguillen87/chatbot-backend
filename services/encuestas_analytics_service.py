@@ -794,7 +794,13 @@ def _response_queries(
     encuesta: EncEncuesta,
     filtros: Optional[Dict[str, Any]],
 ) -> Tuple[Any, Any, str]:
-    base_query = EncRespuesta.query.filter(EncRespuesta.encuesta_id == encuesta.id)
+    # A response's survey foreign key does not prove its tenant namespace.
+    # Quarantine inconsistent stored rows from analytics and exports while
+    # retaining them for the independent archival/deletion safety guards.
+    base_query = EncRespuesta.query.filter(
+        EncRespuesta.encuesta_id == encuesta.id,
+        EncRespuesta.tenant_id == encuesta.tenant_id,
+    )
     base_query = _apply_filters(base_query, filtros)
     mode = _response_data_mode(filtros)
     expected_origin = (

@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+from unittest.mock import patch
+
 import pytest
 
 from database import db
@@ -384,3 +387,112 @@ def test_dashboard_default_whatsapp_segment_does_not_expand_channel_origin_or_sc
     assert comparisons[0]["segment_a"]["stats"]["total_respuestas"] == 3
     assert comparisons[0]["segment_b"]["stats"]["total_respuestas"] == 4
     assert bundle["kpis_executive"]["brecha_segmento_max"]["value"] == 1
+
+
+def _add_foreign_dashboard_responses(survey):
+    from models import TenantProfile
+
+    foreign = TenantProfile.query.filter_by(slug="bundle-channel-foreign").one()
+    question = survey.preguntas[0]
+    option = question.opciones[0]
+    rows = []
+    for origin in ("real", "synthetic_demo", "legacy_unverified"):
+        response = EncRespuesta(
+            encuesta_id=survey.id, tenant_id=foreign.id,
+            canal="whatsapp_chat", response_origin=origin,
+            huella_unica=f"foreign-scope-{origin}",
+            ciudad=f"foreign-scope-marker-{origin}",
+        )
+        db.session.add(response)
+        db.session.flush()
+        db.session.add(EncRespuestaDetalle(
+            respuesta_id=response.id, pregunta_id=question.id, opcion_id=option.id,
+        ))
+        rows.append(response)
+    db.session.commit()
+    return rows
+
+
+@pytest.mark.parametrize("filters,expected_total", [
+    (None, 8),
+    ({"canal": "whatsapp_chat"}, 2),
+    ({"data_mode": "synthetic"}, 1),
+    ({"data_mode": "synthetic", "exclude_demo": True}, 8),
+])
+def test_dashboard_summary_snapshot_and_export_exclude_foreign_response_rows(
+    dashboard_channel_rows, filters, expected_total,
+):
+    survey = dashboard_channel_rows
+    baseline = svc._get_response_snapshot(survey, filters)
+    baseline_summary = svc.get_summary(survey.id, filters)
+    baseline_export = "".join(svc.export_csv(survey.id, filters))
+    baseline_base_ids = {row.id for row in baseline["base_query"].all()}
+    baseline_sample_ids = {row.id for row in baseline["sample"]}
+    foreign_rows = _add_foreign_dashboard_responses(survey)
+
+    with svc._analytics_snapshot_scope():
+        snapshot = svc._get_response_snapshot(survey, filters)
+        assert svc._get_response_snapshot(survey, filters) is snapshot
+        summary = svc.get_summary(survey.id, filters)
+        bundle = svc.get_dashboard_bundle(survey.id, filters)
+
+    assert summary["total_respuestas"] == expected_total
+    assert bundle["modules"]["summary"]["total_respuestas"] == expected_total
+    assert summary["preguntas"] == baseline_summary["preguntas"]
+    assert summary["data_provenance"] == baseline_summary["data_provenance"]
+    for key in (
+        "population_size", "real_count", "synthetic_count",
+        "unverified_count", "result_version",
+    ):
+        assert snapshot[key] == baseline[key]
+    assert {row.id for row in snapshot["base_query"].all()} == baseline_base_ids
+    assert {row.id for row in snapshot["sample"]} == baseline_sample_ids
+    exported = "".join(svc.export_csv(survey.id, filters))
+    assert exported == baseline_export
+    assert "foreign-scope-marker" not in exported
+    # Analytics quarantines the rows; archival and deletion must still see them.
+    assert all(db.session.get(EncRespuesta, row.id) is row for row in foreign_rows)
+    assert all(row.tenant_id != survey.tenant_id for row in foreign_rows)
+
+
+@pytest.mark.parametrize("filters,expected_total", [
+    (None, 8),
+    ({"canal": "whatsapp_chat"}, 2),
+])
+def test_live_results_and_cache_ignore_foreign_response_rows(
+    monkeypatch, dashboard_channel_rows, filters, expected_total,
+):
+    survey = dashboard_channel_rows
+    survey.mostrar_resultados_envivo = True
+    db.session.commit()
+    frozen_now = datetime.now(timezone.utc)
+    monkeypatch.setattr(svc, "_utc_now", lambda: frozen_now)
+    monkeypatch.setattr(svc, "_PUBLIC_LIVE_RESULTS_CACHE", {})
+    # Only the unrelated advisory-provider boundary is replaced. All survey
+    # lookup, response snapshots, SQL aggregates and cache operations are real.
+    monkeypatch.setattr(svc, "build_collection_ai_insights", lambda *args, **kwargs: {
+        "provider_family": "none", "mode": "offline", "recommended_actions": [],
+    })
+    monkeypatch.setattr(svc, "build_map_ai_layers", lambda *args, **kwargs: {})
+
+    with patch.object(
+        svc, "_exact_option_statistics", wraps=svc._exact_option_statistics,
+    ) as aggregate:
+        before = svc.calculate_live_results(
+            survey.slug, preferred_tenant_id=survey.tenant_id,
+            require_tenant_match=True, include_heatmap=False, filtros=filters,
+        )
+        foreign_rows = _add_foreign_dashboard_responses(survey)
+        after = svc.calculate_live_results(
+            survey.slug, preferred_tenant_id=survey.tenant_id,
+            require_tenant_match=True, include_heatmap=False, filtros=filters,
+        )
+
+    assert before["total_respuestas"] == after["total_respuestas"] == expected_total
+    for key in (
+        "preguntas", "data_provenance", "timeline_minute", "result_version",
+        "snapshot_version", "cache_etag",
+    ):
+        assert after[key] == before[key]
+    assert aggregate.call_count == 1
+    assert all(db.session.get(EncRespuesta, row.id) is row for row in foreign_rows)
