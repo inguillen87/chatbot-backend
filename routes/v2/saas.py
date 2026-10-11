@@ -85,6 +85,14 @@ from services.crm_operational_queue_guard import (
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.demo_surveys import resolve_demo_public_frontend_base_url
 from services.live_chat_schedule import build_tenant_live_chat_status
+from services.notification_settings_contract import (
+    NotificationSettingsError,
+    NotificationSettingsRefreshRequired,
+    guard_notification_alias_clears,
+    merge_notification_update,
+    notification_hooks_snapshot,
+    parse_notification_update,
+)
 from services.omnichannel_message_policy import (
     OMNICHANNEL_REPLY_MAX_BODY_BYTES,
     OmnichannelMessagePolicyError,
@@ -4579,37 +4587,59 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def notification_hooks_v2(current_user):
+    raw_period = request.args.get("period_days", "7")
+    try:
+        if len(request.args.getlist("period_days")) > 1 or not raw_period.isdecimal():
+            raise ValueError()
+        period_days = int(raw_period)
+        if not 1 <= period_days <= 90:
+            raise ValueError()
+    except ValueError:
+        return _error_response(
+            "period_days debe ser un entero entre 1 y 90.", 400,
+            "notification_period_invalid", "send_valid_notification_period",
+        )
+    try:
+        body = request.get_json(silent=True) if request.method == "POST" else {}
+        update = parse_notification_update(body) if request.method == "POST" else {}
+    except NotificationSettingsError as exc:
+        return _error_response(str(exc), 400, "notification_settings_invalid", "send_valid_notification_settings")
+
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
 
-    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
-    hooks = cfg.get("notification_hooks") if isinstance(cfg.get("notification_hooks"), dict) else {}
+    try:
+        if request.method == "POST":
+            guard_notification_alias_clears(tenant.configuracion, body)
+        if update:
+            cfg, hooks = merge_notification_update(tenant.configuracion, update)
+        else:
+            hooks = notification_hooks_snapshot(tenant.configuracion)
+    except NotificationSettingsRefreshRequired as exc:
+        return _error_response(str(exc), 409, "notification_settings_refresh_required", "refresh_notification_settings")
+    except NotificationSettingsError as exc:
+        return _error_response(str(exc), 409, "notification_settings_stored_invalid", "review_notification_configuration")
 
-    if request.method == "POST":
-        payload = request.get_json(silent=True) or {}
-        hooks = {
-            "preferences": payload.get("preferences") if isinstance(payload.get("preferences"), dict) else hooks.get("preferences", {}),
-            "triggers": payload.get("triggers") if isinstance(payload.get("triggers"), list) else hooks.get("triggers", []),
-            "delivery": payload.get("delivery") if isinstance(payload.get("delivery"), dict) else hooks.get("delivery", {}),
-        }
-        cfg["notification_hooks"] = hooks
+    # Complete all ancillary reads and construct the ACK before changing the ORM
+    # object. A read error cannot occur after a successful configuration commit.
+    payload = {
+        "contract_version": "notifications.hooks.v1",
+        "tenant": _tenant_ref(tenant),
+        "preferences": hooks["preferences"],
+        "triggers": hooks["triggers"],
+        "delivery": hooks["delivery"],
+        # Bound to the canonical value for the still-published older frontend.
+        "delivery_config": deepcopy(hooks["delivery"]),
+        "templates": _templates_payload(tenant.id),
+        "delivery_status": _notification_delivery_status(tenant.id, period_days=period_days),
+    }
+    response = _json_response(payload)
+    if update:
         tenant.configuracion = cfg
         db.session.add(tenant)
         db.session.commit()
-
-    delivery_status = _notification_delivery_status(tenant.id, period_days=max(1, min(int(request.args.get("period_days", 7) or 7), 90)))
-    return _json_response(
-        {
-            "contract_version": "notifications.hooks.v1",
-            "tenant": _tenant_ref(tenant),
-            "preferences": hooks.get("preferences", {}),
-            "triggers": hooks.get("triggers", []),
-            "delivery": hooks.get("delivery", {}),
-            "templates": _templates_payload(tenant.id),
-            "delivery_status": delivery_status,
-        }
-    )
+    return response
 
 
 @v2_saas_bp.route("/notifications/delivery-status", methods=["GET"])
