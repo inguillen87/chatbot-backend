@@ -552,3 +552,125 @@ def test_fieldwork_scope_signal_checks_associations_outside_selected_cohort(
     assert "group by" not in sql
     assert "limit" not in sql
     assert db.session.get(EncRespuesta, row.id) is row
+
+
+def _normal_conditional_multi_responses(rule_version):
+    """Capture valid branches through the production write service in SQLite."""
+    from services.encuestas_service import (
+        create_encuesta, publicar_encuesta, save_respuesta,
+    )
+
+    owner, _ = _tenant("bundle-eligibility-sample")
+    rule = {
+        "version": 1,
+        "show_if": {"question_order": 1, "option_order": 1},
+    }
+    if rule_version == 2:
+        rule = {"version": 2, "show_if": {
+            "kind": "group", "operator": "and", "children": [{
+                "kind": "option_selected", "question_ref": "controller",
+                "option_ref": "branch-a",
+            }],
+        }}
+    survey = create_encuesta({
+        "titulo": "Conditional eligibility sample",
+        "politica_unicidad": "libre",
+        "preguntas": [
+            {
+                "question_ref": "controller", "orden": 1,
+                "tipo": "opcion_unica", "texto": "Controller",
+                "obligatoria": True,
+                "opciones": [
+                    {"option_ref": "branch-a", "orden": 1, "texto": "A"},
+                    {"option_ref": "branch-b", "orden": 2, "texto": "B"},
+                ],
+            },
+            {
+                "question_ref": "conditional", "orden": 2,
+                "tipo": "opcion_multiple", "texto": "Conditional choices",
+                "obligatoria": True, "min_selecciones": 1,
+                "max_selecciones": 2, "conditional_logic": rule,
+                "opciones": [
+                    {"orden": 1, "texto": "X"},
+                    {"orden": 2, "texto": "Y"},
+                ],
+            },
+        ],
+    }, owner)
+    survey, link = publicar_encuesta(survey.id, owner)
+    controller, conditional = sorted(survey.preguntas, key=lambda q: q.orden)
+    controller_options = {option.orden: option.id for option in controller.opciones}
+    # The latest two rows have one eligible branch; extrapolation gives two,
+    # while all four earlier/eligible rows answered both multiple-choice options.
+    for index, choice in enumerate((1, 1, 1, 1, 2)):
+        answers = [{
+            "pregunta_id": controller.id,
+            "opcion_id": controller_options[choice],
+        }]
+        if choice == 1:
+            answers.append({
+                "pregunta_id": conditional.id,
+                "opcion_ids": [option.id for option in conditional.opciones],
+            })
+        save_respuesta(
+            link.slug_publico, {"respuestas": answers},
+            {"ip": "127.0.0.1", "user_agent": "pytest", "canal": "web",
+             "anon_id": f"bundle-eligibility-{index}"},
+            emit_realtime_update=False, grant_reward=False,
+        )
+    return survey, controller.id, conditional.id
+
+
+@pytest.mark.parametrize("rule_version", [1, 2])
+@pytest.mark.parametrize("sample_limit,filters,expected_total", [
+    (2, None, 5),
+    (0, None, 5),
+    (5, None, 5),
+    (2, {"canal": "whatsapp"}, 0),
+])
+def test_conditional_eligibility_never_divides_exact_counts_by_sample_estimate(
+    monkeypatch, rule_version, sample_limit, filters, expected_total,
+):
+    survey, controller_id, conditional_id = _normal_conditional_multi_responses(
+        rule_version,
+    )
+    monkeypatch.setenv("SURVEY_ANALYTICS_SAMPLE_LIMIT", str(sample_limit))
+    summary = svc.get_summary(survey.id, filters)
+    questions = {question["pregunta_id"]: question for question in summary["preguntas"]}
+    controller = questions[controller_id]
+    conditional = questions[conditional_id]
+    partial = bool(expected_total and sample_limit < expected_total)
+
+    assert summary["total_respuestas"] == expected_total
+    assert summary["data_provenance"]["sample_size"] == min(sample_limit, expected_total)
+    assert summary["data_provenance"]["sample_limit"] == sample_limit
+    assert summary["data_provenance"]["eligibility_estimated_from_sample"] is partial
+    # Unconditional visibility has an exact base even with a zero-sized sample.
+    assert controller["base_elegibles_estimada"] is False
+    assert controller["respuestas_elegibles"] == expected_total
+    assert controller["tasa_respuesta_elegible"] == (100 if expected_total else 0)
+
+    answered = 4 if expected_total else 0
+    assert conditional["respuestas_respondidas"] == answered
+    assert conditional["base_elegibles_estimada"] is partial
+    if partial:
+        assert conditional["respuestas_elegibles_estimadas"] == (
+            2 if sample_limit else None
+        )
+        assert "respuestas_elegibles" not in conditional
+        assert "tasa_respuesta_elegible" not in conditional
+        assert all("porcentaje_elegibles" not in option for option in conditional["opciones"])
+    else:
+        assert "respuestas_elegibles_estimadas" not in conditional
+        assert conditional["respuestas_elegibles"] == answered
+        assert conditional["tasa_respuesta_elegible"] == (100 if answered else 0)
+        assert [option["porcentaje_elegibles"] for option in conditional["opciones"]] == (
+            [100, 100] if answered else [0, 0]
+        )
+    assert [option["respuestas_seleccionaron"] for option in conditional["opciones"]] == [answered, answered]
+    rates = [option["porcentaje_respuestas_pregunta"] for option in conditional["opciones"]]
+    assert rates == ([100, 100] if answered else [0, 0])
+    assert sum(rates) == (200 if answered else 0)
+    coverage = svc.get_fieldwork_coverage_counts(survey, filters)
+    assert coverage["selected_records"] == expected_total
+    assert coverage["tenant_scope_consistent"] is True

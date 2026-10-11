@@ -2493,10 +2493,25 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
     preguntas_summary = []
     for pregunta in encuesta.preguntas:
         normalized_tipo = _normalize_question_type(pregunta.tipo)
-        respuestas_elegibles = elegibles_por_pregunta[pregunta.id]
+        base_elegibles_estimada = (
+            partial_sample and pregunta.logica_condicional is not None
+        )
+        # Unconditional visibility applies to the exact selected population,
+        # including when no detail rows are sampled. Conditional visibility is
+        # evaluated only over the bounded sample; its extrapolated count cannot
+        # serve as the denominator of exact SQL response/selection counts.
+        respuestas_elegibles = (
+            None
+            if base_elegibles_estimada
+            else total
+            if pregunta.logica_condicional is None
+            else elegibles_por_pregunta[pregunta.id]
+        )
         respuestas_respondidas = respuestas_por_pregunta[pregunta.id]
         tasa_respuesta_elegible = (
-            respuestas_respondidas / respuestas_elegibles * 100
+            None
+            if respuestas_elegibles is None
+            else respuestas_respondidas / respuestas_elegibles * 100
             if respuestas_elegibles
             else 0
         )
@@ -2506,10 +2521,18 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
             "tipo": normalized_tipo,
             "tipo_interno": pregunta.tipo,
             "total_respuestas": total,
-            "respuestas_elegibles": respuestas_elegibles,
             "respuestas_respondidas": respuestas_respondidas,
-            "tasa_respuesta_elegible": round(tasa_respuesta_elegible, 2),
+            "base_elegibles_estimada": base_elegibles_estimada,
         }
+        if base_elegibles_estimada:
+            pregunta_data["respuestas_elegibles_estimadas"] = (
+                elegibles_por_pregunta[pregunta.id] if sample_total else None
+            )
+        else:
+            pregunta_data["respuestas_elegibles"] = respuestas_elegibles
+            pregunta_data["tasa_respuesta_elegible"] = round(
+                tasa_respuesta_elegible, 2
+            )
         if normalized_tipo in {"single_choice", "multiple_choice"}:
             opciones = []
             for opcion in pregunta.opciones:
@@ -2524,7 +2547,9 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                     else 0
                 )
                 porcentaje_elegibles = (
-                    respuestas_seleccionaron / respuestas_elegibles * 100
+                    None
+                    if respuestas_elegibles is None
+                    else respuestas_seleccionaron / respuestas_elegibles * 100
                     if respuestas_elegibles
                     else 0
                 )
@@ -2546,9 +2571,8 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                         "porcentaje_total_encuesta": round(
                             porcentaje_total_encuesta, 2
                         ),
-                        "porcentaje_elegibles": round(
-                            porcentaje_elegibles, 2
-                        ),
+                        **({"porcentaje_elegibles": round(porcentaje_elegibles, 2)}
+                           if porcentaje_elegibles is not None else {}),
                         "porcentaje_respuestas_pregunta": round(
                             porcentaje_respuestas_pregunta, 2
                         ),
@@ -2582,7 +2606,9 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                     else 0
                 )
                 porcentaje_elegibles = (
-                    respuestas_seleccionaron / respuestas_elegibles * 100
+                    None
+                    if respuestas_elegibles is None
+                    else respuestas_seleccionaron / respuestas_elegibles * 100
                     if respuestas_elegibles
                     else 0
                 )
@@ -2602,9 +2628,8 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                         "porcentaje_total_encuesta": round(
                             porcentaje_total_encuesta, 2
                         ),
-                        "porcentaje_elegibles": round(
-                            porcentaje_elegibles, 2
-                        ),
+                        **({"porcentaje_elegibles": round(porcentaje_elegibles, 2)}
+                           if porcentaje_elegibles is not None else {}),
                         "porcentaje_respuestas_pregunta": round(
                             porcentaje_respuestas_pregunta, 2
                         ),
