@@ -75,6 +75,7 @@ from utils.contact_identity import (
 )
 from utils.safe_logging import describe_database_uri
 from utils.runtime_environment import is_production_runtime, is_render_runtime
+from utils.runtime_liveness import is_public_liveness_request
 from utils.migration_managed_session import init_migration_managed_session
 
 
@@ -371,15 +372,16 @@ def create_app(config_class=Config):
             """
             Adjunta usuario a g.viewer. Evita tocar DB en migraciones.
             """
-            from utils.auth_helpers import obtener_token, user_from_token
-            from flask_login import current_user
-
             g.viewer = None
             g.pop('_login_user', None)
             g.current_user = None
             g.token_payload = {}
             g.auth_credential_source = None
             g.explicit_bearer_present = False
+            if is_public_liveness_request(request):
+                return
+            from utils.auth_helpers import obtener_token, user_from_token
+            from flask_login import current_user
             from services.auth_session_lifecycle import is_retirement_request
             if is_retirement_request():
                 return
@@ -423,9 +425,11 @@ def create_app(config_class=Config):
 
         @app.before_request
         def attach_contact_identity():
+            g.contact_identity = None
+            if is_public_liveness_request(request):
+                return
             from services.auth_session_lifecycle import is_retirement_request
             if is_retirement_request():
-                g.contact_identity = None
                 return
             g.contact_identity = resolve_contact_identity_from_request(
                 request,

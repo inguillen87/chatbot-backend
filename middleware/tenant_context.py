@@ -11,6 +11,7 @@ from sqlalchemy import func
 
 from database import db
 from models import TenantProfile
+from utils.runtime_liveness import is_public_liveness_request
 from utils.tenant import (
     get_current_tenant_profile,
     get_current_tenant_slug,
@@ -428,6 +429,9 @@ def tenant_middleware(app) -> None:
             "tenant",
         ):
             g.pop(key, None)
+
+        if is_public_liveness_request(request):
+            return
 
         try:
             tenant = _resolve_tenant_profile()
