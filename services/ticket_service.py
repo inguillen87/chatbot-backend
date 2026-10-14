@@ -2590,6 +2590,7 @@ class ServicioTickets:
         ticket: Union[MunicipioTicket, PymeTicket],
         *,
         include_internal: bool = True,
+        include_legacy_conversations: bool = True,
     ) -> list[dict]:
         """Devuelve el historial completo de conversación para un ticket.
 
@@ -2601,8 +2602,10 @@ class ServicioTickets:
         """
         mensajes: list[dict] = []
 
-        # --- Conversaciones previas al ticket (chatbot) ---
-        if getattr(ticket, "anon_id", None):
+        # Legacy conversations are bound only to an anonymous session, not to
+        # this case. Public callers expose the case-linked comments below;
+        # private callers retain their existing history by default.
+        if include_legacy_conversations and getattr(ticket, "anon_id", None):
             try:
                 conversaciones = (
                     Conversacion.query.filter_by(session_id=ticket.anon_id)

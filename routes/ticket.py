@@ -3076,6 +3076,18 @@ def _ticket_ai_enrichment_payload(ticket) -> dict[str, Any]:
     }
 
 
+def _public_ticket_history_scope() -> dict:
+    """Declare the case-bound reading surface without implying an outage."""
+
+    return {
+        "contract_version": "tickets.history_scope.v1",
+        "scope": "ticket_comments_only",
+        "legacy_conversations_included": False,
+        "retryable": False,
+        "notice": "Esta consulta muestra los mensajes vinculados a la solicitud.",
+    }
+
+
 def _serialize_ticket_details(ticket, ticket_type, *, include_internal: bool = True):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
@@ -3140,6 +3152,7 @@ def _serialize_ticket_details(ticket, ticket_type, *, include_internal: bool = T
         historial_chat = servicio_tickets.obtener_historial_chat(
             ticket,
             include_internal=include_internal,
+            include_legacy_conversations=include_internal,
         )
     except Exception as exc:
         current_app.logger.warning(
@@ -3324,6 +3337,9 @@ def _serialize_ticket_details(ticket, ticket_type, *, include_internal: bool = T
 
     if hasattr(ticket, 'foto_url_directa'):
         ticket_data['foto_url_directa'] = ticket.foto_url_directa
+
+    if not include_internal:
+        ticket_data["history_scope"] = _public_ticket_history_scope()
 
     if ticket_type == "municipio":
         ruta_data = None
@@ -4476,6 +4492,7 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             historial_chat = servicio_tickets.obtener_historial_chat(
                 ticket_obj,
                 include_internal=bool(access and access.get("es_agente")),
+                include_legacy_conversations=bool(access and access.get("es_agente")),
             )
         except Exception as exc:
             current_app.logger.warning(
@@ -4519,6 +4536,9 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             "realtime_state": realtime_state,
             "meta": _ticket_degraded_meta(degraded_reasons),
         }
+
+        if not (access and access.get("es_agente")):
+            payload["history_scope"] = _public_ticket_history_scope()
 
         contact_key = _request_contact_key()
         if contact_key:

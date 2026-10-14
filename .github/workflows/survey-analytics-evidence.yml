@@ -35,6 +35,8 @@ name: Survey and organization evidence
       - services/analytics/rbac.py
       - routes/backoffice.py
       - routes/ticket.py
+      - services/ticket_service.py
+      - tests/test_ticket_public_history_scope.py
       - services/operational_intelligence.py
       - services/ticket_workflow_policy.py
       - services/ticket_category_authority.py
@@ -101,6 +103,23 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Public ticket history keeps only case-linked comments
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/ticket-public-history-scope
+          git rev-parse HEAD > .qa-artifacts/ticket-public-history-scope/checkout.txt
+          sha256sum routes/ticket.py services/ticket_service.py tests/test_ticket_public_history_scope.py > .qa-artifacts/ticket-public-history-scope/source-sha256.txt
+          python -X utf8 tests/test_ticket_public_history_scope.py -v 2>&1 | tee .qa-artifacts/ticket-public-history-scope/tests.log
+      - name: Preserve public ticket history evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ticket-public-history-scope-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/ticket-public-history-scope/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - name: Exact WhatsApp channel comparison and tenant scope
         shell: bash
         run: |
