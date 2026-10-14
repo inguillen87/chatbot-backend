@@ -728,10 +728,18 @@ def _tenant_health_payload(tenant: TenantProfile) -> dict[str, Any]:
     }
     score = round((sum(1 for ok in checks.values() if ok) / len(checks)) * 100, 2)
     status = "healthy" if score >= 85 else "warning" if score >= 60 else "critical"
+    review_messages = {
+        "active": "La organización figura desactivada en el registro.",
+        "widget_configured": "Revisar configuración registrada del chat web.",
+        "whatsapp_configured": "Revisar configuración registrada de WhatsApp.",
+        "team_configured": "Revisar el equipo registrado para atender solicitudes.",
+        "notifications_healthy": "Revisar los fallos registrados en las notificaciones.",
+        "sla_healthy": "Revisar los casos con plazo de atención vencido.",
+    }
     alerts = []
     for key, ok in checks.items():
         if not ok:
-            alerts.append({"severity": "high" if key in {"active", "sla_healthy"} else "medium", "reason_code": key, "message": f"Check pendiente: {key}"})
+            alerts.append({"severity": "high" if key in {"active", "sla_healthy"} else "medium", "reason_code": key, "message": review_messages[key]})
 
     return {
         "contract_version": "tenant.health.v1",

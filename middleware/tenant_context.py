@@ -12,6 +12,7 @@ from sqlalchemy import func
 from database import db
 from models import TenantProfile
 from utils.runtime_liveness import is_public_liveness_request
+from utils.runtime_metadata import is_public_version_metadata_request
 from utils.tenant import (
     get_current_tenant_profile,
     get_current_tenant_slug,
@@ -431,6 +432,9 @@ def tenant_middleware(app) -> None:
             g.pop(key, None)
 
         if is_public_liveness_request(request):
+            return
+
+        if is_public_version_metadata_request(request):
             return
 
         try:
