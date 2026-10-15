@@ -11,6 +11,7 @@ from sqlalchemy import func
 
 from database import db
 from models import TenantProfile
+from utils.database_availability import DATABASE_AVAILABILITY_ERRORS, database_unavailable_response
 from utils.runtime_liveness import is_public_liveness_request
 from utils.runtime_metadata import is_public_version_metadata_request
 from utils.tenant import (
@@ -130,6 +131,8 @@ def _find_tenant_by_widget_token(token: str) -> Optional[TenantProfile]:
             TenantProfile.is_active.is_(True),
             TenantProfile.configuracion["widget_tokens"].astext.contains(normalized),
         ).all()
+    except DATABASE_AVAILABILITY_ERRORS:
+        raise
     except Exception:
         candidates = []
 
@@ -437,8 +440,20 @@ def tenant_middleware(app) -> None:
         if is_public_version_metadata_request(request):
             return
 
+        # These routes have their own credential-free CORS preflight response.
+        if request.method == 'OPTIONS' and request.endpoint in {
+            'auth.widget_bootstrap', 'auth_api.widget_bootstrap',
+            'auth.clerk_session_sync', 'auth_api.clerk_session_sync',
+        }:
+            return
+
         try:
             tenant = _resolve_tenant_profile()
+        except HTTPException:
+            raise
+        except DATABASE_AVAILABILITY_ERRORS as error:
+            current_app.logger.warning('Tenant context unavailable error_type=%s', type(error).__name__)
+            return database_unavailable_response(reason_code='tenant_context_unavailable')
         except Exception as exc:
             current_app.logger.warning("[tenant_context] failed to resolve tenant context: %s", exc)
             tenant = None

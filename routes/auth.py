@@ -71,6 +71,9 @@ import secrets
 from urllib.parse import quote_plus
 
 from utils.runtime_environment import is_production_runtime
+from utils.database_availability import (
+    DATABASE_AVAILABILITY_ERRORS, database_unavailable_response, rollback_database_session_safely,
+)
 
 _DEMO_CATALOG_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0, "fingerprint": ""}
 _DEMO_RUBROS_CACHE: dict[str, Any] = {
@@ -647,18 +650,20 @@ def clerk_session_sync():
             transport_policy=transport_policy,
         )
     except ClerkTenantInactive as exc:
-        db.session.rollback()
+        rollback_database_session_safely()
         return jsonify({"error": str(exc), "reason_code": "tenant_inactive"}), 403
     except ClerkNotConfigured as exc:
         current_app.logger.warning("[clerk_auth] Not configured: %s", exc)
         return jsonify({"error": "Clerk auth is not configured", "reason_code": "clerk_not_configured"}), 503
     except ClerkAuthError as exc:
-        db.session.rollback()
+        rollback_database_session_safely()
         return _clerk_error_response(
             exc,
             default_reason_code="invalid_clerk_session",
             default_status_code=401,
         )
+    except DATABASE_AVAILABILITY_ERRORS:
+        return database_unavailable_response()
     except Exception as exc:  # pragma: no cover - defensive guard
         db.session.rollback()
         current_app.logger.error(
@@ -1961,6 +1966,8 @@ def demo_catalog():
     demo_items = []
     try:
         demos = _load_demo_rubros_cached()
+    except DATABASE_AVAILABILITY_ERRORS:
+        raise
     except Exception as exc:
         current_app.logger.warning("[demo_catalog] fallback to static demo catalog: %s", exc)
         demos = []
@@ -1997,6 +2004,8 @@ def demo_catalog():
     quick_login_slug = None
     try:
         quick_login_slug = _resolve_default_demo_slug()
+    except DATABASE_AVAILABILITY_ERRORS:
+        raise
     except Exception as exc:
         current_app.logger.warning("[demo_catalog] unable to resolve default demo slug: %s", exc)
 

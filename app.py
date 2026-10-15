@@ -69,6 +69,7 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
 from middleware import register_cutover_writer_fence, tenant_middleware
 from utils.errors import ApiError
+from utils.database_availability import DATABASE_AVAILABILITY_ERRORS, database_unavailable_response
 from utils.contact_identity import (
     request_path_allows_contact_identity_body,
     resolve_contact_identity_from_request,
@@ -306,6 +307,13 @@ def create_app(config_class=Config):
             action_hint="retry_later",
             retryable=True,
         )
+
+    def handle_database_unavailable(error):
+        app.logger.warning('Database dependency unavailable error_type=%s', type(error).__name__)
+        return database_unavailable_response()
+
+    for exception_type in DATABASE_AVAILABILITY_ERRORS:
+        app.register_error_handler(exception_type, handle_database_unavailable)
 
     @app.errorhandler(HTTPException)
     def handle_http_exception(error: HTTPException):
