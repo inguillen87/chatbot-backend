@@ -77,6 +77,7 @@ from utils.contact_identity import (
 from utils.safe_logging import describe_database_uri
 from utils.runtime_environment import is_production_runtime, is_render_runtime
 from utils.runtime_liveness import is_public_liveness_request
+from utils.internal_cron_request import is_registered_internal_cron_request
 from utils.migration_managed_session import init_migration_managed_session
 
 
@@ -386,7 +387,7 @@ def create_app(config_class=Config):
             g.token_payload = {}
             g.auth_credential_source = None
             g.explicit_bearer_present = False
-            if is_public_liveness_request(request):
+            if is_public_liveness_request(request) or is_registered_internal_cron_request(request):
                 return
             from utils.auth_helpers import obtener_token, user_from_token
             from flask_login import current_user
@@ -434,7 +435,7 @@ def create_app(config_class=Config):
         @app.before_request
         def attach_contact_identity():
             g.contact_identity = None
-            if is_public_liveness_request(request):
+            if is_public_liveness_request(request) or is_registered_internal_cron_request(request):
                 return
             from services.auth_session_lifecycle import is_retirement_request
             if is_retirement_request():

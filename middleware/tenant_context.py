@@ -12,6 +12,7 @@ from sqlalchemy import func
 from database import db
 from models import TenantProfile
 from utils.database_availability import DATABASE_AVAILABILITY_ERRORS, database_unavailable_response
+from utils.internal_cron_request import is_registered_internal_cron_request
 from utils.runtime_liveness import is_public_liveness_request
 from utils.runtime_metadata import is_public_version_metadata_request
 from utils.tenant import (
@@ -434,7 +435,7 @@ def tenant_middleware(app) -> None:
         ):
             g.pop(key, None)
 
-        if is_public_liveness_request(request):
+        if is_public_liveness_request(request) or is_registered_internal_cron_request(request):
             return
 
         if is_public_version_metadata_request(request):

@@ -33,6 +33,7 @@ name: Durable sessions and private attachments
       - socket_service.py
       - utils/auth_helpers.py
       - utils/database_availability.py
+      - utils/internal_cron_request.py
       - utils/tenant_admin_access.py
       - utils/migration_managed_session.py
       - migrations/versions/20261001_add_auth_session_lifecycle_v1.py
@@ -45,6 +46,7 @@ name: Durable sessions and private attachments
       - tests/test_r2_service.py
       - tests/test_runtime_readiness.py
       - tests/test_tenant_dependency_availability.py
+      - tests/test_internal_cron_request_gates.py
       - tests/test_widget_bootstrap.py
       - tests/test_production_login_bootstrap.py
       - tests/test_render_authority_retired.py
@@ -96,13 +98,13 @@ jobs:
         run: |
           set -euo pipefail
           python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_http_writer_authority_lease.py", "tests/test_global_writer_authority.py", "tests/test_cutover_writer_fence.py", "tests/test_cutover_background_writer_fence.py", "tests/test_vercel_voice_stream_writer_guard.py", "tests/test_socket_writer_authority_lease.py", "tests/test_migration_managed_session.py", "tests/test_voice_stream_security.py", "tests/test_live_chat_room_access.py", "-q"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/http-writer-lease.log
-      - name: Database availability, bootstrap and login denial regressions
+      - name: Database availability, cron admission and login denial regressions
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p .qa-artifacts/auth-private-storage/tenant-availability
           git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/tenant-availability/checkout.txt
-          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_tenant_dependency_availability.py", "tests/test_widget_bootstrap.py", "tests/test_production_login_bootstrap.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-availability/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-availability/tests.log
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_tenant_dependency_availability.py", "tests/test_internal_cron_request_gates.py", "tests/test_widget_bootstrap.py", "tests/test_production_login_bootstrap.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-availability/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-availability/tests.log
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
