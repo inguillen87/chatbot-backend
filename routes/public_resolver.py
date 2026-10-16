@@ -2556,6 +2556,48 @@ def tenant_profile():
     return _log_widget_public_request(response, tenant, entity_token=widget_token)
 
 
+def _landing_host_tenant():
+    """Use an already resolved, active exact-host binding; never a default.
+
+    Origin and Referer are not proof of hostname ownership. The canonical brand
+    contract intentionally ignores ambient tenant context on platform hosts.
+    """
+    from middleware.tenant_context import _global_landing_hosts
+    from services.organization_domain_binding import DomainBindingError, build_domain_binding
+    from services.plan_access import tenant_allows_custom_domains
+    values = [request.host]
+    original = request.environ.get("werkzeug.proxy_fix.orig", {})
+    if isinstance(original, dict) and original.get("HTTP_HOST") is not None:
+        values.append(original["HTTP_HOST"])
+    values.extend(request.headers[key] for key in ("X-Forwarded-Host", "X-Original-Host", "X-Host")
+                  if key in request.headers)
+    hosts = []
+    for value in values:
+        try:
+            parsed = urlparse("//" + value)
+            if (not value or value != value.strip() or any(c in value for c in (",", "/", "?", "#"))
+                    or parsed.username is not None or parsed.password is not None
+                    or parsed.port not in (None, 80, 443) or not parsed.hostname):
+                raise ValueError
+        except (TypeError, ValueError):
+            raise TenantResolutionError("No hay una organización disponible para este dominio.") from None
+        hosts.append(parsed.hostname)
+    platform = _global_landing_hosts()
+    custom = set(hosts) - platform
+    if not custom:
+        return None
+    tenant = getattr(g, "tenant_profile", None)
+    if len(custom) != 1 or hosts[0] not in custom or tenant is None:
+        raise TenantResolutionError("No hay una organización disponible para este dominio.")
+    try:
+        binding = build_domain_binding(tenant, entitled=tenant_allows_custom_domains(tenant))
+    except DomainBindingError:
+        raise TenantResolutionError("No hay una organización disponible para este dominio.") from None
+    if binding["active"] is not True or binding["host"] != hosts[0]:
+        raise TenantResolutionError("No hay una organización disponible para este dominio.")
+    return tenant
+
+
 @public_resolver_bp.route(
     "/landing-experience", methods=["GET", "OPTIONS"], provide_automatic_options=False
 )
@@ -2589,6 +2631,12 @@ def landing_experience():
                 ),
                 404,
             )
+    else:
+        try:
+            tenant = _landing_host_tenant()
+        except TenantResolutionError as exc:
+            return jsonify({"contract_version": LANDING_EXPERIENCE_CONTRACT_VERSION,
+                "error": {"code": 404, "message": str(exc)}}), 404
 
     return jsonify(
         build_landing_experience_contract(

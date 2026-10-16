@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -22,6 +24,10 @@ from utils.tenant import (
 )
 
 _TENANT_HINT_BODY_MAX_BYTES = 65_536
+_GLOBAL_LANDING_HOSTS = frozenset({
+    "chatboc.ar", "www.chatboc.ar", "api.chatboc.ar",
+    "chatboc-frontend.vercel.app", "chatboc-backend.vercel.app",
+})
 
 
 def _normalize_slug(value: Optional[str]) -> Optional[str]:
@@ -416,6 +422,76 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
     return _fallback_default_tenant()
 
 
+def _global_landing_hosts() -> set[str]:
+    hosts = set(_GLOBAL_LANDING_HOSTS)
+    runtime_host = os.environ.get("VERCEL_URL")
+    if (isinstance(runtime_host, str) and re.fullmatch(
+            r"chatboc-backend-[a-z0-9]+-marcelos-projects-c26aa499\.vercel\.app",
+            runtime_host)):
+        hosts.add(runtime_host)
+    return hosts
+
+
+def _is_global_platform_landing_request() -> bool:
+    """Only the selector-free brand contract may omit tenant discovery.
+
+    Every supplied host hint must remain canonical. A canonical Origin cannot
+    authorize a custom host, and tenant/widget selectors keep their usual path.
+    This does not bypass authentication hooks or authorize another endpoint.
+    """
+    if (request.endpoint != "public_resolver_bp.landing_experience"
+            or request.path != "/api/public/landing-experience"
+            or request.method not in {"GET", "HEAD", "OPTIONS"}):
+        return False
+    if (set(request.args) - {"page"}
+            or any(len(request.args.getlist(key)) != 1 for key in request.args)
+            or request.content_length not in (None, 0)
+            or "Transfer-Encoding" in request.headers):
+        return False
+    if any(header in request.headers for header in (
+            "X-Tenant", "X-Tenant-Slug", "X-Tenant-Id", "X-Widget-Token",
+            "X-Entity-Token", "X-Owner-Token", "X-Token", "Authorization")):
+        return False
+    cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    if any(name in request.cookies for name in (cookie_name, "widget_token", "owner_token")
+           if isinstance(name, str) and name):
+        return False
+    if _tenant_slug_from_url(request.headers.get("Referer")):
+        return False
+
+    # Only this deployment's exact public runtime hostname is eligible;
+    # neither another candidate nor arbitrary vercel.app hosts are trusted.
+    hosts = _global_landing_hosts()
+
+    def canonical_host(value, *, url=False):
+        if not isinstance(value, str) or not value or value != value.strip() or "," in value:
+            return False
+        if not url and any(part in value for part in ("/", "?", "#")):
+            return False
+        try:
+            parsed = urlparse(value if url else "//" + value)
+            return (parsed.hostname in hosts
+                    and parsed.username is None and parsed.password is None
+                    and parsed.port in (None, 80, 443)
+                    and (not url or parsed.scheme in {"http", "https"}))
+        except ValueError:
+            return False
+
+    if not canonical_host(request.host):
+        return False
+    original = request.environ.get("werkzeug.proxy_fix.orig", {})
+    if (isinstance(original, dict) and original.get("HTTP_HOST") is not None
+            and not canonical_host(original["HTTP_HOST"])):
+        return False
+    for header in ("X-Forwarded-Host", "X-Original-Host", "X-Host"):
+        if header in request.headers and not canonical_host(request.headers[header]):
+            return False
+    for header in ("Origin", "Referer"):
+        if header in request.headers and not canonical_host(request.headers[header], url=True):
+            return False
+    return True
+
+
 def tenant_middleware(app) -> None:
     @app.before_request
     def attach_tenant_profile() -> None:
@@ -439,6 +515,9 @@ def tenant_middleware(app) -> None:
             return
 
         if is_public_version_metadata_request(request):
+            return
+
+        if _is_global_platform_landing_request():
             return
 
         # These routes have their own credential-free CORS preflight response.
