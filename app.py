@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv(encoding="utf-8-sig")  # override=False: respect process secrets
 from flask import Flask, request, current_app, g, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import HTTPException, InternalServerError
 
 # Logging básico del proyecto
 from services.logging_config import (
@@ -293,6 +293,13 @@ def create_app(config_class=Config):
 
     @app.errorhandler(500)
     def handle_server_error(error):
+        # Flask wraps failures outside normal route dispatch (for example while
+        # opening a session) in InternalServerError. Preserve the typed
+        # availability contract without classifying messages or chained causes.
+        if isinstance(error, InternalServerError) and isinstance(
+            error.original_exception, DATABASE_AVAILABILITY_ERRORS
+        ):
+            return handle_database_unavailable(error.original_exception)
         app.logger.error(
             "Unhandled server error error_type=%s",
             type(error).__name__,

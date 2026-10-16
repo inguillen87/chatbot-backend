@@ -13,6 +13,7 @@ name: Durable sessions and private attachments
       - routes/webauthn.py
       - routes/archivos.py
       - routes/internal_cron.py
+      - routes/rubros.py
       - routes/voice_routes.py
       - routes/ticket.py
       - routes/crm/**
@@ -46,6 +47,8 @@ name: Durable sessions and private attachments
       - tests/test_r2_service.py
       - tests/test_runtime_readiness.py
       - tests/test_tenant_dependency_availability.py
+      - tests/test_request_lifecycle_database_availability.py
+      - tests/test_rubros_database_availability.py
       - tests/test_internal_cron_request_gates.py
       - tests/test_widget_bootstrap.py
       - tests/test_production_login_bootstrap.py
@@ -104,7 +107,7 @@ jobs:
           set -euo pipefail
           mkdir -p .qa-artifacts/auth-private-storage/tenant-availability
           git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/tenant-availability/checkout.txt
-          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_tenant_dependency_availability.py", "tests/test_internal_cron_request_gates.py", "tests/test_widget_bootstrap.py", "tests/test_production_login_bootstrap.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-availability/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-availability/tests.log
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_tenant_dependency_availability.py", "tests/test_internal_cron_request_gates.py", "tests/test_request_lifecycle_database_availability.py", "tests/test_rubros_database_availability.py", "tests/test_widget_bootstrap.py", "tests/test_production_login_bootstrap.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-availability/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-availability/tests.log
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
