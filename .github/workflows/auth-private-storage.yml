@@ -14,12 +14,14 @@ name: Durable sessions and private attachments
       - routes/archivos.py
       - routes/internal_cron.py
       - routes/rubros.py
+      - routes/public_resolver.py
       - routes/voice_routes.py
       - routes/ticket.py
       - routes/crm/**
       - services/auth_session_lifecycle.py
       - services/clerk_auth_service.py
       - services/runtime_readiness.py
+      - services/landing_experience_contract.py
       - services/*attachment*.py
       - services/*institutional_assistant*.py
       - services/r2_service.py
@@ -52,6 +54,8 @@ name: Durable sessions and private attachments
       - tests/test_internal_cron_request_gates.py
       - tests/test_widget_bootstrap.py
       - tests/test_production_login_bootstrap.py
+      - tests/test_global_landing_admission.py
+      - tests/test_landing_experience_contract.py
       - tests/test_render_authority_retired.py
       - tests/*voice*writer*.py
       - tests/*socket*writer*.py
@@ -108,6 +112,13 @@ jobs:
           mkdir -p .qa-artifacts/auth-private-storage/tenant-availability
           git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/tenant-availability/checkout.txt
           python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_tenant_dependency_availability.py", "tests/test_internal_cron_request_gates.py", "tests/test_request_lifecycle_database_availability.py", "tests/test_rubros_database_availability.py", "tests/test_widget_bootstrap.py", "tests/test_production_login_bootstrap.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-availability/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-availability/tests.log
+      - name: Canonical landing admission and custom-host contact regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/landing-admission
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/landing-admission/checkout.txt
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_global_landing_admission.py", "tests/test_landing_experience_contract.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/landing-admission/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/landing-admission/tests.log
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -116,6 +127,7 @@ jobs:
           path: |
             .qa-artifacts/auth-private-storage/*.log
             .qa-artifacts/auth-private-storage/tenant-availability/
+            .qa-artifacts/auth-private-storage/landing-admission/
           include-hidden-files: true
   isolated-postgres:
     runs-on: ubuntu-24.04
