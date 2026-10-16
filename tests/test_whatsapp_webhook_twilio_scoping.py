@@ -15,6 +15,7 @@ from app import create_app
 from config import Config
 from extensions import db
 from models import (
+    AuditEvent,
     MessagingEventLedger,
     MunicipioTicket,
     Notification,
@@ -23,6 +24,7 @@ from models import (
     PymeTicket,
     TenantProfile,
     TenantTicket,
+    TenantTicketReplyEvent,
     User,
     WhatsappNumero,
 )
@@ -625,6 +627,156 @@ class TwilioWebhookCredentialScopingTestCase(unittest.TestCase):
         )
         self.assertEqual(persisted_attempt.status, NotificationAttempt.STATUS_SUCCESS)
         self.assertIsNotNone(persisted_attempt.delivery_event_id)
+
+    def test_tenant_ticket_reply_callback_requires_signature_and_is_idempotent(self):
+        sender = self._create_sender(child_scoped=True)
+        ticket = TenantTicket(
+            tenant_id=sender.tenant_id,
+            categoria="luminarias",
+            descripcion="Luminaria apagada",
+            estado="en_proceso",
+            origen="whatsapp",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        reply = TenantTicketReplyEvent(
+            tenant_id=sender.tenant_id,
+            ticket_id=ticket.id,
+            event_id="reply-signed-callback-0001",
+            body="Respuesta privada del operador",
+            recipient_phone=RECIPIENT_NUMBER,
+            whatsapp_delivery_status="uncertain",
+        )
+        db.session.add(reply)
+        db.session.commit()
+
+        callback_path = (
+            "/twilio/whatsapp/status?tenant_ticket_reply_event_id=" f"{reply.id}"
+        )
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "MessageSid": "SM_reply_callback_scoped",
+            "MessageStatus": "delivered",
+            "From": f"whatsapp:{SENDER_NUMBER}",
+            "To": f"whatsapp:{RECIPIENT_NUMBER}",
+        }
+
+        rejected = self.client.post(
+            callback_path,
+            data=payload,
+            headers={"X-Twilio-Signature": "forged"},
+        )
+        self.assertEqual(rejected.status_code, 403)
+        db.session.expire_all()
+        self.assertEqual(
+            db.session.get(TenantTicketReplyEvent, reply.id).whatsapp_delivery_status,
+            "uncertain",
+        )
+
+        signature = self._signature(callback_path, payload, CHILD_AUTH_TOKEN)
+        accepted = self.client.post(
+            callback_path,
+            data=payload,
+            headers={"X-Twilio-Signature": signature},
+        )
+        replay = self.client.post(
+            callback_path,
+            data=payload,
+            headers={"X-Twilio-Signature": signature},
+        )
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(replay.status_code, 200)
+        db.session.expire_all()
+        persisted = db.session.get(TenantTicketReplyEvent, reply.id)
+        self.assertEqual(persisted.whatsapp_delivery_status, "delivered")
+        self.assertEqual(
+            persisted.whatsapp_provider_message_id,
+            "SM_reply_callback_scoped",
+        )
+        self.assertEqual(
+            AuditEvent.query.filter_by(
+                tenant_id=sender.tenant_id,
+                event_type="tenant_ticket.reply.whatsapp.delivery_callback",
+            ).count(),
+            1,
+        )
+
+    def test_tenant_ticket_reply_callback_collision_is_quarantined_terminally(self):
+        sender = self._create_sender(child_scoped=True)
+        ticket = TenantTicket(
+            tenant_id=sender.tenant_id,
+            categoria="luminarias",
+            descripcion="Reclamo con dos respuestas",
+            estado="en_proceso",
+            origen="whatsapp",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        provider_message_id = "SM_reply_callback_collision"
+        owner = TenantTicketReplyEvent(
+            tenant_id=sender.tenant_id,
+            ticket_id=ticket.id,
+            event_id="reply-callback-collision-owner",
+            body="Respuesta original",
+            recipient_phone=RECIPIENT_NUMBER,
+            whatsapp_delivery_status="provider_accepted",
+            whatsapp_provider_message_id=provider_message_id,
+            whatsapp_provider_sender_id=sender.id,
+            whatsapp_provider_status="accepted",
+        )
+        collided = TenantTicketReplyEvent(
+            tenant_id=sender.tenant_id,
+            ticket_id=ticket.id,
+            event_id="reply-callback-collision-target",
+            body="Respuesta que queda en cuarentena",
+            recipient_phone=RECIPIENT_NUMBER,
+            whatsapp_delivery_status="uncertain",
+            whatsapp_provider_sender_id=sender.id,
+        )
+        db.session.add_all([owner, collided])
+        db.session.commit()
+
+        callback_path = (
+            "/twilio/whatsapp/status?tenant_ticket_reply_event_id="
+            f"{collided.id}"
+        )
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "MessageSid": provider_message_id,
+            "MessageStatus": "delivered",
+            "From": f"whatsapp:{SENDER_NUMBER}",
+            "To": f"whatsapp:{RECIPIENT_NUMBER}",
+        }
+        response = self.client.post(
+            callback_path,
+            data=payload,
+            headers={
+                "X-Twilio-Signature": self._signature(
+                    callback_path,
+                    payload,
+                    CHILD_AUTH_TOKEN,
+                )
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        db.session.expire_all()
+        persisted = db.session.get(TenantTicketReplyEvent, collided.id)
+        self.assertEqual(persisted.whatsapp_delivery_status, "uncertain")
+        self.assertIsNone(persisted.whatsapp_provider_message_id)
+        self.assertEqual(
+            persisted.whatsapp_error_code,
+            "whatsapp_provider_message_id_duplicate",
+        )
+        audit = AuditEvent.query.filter_by(
+            tenant_id=sender.tenant_id,
+            event_type="tenant_ticket.reply.whatsapp.provider_message_collision",
+            resource_id=str(collided.id),
+        ).one()
+        self.assertFalse(audit.details["automatic_retry_allowed"])
+        self.assertNotIn(provider_message_id, str(audit.details))
 
     def test_legacy_sender_uses_parent_validator_and_parent_client(self):
         self._create_sender(child_scoped=False, create_provider_sender=False)

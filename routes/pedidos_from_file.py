@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import hashlib
 import logging
@@ -10,12 +12,14 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
-import pandas as pd
 from flask import Blueprint, jsonify, request, session, g
 from flask_cors import cross_origin
 from sqlalchemy import func
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 from database import db
 from models import ArchivoAdjunto, CatalogoItem, MunicipioTicket, PedidoConversacional, TenantTicket, TicketComentario
@@ -2318,6 +2322,10 @@ def pedidos_desde_archivo():
             widget_token=widget_token,
         )
     except TenantResolutionError:
+        # An explicit public selector is authoritative. If it is invalid or
+        # inactive, never recover through the configured/default tenant.
+        if tenant_slug or tenant_id or widget_token:
+            return _json_error(404, "tenant_no_encontrado", "Tenant no encontrado")
         tenant, owner = _resolve_public_owner()
         resolved_as_anon = True
         if not tenant or not owner:

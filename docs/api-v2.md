@@ -95,6 +95,12 @@ SLA calcula y persiste en `datos_extra.sla` por ticket:
 - `first_response_due_at`
 - `resolution_due_at`
 - `next_update_due_at`
+- `next_update_cycle`: ciclo activo compatible con el reloj actual.
+- `next_update_history`: historial append-only a nivel de aplicación, acotado a
+  50 ciclos cerrados por respuesta pública del operador. Cada entrada conserva
+  `due_at`, `satisfied_at` y `result` (`on_time`, `late` o `unknown` cuando la
+  evidencia previa falta o es inválida), bajo
+  `ticket.sla.next_update_cycle.v1`.
 - pausa automática cuando estado está en `waiting_customer` (o equivalente).
 
 Breaches emiten evento de auditoría `sla.breach_detected` y quedan listados vía endpoint.

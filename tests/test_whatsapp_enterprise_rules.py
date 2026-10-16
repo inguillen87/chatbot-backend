@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -7,7 +7,16 @@ import jwt
 import pytest
 
 from app import db
-from models import MessageTemplateRegistry, Notification, TenantProfile, User
+from models import (
+    AuditEvent,
+    MessageTemplateRegistry,
+    Notification,
+    ProviderConnection,
+    ProviderSender,
+    TenantProfile,
+    User,
+    WhatsAppContactState,
+)
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 
 
@@ -50,6 +59,14 @@ def test_whatsapp_rules_update_and_notification_enforcement(client, app):
     get_resp = client.get("/api/admin/whatsapp/rules", headers=headers)
     assert get_resp.status_code == 200
     assert get_resp.get_json()["enforce_template_outside_24h"] is True
+    assert get_resp.get_json()["quiet_hours_timezone"] == "UTC"
+
+    audit = AuditEvent.query.filter_by(
+        tenant_id=tenant.id,
+        event_type="whatsapp_rules.updated",
+    ).one()
+    assert "prohibido" not in json.dumps(audit.details)
+    assert audit.details["after"]["blocked_keywords_count"] == 1
 
     create = client.post(
         "/api/admin/notifications",
@@ -70,6 +87,110 @@ def test_whatsapp_rules_update_and_notification_enforcement(client, app):
     assert data["failed"] >= 1
 
 
+def test_whatsapp_rules_rejects_coercion_unknown_fields_and_invalid_ranges(
+    client, app
+):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    valid = client.put(
+        "/api/admin/whatsapp/rules",
+        headers=headers,
+        json={
+            "enforce_template_outside_24h": True,
+            "max_outbound_per_hour": 25,
+            "quiet_hours_start": 22,
+            "quiet_hours_end": 7,
+            "blocked_keywords": ["prohibido", "PROHIBIDO", "sensible"],
+        },
+    )
+    assert valid.status_code == 200, valid.get_json()
+    assert valid.get_json()["rules"]["blocked_keywords"] == [
+        "prohibido",
+        "sensible",
+    ]
+
+    invalid_updates = [
+        (
+            {"enforce_template_outside_24h": "false"},
+            "whatsapp_rules_boolean_required",
+        ),
+        ({"max_outbound_per_hour": True}, "whatsapp_rules_integer_required"),
+        ({"max_outbound_per_hour": 0}, "whatsapp_rules_integer_out_of_range"),
+        ({"quiet_hours_start": 24}, "whatsapp_rules_integer_out_of_range"),
+        (
+            {"quiet_hours_start": None},
+            "whatsapp_rules_quiet_hours_pair_required",
+        ),
+        (
+            {"quiet_hours_start": 7, "quiet_hours_end": 7},
+            "whatsapp_rules_quiet_hours_empty_window",
+        ),
+        ({"blocked_keywords": "prohibido"}, "whatsapp_rules_keywords_list_required"),
+        ({"blocked_keywords": ["linea\nnueva"]}, "whatsapp_rules_keyword_invalid"),
+        ({"unexpected": True}, "whatsapp_rules_unknown_fields"),
+    ]
+    for payload, reason in invalid_updates:
+        response = client.put(
+            "/api/admin/whatsapp/rules",
+            headers=headers,
+            json=payload,
+        )
+        assert response.status_code == 400, (payload, response.get_json())
+        assert response.get_json()["reason"] == reason
+
+    unchanged = client.get("/api/admin/whatsapp/rules", headers=headers)
+    assert unchanged.status_code == 200
+    body = unchanged.get_json()
+    assert body["enforce_template_outside_24h"] is True
+    assert body["max_outbound_per_hour"] == 25
+    assert body["quiet_hours_start"] == 22
+    assert body["quiet_hours_end"] == 7
+    assert body["blocked_keywords"] == ["prohibido", "sensible"]
+
+    explicit_false = client.put(
+        "/api/admin/whatsapp/rules",
+        headers=headers,
+        json={"enforce_template_outside_24h": False},
+    )
+    assert explicit_false.status_code == 200
+    assert explicit_false.get_json()["rules"]["enforce_template_outside_24h"] is False
+
+
+def test_whatsapp_rules_enforces_quiet_hours_in_utc(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+    configured = client.put(
+        "/api/admin/whatsapp/rules",
+        headers=headers,
+        json={"quiet_hours_start": 22, "quiet_hours_end": 7},
+    )
+    assert configured.status_code == 200, configured.get_json()
+
+    service = WhatsAppEnterpriseRulesService(tenant.id)
+    with patch(
+        "services.whatsapp_enterprise_rules.get_local_now",
+        return_value=datetime(2026, 9, 5, 23, 30, tzinfo=timezone.utc),
+    ):
+        allowed, reason = service.evaluate_outbound(
+            body="Respuesta del operador",
+            metadata={"is_template": True},
+        )
+    assert allowed is False
+    assert reason == "quiet_hours"
+
+    with patch(
+        "services.whatsapp_enterprise_rules.get_local_now",
+        return_value=datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc),
+    ):
+        allowed, reason = service.evaluate_outbound(
+            body="Respuesta del operador",
+            metadata={"is_template": True},
+        )
+    assert allowed is True
+    assert reason is None
+
+
 def test_whatsapp_rules_accepts_canonical_tenant_admin_alias(client, app):
     admin, tenant = _seed(role="tenant_admin")
     headers = _auth_headers(app, admin, tenant.slug)
@@ -83,9 +204,33 @@ def test_whatsapp_rules_accepts_canonical_tenant_admin_alias(client, app):
 def test_whatsapp_rules_uses_contact_state_24h_window(client, app):
     admin, tenant = _seed()
     headers = _auth_headers(app, admin, tenant.slug)
+    connection = ProviderConnection(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        environment="production",
+        status="online",
+        external_account_id="AC" + ("d" * 32),
+    )
+    db.session.add(connection)
+    db.session.flush()
+    sender = ProviderSender(
+        tenant_id=tenant.id,
+        provider_connection_id=connection.id,
+        channel="whatsapp",
+        sender_type="whatsapp_business",
+        phone_number="+17432643718",
+        sender_id="whatsapp:+17432643718",
+        status="online",
+    )
+    db.session.add(sender)
+    db.session.flush()
 
     svc = WhatsAppEnterpriseRulesService(tenant.id)
-    svc.register_inbound_activity(recipient="+5491112345678")
+    svc.register_inbound_activity(
+        recipient="+5491112345678",
+        provider_sender_id=sender.id,
+    )
     db.session.commit()
 
     put_resp = client.put(
@@ -122,6 +267,64 @@ def test_whatsapp_rules_uses_contact_state_24h_window(client, app):
     assert notification.status == "blocked"
     assert notification.last_error == "whatsapp_transport_unavailable"
     assert notification.next_retry_at is None
+
+
+def test_register_inbound_activity_recovers_first_insert_race_without_poisoning_session(
+    client,
+    app,
+):
+    _, tenant = _seed()
+    connection = ProviderConnection(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        environment="production",
+        status="online",
+        external_account_id="AC" + ("e" * 32),
+    )
+    db.session.add(connection)
+    db.session.flush()
+    sender = ProviderSender(
+        tenant_id=tenant.id,
+        provider_connection_id=connection.id,
+        channel="whatsapp",
+        sender_type="whatsapp_business",
+        phone_number="+17432643718",
+        sender_id="whatsapp:+17432643718",
+        status="online",
+    )
+    db.session.add(sender)
+    db.session.flush()
+    existing = WhatsAppContactState(
+        tenant_id=tenant.id,
+        provider_sender_id=sender.id,
+        recipient="+5491112345678",
+        last_inbound_at=datetime(2026, 9, 5, 10, 0, tzinfo=timezone.utc),
+    )
+    db.session.add(existing)
+    db.session.commit()
+
+    observed_at = datetime(2026, 9, 5, 10, 5, tzinfo=timezone.utc)
+    service = WhatsAppEnterpriseRulesService(tenant.id)
+    with patch.object(
+        service,
+        "get_contact_state",
+        side_effect=[None, existing],
+    ):
+        recovered = service.register_inbound_activity(
+            recipient="+5491112345678",
+            provider_sender_id=sender.id,
+            at=observed_at,
+        )
+    db.session.commit()
+
+    assert recovered.id == existing.id
+    assert WhatsAppContactState.query.filter_by(
+        tenant_id=tenant.id,
+        provider_sender_id=sender.id,
+        recipient="+5491112345678",
+    ).count() == 1
+    assert recovered.last_inbound_at.replace(tzinfo=timezone.utc) == observed_at
 
 
 def test_whatsapp_template_catalog_and_policy_test_endpoint(client, app):

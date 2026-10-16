@@ -2,8 +2,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from flask_sqlalchemy import SQLAlchemy
 import os
+from utils.postgres_tls import normalize_postgres_tls_uri
 
-DB_URL = os.getenv("DATABASE_URL", "sqlite:///instance/database.db")
+DB_URL = normalize_postgres_tls_uri(os.getenv("DATABASE_URL", "sqlite:///instance/database.db"))
 
 engine_kwargs = {"future": True}
 if DB_URL.startswith("sqlite"):

@@ -8,8 +8,8 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime
 from flask import Blueprint, abort, g, jsonify, request
-import pdfplumber
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TenantTicket, TicketComentario, User
 from services.analytics import get_summary
@@ -32,7 +32,10 @@ from services.tenant_ticket_scope import (
     resolve_unique_tenant_for_owner,
 )
 from services.vision_fallback_service import analyze_image_text, analyze_text_structured
+from utils.lazy_module import LazyModule
 from utils.roles import ROLE_EMPLEADO, canonical_role
+
+pdfplumber = LazyModule("pdfplumber")
 
 admin_ai_bp = Blueprint("admin_ai_bp", __name__, url_prefix="/admin")
 
@@ -372,6 +375,7 @@ def update_bot_settings():
 
 
 @admin_ai_bp.get("/ai/provider-status")
+@cutover_writer_view
 def ai_provider_status():
     require_access(
         "*",
@@ -477,6 +481,7 @@ def ticket_ai_summary(ticket_id: int):
 
 
 @admin_ai_bp.route("/tickets/<int:ticket_id>/ai-enrichment", methods=["GET", "POST"])
+@cutover_writer_view
 def ticket_ai_enrichment(ticket_id: int):
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):

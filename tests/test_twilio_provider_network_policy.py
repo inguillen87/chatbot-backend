@@ -329,7 +329,7 @@ def test_whatsapp_rules_blocks_client_constructor_and_content_request(caplog):
 
 def test_image_task_sender_blocks_before_twilio_client(caplog):
     caplog.clear()
-    with patch.object(tasks, "Client") as constructor, pytest.raises(
+    with patch("twilio.rest.Client") as constructor, pytest.raises(
         ProviderNetworkDisabledError,
         match="twilio_test_network_disabled",
     ):
@@ -345,6 +345,41 @@ def test_image_task_sender_blocks_before_twilio_client(caplog):
     assert "provider=twilio" in caplog.text
     assert "private-auth-token" not in caplog.text
     assert "private-message-body" not in caplog.text
+
+
+def test_image_task_sender_checks_network_before_client_and_send():
+    events = []
+    fake_client = MagicMock()
+
+    def _record_gate(provider):
+        events.append(("gate", provider))
+
+    def _record_constructor(*_args, **_kwargs):
+        events.append(("client", "twilio"))
+        return fake_client
+
+    def _record_send(**_kwargs):
+        events.append(("send", "twilio"))
+        return SimpleNamespace(sid="SM-mocked")
+
+    fake_client.messages.create.side_effect = _record_send
+
+    with patch(
+        "services.llm_provider_network_policy.require_provider_network",
+        side_effect=_record_gate,
+    ), patch("twilio.rest.Client", side_effect=_record_constructor):
+        result = tasks._send_image_analysis_twilio_message(
+            account_sid="AC-mocked-account",
+            auth_token="mocked-auth-token",
+            from_number="whatsapp:+15550000001",
+            to_number="whatsapp:+15550000002",
+            body="mocked-message-body",
+        )
+
+    assert result.sid == "SM-mocked"
+    assert events[0] == ("gate", "twilio")
+    assert events.index(("client", "twilio")) > events.index(("gate", "twilio"))
+    assert events.index(("send", "twilio")) > events.index(("client", "twilio"))
 
 
 def test_durable_worker_blocks_before_twilio_client_and_keeps_attempt_retryable():

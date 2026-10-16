@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import TestConfig
-from models import MunicipioTicket, TenantProfile, User, TicketComentario
+from models import ArchivoAdjunto, MunicipioTicket, TenantProfile, User, TicketComentario
 from utils.auth_helpers import generar_token
 from utils.time_utils import datetime_to_iso_utc
 
@@ -91,6 +91,77 @@ class TicketPublicEndpointTest(unittest.TestCase):
         self.assertEqual(data['canal_ingreso'], 'web')
         self.assertEqual(data['ultima_actualizacion'], datetime_to_iso_utc(self.ticket_ultima))
         self.assert_private_no_store(resp)
+
+    def test_pin_lookup_hides_internal_notes_and_their_attachments_but_agent_keeps_them(self):
+        internal_attachment = ArchivoAdjunto(
+            filename="internal-routing.pdf",
+            nombre_original="internal-routing.pdf",
+            mime="application/pdf",
+            tamano=512,
+            tipo="internal_note",
+            municipio_ticket_id=self.ticket_id,
+            url="https://cdn.example.test/internal-routing.pdf",
+        )
+        public_attachment = ArchivoAdjunto(
+            filename="public-update.pdf",
+            nombre_original="public-update.pdf",
+            mime="application/pdf",
+            tamano=256,
+            tipo="ticket_update",
+            municipio_ticket_id=self.ticket_id,
+            url="https://cdn.example.test/public-update.pdf",
+        )
+        db.session.add_all([internal_attachment, public_attachment])
+        db.session.flush()
+        internal = TicketComentario(
+            municipio_ticket_id=self.ticket_id,
+            comentario="Derivar internamente al proveedor reservado",
+            es_admin=True,
+            origen="  InTeRnAl  ",
+            archivo_adjunto_id=internal_attachment.id,
+        )
+        public = TicketComentario(
+            municipio_ticket_id=self.ticket_id,
+            comentario="La cuadrilla ya recibio el reclamo",
+            es_admin=True,
+            origen="admin_panel",
+            archivo_adjunto_id=public_attachment.id,
+        )
+        db.session.add_all([internal, public])
+        db.session.commit()
+
+        public_response = self.client.get(
+            "/tickets/municipio/por_numero/123456?pin=654321"
+        )
+
+        self.assertEqual(public_response.status_code, 200)
+        public_serialized = public_response.get_data(as_text=True)
+        self.assertNotIn("Derivar internamente", public_serialized)
+        self.assertNotIn("internal-routing.pdf", public_serialized)
+        self.assertIn("La cuadrilla ya recibio", public_serialized)
+        self.assertIn("public-update.pdf", public_serialized)
+        public_attachment_ids = {
+            item["id"] for item in public_response.get_json()["archivos_adjuntos"]
+        }
+        self.assertNotIn(internal_attachment.id, public_attachment_ids)
+        self.assertIn(public_attachment.id, public_attachment_ids)
+
+        token = generar_token(
+            self.user.id,
+            self.user.rol,
+            self.user.tipo_chat,
+            self.user.municipio_id,
+            self.user.pyme_id,
+        )
+        agent_response = self.client.get(
+            "/tickets/municipio/por_numero/123456",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        self.assertEqual(agent_response.status_code, 200)
+        agent_serialized = agent_response.get_data(as_text=True)
+        self.assertIn("Derivar internamente", agent_serialized)
+        self.assertIn("internal-routing.pdf", agent_serialized)
 
     def test_timeline_maps_cerrado_to_resuelto(self):
         cambio_estado = TicketComentario(

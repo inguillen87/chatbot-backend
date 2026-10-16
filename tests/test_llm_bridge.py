@@ -1,3 +1,4 @@
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -73,7 +74,10 @@ class TestLLMBridge(unittest.TestCase):
 
         responses = FakeResponses()
         fake_client = SimpleNamespace(responses=responses)
-        with patch('services.openai_bridge._get_openai_client', return_value=fake_client):
+        with patch(
+            'services.openai_bridge._get_openai_responses_client',
+            return_value=fake_client,
+        ):
             result = llamar_llm_para_generacion_texto(
                 'Devolve JSON.',
                 'hola',
@@ -89,6 +93,46 @@ class TestLLMBridge(unittest.TestCase):
             responses.kwargs['text']['format'],
             {'type': 'json_object'},
         )
+
+    def test_text_generation_uses_cloudflare_sol_model_when_opted_in(self):
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return SimpleNamespace(
+                    output_text='ok',
+                    output=[],
+                    status='completed',
+                    incomplete_details=None,
+                )
+
+        responses = FakeResponses()
+        fake_client = SimpleNamespace(responses=responses)
+        gateway_env = {
+            'CLOUDFLARE_AI_GATEWAY_ENABLED': 'true',
+            'CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID': 'c' * 32,
+            'CLOUDFLARE_AI_GATEWAY_API_TOKEN': 'cloudflare-text-test-token',
+            'CLOUDFLARE_AI_GATEWAY_ID': 'default',
+        }
+        with (
+            patch.dict(os.environ, gateway_env, clear=False),
+            patch(
+                'services.openai_bridge._get_openai_responses_client',
+                return_value=fake_client,
+            ),
+        ):
+            result = llamar_llm_para_generacion_texto(
+                'Respondé breve.',
+                'hola',
+                model='gpt-5.6-terra',
+            )
+
+        self.assertEqual(result, 'ok')
+        self.assertEqual(responses.kwargs['model'], 'openai/gpt-5.6-sol')
+        self.assertEqual(responses.kwargs['reasoning'], {'effort': 'none'})
+        self.assertIs(responses.kwargs['store'], False)
 
 
 if __name__ == '__main__':

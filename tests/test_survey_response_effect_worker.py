@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import secrets
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 from flask import Flask
 import pytest
@@ -198,6 +198,25 @@ def test_worker_schema_gate_does_not_query_database_for_other_process_roles():
     database_heads.assert_not_called()
 
 
+def test_explicit_schema_gate_checks_web_role_for_serverless_cron():
+    app = _make_app()
+    app.config.update(
+        TESTING=False,
+        CHATBOC_PROCESS_ROLE="web",
+    )
+    with app.app_context(), patch(
+        "services.survey_response_effect_worker._repository_schema_heads",
+        return_value=frozenset({"release-head"}),
+    ), patch(
+        "services.survey_response_effect_worker._database_schema_heads",
+        return_value=frozenset({"previous-head"}),
+    ), pytest.raises(
+        SurveyResponseEffectWorkerConfigurationError,
+        match="survey_response_effect_worker_schema_not_current",
+    ):
+        assert_survey_response_effect_worker_schema_current(required=True)
+
+
 def test_worker_rotates_tenants_and_divides_each_bounded_batch_fairly():
     app = _make_app()
     app.config.update(
@@ -228,6 +247,31 @@ def test_worker_rotates_tenants_and_divides_each_bounded_batch_fairly():
         call(tenant_id=3, limit=1, lease_seconds=120),
         call(tenant_id=1, limit=1, lease_seconds=120),
     ]
+
+
+def test_deadline_stops_claiming_new_survey_tenants_and_passes_effect_guard():
+    app = _make_app()
+    clock = Mock(side_effect=[0.0, 2.0])
+    with app.app_context(), patch(
+        "services.survey_response_effect_worker."
+        "list_due_survey_response_effect_tenant_ids",
+        return_value=(1, 2),
+    ), patch(
+        "services.survey_response_effect_worker.dispatch_survey_response_effects",
+        return_value=_dispatcher_result(),
+    ) as dispatch:
+        report = dispatch_survey_response_effect_batch(
+            limit=2,
+            deadline_monotonic=1.0,
+            clock=clock,
+            require_shared_realtime=True,
+        )
+
+    dispatch.assert_called_once()
+    assert callable(dispatch.call_args.kwargs["should_continue"])
+    assert dispatch.call_args.kwargs["require_shared_realtime"] is True
+    assert report["processed"] == 1
+    assert [item["tenant_id"] for item in report["tenants"]] == [1]
 
 
 def test_retry_wait_survives_process_restart_and_is_applied_once(tmp_path):

@@ -2,7 +2,9 @@ from typing import Dict, Any, List
 from ..base import CatalogProcessor, ProcessResult, CatalogItemData
 from services.llm_utils import llamar_llm_para_json_estructurado
 from services.common_utils import parse_precio_flexible
-import pdfplumber
+from utils.lazy_module import LazyModule
+
+pdfplumber = LazyModule("pdfplumber")
 
 class BodegaProcessor(CatalogProcessor):
     @property

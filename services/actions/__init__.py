@@ -30,7 +30,7 @@ ACTION_HANDLER_MAP = {
     "consultar_puntos_de_interes": "services.actions.information_actions.ConsultarPuntosDeInteresActionHandler",
 
     # Acciones de PYME (Generales)
-    "consultar_producto_pyme": "services.actions.pyme_actions.ConsultarProductoActionHandler",
+    "consultar_producto_pyme": "services.actions.pyme_order_actions.ConsultarProductoAction",
     "consultar_ofertas_pyme": "services.actions.pyme_actions.ConsultarOfertasActionHandler",
     "solicitar_ubicacion_tienda": "services.actions.pyme_actions.SolicitarUbicacionTiendaActionHandler",
     "consultar_estado_pedido": "services.actions.pyme_order_actions.ConsultarEstadoPedidoAction",
@@ -41,6 +41,7 @@ ACTION_HANDLER_MAP = {
     "crear_pedido_pyme": "services.actions.pyme_order_actions.CrearPedidoAction",
     "agregar_item_carrito": "services.actions.pyme_order_actions.AgregarItemCarritoAction",
     "ver_carrito": "services.actions.pyme_order_actions.VerCarritoAction",
+    "ver_carrito_pyme": "services.actions.pyme_order_actions.VerCarritoAction",
     "modificar_carrito": "services.actions.pyme_order_actions.ModificarCarritoAction",
     "finalizar_compra": "services.actions.pyme_order_actions.FinalizarCompraAction",
     "finalizar_pedido_pyme": "services.actions.pyme_order_actions.CrearPedidoAction",

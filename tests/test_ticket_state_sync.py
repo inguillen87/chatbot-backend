@@ -288,7 +288,7 @@ class TicketStateSyncTest(unittest.TestCase):
         token = json.loads(res_login.data)['token']
         res = self.client.put(f'/tickets/pyme/{self.pyme_ticket.id}/estado',
                               headers={'Authorization': f'Bearer {token}'},
-                              data=json.dumps({'estado': 'cerrado'}),
+                              data=json.dumps({'estado': 'cerrado', 'expected_estado': 'nuevo'}),
                               content_type='application/json')
         self.assertEqual(res.status_code, 200)
         actualizado = PymeTicket.query.get(self.pyme_ticket.id)
@@ -381,7 +381,7 @@ class TicketStateSyncTest(unittest.TestCase):
         res = self.client.put(
             f'/tickets/pyme/{self.pyme_ticket.id}/estado',
             headers={'Authorization': f'Bearer {token}'},
-            data=json.dumps({'estado': 'invalido'}),
+            data=json.dumps({'estado': 'invalido', 'expected_estado': 'nuevo'}),
             content_type='application/json'
         )
         self.assertEqual(res.status_code, 400)

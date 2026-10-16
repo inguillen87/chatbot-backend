@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import logging
-import pandas as pd
 import re # Para limpieza y parseo
 from typing import Dict, Any, List, Optional
 from sqlalchemy import func # Para func.lower()
@@ -8,6 +9,9 @@ from sqlalchemy import func # Para func.lower()
 from models import CatalogoItem, User # Asumiendo que User es el modelo de la PYME
 from extensions import db # Para la sesión de base deatos, si es necesario aquí o se pasa
 from services.common_utils import crear_mapa_de_columnas_inteligente, limpiar_texto_base, parse_precio_flexible, KEYWORD_MAP
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 # Necesitaremos una función de similitud si buscamos por nombre de forma flexible
 # from services.common_utils import calcular_similitud_levenshtein # Si la movemos/copiamos a common_utils
 # O la definimos aquí o importamos Levenshtein directamente

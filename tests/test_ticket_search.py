@@ -99,18 +99,19 @@ class TicketSearchTests(unittest.TestCase):
         self.assertEqual(data['municipio_id'], self.admin.id)
         self.assertEqual(data['socket_room'], f'tenant_{self.tenant.id}')
 
-    def test_dynamic_keyword_cache(self):
+    def test_ticket_text_never_mutates_global_category_dictionary(self):
         from services.herramientas_municipio import recargar_cache_keywords_para_tests
         from utils.ticket_utils import normalize_category
 
         nuevo = MunicipioTicket(id=3, nro_ticket='102', estado='nuevo', fecha=datetime.now(),
                                  categoria='luminaria', municipio_id=self.admin.id, user_id=self.neighbor.id,
-                                 tenant_id=self.tenant.id, nombre_vecino='Ana Lopez', detalles='alumbrado publico apagado')
+                                 tenant_id=self.tenant.id, nombre_vecino='Ana Lopez', detalles='xilofonozonal apagado')
         db.session.add(nuevo)
         db.session.commit()
 
         recargar_cache_keywords_para_tests()
         self.assertEqual(normalize_category('alumbrado'), 'Luminarias')
+        self.assertEqual(normalize_category('xilofonozonal'), 'xilofonozonal')
 
 if __name__ == '__main__':
     unittest.main()

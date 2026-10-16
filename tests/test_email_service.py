@@ -46,6 +46,29 @@ class EmailServiceAdminTests(unittest.TestCase):
         self.assertFalse(result)
         mock_send.assert_not_called()
 
+    def test_email_context_hides_unresolved_legacy_and_raw_private_attachment_links(self):
+        legacy = 'https://legacy.example.invalid/citizen.pdf'
+        private = 'r2-private://private-fixture/internal-citizen.pdf'
+        ticket = DummyTicket(archivos=[SimpleNamespace(id=7, nombre_original='Documento.pdf', url=private, mime='application/pdf', tamano=12)], foto_url_directa=legacy)
+        with patch('services.private_attachment_storage.private_attachment_storage', side_effect=AssertionError('email context without exact auth cannot read storage')):
+            context = email_service._collect_ticket_attachments(ticket, {})
+        self.assertEqual(len(context), 2)
+        self.assertTrue(all(item['url'] is None for item in context))
+        self.assertTrue(all(item['storage_access'] == 'unavailable' for item in context))
+        self.assertNotIn(legacy, str(context))
+        self.assertNotIn(private, str(context))
+
+    def test_email_attachment_context_retains_configured_public_catalog_link(self):
+        from services.r2_service import R2Service
+        storage = R2Service()
+        storage.public_base_url = 'https://catalog.example.invalid'
+        url = storage.public_base_url + '/tenants/example/catalogos/catalog.pdf'
+        attachment = SimpleNamespace(nombre_original='Catalogo.pdf', url=url, mime='application/pdf', tamano=12)
+        with patch('services.attachment_delivery.r2_service', storage), patch.object(storage, '_create_client', side_effect=AssertionError('public context needs no SDK')):
+            context = email_service._serialize_attachment(attachment)
+        self.assertEqual(context['url'], url)
+        self.assertEqual(context['storage_access'], 'public')
+
     def test_no_admin_email_ticket(self):
         mock_app = SimpleNamespace(config={}, logger=MagicMock())
         with patch("services.email_service.current_app", mock_app):

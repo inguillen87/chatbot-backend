@@ -1,0 +1,10 @@
+contract_version = "chatboc.render_neon_parity_policy.v1"
+
+[excluded_tables]
+alembic_version = "Neon schema history is validated by the separate cutover preflight."
+
+[table_rules.municipio_ticket.destination_authoritative_columns]
+estado = "Workflow state may advance in Neon after the legacy copy."
+
+[table_rules.municipio_ticket.source_only_null_columns]
+archivo_url = "The retired legacy column is admissible only while every source value is null."

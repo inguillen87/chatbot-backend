@@ -89,6 +89,7 @@ def _ingest(
     now: datetime = BASE_TIME,
     payload_digest: str | None = None,
     max_attempts: int = 8,
+    received_at: datetime | None = None,
 ):
     return ingest_whatsapp_inbound_turn(
         tenant_id=tenant_id,
@@ -97,6 +98,7 @@ def _ingest(
         payload=_payload(sid, body=body),
         payload_digest=payload_digest,
         max_attempts=max_attempts,
+        received_at=received_at,
         now=now,
     )
 
@@ -317,7 +319,8 @@ def test_fifo_blocks_later_inbound_turn_until_stream_head_completes(turn_app):
     second = _ingest(
         "SMfifo002",
         stream_key="same-stream",
-        now=BASE_TIME + timedelta(milliseconds=1),
+        # Equal receipt times exercise the deterministic database-id tie break.
+        now=BASE_TIME,
     )
 
     first_claim = claim_next_whatsapp_inbound_turn(
@@ -347,6 +350,66 @@ def test_fifo_blocks_later_inbound_turn_until_stream_head_completes(turn_app):
     )
     assert second_claim is not None
     assert second_claim.turn_id == second.turn_id
+
+
+def test_fifo_claims_late_replay_by_original_received_at_and_keeps_it_stable(
+    turn_app,
+):
+    stream_key = "late-replay-stream"
+    newer = _ingest(
+        "SMlateReplayNewer001",
+        stream_key=stream_key,
+        now=BASE_TIME + timedelta(seconds=10),
+        received_at=BASE_TIME + timedelta(seconds=10),
+    )
+    older_replayed_late = _ingest(
+        "SMlateReplayOlder001",
+        stream_key=stream_key,
+        now=BASE_TIME + timedelta(seconds=20),
+        received_at=BASE_TIME,
+    )
+
+    first_claim = claim_next_whatsapp_inbound_turn(
+        tenant_id=101,
+        stream_key=stream_key,
+        now=BASE_TIME + timedelta(seconds=20),
+    )
+    assert first_claim is not None
+    assert first_claim.turn_id == older_replayed_late.turn_id
+
+    completion = complete_whatsapp_inbound_turn(
+        first_claim.turn_id,
+        first_claim.lease_token,
+        now=BASE_TIME + timedelta(seconds=21),
+    )
+    assert completion.completed is True
+
+    second_claim = claim_next_whatsapp_inbound_turn(
+        tenant_id=101,
+        stream_key=stream_key,
+        now=BASE_TIME + timedelta(seconds=21),
+    )
+    assert second_claim is not None
+    assert second_claim.turn_id == newer.turn_id
+
+    duplicate = _ingest(
+        "SMlateReplayOlder001",
+        stream_key=stream_key,
+        now=BASE_TIME + timedelta(seconds=30),
+        received_at=BASE_TIME - timedelta(minutes=5),
+    )
+    assert duplicate.outcome == INGEST_DUPLICATE
+
+    with Session(db.engine) as session:
+        persisted = session.get(
+            WhatsAppInboundTurn,
+            older_replayed_late.database_id,
+        )
+        assert persisted is not None
+        assert persisted.received_at.replace(tzinfo=timezone.utc) == BASE_TIME
+        assert persisted.created_at.replace(tzinfo=timezone.utc) == (
+            BASE_TIME + timedelta(seconds=20)
+        )
 
 
 def test_expired_inbound_lease_reclaims_with_new_token_and_fences_stale_worker(turn_app):

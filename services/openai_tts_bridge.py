@@ -2,12 +2,17 @@ import os
 import openai
 import logging
 import uuid
-import httpx
+import time
 from cachetools import TTLCache
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TTS_MODEL,
     resolve_openai_model,
 )
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,47 @@ def clear_tts_cache() -> None:
     """Utility mainly for tests to clear the local TTS cache."""
     _TTS_CACHE.clear()
 
+
+def synthesize_mp3_bytes(text: str, *, max_bytes: int, timeout_seconds: float) -> bytes:
+    """Bounded binary speech for serverless routes; no cache, disk or fallback."""
+    from services.institutional_assistant_content import ContentError
+    api_key = os.getenv('OPENAI_API_KEY', '').strip()
+    if not api_key:
+        raise ContentError('knowledge_audio_unavailable', 503)
+    selected_model = resolve_openai_model('OPENAI_TTS_MODEL', DEFAULT_OPENAI_TTS_MODEL)
+    if selected_model not in {'gpt-4o-mini-tts', 'gpt-4o-mini-tts-2025-12-15', 'tts-1', 'tts-1-hd'}:
+        raise ContentError('knowledge_audio_unavailable', 503)
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        # Pin the official endpoint, disable environment proxies and retries,
+        # and bound idle reads as well as the total streaming deadline.
+        timeout = httpx.Timeout(timeout_seconds, connect=5.0, read=5.0)
+        with httpx.Client(proxy=None, trust_env=False, timeout=timeout,
+                follow_redirects=False) as transport:
+            with openai.OpenAI(api_key=api_key, base_url='https://api.openai.com/v1',
+                    http_client=transport, timeout=timeout, max_retries=0) as client:
+                with client.audio.speech.with_streaming_response.create(
+                        model=selected_model, voice=_normalize_voice(None), input=text,
+                        response_format='mp3', speed=0.9) as response:
+                    mime = response.headers.get('Content-Type', '').split(';', 1)[0].lower()
+                    if mime not in ('audio/mpeg', 'audio/mp3', 'application/octet-stream'):
+                        raise ContentError('knowledge_audio_failed', 502)
+                    buffer = bytearray()
+                    for chunk in response.iter_bytes(chunk_size=65536):
+                        if time.monotonic() > deadline or len(buffer) + len(chunk) > max_bytes:
+                            raise ContentError('knowledge_audio_failed', 502)
+                        buffer.extend(chunk)
+                    audio = bytes(buffer)
+                    if (time.monotonic() > deadline or len(audio) < 3
+                        or not (audio.startswith(b'ID3') or audio[0] == 255 and audio[1] & 224 == 224)):
+                        raise ContentError('knowledge_audio_failed', 502)
+                    return audio
+    except ContentError:
+        raise
+    except Exception as error:
+        logger.warning('Institutional OpenAI speech failed error_type=%s', type(error).__name__)
+        raise ContentError('knowledge_audio_failed', 502) from error
+
 def generar_audio_openai(
     text: str,
     *,
@@ -123,8 +169,22 @@ def generar_audio_openai(
         # unsupported `proxies` arguments into the OpenAI client. Some
         # environments (like CI) define `http_proxy`/`https_proxy` which would
         # otherwise cause `openai.OpenAI` to fail during initialization.
-        http_client = httpx.Client(proxy=None, trust_env=False)
-        client = openai.OpenAI(api_key=api_key, http_client=http_client)
+        configured_timeout = os.getenv("OPENAI_TTS_TIMEOUT_SECONDS", "60")
+        bounded_timeout = outbox_io_timeout_seconds(configured_timeout)
+        http_client_kwargs: dict[str, object] = {
+            "proxy": None,
+            "trust_env": False,
+        }
+        client_kwargs: dict[str, object] = {"api_key": api_key}
+        if bounded_timeout is not None:
+            http_client_kwargs["timeout"] = bounded_timeout
+            client_kwargs.update(
+                timeout=bounded_timeout,
+                max_retries=0,
+            )
+        http_client = httpx.Client(**http_client_kwargs)
+        client_kwargs["http_client"] = http_client
+        client = openai.OpenAI(**client_kwargs)
 
         logger.info(
             "Requesting OpenAI speech synthesis model=%s voice=%s input_chars=%s",

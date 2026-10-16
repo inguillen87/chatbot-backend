@@ -17,8 +17,9 @@ def _create_user(*, email: str = "session@test.com", role: str = "admin") -> Use
 
 
 def _clerk_token(app, user: User, *, sid: str) -> str:
+    from services.auth_session_lifecycle import issue_token
     now = datetime.now(timezone.utc)
-    return jwt.encode(
+    return issue_token(
         {
             "user_id": user.id,
             "rol": user.rol,
@@ -32,8 +33,6 @@ def _clerk_token(app, user: User, *, sid: str) -> str:
             "iat": now,
             "exp": now + timedelta(hours=1),
         },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
     )
 
 
@@ -179,16 +178,16 @@ def test_token_required_rejects_inactive_tenant_flask_session_cookie(client):
         db.session.commit()
         user_id = user.id
 
-    with client.session_transaction() as flask_session:
-        flask_session["_user_id"] = str(user_id)
-        flask_session["_fresh"] = True
+    login = client.post('/auth/login', json={'email': 'inactive-cookie@test.com', 'password': 'safe-password'})
+    assert login.status_code == 200
+    token = login.get_json()['token']
 
     with client.application.app_context():
         tenant = TenantProfile.query.filter_by(slug="inactive-cookie").one()
         tenant.is_active = False
         db.session.commit()
 
-    response = client.get("/auth/token-info")
+    response = client.get("/auth/token-info", headers={'Authorization': 'Bearer ' + token})
 
     assert response.status_code == 401
     payload = response.get_json()
@@ -382,38 +381,79 @@ def test_superadmin_login_fails_closed_when_clerk_is_disabled(client, monkeypatc
         assert response.get_json()["reason_code"] == "clerk_required"
 
 
-def test_v2_logout_clears_flask_and_token_cookies(client):
+def test_impersonation_issues_accepted_revocable_owner_lineage_and_durable_audit(client):
+    from uuid import uuid4
+    from models import AdminAuditLog
+    from utils.auth_helpers import user_from_token
+    with client.application.app_context():
+        administrator = _create_user(email='guillen.marce@gmail.com', role='super_admin')
+        _mark_clerk_managed(administrator)
+        owner = _create_user(email='impersonation-owner@example.invalid')
+        tenant = TenantProfile(slug='disposable-impersonation', nombre='Disposable', tipo='pyme', pyme_id=owner.id)
+        db.session.add(tenant); db.session.flush()
+        owner.tenant_id = tenant.id; owner.tenant_slug = tenant.slug
+        db.session.commit()
+        admin_id, owner_id = administrator.id, owner.id
+        admin_token = _clerk_token(client.application, administrator, sid='synthetic_impersonation_admin')
+    response = client.post('/api/admin/tenants/disposable-impersonation/impersonate',
+        headers={'Authorization': 'Bearer ' + admin_token})
+    assert response.status_code == 200, response.get_json()
+    value = response.get_json()
+    assert value['session_retirement']['actor_id'] == str(owner_id)
+    assert value['session_retirement']['provider'] == 'native'
+    verified = client.get('/api/me', headers={'Authorization': 'Bearer ' + value['token']})
+    assert verified.status_code == 200
+    assert verified.get_json()['session_context'] == {'kind':'impersonation', 'initiated_by_actor_id':str(admin_id)}
+    assert verified.get_json()['session_retirement']['lineage_id'] == value['session_retirement']['lineage_id']
+    with client.application.app_context():
+        claims = jwt.decode(value['token'], client.application.config['SECRET_KEY'], algorithms=['HS256'])
+        assert claims['impersonated_by'] == admin_id
+        assert user_from_token(value['token']).id == owner_id
+        audit = AdminAuditLog.query.filter_by(action='impersonate_tenant', target_object='disposable-impersonation').one()
+        assert audit.admin_user_id == admin_id
+        assert audit.details['target_user_id'] == owner_id
+    retired = client.post('/api/v2/auth/sessions/retire', json={'proof':value['session_retirement']['proof'], 'request_id':uuid4().hex})
+    assert retired.status_code == 200
+    assert not retired.headers.getlist('Set-Cookie')
+    with client.application.app_context():
+        assert user_from_token(value['token']) is None
+        assert user_from_token(admin_token).id == admin_id
+        owner = db.session.get(User, owner_id)
+        _mark_clerk_managed(owner); db.session.commit()
+    unsupported = client.post('/api/admin/tenants/disposable-impersonation/impersonate',
+        headers={'Authorization': 'Bearer ' + admin_token})
+    assert unsupported.status_code == 403
+    assert unsupported.get_json()['reason_code'] == 'impersonation_provider_unsupported'
+    with client.application.app_context():
+        tenant = TenantProfile.query.filter_by(slug='disposable-impersonation').one()
+        tenant.is_active = False; db.session.commit()
+    inactive = client.post('/api/admin/tenants/disposable-impersonation/impersonate',
+        headers={'Authorization': 'Bearer ' + admin_token})
+    assert inactive.status_code == 403
+    assert inactive.get_json()['reason_code'] == 'impersonation_tenant_inactive'
+
+
+def test_v2_logout_retires_proven_lineage_without_ambient_cookie_mutation(client):
+    from uuid import uuid4
     with client.application.app_context():
         _create_user(email="logout@test.com")
-
-    login = client.post(
-        "/auth/login",
-        json={"email": "logout@test.com", "password": "safe-password"},
-    )
+    login = client.post("/auth/login", json={"email":"logout@test.com", "password":"safe-password"})
     assert login.status_code == 200
-
-    logout = client.post("/api/v2/auth/logout")
+    value = login.get_json()
+    logout = client.post("/api/v2/auth/logout", json={"proof":value["session_retirement"]["proof"], "request_id":uuid4().hex})
     assert logout.status_code == 200
-    cookies = "\n".join(logout.headers.getlist("Set-Cookie"))
-    assert "auth_token=;" in cookies
-    assert "widget_token=;" in cookies
-
-    protected = client.get("/auth/me/dashboard")
-    assert protected.status_code == 401
+    assert logout.get_json()["local_revoked"] is True
+    assert not logout.headers.getlist("Set-Cookie")
+    assert client.get("/auth/me/dashboard").status_code == 401
 
 
-def test_v2_logout_clears_domain_and_host_only_token_cookies(client, monkeypatch):
+def test_v2_logout_invalid_command_never_mutates_domain_or_host_cookies(client, monkeypatch):
     monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", ".chatboc.ar")
     monkeypatch.setitem(client.application.config, "SESSION_COOKIE_SECURE", True)
     monkeypatch.setitem(client.application.config, "SESSION_COOKIE_SAMESITE", "None")
-
     response = client.post("/api/v2/auth/logout")
-
-    assert response.status_code == 200
-    cookies = response.headers.getlist("Set-Cookie")
-    assert any("auth_token=;" in value and "Domain=chatboc.ar" in value for value in cookies)
-    assert any("auth_token=;" in value and "Domain=" not in value for value in cookies)
-    assert any("widget_token=;" in value and "Domain=chatboc.ar" in value for value in cookies)
+    assert response.status_code == 400
+    assert not response.headers.getlist("Set-Cookie")
 
 
 def test_legacy_google_never_issues_token_before_terms(client, monkeypatch):

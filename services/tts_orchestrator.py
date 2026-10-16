@@ -6,12 +6,17 @@ import re
 import tempfile
 import textwrap
 from collections import OrderedDict
+from contextlib import contextmanager
 from threading import Lock
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urlparse
 
 from config import BACKEND_URL
 from services.media_cache_policy import IMMUTABLE_PUBLIC_CACHE
+from services.outbox_execution_budget import (
+    OutboxExecutionBudgetExceeded,
+    outbox_io_timeout_seconds,
+)
 
 ProviderCallable = Callable[[str], str | None]
 
@@ -34,6 +39,25 @@ _TTS_CACHE_METRIC_KEYS = (
 _TTS_CACHE_METRICS = {key: 0 for key in _TTS_CACHE_METRIC_KEYS}
 _TTS_CACHE_METRICS_LOCK = Lock()
 _TTS_GENERATION_LOCKS = tuple(Lock() for _ in range(64))
+
+
+@contextmanager
+def _bounded_generation_lock(lock: Lock) -> Iterator[None]:
+    """Bound lock contention only while the cron execution budget is active."""
+
+    bounded_timeout = outbox_io_timeout_seconds()
+    if bounded_timeout is None:
+        with lock:
+            yield
+        return
+
+    acquired = lock.acquire(timeout=bounded_timeout)
+    if not acquired:
+        raise OutboxExecutionBudgetExceeded("outbox_tts_generation_lock_timeout")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _increment_metric(name: str, amount: int = 1) -> None:
@@ -399,7 +423,7 @@ def generar_audio(
     generation_lock = _TTS_GENERATION_LOCKS[
         int(text_hash[:8], 16) % len(_TTS_GENERATION_LOCKS)
     ]
-    with generation_lock:
+    with _bounded_generation_lock(generation_lock):
         if cache_enabled and os.path.exists(cached_rel_path):
             logger.info("TTS Service: Returning audio cached by another request.")
             _increment_metric("cache_hits")

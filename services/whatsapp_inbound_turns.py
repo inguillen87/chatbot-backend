@@ -33,6 +33,7 @@ from models import (
     WhatsAppInboundTurn,
     WhatsAppOutboundAttempt,
 )
+from services.outbox_execution_budget import outbox_persistence_operation
 
 
 INBOUND_CONTRACT_VERSION = WhatsAppInboundTurn.CONTRACT_VERSION
@@ -748,6 +749,7 @@ def ingest_whatsapp_inbound_turn(
     session_identity_hmac: Any = None,
     payload_digest: Any = None,
     max_attempts: Any = DEFAULT_INBOUND_MAX_ATTEMPTS,
+    received_at: Optional[datetime] = None,
     now: Optional[datetime] = None,
 ) -> InboundTurnReceipt:
     """Persist or replay one inbound event in a short independent transaction."""
@@ -794,6 +796,9 @@ def ingest_whatsapp_inbound_turn(
         default=DEFAULT_INBOUND_MAX_ATTEMPTS,
     )
     operation_now = _coerce_utc(now)
+    original_received_at = (
+        _coerce_utc(received_at) if received_at is not None else operation_now
+    )
 
     with Session(bind=db.engine, expire_on_commit=False) as session:
         connection_id, sender_id = _validate_provider_scope(
@@ -868,7 +873,10 @@ def ingest_whatsapp_inbound_turn(
             attempt_count=0,
             max_attempts=resolved_max_attempts,
             available_at=operation_now,
-            received_at=operation_now,
+            # A buffered provider event may be persisted after a newer event.
+            # Keep its original receipt time so stream ordering survives replay;
+            # created_at/available_at still describe the local ingest attempt.
+            received_at=original_received_at,
             contract_version=INBOUND_CONTRACT_VERSION,
             created_at=operation_now,
             updated_at=operation_now,
@@ -986,7 +994,13 @@ def claim_next_whatsapp_inbound_turn(
     head_of_stream = ~exists().where(
         older.tenant_id == WhatsAppInboundTurn.tenant_id,
         older.stream_key == WhatsAppInboundTurn.stream_key,
-        older.id < WhatsAppInboundTurn.id,
+        or_(
+            older.received_at < WhatsAppInboundTurn.received_at,
+            and_(
+                older.received_at == WhatsAppInboundTurn.received_at,
+                older.id < WhatsAppInboundTurn.id,
+            ),
+        ),
         older.status.notin_(
             [WhatsAppInboundTurn.STATUS_COMPLETED, WhatsAppInboundTurn.STATUS_DEAD]
         ),
@@ -1270,6 +1284,7 @@ def _normalize_result(result: Optional[Mapping[str, Any]]) -> Optional[dict[str,
     return dict(normalized)
 
 
+@outbox_persistence_operation
 def complete_whatsapp_inbound_turn(
     turn_id: Any,
     lease_token: Any,
@@ -1391,6 +1406,7 @@ def _retry_delay(attempt_count: int) -> int:
     return min(BASE_BACKOFF_SECONDS * (2**exponent), MAX_BACKOFF_SECONDS)
 
 
+@outbox_persistence_operation
 def _fail_whatsapp_inbound_turn(
     turn_id: Any,
     lease_token: Any,
@@ -1767,6 +1783,7 @@ def claim_next_whatsapp_outbound_attempt(
     return None
 
 
+@outbox_persistence_operation
 def accept_whatsapp_outbound_attempt(
     attempt_id: Any,
     lease_token: Any,
@@ -2018,6 +2035,7 @@ def reconcile_whatsapp_outbound_status(
         return True
 
 
+@outbox_persistence_operation
 def _fail_whatsapp_outbound_attempt(
     attempt_id: Any,
     lease_token: Any,
@@ -2131,6 +2149,7 @@ def dead_whatsapp_outbound_attempt(
     )
 
 
+@outbox_persistence_operation
 def uncertain_whatsapp_outbound_attempt(
     attempt_id: Any,
     lease_token: Any,

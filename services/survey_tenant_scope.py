@@ -63,6 +63,7 @@ def resolve_survey_tenant_profile_reference(
     reference: Any,
     *,
     allow_legacy_owner: bool = False,
+    require_active: bool = True,
 ) -> TenantProfile:
     """Resolve a numeric tenant reference to exactly one profile.
 
@@ -87,7 +88,10 @@ def resolve_survey_tenant_profile_reference(
             TenantProfile.pyme_id == candidate,
         )
 
-    matches = TenantProfile.query.filter(predicate).order_by(TenantProfile.id).limit(3).all()
+    query = TenantProfile.query.filter(predicate)
+    if require_active:
+        query = query.filter(TenantProfile.is_active.is_(True))
+    matches = query.order_by(TenantProfile.id).limit(3).all()
     unique_matches = {int(row.id): row for row in matches}
     if not unique_matches:
         raise SurveyTenantScopeError(
@@ -102,13 +106,20 @@ def resolve_survey_tenant_profile_reference(
     return next(iter(unique_matches.values()))
 
 
-def resolve_survey_tenant_profile_slug(slug: Any) -> TenantProfile:
+def resolve_survey_tenant_profile_slug(
+    slug: Any,
+    *,
+    require_active: bool = True,
+) -> TenantProfile:
     """Resolve a public tenant slug to exactly one canonical profile."""
 
     normalized = str(slug or "").strip().lower()
     if not normalized or len(normalized) > 80:
         raise SurveyTenantScopeError("survey_tenant_scope_invalid")
-    matches = TenantProfile.query.filter_by(slug=normalized).limit(2).all()
+    query = TenantProfile.query.filter_by(slug=normalized)
+    if require_active:
+        query = query.filter(TenantProfile.is_active.is_(True))
+    matches = query.limit(2).all()
     if not matches:
         raise SurveyTenantScopeError("survey_tenant_scope_missing")
     if len(matches) != 1:
@@ -140,6 +151,7 @@ def resolve_survey_storage_tenant_profile(scope_id: Any) -> TenantProfile:
     profile = resolve_survey_tenant_profile_reference(
         candidate,
         allow_legacy_owner=True,
+        require_active=False,
     )
     if int(profile.id) != candidate:
         raise SurveyTenantScopeError(

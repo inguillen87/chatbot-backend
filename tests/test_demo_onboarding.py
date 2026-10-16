@@ -9,6 +9,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 class DemoConfig(Config):
     TESTING = True
+    ENABLE_DEMO_MODE = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     CELERY_TASK_ALWAYS_EAGER = True
     SESSION_COOKIE_SECURE = False

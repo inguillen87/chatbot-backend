@@ -2,12 +2,29 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import os
+import re
 from typing import Any, Mapping
 
-from models import CatalogoItem, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
+from models import (
+    CatalogoItem,
+    CatalogUpload,
+    CategoriaTicket,
+    EncEncuesta,
+    MessageTemplateRegistry,
+    MessagingEventLedger,
+    ProviderConnection,
+    ProviderSender,
+    PublicSurvey,
+    TenantProfile,
+    User,
+)
 from services.commerce_contracts import payment_capabilities
 from services.live_chat_schedule import build_live_chat_status
 from services.plan_access import integration_access_payload
+from services.tenant_implementation_journey import build_implementation_journey
+from services.organization_setup_journey import build_organization_setup_journey
+from services.organization_branding import build_workspace_appearance
+from services.plan_access import tenant_allows_workspace_branding
 from services.twilio_tech_provider import STATE_KEY
 from utils.roles import superadmin_email_allowlist_configured
 
@@ -143,22 +160,73 @@ def _channel(
     }
 
 
-def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool) -> tuple[str, list[str], str | None]:
+def _meta_sandbox_status(tenant: TenantProfile | None) -> tuple[str, list[str], str | None] | None:
+    """Local test configuration only; never calls Graph or opens a credential."""
+    from services import tdf_meta_sandbox as pilot
+    from services.meta_whatsapp_credentials import CONTRACT, PRIVATE_CONFIG_KEY, VAULT_REF
+    from flask import current_app
+
+    if (getattr(tenant, "id", None), getattr(tenant, "slug", None)) != (pilot.TENANT_ID, pilot.TENANT_SLUG):
+        return None
+    connection = ProviderConnection.query.filter_by(tenant_id=tenant.id, provider="meta",
+        channel="whatsapp", environment="sandbox").first()
+    if connection is None:
+        return None
+    evidence = ["Meta Cloud API: entorno de prueba", "Destinatarios limitados por el backend"]
+    if (connection.external_app_id, connection.external_account_id) != (pilot.TEST_APP, pilot.TEST_WABA):
+        return "blocked", evidence, "meta_sandbox_binding_mismatch"
+    senders = ProviderSender.query.filter_by(tenant_id=tenant.id, provider_connection_id=connection.id,
+        channel="whatsapp", waba_id=pilot.TEST_WABA, phone_number_id=pilot.TEST_PHONE).limit(2).all()
+    if len(senders) != 1:
+        return "blocked", evidence, "meta_sandbox_sender_not_unique"
+    if connection.status != "connected" or senders[0].status != "connected":
+        return "pending", evidence, "meta_sandbox_configuration_pending"
+    try:
+        pilot.settings(current_app.config)
+    except pilot.PilotError:
+        return "pending", evidence, "meta_sandbox_runtime_configuration_required"
+    envelope = _as_mapping(_as_mapping(connection.config).get(PRIVATE_CONFIG_KEY))
+    expiry, revision = envelope.get("expires_at"), envelope.get("revision")
+    if (connection.credentials_ref != VAULT_REF or envelope.get("contract") != CONTRACT
+            or type(expiry) is not int or type(revision) is not int or revision < 1):
+        return "pending", evidence, "meta_sandbox_credential_configuration_required"
+    if expiry <= int(datetime.now(timezone.utc).timestamp()):
+        return "pending", evidence, "meta_sandbox_local_credential_expired"
+    evidence += ["Conexión de prueba configurada", "Credencial temporal registrada; no validada en este informe"]
+    receipts = MessagingEventLedger.query.filter_by(tenant_id=tenant.id,
+        provider_connection_id=connection.id, provider_sender_id=senders[0].id,
+        channel="whatsapp", direction="outbound", event_type="tdf_sandbox_reply", provider=pilot.PROVIDER)
+    accepted = _safe_count(receipts.filter(MessagingEventLedger.external_status.in_(["accepted", "sent", "delivered", "read"])))
+    delivered = _safe_count(receipts.filter(MessagingEventLedger.external_status.in_(["delivered", "read"])))
+    evidence += [f"Histórico de prueba: {accepted} respuestas aceptadas; {delivered} con entrega registrada",
+                 "Servicio productivo y conversación actual no certificados"]
+    return "pending", evidence, "meta_sandbox_production_not_certified"
+
+
+def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool, tenant=None) -> tuple[str, list[str], str | None]:
     onboarding = _as_mapping(cfg.get("whatsapp_onboarding"))
     state = _as_mapping(cfg.get(STATE_KEY))
     raw_status = str(onboarding.get("status") or "").strip().lower()
     sender_status = str(state.get("sender_status") or "").strip().lower()
 
     evidence: list[str] = []
-    if onboarding.get("provider"):
-        evidence.append(f"provider:{onboarding.get('provider')}")
-    if sender_status:
+    provider = onboarding.get("provider")
+    provider = provider if isinstance(provider, str) else None
+    if provider in {"twilio", "twilio_tech_provider"}:
+        evidence.append("Proveedor historico: Twilio")
+    elif provider in {"meta", "meta_cloud_api"}:
+        evidence.append("Proveedor declarado: Meta")
+    if sender_status in READY_STATES | {"draft", "pending", "offline", "failed", "sender_registered"}:
         evidence.append(f"sender:{sender_status}")
 
     if not access_enabled:
         return "locked", evidence, "plan_full_required"
+    sandbox = _meta_sandbox_status(tenant)
+    if sandbox is not None:
+        return sandbox
     if sender_status in READY_STATES or raw_status in READY_STATES:
-        return "ready", evidence, None
+        evidence.append("Estado heredado; disponibilidad actual del proveedor no verificada")
+        return "pending", evidence, "whatsapp_legacy_runtime_verification_required"
     if raw_status == "sender_registered":
         return "pending", evidence, "sender_not_online"
     if raw_status == "pending_sender_registration":
@@ -170,6 +238,65 @@ def _whatsapp_status(cfg: Mapping[str, Any], access_enabled: bool) -> tuple[str,
     if raw_status in {"needs_platform_config", "disabled"}:
         return "blocked", evidence, raw_status
     return "action_required", evidence, "connect_whatsapp"
+
+
+def _whatsapp_connection_summary(tenant, cfg, *, reason_code):
+    """Tenant-bound display metadata, never an authority or delivery claim."""
+    result = {
+        "contract_version": "tenant.whatsapp_connection_summary.v1",
+        "provider": None, "environment": None, "display_phone_number": None,
+        "configuration_status": "unconfigured", "reason_code": reason_code,
+        "expires_at": None,
+        "counts": {"sandbox_registered": 0, "production_registered": 0},
+        "production_ready": False, "conversation_verified": False,
+    }
+    if tenant is None:
+        return result
+    query = ProviderConnection.query.filter_by(tenant_id=tenant.id, channel="whatsapp")
+    result["counts"] = {
+        "sandbox_registered": query.filter_by(environment="sandbox").count(),
+        "production_registered": query.filter_by(environment="production").count(),
+    }
+    # Prefer the existing Meta test connection even while expired/pending; the
+    # UI must never silently substitute Twilio sample-number instructions.
+    connection = query.filter_by(provider="meta", environment="sandbox").first()
+    if connection is None:
+        connection = query.filter_by(provider="meta", environment="production").first()
+    if connection is None:
+        connection = query.filter_by(provider="twilio", environment="production").first()
+    if connection is not None:
+        result.update(provider=connection.provider, environment=connection.environment,
+                      configuration_status="unverified")
+        from services import tdf_meta_sandbox as pilot
+        from services.meta_whatsapp_credentials import PRIVATE_CONFIG_KEY
+        expected_pilot = ((tenant.id, tenant.slug) == (pilot.TENANT_ID, pilot.TENANT_SLUG)
+            and connection.provider == "meta" and connection.environment == "sandbox"
+            and (connection.external_app_id, connection.external_account_id) == (pilot.TEST_APP, pilot.TEST_WABA))
+        if expected_pilot:
+            sender_query = ProviderSender.query.filter_by(tenant_id=tenant.id, provider_connection_id=connection.id,
+                channel="whatsapp", waba_id=pilot.TEST_WABA, phone_number_id=pilot.TEST_PHONE)
+            expiry = _as_mapping(_as_mapping(connection.config).get(PRIVATE_CONFIG_KEY)).get("expires_at")
+            if type(expiry) is int and 0 < expiry < 253402300800:
+                result["expires_at"] = expiry
+            result["configuration_status"] = (
+                "configured" if reason_code == "meta_sandbox_production_not_certified" else
+                "expired" if reason_code == "meta_sandbox_local_credential_expired" else "pending")
+        else:
+            sender_query = ProviderSender.query.filter_by(tenant_id=tenant.id,
+                provider_connection_id=connection.id, channel="whatsapp")
+        senders = sender_query.limit(2).all()
+        if len(senders) == 1 and reason_code not in {"plan_full_required", "meta_sandbox_binding_mismatch"}:
+            number = senders[0].phone_number
+            if isinstance(number, str) and re.fullmatch(r"\+?[1-9][0-9]{6,14}", number):
+                result["display_phone_number"] = "+" + number.lstrip("+")
+        return result
+    provider = _as_mapping(cfg.get("whatsapp_onboarding")).get("provider")
+    provider = provider if isinstance(provider, str) else None
+    if provider in {"twilio", "twilio_tech_provider"}:
+        result.update(provider="twilio", environment="historical", configuration_status="unverified")
+    elif provider in {"meta", "meta_cloud_api"}:
+        result.update(provider="meta", environment="historical", configuration_status="unverified")
+    return result
 
 
 def _whatsapp_actions(
@@ -394,14 +521,14 @@ def _public_intake_security_status() -> tuple[str, list[str], str | None, str | 
 
     evidence = ["protege marketplace asistido", "protege encuestas publicas"]
     if site_key:
-        evidence.append("site key publica configurada")
+        evidence.append("referencia de clave publica configurada en servidor; frontend no evaluado")
+    else:
+        evidence.append("clave publica del frontend no evaluada desde el servidor")
     if secret:
         evidence.append("secret backend configurado")
     evidence.append("enforcement activo" if enforced else "enforcement pendiente")
 
     missing: list[str] = []
-    if not site_key:
-        missing.append("VITE_CLOUDFLARE_TURNSTILE_SITE_KEY")
     if not secret:
         missing.append("CLOUDFLARE_TURNSTILE_SECRET_KEY")
 
@@ -424,26 +551,309 @@ def _public_intake_security_status() -> tuple[str, list[str], str | None, str | 
             "pending",
             evidence,
             "turnstile_enforcement_pending",
-            "Site key y secret estan configurados. Activar enforcement despues del deploy frontend/backend.",
+            "Secret del servidor configurado. Comprobar VITE_CLOUDFLARE_TURNSTILE_SITE_KEY en el frontend publicado antes de activar enforcement.",
         )
-    return "ready", evidence, None, "Cargas anonimas protegidas con Cloudflare Turnstile."
+    return "ready", evidence, None, "Configuracion del servidor completa. Comprobar la clave del frontend publicado y una verificacion real antes de abrir participacion."
 
 
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
     if tenant is None or not getattr(tenant, "id", None):
-        return {"catalog_items": 0, "approved_templates": 0, "surveys": 0, "team_members": 0}
+        return {
+            "catalog_items": 0,
+            "catalog_imports_committed": 0,
+            "approved_templates": 0,
+            "surveys": 0,
+            "team_members": 0,
+            "ticket_categories": 0,
+            "routed_team_members": 0,
+        }
     return {
         "catalog_items": _safe_count(CatalogoItem.query.filter_by(tenant_id=tenant.id)),
+        "catalog_imports_committed": _safe_count(
+            CatalogUpload.query.filter_by(tenant_id=tenant.id, status="committed")
+        ),
         "approved_templates": _safe_count(
             MessageTemplateRegistry.query.filter_by(tenant_id=tenant.id, channel="whatsapp", status="approved")
         ),
         "surveys": _safe_count(EncEncuesta.query.filter_by(tenant_id=tenant.id))
         + _safe_count(PublicSurvey.query.filter_by(tenant_id=tenant.id)),
         "team_members": _safe_count(User.query.filter_by(tenant_id=tenant.id, es_empleado=True)),
+        "ticket_categories": _safe_count(
+            CategoriaTicket.query.filter_by(tenant_id=tenant.id, tipo="ticket")
+        ),
+        "routed_team_members": _safe_count(
+            # PostgreSQL cannot DISTINCT whole user rows containing JSON.
+            # Count each employee by scalar identity, preserving scope filters.
+            User.query.with_entities(User.id).join(User.categorias_ticket)
+            .filter(
+                User.tenant_id == tenant.id,
+                User.es_empleado.is_(True),
+                CategoriaTicket.tenant_id == tenant.id,
+                CategoriaTicket.tipo == "ticket",
+            )
+            .distinct()
+        ),
     }
 
 
-def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, Any]:
+def _mesa_unica_status(
+    counts: Mapping[str, int],
+) -> tuple[str, list[str], str | None, str]:
+    category_count = max(0, int(counts.get("ticket_categories") or 0))
+    routed_count = max(0, int(counts.get("routed_team_members") or 0))
+    evidence: list[str] = []
+    if category_count:
+        evidence.append(f"{category_count} categorias operativas")
+    if routed_count:
+        evidence.append(f"{routed_count} responsables con enrutamiento")
+
+    if not category_count:
+        return (
+            "action_required",
+            evidence,
+            "mesa_unica_categories_required",
+            "Preparar las categorias institucionales antes de habilitar la Mesa Unica.",
+        )
+    if not routed_count:
+        return (
+            "pending",
+            evidence,
+            "mesa_unica_routing_required",
+            "Las categorias estan preparadas; falta asignar responsables para operar casos reales.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Mesa Unica preparada con categorias y responsables enrutados.",
+    )
+
+
+def _team_routing_status(
+    counts: Mapping[str, int],
+) -> tuple[str, list[str], str | None, str]:
+    member_count = max(0, int(counts.get("team_members") or 0))
+    routed_count = max(0, int(counts.get("routed_team_members") or 0))
+    evidence: list[str] = []
+    if member_count:
+        evidence.append(f"{member_count} operadores")
+    if routed_count:
+        evidence.append(f"{routed_count} con categorias asignadas")
+
+    if not member_count:
+        return (
+            "action_required",
+            evidence,
+            "team_required",
+            "Agregar operadores y responsables antes de recibir casos reales.",
+        )
+    if not routed_count:
+        return (
+            "pending",
+            evidence,
+            "team_category_routing_required",
+            "El equipo existe, pero falta asignar categorias operativas a sus responsables.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Equipo operativo con categorias y responsables asignados.",
+    )
+
+
+def _knowledge_content_status(counts: Mapping[str, int], tenant=None) -> tuple[str, list[str], str | None, str]:
+    """Keep content presence separate from verified retrieval readiness."""
+
+    item_count = max(0, int(counts.get("catalog_items") or 0))
+    committed_imports = max(0, int(counts.get("catalog_imports_committed") or 0))
+    evidence: list[str] = []
+    if tenant is not None:
+        from services.institutional_assistant import read_state
+        from services.institutional_assistant_content import ContentError
+        try:
+            state = read_state(tenant)
+        except ContentError:
+            return "blocked", [], "knowledge_state_unavailable", "No pudimos validar la version institucional de esta organizacion. Revisar su estado antes de publicar."
+        if state is not None:
+            bundle = state["bundle"]
+            if not isinstance(bundle.get("nodes"), dict) or not isinstance(bundle.get("sources"), dict):
+                return "blocked", [], "knowledge_state_unavailable", "La estructura de la version institucional no es valida. Revisar su estado antes de publicar."
+            evidence = [f"{len(bundle['nodes'])} contenidos canonicos", f"{len(bundle['sources'])} fuentes documentales"]
+            if state["visibility"] == "public":
+                evidence.append(f"Version publicada: {state['revision']}")
+                return "ready", evidence, None, "Menu y respuestas canonicas publicados. Este estado no acredita indexacion RAG ni validacion institucional externa."
+            return "pending", evidence, "knowledge_publication_required", "La version institucional es interna. Revisar y habilitar en el agente para consultas publicas."
+    if item_count:
+        evidence.append(f"{item_count} contenidos estructurados")
+    if committed_imports:
+        evidence.append(f"{committed_imports} importaciones confirmadas")
+
+    if not item_count:
+        return (
+            "action_required",
+            evidence,
+            "knowledge_content_required",
+            "Cargar tramites, servicios o documentos institucionales y revisar su procedencia.",
+        )
+    return (
+        "pending",
+        evidence,
+        "knowledge_retrieval_verification_required",
+        "El contenido existe, pero falta un recibo verificable de indexacion y una prueba de recuperacion antes de declararlo listo.",
+    )
+
+
+def _survey_status(counts, security_status, security_reason):
+    count = max(0, int(counts.get("surveys") or 0))
+    if not count:
+        return "action_required", [], "survey_instruments_required", "Crear y revisar los instrumentos de participacion."
+    evidence = [f"{count} encuestas/votaciones registradas", "Existencia de instrumentos; no prueba de participacion operativa"]
+    if security_status != "ready":
+        return "pending", evidence, security_reason or "survey_public_security_required", "Los instrumentos existen. Completar la proteccion publica antes de comprobar envios y metricas."
+    return "pending", evidence, "survey_public_flow_verification_required", "Comprobar publicacion, consentimiento y elegibilidad aplicables, formulario publicado, unicidad y metricas. No se infiere funcionamiento por cantidad."
+
+
+def _institutional_branding_status(
+    tenant: TenantProfile | None,
+) -> tuple[str, list[str], str | None, str]:
+    """Report explicit tenant branding without treating platform defaults as setup."""
+
+    if tenant is None:
+        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su identidad visual."
+
+    logo_configured = bool(str(getattr(tenant, "logo_url", None) or "").strip())
+    palette_configured = bool(
+        isinstance(getattr(tenant, "tema", None), Mapping)
+        and getattr(tenant, "tema", None)
+    ) or bool(
+        isinstance(getattr(tenant, "theme_json", None), Mapping)
+        and getattr(tenant, "theme_json", None)
+    )
+    domain_configured = bool(str(getattr(tenant, "dominio", None) or "").strip())
+
+    evidence: list[str] = []
+    if logo_configured:
+        evidence.append("logo institucional configurado")
+    if palette_configured:
+        evidence.append("paleta institucional configurada")
+    if domain_configured:
+        evidence.append("dominio declarado; activacion DNS/HTTPS no inferida")
+    from services.organization_domain_binding import build_domain_binding, DomainBindingError
+    from services.plan_access import tenant_allows_custom_domains
+    try:
+        domain = build_domain_binding(tenant, entitled=tenant_allows_custom_domains(tenant))
+        if domain["status"] != "unconfigured":
+            evidence.append("Dominio propio: activo con verificaciones vigentes" if domain["active"] else
+                            "Dominio propio: pendiente de verificacion o activacion")
+    except DomainBindingError:
+        evidence.append("Estado del dominio propio no verificable")
+
+    missing: list[str] = []
+    if not logo_configured:
+        missing.append("logo")
+    if not palette_configured:
+        missing.append("paleta")
+    if missing:
+        return (
+            "action_required",
+            evidence,
+            "institutional_branding_incomplete",
+            f"Completar identidad institucional: {', '.join(missing)}. El dominio propio puede incorporarse en una etapa posterior.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Identidad institucional lista; el dominio propio es opcional para operar sobre Chatboc.ar.",
+    )
+
+
+def _accessibility_status(
+    cfg: Mapping[str, Any],
+) -> tuple[str, list[str], str | None, str]:
+    """Require an explicit tenant policy instead of inferring readiness globally."""
+
+    accessibility = _as_mapping(cfg.get("accessibility"))
+    if not accessibility:
+        return (
+            "action_required",
+            ["componentes accesibles disponibles en plataforma"],
+            "accessibility_policy_required",
+            "Definir la politica del tenant: lectura, contraste, navegacion por teclado, lenguaje claro y derivacion humana.",
+        )
+
+    if accessibility.get("enabled") is False:
+        return (
+            "blocked",
+            ["politica del tenant deshabilitada"],
+            "accessibility_disabled",
+            "Habilitar la politica de accesibilidad antes de publicar los canales ciudadanos.",
+        )
+
+    configured_features = accessibility.get("features")
+    feature_count = len(configured_features) if isinstance(configured_features, list) else 0
+    evidence = ["politica del tenant configurada"]
+    if feature_count:
+        evidence.append(f"{feature_count} apoyos declarados")
+    if accessibility.get("human_handoff") is True:
+        evidence.append("derivacion humana declarada")
+
+    if accessibility.get("enabled") is True and feature_count > 0:
+        return (
+            "ready",
+            evidence,
+            None,
+            "Politica accesible declarada. La validacion con usuarios y dispositivos sigue siendo un gate de publicacion.",
+        )
+    return (
+        "pending",
+        evidence,
+        "accessibility_validation_pending",
+        "Completar apoyos accesibles y validar la experiencia con usuarios y dispositivos antes de publicar.",
+    )
+
+
+def _territorial_status(
+    tenant: TenantProfile | None,
+) -> tuple[str, list[str], str | None, str]:
+    """Only accept the server-owned jurisdiction attestation as territorial readiness."""
+
+    if tenant is None:
+        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su jurisdiccion."
+
+    status = str(getattr(tenant, "jurisdiction_status", None) or "unverified").strip().lower()
+    if status == "not_applicable":
+        return (
+            "ready",
+            ["jurisdiccion no requerida para este tenant"],
+            None,
+            "El tenant declaro que no necesita agregacion territorial oficial.",
+        )
+
+    verified = bool(
+        status == "verified"
+        and str(getattr(tenant, "jurisdiction_ref", None) or "").strip()
+        and str(getattr(tenant, "jurisdiction_evidence_ref", None) or "").strip()
+        and getattr(tenant, "jurisdiction_verified_by_user_id", None)
+        and getattr(tenant, "jurisdiction_verified_at", None)
+    )
+    if verified:
+        return (
+            "ready",
+            ["jurisdiccion oficial verificada", "evidencia institucional registrada"],
+            None,
+            "La delimitacion oficial esta lista para validar puntos, zonas y agregaciones.",
+        )
+    return (
+        "action_required",
+        [f"estado:{status}"],
+        "official_jurisdiction_required",
+        "Registrar y aprobar limites oficiales antes de publicar rankings, tasas o comparaciones por zona.",
+    )
+
+
+def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None) -> dict[str, Any]:
     """Build a public, secret-free checklist for post-onboarding channel activation."""
 
     cfg = _cfg(tenant)
@@ -454,12 +864,18 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     provisioning = _as_mapping(cfg.get("provisioning"))
     preferred_channels = onboarding.get("preferred_channels") if isinstance(onboarding.get("preferred_channels"), list) else []
     identity_status, identity_evidence, identity_reason, identity_hint = _identity_auth_status(tenant, cfg)
-    whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled)
+    whatsapp_status, whatsapp_evidence, whatsapp_reason = _whatsapp_status(cfg, access_enabled, tenant)
     live_status, live_evidence = _live_chat_status(cfg)
     payment_status, payment_evidence, payment_reason = _payment_status(tenant, access_enabled)
     public_security_status, public_security_evidence, public_security_reason, public_security_hint = (
         _public_intake_security_status()
     )
+    branding_status, branding_evidence, branding_reason, branding_hint = _institutional_branding_status(tenant)
+    accessibility_status, accessibility_evidence, accessibility_reason, accessibility_hint = _accessibility_status(cfg)
+    territory_status, territory_evidence, territory_reason, territory_hint = _territorial_status(tenant)
+    knowledge_status, knowledge_evidence, knowledge_reason, knowledge_hint = _knowledge_content_status(counts, tenant)
+    crm_status, crm_evidence, crm_reason, crm_hint = _mesa_unica_status(counts)
+    team_status, team_evidence, team_reason, team_hint = _team_routing_status(counts)
 
     widget_configured = bool(
         getattr(tenant, "widget_settings", None)
@@ -469,16 +885,55 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     widget_status = "locked" if not access_enabled else ("ready" if widget_configured else "action_required")
     template_status = "locked" if not access_enabled else ("ready" if counts["approved_templates"] > 0 else "action_required")
     catalog_status = "ready" if counts["catalog_items"] > 0 else "action_required"
-    analytics_status = "ready" if counts["surveys"] > 0 else "action_required"
+    analytics_status, analytics_evidence, analytics_reason, analytics_hint = _survey_status(counts, public_security_status, public_security_reason)
 
     channels = [
         _channel(
+            "institutional_branding",
+            "Identidad institucional",
+            branding_status,
+            "Logo, paleta y dominio opcional para una experiencia white-label gobernada por tenant.",
+            actions=[_action("open_branding", "Configurar identidad", _profile_path("perfil"), primary=True)],
+            evidence=branding_evidence,
+            reason_code=branding_reason,
+            progress_hint=branding_hint,
+        ),
+        _channel(
+            "accessibility",
+            "Accesibilidad e inclusion",
+            accessibility_status,
+            "Politica accesible para web, WhatsApp, formularios y derivacion humana.",
+            actions=[_action("open_accessibility", "Configurar accesibilidad", _profile_path("perfil"), primary=True)],
+            evidence=accessibility_evidence,
+            reason_code=accessibility_reason,
+            progress_hint=accessibility_hint,
+        ),
+        _channel(
+            "territorial_intelligence",
+            "Territorio y mapas",
+            territory_status,
+            "Jurisdiccion oficial para validar direcciones, zonas, categorias y mapas de calor.",
+            actions=[_action("open_territory", "Configurar territorio", _profile_path("mapas"), primary=True)],
+            evidence=territory_evidence,
+            reason_code=territory_reason,
+            progress_hint=territory_hint,
+        ),
+        _channel(
             "crm",
-            "CRM operativo",
-            "ready" if tenant else "blocked",
-            "Bandeja de reclamos, pedidos y conversaciones para operar desde el primer dia.",
-            actions=[_action("open_crm", "Abrir reclamos/tickets", _profile_path("tickets"), primary=True)],
-            evidence=["tenant creado"] if tenant else [],
+            "Mesa Unica y CRM operativo",
+            crm_status,
+            "Bandeja de reclamos, pedidos y conversaciones con categorias y responsables verificables.",
+            actions=[
+                _action(
+                    "prepare_service_desk" if crm_reason == "mesa_unica_categories_required" else "open_crm",
+                    "Preparar Mesa Unica" if crm_reason == "mesa_unica_categories_required" else "Abrir reclamos/tickets",
+                    _profile_path("categorias") if crm_reason == "mesa_unica_categories_required" else _profile_path("tickets"),
+                    primary=True,
+                )
+            ],
+            evidence=crm_evidence,
+            reason_code=crm_reason,
+            progress_hint=crm_hint,
         ),
         _channel(
             "identity_auth",
@@ -497,11 +952,14 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "whatsapp",
             "WhatsApp Business",
             whatsapp_status,
-            "Sender productivo, proveedor Twilio/Meta y pruebas de conversacion.",
+            "Configuracion y evidencias del canal. Un sandbox o estado heredado no certifica servicio productivo.",
             actions=_whatsapp_actions(tenant, cfg, whatsapp_status, whatsapp_reason, access_enabled),
             evidence=whatsapp_evidence,
             reason_code=whatsapp_reason,
             required_plan=None if access_enabled else "full",
+            progress_hint=("Prueba Meta limitada a destinatarios autorizados; no cambia los numeros productivos."
+                if whatsapp_reason and whatsapp_reason.startswith("meta_sandbox_") else
+                "Comprobar la disponibilidad actual del proveedor y una conversacion real antes de declarar el canal operativo."),
         ),
         _channel(
             "widget",
@@ -542,6 +1000,16 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             evidence=[f"{counts['catalog_items']} items"] if counts["catalog_items"] else [],
         ),
         _channel(
+            "knowledge_content",
+            "Conocimiento institucional",
+            knowledge_status,
+            "Menu y respuestas canonicas con fuentes y version publicada. La indexacion RAG es una capacidad independiente.",
+            actions=[_action("open_knowledge", "Gestionar contenidos", "/implementacion", primary=True)],
+            evidence=knowledge_evidence,
+            reason_code=knowledge_reason,
+            progress_hint=knowledge_hint,
+        ),
+        _channel(
             "payments_checkout",
             "Cobros y checkout",
             payment_status,
@@ -554,11 +1022,12 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         _channel(
             "team_routing",
             "Equipo y responsables",
-            "ready" if counts["team_members"] > 0 else "action_required",
+            team_status,
             "Operadores, permisos y categorias para que reclamos, pedidos y chats no queden sin responsable.",
             actions=[_action("open_team", "Configurar equipo", _profile_path("empleados"), primary=True)],
-            evidence=[f"{counts['team_members']} operadores"] if counts["team_members"] else [],
-            reason_code=None if counts["team_members"] > 0 else "team_required",
+            evidence=team_evidence,
+            reason_code=team_reason,
+            progress_hint=team_hint,
         ),
         _channel(
             "live_chat",
@@ -575,7 +1044,9 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             analytics_status,
             "Encuestas, votaciones, reportes y mapas de calor para decisiones operativas.",
             actions=[_action("open_analytics", "Abrir analitica", _profile_path("analytics"), primary=True)],
-            evidence=[f"{counts['surveys']} encuestas/votaciones"] if counts["surveys"] else [],
+            evidence=analytics_evidence,
+            reason_code=analytics_reason,
+            progress_hint=analytics_hint,
         ),
     ]
 
@@ -584,6 +1055,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     attention_count = len(channels) - ready_count - locked_count
     progress = round((ready_count / max(1, len(channels))) * 100)
     first_actionable = next((item for item in channels if not item["ready"] and item["actions"]), None)
+    implementation_journey = build_implementation_journey(channels)
     blockers = [
         {
             "id": item["id"],
@@ -594,6 +1066,13 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         for item in channels
         if item["locked"] or item.get("reason_code") in {"plan_full_required", "needs_platform_config"}
     ]
+
+    from services.tenant_conversation_guide import guide_access_descriptor
+    from services.tenant_conversation_guide_control import control_descriptor
+    from utils.roles import is_authorized_superadmin_user
+    from utils.tenant_admin_access import can_manage_tenant_control_plane
+    guide = guide_access_descriptor(tenant, can_read=can_manage_tenant_control_plane(actor, tenant))
+    guide_control = control_descriptor(tenant, can_edit=is_authorized_superadmin_user(actor) and can_manage_tenant_control_plane(actor, tenant))
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -607,11 +1086,17 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "attention": attention_count,
             "progress": progress,
             "primary_next_action": (first_actionable or {}).get("actions", [{}])[0],
-            "health_label": "Listo para operar" if progress >= 85 else "Activacion en progreso",
+            "health_label": "Configuracion completa; falta validar operacion" if ready_count == len(channels) else "Configuracion en progreso",
+            "progress_scope": "configuration_checklist",
+            "production_ready": False,
         },
         "preferred_channels": preferred_channels,
         "counts": counts,
+        "whatsapp_connection": _whatsapp_connection_summary(tenant, cfg, reason_code=whatsapp_reason),
         "channels": channels,
+        "implementation_journey": implementation_journey,
+        "conversation_guide_control": guide_control,
+        "organization_setup": build_organization_setup_journey(tenant, channels, workspace_appearance=build_workspace_appearance(tenant, entitled=tenant_allows_workspace_branding(tenant)), conversation_guide=guide),
         "blockers": blockers,
         "integration_access": {
             "enabled": access.get("enabled"),
@@ -632,6 +1117,8 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "bootstrap": "/auth/session/bootstrap",
             "whatsapp_status": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/integrations/whatsapp/status",
             "live_chat_schedule": f"/api/admin/tenants/{getattr(tenant, 'slug', '')}/live-chat/schedule",
+            "mesa_unica_preview": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/blueprints/government-core/launch/mesa-unica/preview",
+            "mesa_unica_apply": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/blueprints/government-core/launch/mesa-unica/apply",
         },
         "security": {
             "secret_free": True,

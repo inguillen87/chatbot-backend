@@ -88,7 +88,14 @@ def _resolve_tenant_profile_from_context(context: Dict[str, Any]) -> Optional[Te
 
     pyme_id = _resolve_pyme_id_from_context(context)
     if pyme_id:
-        return TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+        matches = TenantProfile.query.filter_by(pyme_id=pyme_id).limit(2).all()
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            logger.warning(
+                "Tenant context is ambiguous for pyme_id=%s; explicit tenant scope is required",
+                pyme_id,
+            )
 
     return None
 
@@ -102,33 +109,116 @@ def _resolve_tenant_id_from_context(context: Dict[str, Any]) -> Optional[int]:
     return tenant_profile.id if tenant_profile else None
 
 
+def _catalog_item_matches_scope(
+    item: Optional[CatalogoItem],
+    *,
+    pyme_id: int,
+    tenant_id: Optional[int],
+) -> bool:
+    if item is None or item.user_id != pyme_id:
+        return False
+    if tenant_id is not None and item.tenant_id != tenant_id:
+        return False
+    return item.disponible is not False
+
+
+def _canonical_catalog_item_from_vector_payload(
+    context: Dict[str, Any],
+    *,
+    pyme_id: int,
+    payload: Dict[str, Any],
+) -> Optional[CatalogoItem]:
+    """Resolve a vector hit back to the tenant-scoped SQL catalog.
+
+    Qdrant is a discovery index, never the authority for product identity,
+    availability or price.  Older points without a database id may recover by
+    exact SKU, but every accepted hit is rehydrated from the canonical row.
+    """
+
+    resolved_pyme_id = _coerce_int(pyme_id)
+    if not resolved_pyme_id:
+        return None
+    tenant_id = _resolve_tenant_id_from_context(context)
+    if tenant_id is None and TenantProfile.query.filter_by(pyme_id=resolved_pyme_id).limit(2).count() > 1:
+        logger.warning(
+            "Catalog vector hit rejected with ambiguous tenant scope pyme_id=%s",
+            resolved_pyme_id,
+        )
+        return None
+    db_id = _coerce_int(payload.get("db_id"))
+    if db_id:
+        item = db.session.get(CatalogoItem, db_id)
+        if item is not None:
+            if _catalog_item_matches_scope(
+                item,
+                pyme_id=resolved_pyme_id,
+                tenant_id=tenant_id,
+            ):
+                return item
+            logger.warning(
+                "Catalog vector hit rejected outside canonical scope item_id=%s tenant_id=%s pyme_id=%s",
+                db_id,
+                tenant_id,
+                resolved_pyme_id,
+            )
+            return None
+
+    sku = str(payload.get("sku") or "").strip()
+    if not sku:
+        logger.warning(
+            "Catalog vector hit rejected without canonical identity tenant_id=%s pyme_id=%s",
+            tenant_id,
+            resolved_pyme_id,
+        )
+        return None
+
+    query = CatalogoItem.query.filter_by(user_id=resolved_pyme_id, sku=sku)
+    if tenant_id is not None:
+        query = query.filter_by(tenant_id=tenant_id)
+    item = query.first()
+    if not _catalog_item_matches_scope(
+        item,
+        pyme_id=resolved_pyme_id,
+        tenant_id=tenant_id,
+    ):
+        logger.warning(
+            "Catalog vector SKU rejected without canonical scoped row sku=%s tenant_id=%s pyme_id=%s",
+            sku,
+            tenant_id,
+            resolved_pyme_id,
+        )
+        return None
+    return item
+
+
+def _product_info_from_catalog_item(item: CatalogoItem) -> Dict[str, Any]:
+    _, precio_float, moneda = parse_precio_flexible(item.precio)
+    return {
+        "catalogo_item_id": item.id,
+        "nombre_producto": item.nombre,
+        "descripcion": item.descripcion_corta or item.descripcion or "",
+        "precio_unitario": precio_float,
+        "moneda": moneda or "ARS",
+        "sku": item.sku,
+        "presentacion": item.unidad,
+        "imagen_url": item.imagen_url,
+    }
+
+
 class AgregarItemCarritoAction(BaseActionHandler):
-    def _build_product_info_from_qdrant_hit(self, payload: Dict[str, Any], fallback_name: str) -> Dict[str, Any]:
-        db_id = payload.get("db_id")
-        item_db = db.session.get(CatalogoItem, db_id) if db_id else None
-
-        if item_db:
-            _, precio_float, moneda = parse_precio_flexible(item_db.precio)
-            return {
-                "catalogo_item_id": item_db.id,
-                "nombre_producto": item_db.nombre,
-                "precio_unitario": precio_float,
-                "moneda": moneda or "ARS",
-                "sku": item_db.sku,
-                "presentacion": item_db.unidad,
-                "imagen_url": item_db.imagen_url,
-            }
-
-        _, precio_float, moneda = parse_precio_flexible(payload.get("precio_str", "0"))
-        return {
-            "catalogo_item_id": payload.get("sku") or payload.get("nombre"),
-            "nombre_producto": payload.get("nombre", fallback_name),
-            "precio_unitario": precio_float,
-            "moneda": moneda or "ARS",
-            "sku": payload.get("sku"),
-            "presentacion": payload.get("unidad_descripcion") or payload.get("unidad_original"),
-            "imagen_url": payload.get("imagen_url"),
-        }
+    def _build_product_info_from_qdrant_hit(
+        self,
+        payload: Dict[str, Any],
+        pyme_id: int,
+    ) -> Optional[Dict[str, Any]]:
+        item_db = _canonical_catalog_item_from_vector_payload(
+            self.context,
+            pyme_id=pyme_id,
+            payload=payload,
+        )
+        if item_db is None:
+            return None
+        return _product_info_from_catalog_item(item_db)
 
     def _search_product_candidates(self, pyme_id: int, product_identifier: str, *, limit: int = 5) -> List[Dict[str, Any]]:
         qdrant_collection = CATALOGO_PYME
@@ -138,6 +228,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
             pregunta=product_identifier,
             limite=max(1, int(limit or 1)),
             coleccion=qdrant_collection,
+            tenant_id=_resolve_tenant_id_from_context(self.context),
         )
 
         candidates: List[Dict[str, Any]] = []
@@ -146,7 +237,12 @@ class AgregarItemCarritoAction(BaseActionHandler):
             payload = getattr(hit, "payload", {}) or {}
             if not payload:
                 continue
-            candidate = self._build_product_info_from_qdrant_hit(payload, product_identifier)
+            candidate = self._build_product_info_from_qdrant_hit(
+                payload,
+                pyme_id,
+            )
+            if not candidate:
+                continue
             dedupe_key = str(candidate.get("catalogo_item_id") or candidate.get("sku") or candidate.get("nombre_producto"))
             if dedupe_key in seen:
                 continue
@@ -157,18 +253,24 @@ class AgregarItemCarritoAction(BaseActionHandler):
     def _find_product_details(self, pyme_id: int, product_identifier: str) -> Optional[Dict[str, Any]]:
         sku_candidate = str(product_identifier or "").strip()
         if sku_candidate:
-            exact = CatalogoItem.query.filter_by(user_id=pyme_id, sku=sku_candidate).first()
+            exact_query = CatalogoItem.query.filter_by(user_id=pyme_id, sku=sku_candidate)
+            tenant_id = _resolve_tenant_id_from_context(self.context)
+            if (
+                tenant_id is None
+                and TenantProfile.query.filter_by(pyme_id=pyme_id).limit(2).count() > 1
+            ):
+                logger.warning(
+                    "Exact catalog lookup rejected with ambiguous tenant scope pyme_id=%s",
+                    pyme_id,
+                )
+                return None
+            if tenant_id is not None:
+                exact_query = exact_query.filter_by(tenant_id=tenant_id)
+            exact = exact_query.first()
             if exact:
-                _, precio_float, moneda = parse_precio_flexible(exact.precio)
-                return {
-                    "catalogo_item_id": exact.id,
-                    "nombre_producto": exact.nombre,
-                    "precio_unitario": precio_float,
-                    "moneda": moneda or "ARS",
-                    "sku": exact.sku,
-                    "presentacion": exact.unidad,
-                    "imagen_url": exact.imagen_url,
-                }
+                if exact.disponible is False:
+                    return None
+                return _product_info_from_catalog_item(exact)
 
         candidates = self._search_product_candidates(pyme_id, product_identifier, limit=1)
         if not candidates:
@@ -372,7 +474,10 @@ class CrearPedidoAction(BaseActionHandler):
 
             mensaje_confirmacion = resumen_carrito
             if nota_pdf_generado and email_cliente_validado:
-                mensaje_confirmacion += f"\n\nTe enviamos la nota de pedido en PDF a {email_cliente_validado}."
+                mensaje_confirmacion += (
+                    f"\n\nLa nota de pedido en PDF quedó generada para {email_cliente_validado}; "
+                    "el envío se confirma por separado."
+                )
             elif nota_pdf_generado:
                 mensaje_confirmacion += "\n\nLa nota de pedido en PDF está lista para compartir con tu equipo."
 
@@ -402,22 +507,51 @@ class ConsultarProductoAction(BaseActionHandler):
         rubro_nombre = getattr(pyme_user.rubro, "nombre", "general") if pyme_user and hasattr(pyme_user, "rubro") else "general"
         qdrant_collection = CATALOGO_PYME
 
-        resultados = buscar_catalogo_qdrant(user_id=pyme_id, pregunta=query, limite=3, coleccion=qdrant_collection)
+        resultados = buscar_catalogo_qdrant(
+            user_id=pyme_id,
+            pregunta=query,
+            limite=3,
+            coleccion=qdrant_collection,
+            tenant_id=_resolve_tenant_id_from_context(self.context),
+        )
 
         if not resultados:
             return {"success": True, "message_to_user": f"No encontré productos para '{query}'. ¿Intentar otra búsqueda?"}
 
         respuesta_str = f"Resultados para '{query}':\n"
         productos_info_list = []
+        seen_product_ids: set[int] = set()
         for hit in resultados:
-            payload = hit.payload; nombre = payload.get("nombre", "N/A"); desc = payload.get("descripcion_corta", "")
-            _, precio_f, moneda = parse_precio_flexible(payload.get("precio_str", "0"))
+            payload = getattr(hit, "payload", {}) or {}
+            item_db = _canonical_catalog_item_from_vector_payload(
+                self.context,
+                pyme_id=pyme_id,
+                payload=payload,
+            )
+            if item_db is None:
+                continue
+            if item_db.id in seen_product_ids:
+                continue
+            seen_product_ids.add(item_db.id)
+            canonical = _product_info_from_catalog_item(item_db)
+            nombre = canonical["nombre_producto"]
+            desc = canonical["descripcion"]
+            precio_f = canonical["precio_unitario"]
+            moneda = canonical["moneda"]
 
             prod_info = {"nombre": nombre, "descripcion": desc,
                          "precio_formateado": f"${precio_f:,.2f} {moneda or 'ARS'}" if precio_f is not None else "Consultar precio",
-                         "sku": payload.get("sku")}
+                         "sku": canonical["sku"],
+                         "catalogo_item_id": canonical["catalogo_item_id"]}
             productos_info_list.append(prod_info)
             respuesta_str += f"\n- **{nombre}**: {desc} (Precio: {prod_info['precio_formateado']})"
+
+        if not productos_info_list:
+            return {
+                "success": True,
+                "message_to_user": f"No encontré productos vigentes para '{query}'. ¿Intentar otra búsqueda?",
+                "data": {"productos_encontrados": [], "sugerencias_botones_llm": []},
+            }
 
         respuesta_str += "\n\n¿Te interesa alguno o buscamos otra cosa?"
 

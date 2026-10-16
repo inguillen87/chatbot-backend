@@ -1,3 +1,10 @@
+from services.organization_modules import ModuleSelectionError, build_module_selection, save_module_selection, UI as MODULE_UI
+from services.plan_access import tenant_allows_module_selection
+from services.organization_branding import BrandingError, build_branding, save_branding
+from services.plan_access import tenant_allows_workspace_branding
+from services.plan_access import tenant_allows_custom_domains
+from services.organization_domain_binding import DomainBindingError, build_domain_binding, save_domain_binding
+from cutover_writer_fence import cutover_writer_fence_enabled
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
 import uuid
@@ -5,11 +12,18 @@ from sqlalchemy import Numeric, and_, case, cast, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
-from utils.auth_helpers import obtener_token, token_requerido, user_from_token
+from cutover_writer_fence import cutover_writer_view
+from utils.auth_helpers import obtener_token, token_requerido, user_from_token, auth_sin_escrituras_implicitas
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
+from services.organization_profile_settings import (
+    build_profile_settings, save_profile_settings, ProfileSettingsError,
+)
+from services.organization_type_presentation import organization_type_descriptor
+from utils.tenant_admin_access import can_manage_tenant_control_plane, resolve_consistent_user_tenant
 from middleware.tenant_context import require_tenant
 from models import (
+    AuditEvent,
     CatalogoItem,
     db,
     TenantProfile,
@@ -37,11 +51,15 @@ from routes.carrito import _product_query_for_tenant
 from services.commerce_unified import dedupe_unified_orders, serialize_unified_order, summarize_unified_orders
 from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
-from services.catalog_inventory import inventory_columns_contract, inventory_contract, new_catalog_version
-from services.embedding_service import embed_textos_llm
+from services.catalog_inventory import inventory_columns_contract, inventory_contract
+from services.catalog_ingestion_assurance import (
+    CatalogSnapshotPublicationError,
+    publish_tenant_catalog_snapshot,
+)
 from services.pymes import tiene_archivo_catalogo
-from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
+from services.tenant_provisioning_readiness import build_tenant_provisioning_readiness
+from services.tenant_conversation_guide import guide_access_descriptor, guide_menu_payload
 from services.tenant_resolver import apply_tenant_alias
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_REAL,
@@ -49,7 +67,15 @@ from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
     build_survey_response_provenance,
 )
-from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.employee_ticket_access import (
+    apply_employee_ticket_category_scope,
+    ticket_assignee_is_compatible,
+)
+from services.ticket_assignment_policy import (
+    TicketAssignmentPolicyError,
+    actor_can_assign_tickets,
+    assignment_transition,
+)
 from services.operational_heatmap_access import (
     EMPLOYEE_HEATMAP_K_MIN,
     EMPLOYEE_HEATMAP_COORDINATE_PRECISION,
@@ -60,6 +86,7 @@ from services.operational_heatmap_access import (
 from services.tenant_ticket_scope import (
     municipio_ticket_belongs_to_tenant,
     municipio_ticket_scope_filter,
+    scoped_municipio_ticket_query,
 )
 from services.plan_access import (
     FULL_INTEGRATION_PLANS,
@@ -207,59 +234,17 @@ def _sanitize_personalization_options_for_storage(raw_options):
 
 
 def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool:
-    """Return True if ``current_user`` can manage the given tenant.
+    """Resolve operational membership consistently with the panel profile.
 
-    Besides the explicit ``tenant_id`` match used in most flows, admins may be
-    linked as the owning municipality/pyme user without ``tenant_id`` filled in.
-    Allow those owners (and platform admins) to administer employees to avoid
-    false 403 responses when legacy data lacks ``tenant_id``.
+    Control-plane writes apply their additional role checks separately. Legacy
+    owners and employees remain supported only when their references agree.
     """
-
     if not current_user or not tenant:
         return False
-
     if is_authorized_superadmin_user(current_user):
         return True
-
-    if current_user.tenant_id and current_user.tenant_id == tenant.id:
-        return True
-
-    if getattr(current_user, "tenant_slug", None) and tenant.slug and current_user.tenant_slug.lower() == tenant.slug.lower():
-        return True
-
-    # Unconditional Owner Check (Strongest)
-    # Handle int vs str comparison just in case
-    if tenant.municipio_id and str(current_user.id) == str(tenant.municipio_id):
-        return True
-    if tenant.pyme_id and str(current_user.id) == str(tenant.pyme_id):
-        return True
-
-    # 3) fallback LEGACY municipio
-    if getattr(current_user, "tipo_chat", None) == "municipio":
-        # a) usuario tiene municipio_id apuntando al tenant (ID)
-        if getattr(current_user, "municipio_id", None) and str(current_user.municipio_id) == str(tenant.id):
-            return True
-        # c) usuario es empleado del dueño (mismo municipio_id)
-        if getattr(tenant, "municipio_id", None) and getattr(current_user, "municipio_id", None):
-            if str(current_user.municipio_id) == str(tenant.municipio_id):
-                return True
-
-    # 4) fallback LEGACY pyme/empresa
-    tipo_chat = getattr(current_user, "tipo_chat", "")
-    if tipo_chat in ("pyme", "empresa"):
-        if getattr(current_user, "empresa_id", None) and current_user.empresa_id == tenant.id:
-            return True
-        if getattr(current_user, "pyme_id", None) and current_user.pyme_id == tenant.id:
-             return True
-        # Check affiliation (employee/admin of same owner)
-        if getattr(tenant, "pyme_id", None):
-            owner_id = tenant.pyme_id
-            if getattr(current_user, "empresa_id", None) == owner_id:
-                return True
-            if getattr(current_user, "pyme_id", None) == owner_id:
-                return True
-
-    return False
+    resolved = resolve_consistent_user_tenant(current_user)
+    return resolved is not None and resolved.id == tenant.id
 
 
 def _survey_response_counts_subquery(tenant_id: int):
@@ -315,7 +300,7 @@ def _build_tenant_dashboard_bundle_payload(
 
     lead_rows = []
     municipio_leads_query = apply_employee_ticket_category_scope(
-        MunicipioTicket.query.filter_by(tenant_id=tenant.id),
+        scoped_municipio_ticket_query(tenant),
         viewer,
         MunicipioTicket,
     )
@@ -521,7 +506,7 @@ def _build_tenant_dashboard_bundle_payload(
         db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
         .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
         .filter(
-            MunicipioTicket.tenant_id == tenant.id,
+            municipio_ticket_scope_filter(tenant),
             TicketComentario.es_admin.is_(False),
             TicketComentario.fecha >= cutoff_unread,
         )
@@ -649,7 +634,7 @@ def _build_tenant_dashboard_bundle_payload(
                 & (TicketRealtimeState.ticket_id == MunicipioTicket.id),
             ).filter(
                 TicketRealtimeState.viewer_user_id.in_(employee_ids),
-                MunicipioTicket.tenant_id == tenant.id,
+                municipio_ticket_scope_filter(tenant),
             )
         )
         municipio_realtime_rows = apply_employee_ticket_category_scope(
@@ -800,8 +785,13 @@ def _build_tenant_heatmap_summary_payload(
     effective_limit = max(1, min(int(limit_points or 1500), 5000))
 
     def _scoped_ticket_query(model):
+        base_query = (
+            scoped_municipio_ticket_query(tenant)
+            if model is MunicipioTicket
+            else model.query.filter_by(tenant_id=tenant.id)
+        )
         return apply_employee_ticket_category_scope(
-            model.query.filter_by(tenant_id=tenant.id),
+            base_query,
             viewer,
             model,
         )
@@ -2019,6 +2009,17 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({"error": "Unauthorized"}), 403
 
+    # Serialize catalog publication for the exact authorized tenant.  The
+    # snapshot publisher advances the active version only after R2 and Qdrant
+    # acknowledgements, inside this same SQL transaction.
+    tenant = (
+        TenantProfile.query.filter_by(id=tenant.id)
+        .with_for_update()
+        .first()
+    )
+    if tenant is None or not tenant.is_active:
+        return jsonify({"error": "Tenant not found"}), 404
+
     owner = tenant.municipio or tenant.pyme
     if not owner:
         return jsonify({"error": "Tenant owner not found"}), 404
@@ -2109,58 +2110,39 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         metadata["stock_updated_at"] = datetime.now(timezone.utc).isoformat()
         item.extra_metadata = metadata
 
-    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
-    catalog_version = new_catalog_version(tenant.id)
-    cfg["catalog_version"] = catalog_version
-    cfg["catalog_last_inventory_update_at"] = datetime.now(timezone.utc).isoformat()
-    tenant.configuracion = cfg
-    flag_modified(tenant, "configuracion")
-
-    db.session.commit()
-
-    text_parts = [
-        item.nombre,
-        item.descripcion or "",
-        item.sku or "",
-    ]
-    if isinstance(item.extra_metadata, dict):
-        text_parts.extend(
-            str(value)
-            for value in item.extra_metadata.values()
-            if value and not isinstance(value, (list, dict))
-        )
-    texto = " ".join(part for part in text_parts if part).strip()
-    embeddings = embed_textos_llm([texto]) if texto else []
-    if embeddings and embeddings[0]:
-        rubro_nombre = "general"
-        if getattr(owner, "rubro", None) and owner.rubro.nombre:
-            rubro_nombre = owner.rubro.nombre
-
-        index_catalog_item(
-            tenant.id,
+    try:
+        publication = publish_tenant_catalog_snapshot(tenant.id)
+        db.session.commit()
+    except CatalogSnapshotPublicationError as exc:
+        db.session.rollback()
+        response = jsonify(
             {
-                "id": item.id,
-                "nombre": item.nombre,
-                "descripcion": item.descripcion,
-                "precio": item.precio or item.precio_monetario or 0,
-                "rubro": rubro_nombre,
-                "stock": item.cantidad,
-                "user_id": owner.id,
-                "tenant_id": tenant.id,
-                "sku": item.sku,
-                "marca": item.marca,
-                "categoria": item.categoria,
-                "moneda": item.moneda,
-                "unidad": item.unidad,
-                "precio_por_caja": item.precio_por_caja,
-                "unidad_por_caja": item.unidad_por_caja,
-                "extra_metadata": item.extra_metadata or {},
-            },
-            embeddings[0],
+                "codigo": exc.reason_code,
+                "mensaje": "No se actualizó el catálogo. La versión anterior continúa activa.",
+                "previous_catalog_preserved": True,
+                "ingestion_assurance": exc.assurance,
+            }
         )
+        response.status_code = 503
+        return response
+    except Exception as exc:
+        current_app.logger.warning(
+            "Catalog inline publication stopped error_type=%s",
+            type(exc).__name__,
+        )
+        db.session.rollback()
+        response = jsonify(
+            {
+                "codigo": "catalog_snapshot_publication_failed",
+                "mensaje": "No se actualizó el catálogo. La versión anterior continúa activa.",
+                "previous_catalog_preserved": True,
+            }
+        )
+        response.status_code = 503
+        return response
 
     request_id = _request_id()
-    catalog_version = cfg.get("catalog_version") or _catalog_version_for_tenant(tenant)
+    catalog_version = publication["catalog_version"]
     formatted = _formatear_producto(
         {
             "nombre": item.nombre,
@@ -2198,6 +2180,7 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
             "contract_version": "tenant.catalog_item_update.v1",
             "request_id": request_id,
             "catalog_version": catalog_version,
+            "ingestion_assurance": publication["ingestion_assurance"],
             "item": formatted,
         }
     )
@@ -2298,6 +2281,8 @@ def create_tenant():
                 "owner_email_generated": bool((tenant.configuracion or {}).get("owner_email_generated")),
             },
             "whatsapp_onboarding": (tenant.configuracion or {}).get("whatsapp_onboarding"),
+            "provisioning_readiness": build_tenant_provisioning_readiness(tenant),
+            "readiness_endpoint": f"/api/admin/tenants/{tenant.slug}/provisioning-readiness",
             "integration_access": integration_access_payload(tenant),
         }), 201
     except ValueError as e:
@@ -2318,7 +2303,7 @@ def get_tenant_config_bundle(current_user, slug):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
-    configs = TenantConfig.query.filter_by(tenant_id=tenant.id).all()
+    configs = TenantConfig.query.filter_by(tenant_id=tenant.id).filter(TenantConfig.key != 'institutional_assistant').all()
     # Nested structure: key -> channel -> value
     config_dict = {}
     for cfg in configs:
@@ -2331,6 +2316,8 @@ def get_tenant_config_bundle(current_user, slug):
     integration_access = integration_access_payload(tenant)
     response = {
         "tenant": {
+            **organization_type_descriptor(tenant.tipo),
+            "id": tenant.id,
             "slug": tenant.slug,
             "nombre": tenant.nombre,
             "tipo": tenant.tipo,
@@ -2350,12 +2337,199 @@ def get_tenant_config_bundle(current_user, slug):
             "widget_customization": integration_access["enabled"]
         },
         "integration_access": integration_access,
+        "provisioning_readiness": build_tenant_provisioning_readiness(tenant),
+        "readiness_endpoint": f"/api/admin/tenants/{tenant.slug}/provisioning-readiness",
+        "template": (tenant.configuracion or {}).get("template"),
     }
-    return jsonify(response)
+    owner = tenant.municipio if tenant.municipio_id else tenant.pyme
+    response["organization_profile"] = build_profile_settings(
+        tenant, owner, can_edit=can_manage_tenant_control_plane(current_user, tenant), writes_blocked=cutover_writer_fence_enabled(current_app.config)
+    )
+    response['organization_modules'] = build_module_selection(tenant, can_edit=can_manage_tenant_control_plane(current_user,tenant),
+        entitled=tenant_allows_module_selection(tenant),writes_blocked=cutover_writer_fence_enabled(current_app.config))
+    response['organization_branding'] = build_branding(tenant,
+        can_edit=can_manage_tenant_control_plane(current_user,tenant),
+        entitled=tenant_allows_workspace_branding(tenant),writes_blocked=cutover_writer_fence_enabled(current_app.config))
+    response['conversation_guide'] = guide_access_descriptor(
+        tenant, can_read=can_manage_tenant_control_plane(current_user, tenant))
+    from services.tenant_conversation_guide_control import control_descriptor
+    response['conversation_guide_control'] = control_descriptor(tenant, can_edit=
+        is_authorized_superadmin_user(current_user) and can_manage_tenant_control_plane(current_user, tenant))
+    result = jsonify(response)
+    result.headers["Cache-Control"] = "no-store"
+    return result
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/domain', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def tenant_domain_binding(current_user, slug):
+    """Own-tenant DNS preparation, never an HTTP activation/provider-write endpoint."""
+    def reply(payload, status=200):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'private, no-store'
+        result.headers['Vary'] = 'Cookie, Authorization'
+        return result, status
+    if request.args:
+        return reply({'contract_version': 'organization.domain_error.v1',
+            'reason_code': 'domain_request_invalid'}, 400)
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None:
+        return reply({'reason_code': 'domain_not_found'}, 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return reply({'reason_code': 'domain_forbidden'}, 403)
+    writes_blocked = cutover_writer_fence_enabled(current_app.config)
+    if request.method == 'PUT':
+        # Defense in depth alongside the global cutover middleware and auth flow.
+        if writes_blocked:
+            return reply({'reason_code': 'maintenance'}, 503)
+        import os
+        origin = request.headers.get('Origin')
+        allowed = {value.strip() for value in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+            if value.strip() and value.strip() != '*'}
+        allowed.add(request.host_url.rstrip('/'))
+        if origin is not None and origin not in allowed:
+            return reply({'reason_code': 'domain_origin_forbidden'}, 403)
+    try:
+        if request.method == 'GET':
+            return reply(build_domain_binding(tenant, can_edit=True,
+                entitled=tenant_allows_custom_domains(tenant), writes_blocked=writes_blocked))
+        result = save_domain_binding(db.session, TenantProfile, User, AuditEvent,
+            tenant_id=tenant.id, actor_id=current_user.id, data=request.get_json(silent=True),
+            authorize=can_manage_tenant_control_plane, entitlement=tenant_allows_custom_domains)
+        return reply(result)
+    except DomainBindingError as exc:
+        return reply({'contract_version': 'organization.domain_error.v1', 'reason_code': exc.code,
+            'error': {'code': exc.status, 'message': exc.message}}, exc.status)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/conversation-guide', methods=['GET'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def get_tenant_conversation_guide(current_user, slug):
+    """Read explicit evaluation choices in the exact authorized organization."""
+    def response(payload, status=200):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'private, no-store'
+        result.headers['Vary'] = 'Cookie, Authorization'
+        return result, status
+
+    # No legacy alias or current-user fallback may replace the requested scope.
+    tenant = TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == str(slug).strip().lower()).first()
+    if tenant is None:
+        return response({'error': 'Tenant not found'}, 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return response({'error': 'Unauthorized'}, 403)
+    descriptor = guide_access_descriptor(tenant, can_read=True)
+    if descriptor is None:
+        return response({'error': 'conversation_guide_unavailable'}, 404)
+
+    allowed = {'node', 'selection', 'tenant', 'tenant_slug', 'tenant_id'}
+    if any(key not in allowed or len(request.args.getlist(key)) != 1 for key in request.args):
+        return response({'error': 'conversation_guide_query_invalid'}, 400)
+    for key in ('tenant', 'tenant_slug'):
+        if key in request.args and request.args[key].strip().lower() != tenant.slug.lower():
+            return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    if 'tenant_id' in request.args and request.args['tenant_id'] != str(tenant.id):
+        return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    for header in ('X-Tenant', 'X-Tenant-Slug'):
+        if request.headers.get(header) and request.headers[header].strip().lower() != tenant.slug.lower():
+            return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    if request.headers.get('X-Tenant-ID') and request.headers['X-Tenant-ID'] != str(tenant.id):
+        return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    try:
+        payload = guide_menu_payload(descriptor, node=request.args.get('node', 'start'),
+                                     selection=request.args.get('selection'))
+    except ValueError as exc:
+        if str(exc) in {'evaluation_node_unknown', 'evaluation_selection_unknown'}:
+            return response({'error': str(exc)}, 400)
+        return response({'error': 'conversation_guide_unavailable'}, 503)
+    except (OSError, KeyError, TypeError):
+        return response({'error': 'conversation_guide_unavailable'}, 503)
+    return response(payload)
+
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/conversation-guide-control', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def tenant_conversation_guide_control(current_user, slug):
+    """Control evaluation access, without approving content or invoking providers."""
+    from services.tenant_conversation_guide_control import (
+        GuideControlError, build_control, decode_command, save_control,
+    )
+    def reply(payload, status=200):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'private, no-store'
+        result.headers['Vary'] = 'Cookie, Authorization'
+        return result, status
+    # This management route must not inherit a permissive wildcard CORS policy.
+    import os
+    origin = request.headers.get('Origin')
+    allowed_origins = {value.strip() for value in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+                       if value.strip() and value.strip() != '*'}
+    allowed_origins.add(request.host_url.rstrip('/'))
+    if origin is not None and origin not in allowed_origins:
+        return reply({'error': 'guide_control_origin_forbidden'}, 403)
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None: return reply({'error': 'guide_control_not_found'}, 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return reply({'error': 'guide_control_forbidden'}, 403)
+    can_edit = is_authorized_superadmin_user(current_user)
+    if request.method == 'PUT' and not can_edit:
+        return reply({'error': 'guide_control_platform_admin_required'}, 403)
+    allowed = {'tenant', 'tenant_slug', 'tenant_id'}
+    for key in request.args:
+        expected = str(tenant.id) if key == 'tenant_id' else tenant.slug
+        if key not in allowed or request.args.getlist(key) != [expected]:
+            return reply({'error': 'guide_control_scope_mismatch'}, 400)
+    for header in ('X-Tenant', 'X-Tenant-Slug', 'X-Tenant-ID'):
+        expected = str(tenant.id) if header == 'X-Tenant-ID' else tenant.slug
+        if header in request.headers and request.headers[header] != expected:
+            return reply({'error': 'guide_control_scope_mismatch'}, 400)
+    blocked = lambda: cutover_writer_fence_enabled(current_app.config)
+    try:
+        if request.method == 'GET':
+            result = build_control(tenant, can_edit=can_edit, writes_blocked=blocked())
+            result['required_headers'] = {'X-Chatboc-Guide-Control': '1'}
+            return reply(result)
+        if blocked(): raise GuideControlError('guide_control_maintenance', 503)
+        if not request.is_json or request.headers.get('X-Chatboc-Guide-Control') != '1':
+            raise GuideControlError('guide_control_json_request_required', 415)
+        if request.content_length is None or request.content_length > 8192:
+            raise GuideControlError('guide_control_request_too_large', 413)
+        data = decode_command(request.get_data(cache=False))
+        result = save_control(db.session, TenantProfile, User, AuditEvent,
+            tenant_id=tenant.id, tenant_slug=tenant.slug, actor_id=current_user.id,
+            data=data, authorize=lambda actor, current: is_authorized_superadmin_user(actor)
+                and can_manage_tenant_control_plane(actor, current), writes_blocked=blocked)
+        return reply(result)
+    except GuideControlError as error:
+        return reply({'contract_version': 'tenant.conversation_guide_control_error.v1',
+                      'reason_code': error.code}, error.status)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/provisioning-readiness', methods=['GET'])
+@token_requerido
+@require_tenant
+def get_tenant_provisioning_readiness(current_user, slug):
+    """Return current tenant configuration readiness without running providers."""
+
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    response = jsonify(build_tenant_provisioning_readiness(tenant))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
 @admin_tenant_bp.route('/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def admin_tenant_catalog(current_user, slug):
@@ -2497,12 +2671,65 @@ def update_tenant_config_bundle(current_user, slug):
     # IDOR Check (same logic as GET and other admin tenant endpoints)
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        reason_code = "tenant_inactive" if getattr(tenant, "is_active", True) is not True else "tenant_admin_required"
+        return jsonify({"error": "Unauthorized", "reason_code": reason_code}), 403
 
-    data = request.json or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Enviá un objeto JSON válido."}), 400
+    if "organization_modules" in data:
+        try:
+            result=save_module_selection(db.session,TenantProfile,User,AuditEvent,tenant_id=tenant.id,
+                actor_id=current_user.id,data=data,authorize=can_manage_tenant_control_plane,
+                entitlement=tenant_allows_module_selection)
+            status=200
+        except ModuleSelectionError as exc:
+            message=MODULE_UI['conflict'] if exc.status==412 else MODULE_UI['full'] if exc.code=='module_full_required' else MODULE_UI['error']
+            result={'contract_version':'organization.setup_modules_error.v1','reason_code':exc.code,'error':{'code':exc.status,'message':message}};status=exc.status
+        response=jsonify(result);response.headers['Cache-Control']='no-store'
+        return response,status
+    if "organization_branding" in data:
+        try:
+            result=save_branding(db.session,TenantProfile,User,AuditEvent,tenant_id=tenant.id,
+                actor_id=current_user.id,data=data,authorize=can_manage_tenant_control_plane,
+                entitlement=tenant_allows_workspace_branding)
+            status=200
+        except BrandingError as exc:
+            result={'contract_version':'organization.branding_error.v1','reason_code':exc.code,
+                'error':{'code':exc.status,'message':exc.message}};status=exc.status
+        response=jsonify(result);response.headers['Cache-Control']='no-store'
+        return response,status
+    if "organization_profile" in data or "expected_revision" in data:
+        try:
+            result = save_profile_settings(
+                db.session, TenantProfile, User, AuditEvent,
+                tenant_id=tenant.id, actor_id=current_user.id, data=data,
+                authorize=can_manage_tenant_control_plane,
+            )
+        except ProfileSettingsError as exc:
+            result = {"contract_version": "organization.profile_error.v1", "reason_code": exc.code,
+                "error": {"code": exc.status, "message": exc.message},
+                "next_action": "review_latest_profile"}
+            response = jsonify(result)
+            response.headers["Cache-Control"] = "no-store"
+            return response, exc.status
+        response = jsonify(result)
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200
+
+
 
     # Update Tenant fields
     tenant_data = data.get('tenant', {})
-    if 'nombre' in tenant_data: tenant.nombre = tenant_data['nombre']
+    if not isinstance(tenant_data, dict):
+        return jsonify({'error': 'Enviá los datos de la organización como un objeto JSON válido.'}), 400
+    if 'nombre' in tenant_data and (not isinstance(tenant_data['nombre'], str) or tenant_data['nombre'] != tenant.nombre):
+        return jsonify({
+            'reason_code': 'organization_name_requires_profile_update',
+            'error': 'Para cambiar el nombre, abrí Datos institucionales y guardá el perfil de la organización.',
+            'save_endpoint': f'/api/admin/tenants/{tenant.slug}/config',
+        }), 409
     if 'logo_url' in tenant_data: tenant.logo_url = tenant_data['logo_url']
     if 'dispatch_email' in tenant_data: tenant.dispatch_email = tenant_data['dispatch_email']
     if 'dispatch_phone' in tenant_data: tenant.dispatch_phone = tenant_data['dispatch_phone']
@@ -2545,8 +2772,14 @@ def update_tenant_config_bundle(current_user, slug):
                 cfg = TenantConfig(tenant_id=tenant.id, key=key, channel=chan_val, json_value=value)
                 db.session.add(cfg)
 
+    db.session.flush()
+    readiness = build_tenant_provisioning_readiness(tenant)
     db.session.commit()
-    return jsonify({"message": "Config updated"})
+    return jsonify({
+        "message": "Config updated",
+        "provisioning_readiness": readiness,
+        "readiness_endpoint": f"/api/admin/tenants/{tenant.slug}/provisioning-readiness",
+    })
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/assign-whatsapp-number', methods=['POST'])
 @token_requerido
@@ -2559,6 +2792,11 @@ def assign_whatsapp_number(current_user, slug):
     # IDOR Check
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        reason_code = "tenant_inactive" if getattr(tenant, "is_active", True) is not True else "tenant_admin_required"
+        return jsonify({"error": "Unauthorized", "reason_code": reason_code}), 403
+    if not plan_allows_full_integrations(tenant):
+        return _integration_plan_required_response(tenant, "whatsapp_sender_management")
 
     number = assign_number_to_tenant(tenant)
     if not number:
@@ -2798,9 +3036,13 @@ def create_employee(current_user):
     if not tenant:
         return jsonify({'error': 'No tenant context'}), 400
 
-    # IDOR Check
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    # Employee identities, roles and capabilities are control-plane state.
+    # Tenant membership alone must never authorize these mutations.
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     data = request.json or {}
     email = str(data.get('email') or '').strip().lower()
@@ -2863,8 +3105,11 @@ def update_employee_admin(current_user, user_id):
     tenant = g.tenant_profile
     if not tenant:
         return jsonify({'error': 'No tenant context'}), 400
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     user = User.query.filter_by(id=user_id, tenant_id=tenant.id, es_empleado=True).first()
     if not user:
@@ -2932,9 +3177,11 @@ def assign_role(current_user, user_id):
     if not tenant:
          return jsonify({'error': 'No tenant context'}), 400
 
-    # IDOR Check
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     data = request.json or {}
     role_name = data.get('role')
@@ -2970,16 +3217,22 @@ def assign_categories(current_user, user_id):
     if not tenant:
          return jsonify({'error': 'No tenant context'}), 400
 
-    # IDOR Check
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     data = request.json or {}
     category_ids = data.get('category_ids', [])
 
-    user = User.query.get(user_id)
+    user = User.query.filter_by(
+        id=user_id,
+        tenant_id=tenant.id,
+        es_empleado=True,
+    ).first()
     if not user:
-        return jsonify({'error': 'User not found'}), 404
+        return jsonify({'error': 'Employee not found'}), 404
 
     valid_cats = CategoriaTicket.query.filter(
         CategoriaTicket.id.in_(category_ids),
@@ -3007,8 +3260,11 @@ def update_employee_scope(current_user, user_id):
     tenant = g.tenant_profile
     if not tenant:
         return jsonify({'error': 'No tenant context'}), 400
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     user = User.query.get(user_id)
     if not user or user.tenant_id != tenant.id or not user.es_empleado:
@@ -3075,9 +3331,31 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         return jsonify({'error': 'Tenant not found'}), 404
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
+    if not actor_can_assign_tickets(current_user):
+        return jsonify({
+            'contract_version': 'shared.error.v1',
+            'status_code': 403,
+            'reason_code': 'ticket_assignment_forbidden',
+            'message': 'La asignacion a otro operador requiere supervision o la capacidad tickets.assign',
+            'action_hint': 'request_supervisor_assignment',
+        }), 403
 
-    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
-    if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
+    if ticket_type == 'municipio':
+        ticket = (
+            scoped_municipio_ticket_query(tenant)
+            .filter(MunicipioTicket.id == ticket_id)
+            .with_for_update()
+            .first()
+        )
+    elif ticket_type == 'pyme':
+        ticket = (
+            PymeTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id)
+            .with_for_update()
+            .first()
+        )
+    else:
+        ticket = None
+    if not ticket:
         return jsonify({'error': 'Ticket no encontrado'}), 404
 
     categoria = str(getattr(ticket, 'categoria', None) or '').strip().lower()
@@ -3086,6 +3364,7 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
     best = None
     best_score = -1
+    current_best = None
     payload = request.get_json(silent=True) or {}
     required_permission = str(payload.get('required_permission') or '').strip().lower()
 
@@ -3093,39 +3372,69 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         scope = _employee_scope(emp)
         if required_permission and not _scope_has_permission(scope, required_permission):
             continue
+        if not ticket_assignee_is_compatible(emp, ticket):
+            continue
         base_score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        # A persisted CategoriaTicket relation is authoritative even when the
+        # legacy display label is the generic ``General`` value.
+        if base_score <= 0 and getattr(ticket, 'categoria_id', None):
+            base_score = 80
         workload = _employee_open_workload(tenant.id, emp.id)
         score = max(base_score - min(workload * 5, 30), 0)
+        if str(emp.id) == str(getattr(ticket, 'asignado_a_id', None) or ''):
+            current_best = (emp, scope, workload, score)
         if score > best_score:
             best_score = score
             best = (emp, scope, workload)
+
+    if current_best is not None:
+        current_emp, current_scope, current_workload, current_score = current_best
+        best = (current_emp, current_scope, current_workload)
+        best_score = current_score
 
     if not best or best_score <= 0:
         return jsonify({'ok': False, 'assigned': False, 'reason': 'no_match'}), 200
 
     emp, scope, workload = best
-    if hasattr(ticket, 'asignado_a_id'):
+    try:
+        transition = assignment_transition(
+            actor=current_user,
+            payload=payload,
+            current_assignee_id=getattr(ticket, 'asignado_a_id', None),
+            target_assignee_id=emp.id,
+        )
+    except TicketAssignmentPolicyError as exc:
+        return jsonify({
+            'contract_version': 'shared.error.v1',
+            'status_code': exc.status_code,
+            'reason_code': exc.reason_code,
+            'message': exc.message,
+            'action_hint': exc.action_hint,
+        }), exc.status_code
+
+    if not transition.replayed and hasattr(ticket, 'asignado_a_id'):
         ticket.asignado_a_id = emp.id
         ticket.asignado_en = datetime.now(timezone.utc)
 
     details = _ticket_details(ticket)
     timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
-    timeline.append({
-        'at': datetime.now(timezone.utc).isoformat(),
-        'by_user_id': current_user.id,
-        'event': 'auto_assign_employee_scope',
-        'employee_id': emp.id,
-        'employee_name': emp.name,
-        'score': best_score,
-        'workload_open_tickets': workload,
-        'categoria': categoria or None,
-        'zona': zona or None,
-    })
-    details['lead_timeline'] = timeline[-100:]
-    _save_ticket_details(ticket, details)
-    if hasattr(ticket, 'ultima_actividad'):
-        ticket.ultima_actividad = datetime.now(timezone.utc)
-    db.session.commit()
+    if not transition.replayed:
+        timeline.append({
+            'at': datetime.now(timezone.utc).isoformat(),
+            'by_user_id': current_user.id,
+            'event': 'auto_assign_employee_scope',
+            'employee_id': emp.id,
+            'employee_name': emp.name,
+            'score': best_score,
+            'workload_open_tickets': workload,
+            'categoria': categoria or None,
+            'zona': zona or None,
+        })
+        details['lead_timeline'] = timeline[-100:]
+        _save_ticket_details(ticket, details)
+        if hasattr(ticket, 'ultima_actividad'):
+            ticket.ultima_actividad = datetime.now(timezone.utc)
+        db.session.commit()
 
     return jsonify({
         'ok': True,
@@ -3136,6 +3445,12 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         'score': best_score,
         'workload_open_tickets': workload,
         'scope': scope,
+        'assignment': {
+            'contract_version': 'inbox.assignment_cas.v1',
+            'expected_assignee_id': transition.expected_assignee_id,
+            'assignee_id': emp.id,
+            'replayed': transition.replayed,
+        },
     })
 
 
@@ -3208,6 +3523,7 @@ def tenant_surveys_overview(current_user, slug):
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/tickets/unread-summary', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def tenant_unread_ticket_summary(current_user, slug):
@@ -3227,7 +3543,7 @@ def tenant_unread_ticket_summary(current_user, slug):
         db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
         .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
         .filter(
-            MunicipioTicket.tenant_id == tenant.id,
+            municipio_ticket_scope_filter(tenant),
             TicketComentario.es_admin.is_(False),
             TicketComentario.fecha >= cutoff,
         )
@@ -3301,6 +3617,7 @@ def tenant_employees_workload(current_user, slug):
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/dashboard-bundle', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 @require_tenant
@@ -3463,48 +3780,32 @@ def connect_integration(current_user, slug, integration_type):
     if not _plan_allows_integrations(tenant):
         return _integration_plan_required_response(tenant, _integration_plan_feature_id(integration_type))
 
-    base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
+    # Marketplace OAuth used to put the plain tenant id in ``state``.  Keep
+    # those legacy entry points fail-closed until state is signed, expiring and
+    # backed by a one-time nonce store.  The WhatsApp branch below uses its own
+    # tenant-bound Tech Provider contract and is intentionally unaffected.
+    if integration_type.lower() in {'tiendanube', 'mercadolibre'}:
+        migration_flag_requested = bool(
+            current_app.config.get("LEGACY_INTEGRATIONS_TRANSPORT_ENABLED", False)
+        )
+        response = jsonify(
+            {
+                "contract_version": "tenant.integration.legacy_transport_disabled.v1",
+                "status": "disabled",
+                "reason_code": (
+                    "legacy_integration_secure_transport_unavailable"
+                    if migration_flag_requested
+                    else "legacy_oauth_connect_disabled"
+                ),
+                "retryable": False,
+                "next_action": "configure_tenant_bound_signed_provider_adapter",
+            }
+        )
+        response.status_code = 503 if migration_flag_requested else 404
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
-    # Uses Platform Credentials (configured in Render/Env) to generate the OAuth URL.
-    # The Client (Tenant Admin) clicks this URL, logs in to their account, and authorizes "Chatboc".
-    # We use the GENERIC callback URL defined in routes/integrations.py to allow a single app registration.
-    # The tenant context is preserved via the 'state' parameter (tenant.id).
-
-    if integration_type.lower() == 'tiendanube':
-        client_id = current_app.config.get("TIENDANUBE_CLIENT_ID")
-        if not client_id:
-            # Fallback for development or incomplete config - don't crash with 503
-            current_app.logger.warning("TIENDANUBE_CLIENT_ID not set. Integration unavailable.")
-            # Si estamos en modo desarrollo o no hay config, devolvemos un mock o un error 200 con mensaje
-            # Para evitar 422 que rompe el frontend, devolvemos un error manejable o un mensaje de demo
-            return jsonify({
-                "error": "platform_not_configured",
-                "message": "Falta TIENDANUBE_CLIENT_ID en el servidor. Contacte al administrador.",
-                "demo_mode": True
-            }), 200 # Cambiamos a 200 para que el frontend pueda manejarlo sin excepción
-
-        redirect_uri = f"{base_url}/api/integrations/tiendanube/callback"
-        # TiendaNube typically doesn't support 'state' in all docs, but standard OAuth does.
-        # We assume standard behavior or fallback to direct if needed.
-        auth_url = f"https://www.tiendanube.com/apps/authorize?client_id={client_id}&redirect_uri={redirect_uri}&state={tenant.id}"
-        return jsonify({"redirect_url": auth_url})
-
-    elif integration_type.lower() == 'mercadolibre':
-        client_id = current_app.config.get("ML_APP_ID")
-        if not client_id:
-             current_app.logger.warning("ML_APP_ID not set. Integration unavailable.")
-             return jsonify({
-                "error": "platform_not_configured",
-                "message": "Falta ML_APP_ID en el servidor. Contacte al administrador.",
-                "demo_mode": True
-            }), 200
-
-        redirect_uri = f"{base_url}/api/integrations/mercadolibre/callback"
-        # MercadoLibre supports 'state' perfectly.
-        auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&state={tenant.id}"
-        return jsonify({"redirect_url": auth_url})
-
-    elif integration_type.lower() == 'whatsapp':
+    if integration_type.lower() == 'whatsapp':
         contract = build_twilio_tech_provider_contract(tenant, current_app.config)
         embedded_signup = contract.get("embedded_signup") or {}
         setup_health = contract.get("setup_health") or {}
@@ -3757,6 +4058,7 @@ def sync_integration(current_user, slug, integration_type):
     return jsonify({"error": "Integration not supported"}), 400
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/preview', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def preview_integration_sync(current_user, slug, integration_type):
@@ -4894,7 +5196,7 @@ def tenant_list_leads(current_user, slug):
     limit = max(1, min(int(request.args.get('limit', 100) or 100), 250))
     stage_filter = str(request.args.get('stage') or '').strip().lower()
 
-    m_query = MunicipioTicket.query.filter_by(tenant_id=tenant.id)
+    m_query = scoped_municipio_ticket_query(tenant)
     p_query = PymeTicket.query.filter_by(tenant_id=tenant.id)
     t_query = TenantTicket.query.filter_by(tenant_id=tenant.id)
     rows = []
@@ -5094,3 +5396,11 @@ def tenant_lead_timeline(current_user, slug, ticket_type: str, ticket_id: int):
         ticket.ultima_actividad = datetime.now(timezone.utc)
     db.session.commit()
     return jsonify({'ok': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type, 'timeline': details['lead_timeline']})
+
+
+@admin_tenant_bp.after_request
+def preserve_guide_control_cache_policy(response):
+    if request.endpoint == f'{admin_tenant_bp.name}.tenant_conversation_guide_control':
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.vary.update(('Cookie', 'Authorization', 'Origin'))
+    return response

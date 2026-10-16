@@ -1,0 +1,9 @@
+contract_version = "chatboc.render_neon_parity_policy.v1"
+
+[excluded_tables]
+alembic_version = "Schema history is certified separately by the migration-head cutover gate."
+
+[allowed_destination_only_tables]
+
+[table_rules.municipio_ticket.source_only_null_columns]
+archivo_url = "The retired legacy column is admissible only while every source value is null."

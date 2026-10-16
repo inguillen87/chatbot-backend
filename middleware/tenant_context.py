@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -9,7 +11,12 @@ from flask import current_app, g, jsonify, make_response, request
 from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
 
+from database import db
 from models import TenantProfile
+from utils.database_availability import DATABASE_AVAILABILITY_ERRORS, database_unavailable_response
+from utils.internal_cron_request import is_registered_internal_cron_request
+from utils.runtime_liveness import is_public_liveness_request
+from utils.runtime_metadata import is_public_version_metadata_request
 from utils.tenant import (
     get_current_tenant_profile,
     get_current_tenant_slug,
@@ -17,6 +24,10 @@ from utils.tenant import (
 )
 
 _TENANT_HINT_BODY_MAX_BYTES = 65_536
+_GLOBAL_LANDING_HOSTS = frozenset({
+    "chatboc.ar", "www.chatboc.ar", "api.chatboc.ar",
+    "chatboc-frontend.vercel.app", "chatboc-backend.vercel.app",
+})
 
 
 def _normalize_slug(value: Optional[str]) -> Optional[str]:
@@ -77,7 +88,10 @@ def _tenant_slug_from_url(url: Optional[str]) -> Optional[str]:
 def _find_tenant_by_slug(slug: str) -> Optional[TenantProfile]:
     if not slug:
         return None
-    return TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first()
+    return TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == slug.lower(),
+        TenantProfile.is_active.is_(True),
+    ).first()
 
 
 def _fallback_default_tenant() -> Optional[TenantProfile]:
@@ -93,20 +107,50 @@ def _fallback_default_tenant() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    return TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+    return (
+        TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+        .order_by(TenantProfile.id.asc())
+        .first()
+    )
 
 
 def _find_tenant_by_widget_token(token: str) -> Optional[TenantProfile]:
     if not token:
         return None
-    # Using the same logic as services/tenant_resolver.py
-    try:
-        return TenantProfile.query.filter(
-            TenantProfile.configuracion["widget_tokens"].astext.contains(token)
-        ).first()
-    except Exception:
-        # In case of database dialect issues (e.g. SQLite vs Postgres JSON)
+
+    normalized = str(token).strip()
+    if not normalized:
         return None
+
+    def _has_exact_token(tenant: TenantProfile) -> bool:
+        cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        configured = cfg.get("widget_tokens")
+        if isinstance(configured, str):
+            values = [configured]
+        elif isinstance(configured, (list, tuple, set)):
+            values = configured
+        else:
+            values = []
+        return any(str(value or "").strip() == normalized for value in values)
+
+    try:
+        candidates = TenantProfile.query.filter(
+            TenantProfile.is_active.is_(True),
+            TenantProfile.configuracion["widget_tokens"].astext.contains(normalized),
+        ).all()
+    except DATABASE_AVAILABILITY_ERRORS:
+        raise
+    except Exception:
+        candidates = []
+
+    matches = [tenant for tenant in candidates if _has_exact_token(tenant)]
+    if not matches:
+        matches = [
+            tenant
+            for tenant in TenantProfile.query.filter(TenantProfile.is_active.is_(True)).all()
+            if _has_exact_token(tenant)
+        ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
@@ -195,7 +239,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 def _resolve_tenant_profile() -> Optional[TenantProfile]:
     view_args = getattr(request, "view_args", None) or {}
 
-    slug = _normalize_slug(
+    raw_slug = (
         view_args.get("tenant_slug")
         or view_args.get("tenant")
         or view_args.get("slug")
@@ -207,6 +251,8 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         or _tenant_slug_from_path(request.path)
         or _tenant_slug_from_url(request.headers.get("Referer") or getattr(request, "referrer", None))
     )
+    slug = _normalize_slug(raw_slug)
+    unresolved_explicit_slug = False
     if slug:
         try:
             from services.tenant_resolver import apply_tenant_alias
@@ -218,15 +264,19 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         tenant = _find_tenant_by_slug(slug)
         if tenant:
             return tenant
+        unresolved_explicit_slug = True
 
     tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
-    if tenant_id:
+    if tenant_id and not unresolved_explicit_slug:
         try:
-            tenant = TenantProfile.query.get(int(tenant_id))
+            tenant = db.session.get(TenantProfile, int(tenant_id))
         except (TypeError, ValueError):
             tenant = None
-        if tenant:
+        if tenant and getattr(tenant, "is_active", True) is not False:
             return tenant
+        # A caller that supplied an explicit database identity must never be
+        # silently redirected to a token, host, viewer, or default tenant.
+        return None
 
     # Check for Widget Token (used by ChatWidget)
     widget_token = (
@@ -239,6 +289,16 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         tenant = _find_tenant_by_widget_token(widget_token)
         if tenant:
             return tenant
+        # Invalid and ambiguous tokens are authoritative failed selectors.
+        # Falling through here would expose whichever tenant is configured as
+        # the shared-platform default.
+        return None
+
+    # An explicit but unknown/inactive slug must never fall through to a host,
+    # authenticated viewer, configured default, or first-row tenant. A valid
+    # widget token above remains an intentional compatibility selector.
+    if unresolved_explicit_slug:
+        return None
 
     # Try resolving by slug hint (query params) using the shared resolver to honor
     # widget tokens and explicit slugs coming from the web widget/marketplace.
@@ -302,7 +362,7 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         try:
             tenant = resolve_tenant_only(host=host, require_explicit_slug=False)
         except TenantResolutionError:
-            tenant = None
+            return None
 
         if tenant:
             return tenant
@@ -362,11 +422,118 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
     return _fallback_default_tenant()
 
 
+def _global_landing_hosts() -> set[str]:
+    hosts = set(_GLOBAL_LANDING_HOSTS)
+    runtime_host = os.environ.get("VERCEL_URL")
+    if (isinstance(runtime_host, str) and re.fullmatch(
+            r"chatboc-backend-[a-z0-9]+-marcelos-projects-c26aa499\.vercel\.app",
+            runtime_host)):
+        hosts.add(runtime_host)
+    return hosts
+
+
+def _is_global_platform_landing_request() -> bool:
+    """Only the selector-free brand contract may omit tenant discovery.
+
+    Every supplied host hint must remain canonical. A canonical Origin cannot
+    authorize a custom host, and tenant/widget selectors keep their usual path.
+    This does not bypass authentication hooks or authorize another endpoint.
+    """
+    if (request.endpoint != "public_resolver_bp.landing_experience"
+            or request.path != "/api/public/landing-experience"
+            or request.method not in {"GET", "HEAD", "OPTIONS"}):
+        return False
+    if (set(request.args) - {"page"}
+            or any(len(request.args.getlist(key)) != 1 for key in request.args)
+            or request.content_length not in (None, 0)
+            or "Transfer-Encoding" in request.headers):
+        return False
+    if any(header in request.headers for header in (
+            "X-Tenant", "X-Tenant-Slug", "X-Tenant-Id", "X-Widget-Token",
+            "X-Entity-Token", "X-Owner-Token", "X-Token", "Authorization")):
+        return False
+    cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    if any(name in request.cookies for name in (cookie_name, "widget_token", "owner_token")
+           if isinstance(name, str) and name):
+        return False
+    if _tenant_slug_from_url(request.headers.get("Referer")):
+        return False
+
+    # Only this deployment's exact public runtime hostname is eligible;
+    # neither another candidate nor arbitrary vercel.app hosts are trusted.
+    hosts = _global_landing_hosts()
+
+    def canonical_host(value, *, url=False):
+        if not isinstance(value, str) or not value or value != value.strip() or "," in value:
+            return False
+        if not url and any(part in value for part in ("/", "?", "#")):
+            return False
+        try:
+            parsed = urlparse(value if url else "//" + value)
+            return (parsed.hostname in hosts
+                    and parsed.username is None and parsed.password is None
+                    and parsed.port in (None, 80, 443)
+                    and (not url or parsed.scheme in {"http", "https"}))
+        except ValueError:
+            return False
+
+    if not canonical_host(request.host):
+        return False
+    original = request.environ.get("werkzeug.proxy_fix.orig", {})
+    if (isinstance(original, dict) and original.get("HTTP_HOST") is not None
+            and not canonical_host(original["HTTP_HOST"])):
+        return False
+    for header in ("X-Forwarded-Host", "X-Original-Host", "X-Host"):
+        if header in request.headers and not canonical_host(request.headers[header]):
+            return False
+    for header in ("Origin", "Referer"):
+        if header in request.headers and not canonical_host(request.headers[header], url=True):
+            return False
+    return True
+
+
 def tenant_middleware(app) -> None:
     @app.before_request
     def attach_tenant_profile() -> None:
+        from services.auth_session_lifecycle import is_retirement_request
+        if is_retirement_request():
+            return
+        # Reset every tenant alias at the beginning of each request. This also
+        # protects test/worker code that intentionally reuses an app context;
+        # a failed resolution must never inherit the previous request's tenant.
+        for key in (
+            "tenant_profile",
+            "tenant_profile_slug",
+            "current_tenant",
+            "current_tenant_slug",
+            "tenant_slug",
+            "tenant",
+        ):
+            g.pop(key, None)
+
+        if is_public_liveness_request(request) or is_registered_internal_cron_request(request):
+            return
+
+        if is_public_version_metadata_request(request):
+            return
+
+        if _is_global_platform_landing_request():
+            return
+
+        # These routes have their own credential-free CORS preflight response.
+        if request.method == 'OPTIONS' and request.endpoint in {
+            'auth.widget_bootstrap', 'auth_api.widget_bootstrap',
+            'auth.clerk_session_sync', 'auth_api.clerk_session_sync',
+        }:
+            return
+
         try:
             tenant = _resolve_tenant_profile()
+        except HTTPException:
+            raise
+        except DATABASE_AVAILABILITY_ERRORS as error:
+            current_app.logger.warning('Tenant context unavailable error_type=%s', type(error).__name__)
+            return database_unavailable_response(reason_code='tenant_context_unavailable')
         except Exception as exc:
             current_app.logger.warning("[tenant_context] failed to resolve tenant context: %s", exc)
             tenant = None

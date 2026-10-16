@@ -693,13 +693,27 @@ def _find_order_ticket(order: PymePedido, tenant: TenantProfile | None):
     ).order_by(PymeTicket.id.desc()).first()
 
 
+def _is_internal_ticket_comment(comment: TicketComentario) -> bool:
+    """Keep private operator notes out of every legacy public tracking view."""
+
+    return str(getattr(comment, "origen", None) or "").strip().casefold() == "internal"
+
+
 def _order_chat_history(order, tenant: TenantProfile | None) -> list[dict]:
     if not isinstance(order, PymePedido):
         return []
     ticket = _find_order_ticket(order, tenant)
     if not ticket:
         return []
-    comments = ticket.comentarios.order_by(TicketComentario.fecha.asc()).limit(100).all()
+    comments = (
+        ticket.comentarios.filter(
+            (TicketComentario.origen.is_(None))
+            | (func.lower(func.trim(TicketComentario.origen)) != "internal")
+        )
+        .order_by(TicketComentario.fecha.asc())
+        .limit(100)
+        .all()
+    )
     return [
         {
             "id": comment.id,
@@ -709,6 +723,7 @@ def _order_chat_history(order, tenant: TenantProfile | None) -> list[dict]:
             "created_at": comment.fecha.isoformat() if comment.fecha else None,
         }
         for comment in comments
+        if not _is_internal_ticket_comment(comment)
     ]
 
 
@@ -748,8 +763,17 @@ def tracking_claim(nro_ticket):
 
     # 4. Chat History
     chat_history = []
-    comments = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+    comments = (
+        ticket.comentarios.filter(
+            (TicketComentario.origen.is_(None))
+            | (func.lower(func.trim(TicketComentario.origen)) != "internal")
+        )
+        .order_by(TicketComentario.fecha.asc())
+        .all()
+    )
     for c in comments:
+        if _is_internal_ticket_comment(c):
+            continue
         chat_history.append(c.to_dict())
 
     return render_template(

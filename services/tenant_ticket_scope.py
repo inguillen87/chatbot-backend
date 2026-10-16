@@ -77,6 +77,29 @@ def tenant_owner_ids(tenant: TenantProfile | None) -> tuple[int, ...]:
     return tuple(values)
 
 
+def _is_structurally_municipal_tenant(tenant: TenantProfile | None) -> bool:
+    """Return true only for a tenant that can own municipal-domain records.
+
+    Older backfills matched ``MunicipioTicket.municipio_id`` against both
+    tenant owner columns.  That allowed an explicit PYME tenant to become
+    authoritative merely because the numeric owner happened to match.  An
+    explicit but cross-domain tenant must be quarantined just like a missing
+    or ambiguous scope.
+    """
+
+    if tenant is None:
+        return False
+    if str(getattr(tenant, "tipo", "") or "").strip().lower() != "municipio":
+        return False
+    if getattr(tenant, "pyme_id", None) is not None:
+        return False
+    try:
+        _positive_int(getattr(tenant, "municipio_id", None), field="owner_id")
+    except TicketTenantScopeError:
+        return False
+    return True
+
+
 def tenant_unique_legacy_owner_id(tenant: TenantProfile | None) -> int | None:
     """Return the sole legacy owner only when it resolves back to ``tenant``.
 
@@ -143,7 +166,11 @@ def resolve_unique_tenant_for_owner(owner_id: Any) -> TenantOwnerResolution:
 def municipio_ticket_scope_filter(tenant: TenantProfile | None):
     """Build the only supported tenant predicate for ``MunicipioTicket``."""
 
-    if tenant is None or getattr(tenant, "id", None) is None:
+    if (
+        tenant is None
+        or getattr(tenant, "id", None) is None
+        or not _is_structurally_municipal_tenant(tenant)
+    ):
         return false()
     try:
         tenant_id = _positive_int(tenant.id, field="tenant_id")
@@ -185,7 +212,11 @@ def municipio_ticket_belongs_to_tenant(
 ) -> bool:
     """Check access without allowing owner fallback over an explicit tenant."""
 
-    if ticket is None or tenant is None:
+    if (
+        ticket is None
+        or tenant is None
+        or not _is_structurally_municipal_tenant(tenant)
+    ):
         return False
     try:
         tenant_id = _positive_int(getattr(tenant, "id", None), field="tenant_id")
@@ -233,6 +264,11 @@ def resolve_municipio_ticket_access_tenant(
                 "ticket_tenant_not_found",
                 "Municipal ticket tenant scope is unavailable.",
             )
+        if not _is_structurally_municipal_tenant(tenant):
+            raise TicketTenantScopeError(
+                "ticket_tenant_incompatible",
+                "Municipal ticket tenant scope is unavailable.",
+            )
         return tenant
 
     owner_id = getattr(ticket, "municipio_id", None)
@@ -250,6 +286,11 @@ def resolve_municipio_ticket_access_tenant(
     if resolution.status == "orphan" or resolution.tenant is None:
         raise TicketTenantScopeError(
             "ticket_tenant_not_found",
+            "Municipal ticket tenant scope is unavailable.",
+        )
+    if not _is_structurally_municipal_tenant(resolution.tenant):
+        raise TicketTenantScopeError(
+            "ticket_tenant_incompatible",
             "Municipal ticket tenant scope is unavailable.",
         )
     return resolution.tenant
@@ -291,6 +332,12 @@ def normalize_municipio_ticket_write_scope(
                 "Municipal ticket tenant scope is unavailable.",
             )
         tenant = resolution.tenant
+
+    if not _is_structurally_municipal_tenant(tenant):
+        raise TicketTenantScopeError(
+            "ticket_tenant_incompatible",
+            "Municipal ticket tenant scope is unavailable.",
+        )
 
     owners = tenant_owner_ids(tenant)
     if len(owners) != 1:

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from services.message_templates import (
     render_whatsapp_template_preview,
     validate_whatsapp_template,
     whatsapp_template_lifecycle,
+    whatsapp_template_pack,
     whatsapp_template_pack_catalog,
 )
 from services.whatsapp_experience import (
@@ -29,7 +31,7 @@ def _auth_headers(app, user: User, tenant_slug: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "X-Tenant": tenant_slug}
 
 
-def _seed(*, role: str = "admin", tenant_type: str = "municipio"):
+def _seed(*, role: str = "admin", tenant_type: str = "municipio", tenant_slug: str | None = None):
     suffix = uuid4().hex[:10]
     user = User(
         email=f"wa-template-pack-{suffix}@test.com",
@@ -41,7 +43,7 @@ def _seed(*, role: str = "admin", tenant_type: str = "municipio"):
     db.session.add(user)
     db.session.flush()
     tenant = TenantProfile(
-        slug=f"wa-template-pack-{suffix}",
+        slug=tenant_slug or f"wa-template-pack-{suffix}",
         nombre="Template Pack Tenant",
         tipo=tenant_type,
         municipio_id=user.id if tenant_type == "municipio" else None,
@@ -88,6 +90,51 @@ def test_versioned_vertical_packs_have_valid_rendered_previews():
             assert "{{" not in template["preview"]["body"]
             assert template["lifecycle"]["state"] == "local_draft"
             assert template["lifecycle"]["production_send_allowed"] is False
+
+
+def test_tdf_catalog_requires_authorized_tenant_slug_and_keeps_generic_packs():
+    for slug in (None, "junin", "other-tenant", "TDF", "tierra-del-fuego/", " tierra-del-fuego"):
+        assert whatsapp_template_pack("tdf", tenant_slug=slug) is None
+        assert all(pack["vertical"] != "tdf" for pack in whatsapp_template_pack_catalog(tenant_slug=slug)["packs"])
+
+    catalog = whatsapp_template_pack_catalog(tenant_slug="tierra-del-fuego")
+    assert catalog["summary"]["packs"] == 4
+    assert catalog["summary"]["templates"] == 20
+    generic = whatsapp_template_pack_catalog()
+    assert catalog["packs"][:3] == generic["packs"]
+    pack = next(item for item in catalog["packs"] if item["vertical"] == "tdf")
+    assert pack["pack_version"] == "1.0.0"
+    assert pack["scope"]["tenant_slug"] == "tierra-del-fuego"
+    assert {t["intent"] for t in pack["templates"]} == {"orientation", "follow_up", "appointment", "notice", "handoff"}
+    assert pack["dispatch_policy"]["runtime_dispatch_enabled"] is False
+    assert pack["dispatch_policy"]["source_event_validation_implemented"] is False
+    assert pack["dispatch_policy"]["tenant_provider_binding_verified"] is False
+    for template in pack["templates"]:
+        assert template["category"] == "UTILITY"
+        assert template["validation"] == {"valid": True, "errors": []}
+        assert template["variables"] == []
+        assert template["cta"] is None
+        assert template["preview"]["contains_unresolved_variables"] is False
+        assert template["lifecycle"]["state"] == "local_draft"
+        assert template["lifecycle"]["production_send_allowed"] is False
+        assert "template_pack_dispatch_not_enabled" in template["blockers"]
+
+
+def test_tdf_provider_approval_does_not_enable_unimplemented_event_dispatch():
+    pack = whatsapp_template_pack("tdf", tenant_slug="tierra-del-fuego")
+    registry = {template["name"]: {
+        "source": "message_template_registry", "status": "approved",
+        "external_template_id": "synthetic-provider-reference",
+        "last_sync_at": datetime.now(timezone.utc),
+    } for template in pack["templates"]}
+    catalog = whatsapp_template_pack_catalog(registry, tenant_slug="tierra-del-fuego")
+    tdf = next(item for item in catalog["packs"] if item["vertical"] == "tdf")
+    for template in tdf["templates"]:
+        assert template["lifecycle"]["state"] == "approved"
+        assert template["lifecycle"]["production_send_allowed"] is False
+        assert "template_pack_dispatch_not_enabled" in template["lifecycle"]["blockers"]
+    # This is synthetic lifecycle evidence, not provider/WABA acceptance.
+    assert tdf["dispatch_policy"]["tenant_provider_binding_verified"] is False
 
 
 def test_strict_validator_rejects_invalid_identity_variables_and_cta():
@@ -173,8 +220,19 @@ def test_lifecycle_requires_fresh_provider_evidence_and_never_trusts_local_copy(
     assert local_active["production_send_allowed"] is False
 
 
-def test_global_manifest_is_redacted_stale_and_not_remote_configured():
-    manifest = _local_twilio_manifest_template_map()
+def test_global_manifest_is_redacted_stale_and_not_remote_configured(tmp_path):
+    # The runtime manifest is intentionally private/ignored. This test must not
+    # depend on its presence or import actual global provider references.
+    fixture_path = tmp_path / "synthetic-manifest.json"
+    fixture_path.write_text(json.dumps({"version": "fixture", "templates": {
+        "order_checkout": {"sid": "synthetic-global-reference", "approved": True}
+    }}), encoding="utf-8")
+    with patch("services.whatsapp_experience.LOCAL_TWILIO_MANIFEST_PATH", fixture_path):
+        _local_twilio_manifest_template_map.cache_clear()
+        try:
+            manifest = _local_twilio_manifest_template_map()
+        finally:
+            _local_twilio_manifest_template_map.cache_clear()
     status = _template_status(manifest, "order_checkout")
     readiness = _template_readiness_payload(status, {})
 
@@ -288,6 +346,67 @@ def test_template_pack_endpoint_materializes_local_drafts_with_audit_and_idempot
         tenant_id=tenant.id,
         event_type="whatsapp_template_pack.local_drafts_materialized",
     ).count() == 1
+
+
+def test_tdf_endpoint_creates_only_local_drafts_and_replays_alias_atomically(client, app):
+    # Native identities, tokens and the database here are disposable fixtures.
+    admin, tenant = _seed(tenant_slug="tierra-del-fuego")
+    headers = _auth_headers(app, admin, tenant.slug)
+    headers["Idempotency-Key"] = "tdf-draft-operation-0001"
+    with patch("routes.whatsapp_rules.Client") as twilio_client, patch("requests.sessions.Session.request") as http:
+        catalog = client.get("/api/admin/whatsapp/template-packs", headers=headers)
+        first = client.post("/api/admin/whatsapp/template-packs/tdf/drafts", headers=headers, json={"pack_version": "1.0.0"})
+        replay = client.post("/api/admin/whatsapp/template-packs/tierra-del-fuego/drafts", headers=headers, json={"pack_version": "1.0.0"})
+    assert catalog.status_code == 200
+    assert "tdf" in {p["vertical"] for p in catalog.get_json()["packs"]}
+    assert first.status_code == 201, first.get_json()
+    assert first.get_json()["created_count"] == 5
+    assert first.get_json()["pack"]["dispatch_policy"]["runtime_dispatch_enabled"] is False
+    assert all(template["materialized"] and template["lifecycle"]["state"] == "local_draft"
+               and not template["lifecycle"]["production_send_allowed"]
+               for template in first.get_json()["pack"]["templates"])
+    assert replay.status_code == 200, replay.get_json()
+    assert replay.get_json()["idempotent_replay"] is True
+    twilio_client.assert_not_called()
+    http.assert_not_called()
+    rows = MessageTemplateRegistry.query.filter_by(tenant_id=tenant.id, provider="chatboc").all()
+    assert len(rows) == 5
+    assert all(row.status == "local_draft" and row.content_sid is None and row.external_template_id is None for row in rows)
+    assert all(row.metadata_json["template_pack"]["vertical"] == "tdf" for row in rows)
+    assert AuditEvent.query.filter_by(tenant_id=tenant.id, event_type="whatsapp_template_pack.local_drafts_materialized").count() == 1
+
+
+def test_tdf_pack_cannot_be_created_using_another_tenant_or_raw_request_hint(client, app):
+    admin, tenant = _seed()
+    _, tdf = _seed(tenant_slug="tierra-del-fuego")
+    headers = _auth_headers(app, admin, tenant.slug)
+    headers["Idempotency-Key"] = "tdf-scope-denied-0001"
+    catalog = client.get("/api/admin/whatsapp/template-packs", headers=headers)
+    assert catalog.status_code == 200
+    assert all(pack["vertical"] != "tdf" for pack in catalog.get_json()["packs"])
+    for path in ("/api/admin/whatsapp/template-packs/tdf/drafts", "/api/admin/whatsapp/template-packs/tdf/drafts?tenant_slug=tierra-del-fuego"):
+        denied = client.post(path, headers=headers, json={"pack_version": "1.0.0"})
+        assert denied.status_code in {403, 404}, denied.get_json()
+    headers["X-Tenant"] = tdf.slug
+    denied = client.post("/api/admin/whatsapp/template-packs/tdf/drafts", headers=headers, json={"pack_version": "1.0.0"})
+    assert denied.status_code in {403, 404}, denied.get_json()
+    assert MessageTemplateRegistry.query.count() == 0
+    assert AuditEvent.query.filter_by(event_type="whatsapp_template_pack.local_drafts_materialized").count() == 0
+
+
+def test_tdf_pack_requires_manage_capability_and_exact_version(client, app):
+    employee, tenant = _seed(role="empleado", tenant_slug="tierra-del-fuego")
+    headers = _auth_headers(app, employee, tenant.slug)
+    headers["Idempotency-Key"] = "tdf-employee-denied-01"
+    denied = client.post("/api/admin/whatsapp/template-packs/tdf/drafts", headers=headers, json={"pack_version": "1.0.0"})
+    assert denied.status_code == 403
+    employee.rol = "admin"
+    db.session.commit()
+    headers = _auth_headers(app, employee, tenant.slug)
+    headers["Idempotency-Key"] = "tdf-version-denied-01"
+    wrong_version = client.post("/api/admin/whatsapp/template-packs/tdf/drafts", headers=headers, json={"pack_version": "2.0.0"})
+    assert wrong_version.status_code == 409, wrong_version.get_json()
+    assert MessageTemplateRegistry.query.count() == 0
 
 
 def test_template_pack_mutation_is_capability_and_tenant_scoped(client, app):

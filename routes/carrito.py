@@ -13,6 +13,7 @@ from sqlalchemy import func, or_, text
 from sqlalchemy import inspect as sqlalchemy_inspect
 
 from config import ALLOWED_ORIGINS
+from cutover_writer_fence import cutover_writer_view
 from database import db
 from middleware import require_tenant
 from models import (
@@ -615,6 +616,7 @@ def _resolve_owner_and_seed() -> Tuple[Optional[TenantProfile], Optional[User]]:
 
 @carrito_bp.route('', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
 @carrito_bp.route('/', methods=['GET', 'POST', 'DELETE', 'OPTIONS'])
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "POST", "DELETE", "OPTIONS"]))
 @require_tenant
 def carrito_root():
@@ -814,6 +816,7 @@ def vaciar():
     })
 
 @carrito_bp.route('/resumen', methods=['GET'])
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET"]))
 @require_tenant
 def resumen():
@@ -838,6 +841,7 @@ def resumen():
     return jsonify(_db_cart_summary(cart, owner))
 
 @carrito_bp.route('/pwa/public/<tenant_slug>/carrito', methods=['GET', 'POST', 'OPTIONS'])
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "POST", "OPTIONS"]))
 def carrito_pwa_public(tenant_slug: str):
     """Alias legacy para exponer el carrito público por slug."""

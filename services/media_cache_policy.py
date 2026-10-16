@@ -43,6 +43,9 @@ def cache_control_for_key(key: str, content_type: str | None = None) -> str:
         "products",
         "productos",
         "public",
+        "catalog_product_images",
+        "profile_avatars",
+        "eventos",
     }
     public_logo_segments = {"logos", "avatars", "brand", "brands"}
     if key_has_segment(normalized_key, public_segments | public_logo_segments):
