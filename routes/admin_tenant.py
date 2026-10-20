@@ -2287,9 +2287,12 @@ def create_tenant():
         }), 201
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    except Exception as e:
+    except Exception:
         current_app.logger.exception("Tenant creation failed")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": "No se pudo confirmar la creación de la organización. Consultá el estado antes de volver a intentarlo.",
+            "reason_code": "tenant_creation_failed",
+        }), 500
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/config', methods=['GET'])
 @token_requerido

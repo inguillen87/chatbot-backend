@@ -273,7 +273,9 @@ def create_tenant_from_template(
         owner_email = _owner_email_for_slug(slug)
     owner_email = str(owner_email).strip().lower()
     explicit_password = bool(str(owner_password or "").strip())
-    owners = (User.query.filter(func.lower(User.email) == owner_email)
+    # Lock only owner rows. The default joined ticket-category collection adds
+    # a nullable outer join that PostgreSQL cannot lock with FOR UPDATE.
+    owners = (User.query.enable_eagerloads(False).filter(func.lower(User.email) == owner_email)
               .populate_existing().with_for_update().limit(2).all())
     if len(owners) > 1:
         raise ValueError("owner_email matches more than one account")
