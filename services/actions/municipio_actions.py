@@ -1641,6 +1641,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ticket_nro = ticket_creado.get('nro_ticket')
             if not ticket_nro:
                 raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
+            # A durable replay returns the original credential.  The candidate
+            # generated before creation must never replace that persisted PIN.
+            persisted_pin = str(ticket_creado.get("consulta_pin") or "").strip()
+            if len(persisted_pin) != 6 or not persisted_pin.isdigit():
+                raise ValueError("El ticket no devolvió un PIN de seguimiento válido.")
+            pin_final = persisted_pin
             nro_ticket_str = _format_ticket_code("M", ticket_nro)
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
