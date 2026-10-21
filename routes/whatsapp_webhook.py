@@ -124,7 +124,10 @@ from services.llm_provider_network_policy import (
     provider_network_allowed,
     require_provider_network,
 )
-from services.outbox_execution_budget import outbox_io_timeout_seconds
+from services.outbox_execution_budget import (
+    OutboxExecutionBudgetExceeded,
+    outbox_io_timeout_seconds,
+)
 from services.education_contracts import (
     build_education_case_ack_payload,
     build_education_pending_case,
@@ -5376,6 +5379,8 @@ def _resolve_public_municipio_identity(
 def _ensure_welcome_audio_payload(payload: dict) -> None:
     if not isinstance(payload, dict):
         return
+    if payload.get("skip_audio_generation"):
+        return
 
     has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
     audio_policy = payload.get("audio_cache_policy") if isinstance(payload.get("audio_cache_policy"), dict) else {}
@@ -5398,7 +5403,7 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
     if prefers_cached_menu_audio:
         payload.pop("audio_url", None)
 
-    if payload.get("audio_url") or payload.get("skip_audio_generation"):
+    if payload.get("audio_url"):
         return
 
     if has_menu_content and not payload.get("audio_text"):
@@ -5448,18 +5453,33 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
         except (TypeError, ValueError):
             tts_speed = None
 
-        audio_url = generar_audio(
-            text_to_speak,
-            voice=payload.get("tts_voice"),
-            model=payload.get("tts_model"),
-            style=payload.get("tts_style"),
-            speed=tts_speed,
-            cache_namespace=payload.get("tts_cache_namespace"),
-        )
+        try:
+            audio_url = generar_audio(
+                text_to_speak,
+                voice=payload.get("tts_voice"),
+                model=payload.get("tts_model"),
+                style=payload.get("tts_style"),
+                speed=tts_speed,
+                cache_namespace=payload.get("tts_cache_namespace"),
+            )
+        except OutboxExecutionBudgetExceeded:
+            raise
+        except Exception as exc:
+            _log(
+                "warning",
+                "[WELCOME_AUDIO] Optional synthesis failed error_type=%s",
+                type(exc).__name__,
+            )
+            audio_url = None
         if audio_url:
             payload["audio_url"] = audio_url
-        elif fallback_audio_url:
-            payload["audio_url"] = fallback_audio_url
+        else:
+            # The same welcome payload is also rendered by its delayed callback.
+            # Keep text/menu delivery independent and do not retry an optional
+            # provider failure a second time for that payload.
+            payload["skip_audio_generation"] = True
+            if fallback_audio_url:
+                payload["audio_url"] = fallback_audio_url
 
 
 def _prepare_cached_welcome_audio(payload: dict, *, tenant_profile=None, client_user=None) -> None:

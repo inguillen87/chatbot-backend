@@ -9,6 +9,7 @@ from services.openai_model_defaults import (
     resolve_openai_model,
 )
 from services.outbox_execution_budget import outbox_io_timeout_seconds
+from services.tts_audio_artifacts import is_nonempty_audio_file
 from utils.lazy_module import LazyModule
 
 
@@ -162,7 +163,10 @@ def generar_audio_openai(
         ]
     )
     if cache_key in _TTS_CACHE:
-        return _TTS_CACHE[cache_key]
+        cached_path = _TTS_CACHE[cache_key]
+        if is_nonempty_audio_file(cached_path.lstrip("/")):
+            return cached_path
+        _TTS_CACHE.pop(cache_key, None)
 
     try:
         # Disable reading proxy settings from the environment to avoid passing
@@ -219,6 +223,9 @@ def generar_audio_openai(
 
         # Stream the response content to the file
         response.stream_to_file(output_path)
+        if not is_nonempty_audio_file(output_path):
+            logger.warning("OpenAI speech synthesis returned no usable local audio file")
+            return None
         logger.info("OpenAI speech audio written output_format=mp3")
 
         _TTS_CACHE[cache_key] = public_url_path

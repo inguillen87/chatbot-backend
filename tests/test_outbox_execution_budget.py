@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
@@ -559,13 +560,14 @@ def test_cohere_stt_fallback_is_also_clamped_in_cron():
     httpx_module.Client.assert_called_once_with(timeout=4.0)
 
 
-def test_openai_tts_is_bounded_and_disables_sdk_retries_only_in_cron():
+def test_openai_tts_is_bounded_and_disables_sdk_retries_only_in_cron(tmp_path, monkeypatch):
     import services.openai_tts_bridge as openai_tts
 
+    monkeypatch.chdir(tmp_path)
     httpx_module = MagicMock()
     openai_module = MagicMock()
     response = openai_module.OpenAI.return_value.audio.speech.create.return_value
-    response.stream_to_file.return_value = None
+    response.stream_to_file.side_effect = lambda path: Path(path).write_bytes(b"synthetic-audio-fixture")
     with (
         patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False),
         activate_outbox_execution_budget(
@@ -574,7 +576,6 @@ def test_openai_tts_is_bounded_and_disables_sdk_retries_only_in_cron():
         ),
         patch.object(openai_tts, "httpx", httpx_module),
         patch.object(openai_tts, "openai", openai_module),
-        patch.object(openai_tts.os, "makedirs"),
     ):
         openai_tts.clear_tts_cache()
         assert openai_tts.generar_audio_openai("cron tts bounded") is not None
@@ -597,7 +598,6 @@ def test_openai_tts_is_bounded_and_disables_sdk_retries_only_in_cron():
         patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=False),
         patch.object(openai_tts, "httpx", httpx_module),
         patch.object(openai_tts, "openai", openai_module),
-        patch.object(openai_tts.os, "makedirs"),
     ):
         openai_tts.clear_tts_cache()
         assert openai_tts.generar_audio_openai("normal tts unchanged") is not None
