@@ -118,5 +118,8 @@ def get_stopwords() -> frozenset[str]:
     return get_ticket_vocabulary().stopwords
 
 
+@lru_cache(maxsize=1)
 def get_name_prefix_stopwords() -> frozenset[str]:
-    return get_ticket_vocabulary().name_prefix_stopwords
+    """Load name-prefix words without initializing the optional NLP model."""
+    raw_data = _load_vocab_resource(_VOCAB_FILE)
+    return _normalize_with_originals(raw_data.get("name_prefix_stopwords", []))

@@ -46,7 +46,6 @@ from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.categorias_municipio import normalizar_texto
-from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from services.whatsapp_assisted_intake import (
@@ -65,9 +64,9 @@ from services.whatsapp_inbound_durability import (
 )
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
-from services.municipio_responder import CONTEXTO_MUNICIPIO
+from services.constants import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
-from services.response_formatter import repair_common_mojibake, render_audio_text
+from services.response_formatter import repair_common_mojibake, render_audio_text, whatsapp_menu_context_scope
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
@@ -85,8 +84,12 @@ from services.reclamo_turn_semantics import (
     classify_reclamo_confirmation_turn,
 )
 from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
+from services.whatsapp_receipt_branding import resolve_whatsapp_receipt_header
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
-from services.demo_surveys import build_demo_survey_chat_menu
+from services.demo_surveys import (
+    build_demo_survey_chat_menu,
+    resolve_demo_public_frontend_base_url,
+)
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 from services.whatsapp_flow_submissions import (
     FlowSubmissionValidationError,
@@ -122,6 +125,10 @@ from services.llm_provider_network_policy import (
     provider_network_allowed,
     require_provider_network,
 )
+from services.outbox_execution_budget import (
+    OutboxExecutionBudgetExceeded,
+    outbox_io_timeout_seconds,
+)
 from services.education_contracts import (
     build_education_case_ack_payload,
     build_education_pending_case,
@@ -141,6 +148,14 @@ from services.education_case_service import (
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
 logger = logging.getLogger(__name__)
+
+
+def responder_chatboc(*args, **kwargs):
+    """Load the conversational stack only when an inbound turn needs it."""
+
+    from services.logic import responder_chatboc as _responder_chatboc
+
+    return _responder_chatboc(*args, **kwargs)
 
 # Twilio accepts at most 1,600 GSM characters per API request, while WhatsApp
 # applies the stricter 1,024-character limit to non-template messages.  We use
@@ -1232,9 +1247,10 @@ def _remember_chatboc_demo_sector(session_context: ChatSessionContext, sector: s
 
 def _chatboc_demo_survey_url(slug: str, *, source: str = "whatsapp_demo") -> str:
     clean_slug = str(slug or "").strip().strip("/")
+    public_base = resolve_demo_public_frontend_base_url(current_app.config)
     if not clean_slug:
-        return "https://www.chatboc.ar/encuestas"
-    return f"https://www.chatboc.ar/e/{clean_slug}?source={source}&demo_participation=1"
+        return f"{public_base}/encuestas"
+    return f"{public_base}/e/{clean_slug}?source={source}&demo_participation=1"
 
 
 def _chatboc_demo_survey_share_url(slug: str) -> str:
@@ -1455,6 +1471,7 @@ def _build_chatboc_surveys_payload(action_id: str, session_context: ChatSessionC
         tenant_slug=CHATBOC_DEMO_TENANT_SLUG,
         rubro=sector,
         channel="whatsapp",
+        public_base_url=resolve_demo_public_frontend_base_url(current_app.config),
         page=page,
         page_size=3,
     )
@@ -2053,11 +2070,15 @@ def _download_twilio_media(
     """Download bounded provider media after the shared test-network gate."""
 
     require_provider_network("twilio")
+    bounded_timeout = outbox_io_timeout_seconds(timeout)
+    effective_timeout = (
+        bounded_timeout if bounded_timeout is not None else timeout
+    )
     response = requests.get(
         media_url,
         auth=auth,
         stream=True,
-        timeout=timeout,
+        timeout=effective_timeout,
     )
     try:
         response.raise_for_status()
@@ -2133,6 +2154,40 @@ def _selected_option_text_for_bot(selected_option: Optional[dict[str, Any]]) -> 
     cleaned = re.sub(r"[*_`~]", "", str(value)).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned or None
+
+
+def _resolve_whatsapp_menu_selection(
+    message_body: str, context_data: dict, *, expecting_free_info: bool = False,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Resolve legacy menus; institutional replies keep their original text.
+
+    Only the formatter's persisted scope selects this path. The knowledge
+    service validates its own displayed node/revision and exact reply code.
+    """
+    if context_data.get("last_options_scope") == "institutional_knowledge":
+        return None, None
+    last_options = context_data.get("last_options_sent")
+    if not last_options or expecting_free_info:
+        return None, None
+    selected_option = None
+    if message_body.isdigit():
+        idx = int(message_body) - 1
+        if 0 <= idx < len(last_options):
+            selected_option = last_options[idx]
+    else:
+        normalized_body = (message_body or "").strip().lower()
+        for option in last_options:
+            option_text = (option.get("texto") or "").strip().lower()
+            option_action = (option.get("action_id") or option.get("id") or "").strip().lower()
+            if normalized_body and normalized_body in {option_text, option_action}:
+                selected_option = option
+                break
+    if selected_option is None:
+        return None, None
+    action_id = (selected_option.get("action_id") or selected_option.get("id")
+                 or selected_option.get("id_accion") or selected_option.get("category_name")
+                 or selected_option.get("texto"))
+    return selected_option, action_id
 
 
 def _clean_contact_name(value: Optional[Any]) -> Optional[str]:
@@ -2506,6 +2561,7 @@ def _handle_education_whatsapp_turn(
     if normalized_action in {"menu_principal", "menu_colegio"}:
         payload = build_education_whatsapp_menu_payload(tenant_profile)
         context_data["last_options_sent"] = payload.get("options_list") or []
+        context_data["last_options_scope"] = whatsapp_menu_context_scope(payload)
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
         db.session.commit()
@@ -2517,6 +2573,7 @@ def _handle_education_whatsapp_turn(
         context_data["education_pending_case"] = pending_case
         payload = _education_prompt_payload(normalized_action, tenant_profile)
         context_data["last_options_sent"] = payload.get("options_list") or []
+        context_data["last_options_scope"] = whatsapp_menu_context_scope(payload)
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
         db.session.commit()
@@ -4515,6 +4572,41 @@ def _send_twilio_message(client, **params):
     return client.messages.create(**sanitized)
 
 
+def _receipt_public_header_for_window(
+    tenant_profile: Optional[TenantProfile],
+    provider_sender: Optional[ProviderSender],
+    recipient: str,
+) -> Optional[str]:
+    """A receipt campaign image needs the actual tenant/sender/contact window."""
+    tenant_id = getattr(tenant_profile, "id", None)
+    sender_id = getattr(provider_sender, "id", None)
+    if not tenant_id or not sender_id or getattr(provider_sender, "tenant_id", None) != tenant_id:
+        return None
+    base_url = _public_media_base_url(request.url_root if has_request_context() else "")
+    image_url = resolve_whatsapp_receipt_header(tenant_profile, public_base_url=base_url)
+    if not image_url:
+        return None
+    try:
+        state = WhatsAppEnterpriseRulesService(int(tenant_id)).get_contact_state(
+            recipient=recipient,
+            provider_sender_id=sender_id,
+        )
+        last_inbound = getattr(state, "last_inbound_at", None)
+        if not isinstance(last_inbound, datetime):
+            return None
+        if last_inbound.tzinfo is None:
+            last_inbound = last_inbound.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - last_inbound.astimezone(timezone.utc)).total_seconds()
+        if not 0 <= age < 24 * 60 * 60:
+            return None
+        return image_url
+    except OutboxExecutionBudgetExceeded:
+        raise
+    except Exception as exc:
+        _log("warning", "[RECEIPT_HEADER] Window unavailable error_type=%s", type(exc).__name__)
+        return None
+
+
 def _dispatch_twilio_pre_messages(
     client,
     to_number: str,
@@ -4524,6 +4616,7 @@ def _dispatch_twilio_pre_messages(
     *,
     channel: str = "whatsapp",
     tenant_profile: Optional[TenantProfile] = None,
+    provider_sender: Optional[ProviderSender] = None,
 ) -> None:
     """Send auxiliary Twilio messages declared in the payload metadata."""
 
@@ -4551,6 +4644,18 @@ def _dispatch_twilio_pre_messages(
                 continue
 
         params: Dict[str, Any] = {"from_": to_number, "to": from_number}
+        template_contract = entry.get("template_contract")
+        receipt_contract = template_contract.get("receipt_contract") if isinstance(template_contract, dict) else None
+        receipt_header_url = None
+        is_operational_receipt = (
+            isinstance(receipt_contract, dict)
+            and receipt_contract.get("kind") == "municipal_claim_receipt"
+            and receipt_contract.get("surface_role") == "primary_receipt"
+        )
+        if is_operational_receipt:
+            receipt_header_url = _receipt_public_header_for_window(
+                tenant_profile, provider_sender, from_number
+            )
         content_sid = entry.get("content_sid")
         if not content_sid:
             content_sid = _resolve_approved_whatsapp_template_sid(
@@ -4598,7 +4703,10 @@ def _dispatch_twilio_pre_messages(
                 params["body"] = str(body)
 
             media_urls: List[str] = []
-            for candidate in entry.get("media_urls") or []:
+            media_candidates = (
+                [receipt_header_url] if receipt_header_url else []
+            ) if is_operational_receipt else entry.get("media_urls") or []
+            for candidate in media_candidates:
                 resolved = resolve_media_link(candidate)
                 if not resolved:
                     continue
@@ -4633,6 +4741,33 @@ def _dispatch_twilio_pre_messages(
                 )
                 continue
 
+        if content_sid and receipt_header_url:
+            # ContentSid replaces Body/MediaUrl. A separate public image
+            # can precede the existing text template only in the verified
+            # service window; no template media approval is implied.
+            try:
+                header_metadata = dict(entry.get("metadata") or {})
+                allowed, _reason = _can_send_whatsapp_freeform_pre_message(
+                    body="",
+                    tenant_profile=tenant_profile,
+                    recipient=from_number,
+                    metadata=header_metadata,
+                )
+                if allowed:
+                    _send_twilio_message(
+                        client,
+                        from_=to_number,
+                        to=from_number,
+                        body="",
+                        media_url=[receipt_header_url],
+                        _chatboc_policy_metadata=header_metadata,
+                    )
+            except OutboxExecutionBudgetExceeded:
+                raise
+            except Exception as exc:
+                _log("warning", "[RECEIPT_HEADER] Image submission failed error_type=%s", type(exc).__name__)
+                if has_app_context() and getattr(g, "whatsapp_outbound_collector", None) is not None:
+                    raise
         try:
             params["_chatboc_policy_metadata"] = (
                 entry.get("metadata")
@@ -4972,12 +5107,18 @@ def _allowed_native_flow_ids_for_tenant(tenant: Optional[TenantProfile]) -> set[
     return allowed
 
 
-def _register_whatsapp_inbound_activity(tenant_id: Optional[int], from_number: Optional[str]) -> None:
-    if not tenant_id or not from_number:
+def _register_whatsapp_inbound_activity(
+    tenant_id: Optional[int],
+    from_number: Optional[str],
+    *,
+    provider_sender_id: Optional[int],
+) -> None:
+    if not tenant_id or not from_number or not provider_sender_id:
         return
     try:
         WhatsAppEnterpriseRulesService(int(tenant_id)).register_inbound_activity(
             recipient=from_number,
+            provider_sender_id=int(provider_sender_id),
         )
     except Exception as exc:
         _log(
@@ -5278,6 +5419,71 @@ def _looks_like_junin_context(*values: Any) -> bool:
     return False
 
 
+def _juni_explicit_greeting_tenant(tenant_profile, owner) -> bool:
+    """Keep the repeated JUNÍ greeting inside its canonical municipal scope."""
+    if not tenant_profile or not owner:
+        return False
+    owner_id = getattr(owner, "municipio_id", None) or getattr(owner, "id", None)
+    return bool(
+        getattr(tenant_profile, "id", None)
+        and getattr(tenant_profile, "is_active", False) is True
+        and getattr(tenant_profile, "tipo", None) == "municipio"
+        and getattr(owner, "tipo_chat", None) == "municipio"
+        and _plain_ascii_key(getattr(tenant_profile, "slug", None)) == "junin"
+        and getattr(owner, "tenant_id", None) == tenant_profile.id
+        and getattr(tenant_profile, "municipio_id", None) == owner_id
+    )
+
+
+def _juni_pending_welcome_payload(context_data: dict) -> Optional[dict]:
+    """Remind an active step without interpreting a greeting as form data."""
+    municipal = context_data.get(CONTEXTO_MUNICIPIO)
+    municipal = municipal if isinstance(municipal, dict) else {}
+    flow = municipal.get("reclamo_flow_v2")
+    flow = flow if isinstance(flow, dict) else {}
+    state = str(flow.get("state") or municipal.get("estado_conversacion") or "").upper()
+    has_draft = bool(
+        flow
+        or any(municipal.get(key) for key in (
+            "datos_reclamo", "datos_parciales_llm_reclamo",
+            "reclamo_confirmacion_pendiente", "confirmation_required",
+        ))
+        or context_data.get("pending_sensitive_action")
+    )
+    if state == "ESPERANDO_NOMBRE_INICIAL" and not has_draft:
+        return None
+    pending = bool(
+        has_draft
+        or _esperando_info_libre(municipal)
+        or state.startswith("EN_FLUJO_")
+        or (state.startswith("ESPERANDO_") and "MENU" not in state)
+    )
+    if not pending:
+        return None
+    prompts = {
+        "ESPERANDO_CATEGORIA": "Elegí la categoría del reclamo para continuar.",
+        "ESPERANDO_DIRECCION": "Enviame la dirección exacta del problema para continuar.",
+        "ESPERANDO_DESCRIPCION": "Contame qué ocurrió para continuar con el reclamo.",
+        "ESPERANDO_FOTO": "Podés enviar una evidencia o seguir sin adjunto.",
+        "ESPERANDO_DATOS_CONTACTO": "Completá los datos de contacto pendientes para continuar.",
+        "ESPERANDO_CONFIRMACION": "Revisá los datos anteriores y elegí una opción para continuar.",
+    }
+    message = "Conservo lo que ya cargaste. " + prompts.get(
+        state, "Respondé la consulta pendiente para continuar, o escribí cancelar."
+    )
+    options = context_data.get("last_options_sent")
+    options = deepcopy(options) if isinstance(options, list) else []
+    return {
+        "message_body": message,
+        "message_type": "interactive_buttons" if 0 < len(options) <= 3 else (
+            "interactive_list" if options else "text"
+        ),
+        "options_list": options,
+        "fuente": "juni_pending_step_welcome",
+        "skip_audio_generation": True,
+    }
+
+
 def _is_placeholder_municipio_name(value: Any) -> bool:
     return _plain_ascii_key(value) in {"", "tu municipio", "municipio", "municipio inteligente", "demo municipio"}
 
@@ -5317,6 +5523,8 @@ def _resolve_public_municipio_identity(
 def _ensure_welcome_audio_payload(payload: dict) -> None:
     if not isinstance(payload, dict):
         return
+    if payload.get("skip_audio_generation"):
+        return
 
     has_menu_content = bool(payload.get("options_list") or payload.get("categorias") or payload.get("botones"))
     audio_policy = payload.get("audio_cache_policy") if isinstance(payload.get("audio_cache_policy"), dict) else {}
@@ -5339,7 +5547,7 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
     if prefers_cached_menu_audio:
         payload.pop("audio_url", None)
 
-    if payload.get("audio_url") or payload.get("skip_audio_generation"):
+    if payload.get("audio_url"):
         return
 
     if has_menu_content and not payload.get("audio_text"):
@@ -5389,18 +5597,33 @@ def _ensure_welcome_audio_payload(payload: dict) -> None:
         except (TypeError, ValueError):
             tts_speed = None
 
-        audio_url = generar_audio(
-            text_to_speak,
-            voice=payload.get("tts_voice"),
-            model=payload.get("tts_model"),
-            style=payload.get("tts_style"),
-            speed=tts_speed,
-            cache_namespace=payload.get("tts_cache_namespace"),
-        )
+        try:
+            audio_url = generar_audio(
+                text_to_speak,
+                voice=payload.get("tts_voice"),
+                model=payload.get("tts_model"),
+                style=payload.get("tts_style"),
+                speed=tts_speed,
+                cache_namespace=payload.get("tts_cache_namespace"),
+            )
+        except OutboxExecutionBudgetExceeded:
+            raise
+        except Exception as exc:
+            _log(
+                "warning",
+                "[WELCOME_AUDIO] Optional synthesis failed error_type=%s",
+                type(exc).__name__,
+            )
+            audio_url = None
         if audio_url:
             payload["audio_url"] = audio_url
-        elif fallback_audio_url:
-            payload["audio_url"] = fallback_audio_url
+        else:
+            # The same welcome payload is also rendered by its delayed callback.
+            # Keep text/menu delivery independent and do not retry an optional
+            # provider failure a second time for that payload.
+            payload["skip_audio_generation"] = True
+            if fallback_audio_url:
+                payload["audio_url"] = fallback_audio_url
 
 
 def _prepare_cached_welcome_audio(payload: dict, *, tenant_profile=None, client_user=None) -> None:
@@ -5478,6 +5701,7 @@ def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> No
     municipio_ctx.pop("consulta_pendiente_ubicacion", None)
     municipio_ctx.pop("menu_opciones", None)
     session_context.context_data.pop("last_options_sent", None)
+    session_context.context_data.pop("last_options_scope", None)
     session_context.context_data.pop("pending_sensitive_action", None)
     safe_flag_modified(session_context, "context_data")
 
@@ -6793,7 +7017,11 @@ def whatsapp_webhook():
         session_context_db_entry.context_data["last_whatsapp_flow_submission"] = deepcopy(
             safe_flow_submission
         )
-    _register_whatsapp_inbound_activity(tenant_id, from_number_cleaned)
+    _register_whatsapp_inbound_activity(
+        tenant_id,
+        from_number_cleaned,
+        provider_sender_id=getattr(provider_sender, "id", None),
+    )
     safe_flag_modified(session_context_db_entry, "context_data")
     db.session.add(session_context_db_entry)
     db.session.commit()
@@ -6964,13 +7192,26 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
+    explicit_juni_greeting = bool(
+        message_sid
+        and not flow_submission_present
+        and is_plain_text_turn
+        and is_greeting
+        and not force_chatboc_demo_hub
+        and _juni_explicit_greeting_tenant(tenant_profile, client_user)
+    )
+    pending_welcome_payload = (
+        _juni_pending_welcome_payload(session_context_db_entry.context_data)
+        if explicit_juni_greeting else None
+    )
+
     # Universal greeting logic: both Pymes and Municipios now use the Boti-style welcome block.
     # _get_main_menu_payload handles generating the correct menu structure for each type.
     should_trigger_welcome = (
         not flow_submission_present
         and is_plain_text_turn
         and is_greeting
-        and not is_waiting_for_info
+        and (not is_waiting_for_info or explicit_juni_greeting)
         and not force_chatboc_demo_hub
     )
 
@@ -7000,7 +7241,7 @@ def whatsapp_webhook():
     tenant_config: Dict[str, Any] = {}
     assistant_name = None
 
-    if should_trigger_welcome and not is_rate_limited:
+    if should_trigger_welcome and (not is_rate_limited or explicit_juni_greeting):
         _log(
             "info",
             "[WELCOME] Triggering welcome tenant_id=%s greeting=%s",
@@ -7079,8 +7320,12 @@ def whatsapp_webhook():
                     )
 
                 should_send_template = bool(template_sid) and not template_state.get("disabled", False)
-                should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
-                sticker_metadata_allowed = True
+                should_send_sticker = bool(resolved_sticker_url) and (
+                    explicit_juni_greeting or not sticker_state.get("disabled", False)
+                )
+                # A new user greeting owns one standalone attempt. A failure
+                # must not cause the delayed menu to attach the sticker again.
+                sticker_metadata_allowed = not explicit_juni_greeting
                 public_welcome_identity = (
                     f"{assistant_name} de {municipio_name}"
                     if is_municipio_client and assistant_name
@@ -7101,7 +7346,7 @@ def whatsapp_webhook():
                     # Permitir template + sticker cuando el canal lo soporte.
                     # Antes se forzaba False en ambos branches, deshabilitando
                     # el sticker de bienvenida para municipios.
-                    sticker_metadata_allowed = True
+                    sticker_metadata_allowed = not explicit_juni_greeting
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
                     if "sticker_cooldown_seconds" in pyme_welcome_overrides:
@@ -7166,7 +7411,7 @@ def whatsapp_webhook():
                     or sticker_state.get("last_provider_accepted_ts")
                     or sticker_state.get("last_sent_ts")  # legacy state
                 )
-                if should_send_sticker and last_sticker_ts:
+                if should_send_sticker and last_sticker_ts and not explicit_juni_greeting:
                     if (now - last_sticker_ts) < max(0, sticker_cooldown):
                         should_send_sticker = False
                         _log("info", "[WELCOME] Sticker skipped due to cooldown")
@@ -7211,6 +7456,8 @@ def whatsapp_webhook():
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 if should_send_sticker and not is_override:
+                    if explicit_juni_greeting:
+                        sticker_state["last_attempt_ts"] = now
                     try:
                         provider_message = _send_twilio_message(
                             twilio_client,
@@ -7225,6 +7472,8 @@ def whatsapp_webhook():
                         )
                         safe_flag_modified(session_context_db_entry, "context_data")
                         sticker_submitted = True
+                        if explicit_juni_greeting:
+                            sticker_state.pop("disabled", None)
                         _log(
                             "info",
                             "[WELCOME] Sticker submitted outcome=%s",
@@ -7238,7 +7487,10 @@ def whatsapp_webhook():
                             "[WELCOME] Failed to send welcome sticker error_type=%s",
                             type(exc).__name__,
                         )
-                        sticker_state["disabled"] = True
+                        if explicit_juni_greeting:
+                            sticker_state.pop("disabled", None)
+                        else:
+                            sticker_state["disabled"] = True
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 greeting_submitted = False
@@ -7278,7 +7530,9 @@ def whatsapp_webhook():
                     greeting = (
                         f"*¡Hola, {user_name}!* Acá *{greeting_name}* \U0001F44B"
                         if user_name
-                        else f"*¡Hola!* Soy *{greeting_name}* \U0001F44B ¿Cómo te llamás?"
+                        else f"*¡Hola!* Soy *{greeting_name}* \U0001F44B" + (
+                            "" if explicit_juni_greeting else " ¿Cómo te llamás?"
+                        )
                     )
                     try:
                         _send_twilio_message(
@@ -7294,7 +7548,7 @@ def whatsapp_webhook():
                             type(exc).__name__,
                         )
 
-                if not user_name and greeting_submitted:
+                if not user_name and greeting_submitted and not explicit_juni_greeting:
                     session_context_db_entry.context_data["awaiting_user_name"] = True
                     safe_flag_modified(session_context_db_entry, "context_data")
                     db.session.commit()
@@ -7343,7 +7597,9 @@ def whatsapp_webhook():
                     or sticker_submitted
                 )
                 welcome_message_override = None
-                if is_education_tenant(tenant_profile):
+                if pending_welcome_payload is not None:
+                    welcome_response_payload = pending_welcome_payload
+                elif is_education_tenant(tenant_profile):
                     welcome_response_payload = build_education_whatsapp_menu_payload(
                         tenant_profile,
                         profile_name=profile_name or None,
@@ -7405,16 +7661,20 @@ def whatsapp_webhook():
                     resolved_existing_audio = _resolve_public_media_url(existing_audio_url, request_root_stripped)
                     if resolved_existing_audio:
                         welcome_response_payload["audio_url"] = resolved_existing_audio
-                    elif resolved_audio_url:
+                    elif resolved_audio_url and pending_welcome_payload is None:
                         welcome_response_payload.setdefault("audio_url", resolved_audio_url)
 
                     _ensure_welcome_audio_payload(welcome_response_payload)
 
-                _reset_municipio_context_for_menu(session_context_db_entry)
-                if isinstance(welcome_response_payload, dict):
+                if pending_welcome_payload is None:
+                    _reset_municipio_context_for_menu(session_context_db_entry)
+                if explicit_juni_greeting:
+                    session_context_db_entry.context_data.pop("awaiting_user_name", None)
+                if isinstance(welcome_response_payload, dict) and pending_welcome_payload is None:
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list
+                        session_context_db_entry.context_data["last_options_scope"] = whatsapp_menu_context_scope(welcome_response_payload)
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
@@ -7569,6 +7829,7 @@ def whatsapp_webhook():
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list
+                        session_context_db_entry.context_data["last_options_scope"] = whatsapp_menu_context_scope(welcome_response_payload)
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
@@ -7584,6 +7845,7 @@ def whatsapp_webhook():
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list
+                        session_context_db_entry.context_data["last_options_scope"] = whatsapp_menu_context_scope(welcome_response_payload)
                         safe_flag_modified(session_context_db_entry, "context_data")
                 # Persist any context updates from responder_chatboc
                 safe_flag_modified(session_context_db_entry, "context_data")
@@ -8192,7 +8454,6 @@ def whatsapp_webhook():
         return followup_result
 
     # --- Numeric Menu Handling ---
-    last_options = session_context_db_entry.context_data.get("last_options_sent")
     municipio_ctx = (
         session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
         or session_context_db_entry.context_data.get("contexto_municipio", {})
@@ -8204,34 +8465,10 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
-    selected_option = None
-    selected_action_id = None
-    if message_body.isdigit() and last_options and not esperando_info:
-        idx = int(message_body) - 1
-        if 0 <= idx < len(last_options):
-            selected_option = last_options[idx]
-            selected_action_id = (
-                selected_option.get("action_id")
-                or selected_option.get("id")
-                or selected_option.get("id_accion")
-                or selected_option.get("category_name")
-                or selected_option.get("texto")
-            )
-    elif last_options and not esperando_info:
-        normalized_body = (message_body or "").strip().lower()
-        for option in last_options:
-            option_text = (option.get("texto") or "").strip().lower()
-            option_action = (option.get("action_id") or option.get("id") or "").strip().lower()
-            if normalized_body and normalized_body in {option_text, option_action}:
-                selected_option = option
-                selected_action_id = (
-                    option.get("action_id")
-                    or option.get("id")
-                    or option.get("id_accion")
-                    or option.get("category_name")
-                    or option.get("texto")
-                )
-                break
+    selected_option, selected_action_id = _resolve_whatsapp_menu_selection(
+        message_body, session_context_db_entry.context_data,
+        expecting_free_info=esperando_info,
+    )
 
     pending_sensitive_action = session_context_db_entry.context_data.get("pending_sensitive_action")
     normalized_message = (message_body or "").strip().lower()
@@ -8823,8 +9060,19 @@ def whatsapp_webhook():
             bot_response_dict["message_body"] = receipt_payload.get("body_text")
             bot_response_dict["options_list"] = []
             bot_response_dict["message_type"] = "text"
-            if receipt_payload.get("media_url"):
-                bot_response_dict["image_url"] = receipt_payload.get("media_url")
+        is_completed_order = (
+            bot_response_dict.get("fuente") == "pyme_pedido_confirmado"
+            and bot_response_dict.get("success") is True
+        )
+        if receipt_payload or is_completed_order:
+            # Receipt imagery is public organization branding, never a claim
+            # attachment or a municipal default inherited by another tenant.
+            bot_response_dict.pop("image_url", None)
+            receipt_header_url = _receipt_public_header_for_window(
+                tenant_profile, provider_sender, from_number_raw
+            )
+            if receipt_header_url:
+                bot_response_dict["image_url"] = receipt_header_url
 
         response_base_url = (
             (current_app.config.get("APP_BASE_URL") or "").rstrip("/")
@@ -8981,6 +9229,7 @@ def whatsapp_webhook():
                 bot_response_dict,
                 _resolve_pre_media_link,
                 tenant_profile=tenant_profile,
+                provider_sender=provider_sender,
             )
             _dispatch_required_whatsapp_disclosure(
                 twilio_client,
@@ -9099,6 +9348,8 @@ def whatsapp_webhook():
                         'to': from_number_raw,
                         'body': first_chunk,
                     }
+                    if message_params.get("media_url"):
+                        first_chunk_params["media_url"] = message_params["media_url"]
                     main_message = _send_twilio_message(twilio_client, **first_chunk_params)
                     _log(
                         "info",
@@ -9383,5 +9634,155 @@ def twilio_whatsapp_status():
             # retries using Twilio connection overrides. Returning 200 here
             # would permanently discard the only automatic reconciliation of
             # a send whose API outcome may be unknown.
+            return "RETRY", 503
+
+    tenant_ticket_reply_event_id = str(
+        request.args.get("tenant_ticket_reply_event_id") or ""
+    ).strip()
+    municipio_ticket_reply_event_id = str(
+        request.args.get("municipio_ticket_reply_event_id") or ""
+    ).strip()
+    if tenant_ticket_reply_event_id and municipio_ticket_reply_event_id:
+        current_app.logger.warning(
+            "[TWILIO_WHATSAPP_STATUS] Reply callback has conflicting aggregate scopes"
+        )
+        return "Forbidden", 403
+    if tenant_ticket_reply_event_id:
+        if (
+            not tenant
+            or not getattr(tenant, "id", None)
+            or not provider_sender
+            or not getattr(provider_sender, "id", None)
+            or not persisted_status_event
+            or not getattr(persisted_status_event, "id", None)
+        ):
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply callback lacks signed scope"
+            )
+            return "Forbidden", 403
+        try:
+            from services.tenant_ticket_reply_delivery import (
+                TenantTicketReplyProviderMessageCollision,
+                emit_delivery_invalidation,
+                reconcile_provider_callback,
+            )
+
+            reconciled_reply = reconcile_provider_callback(
+                tenant_id=int(tenant.id),
+                reply_event_record_id=tenant_ticket_reply_event_id,
+                provider_message_id=message_sid,
+                provider_status=message_status,
+                provider_sender_id=int(provider_sender.id),
+                delivery_event_id=int(persisted_status_event.id),
+                error_code=error_code,
+            )
+            if reconciled_reply is None:
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] TenantTicket reply callback scope mismatch "
+                    "tenant_id=%s sender_id=%s",
+                    tenant.id,
+                    provider_sender.id,
+                )
+                return "Forbidden", 403
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception as exc:  # HTTP polling remains authoritative.
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] TenantTicket reply realtime invalidation failed "
+                    "tenant_id=%s error_type=%s",
+                    tenant.id,
+                    type(exc).__name__,
+                )
+        except TenantTicketReplyProviderMessageCollision:
+            current_app.logger.error(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply provider message "
+                "collision quarantined tenant_id=%s sender_id=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+            )
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception:  # HTTP polling remains authoritative.
+                pass
+            # The callback is valid and has been quarantined durably.  A 5xx
+            # would make Twilio retry the same collision without adding truth.
+            return "OK", 200
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply reconciliation failed "
+                "tenant_id=%s sender_id=%s error_type=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+                type(exc).__name__,
+            )
+            return "RETRY", 503
+    if municipio_ticket_reply_event_id:
+        if (
+            not tenant
+            or not getattr(tenant, "id", None)
+            or not provider_sender
+            or not getattr(provider_sender, "id", None)
+            or not persisted_status_event
+            or not getattr(persisted_status_event, "id", None)
+        ):
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply callback lacks signed scope"
+            )
+            return "Forbidden", 403
+        try:
+            from services.municipio_ticket_reply_delivery import (
+                MunicipioTicketReplyProviderMessageCollision,
+                emit_delivery_invalidation,
+                reconcile_provider_callback,
+            )
+
+            reconciled_reply = reconcile_provider_callback(
+                tenant_id=int(tenant.id),
+                reply_event_record_id=municipio_ticket_reply_event_id,
+                provider_message_id=message_sid,
+                provider_status=message_status,
+                provider_sender_id=int(provider_sender.id),
+                delivery_event_id=int(persisted_status_event.id),
+                error_code=error_code,
+            )
+            if reconciled_reply is None:
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply callback scope mismatch "
+                    "tenant_id=%s sender_id=%s",
+                    tenant.id,
+                    provider_sender.id,
+                )
+                return "Forbidden", 403
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception as exc:  # HTTP polling remains authoritative.
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply realtime invalidation failed "
+                    "tenant_id=%s error_type=%s",
+                    tenant.id,
+                    type(exc).__name__,
+                )
+        except MunicipioTicketReplyProviderMessageCollision:
+            current_app.logger.error(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply provider message "
+                "collision quarantined tenant_id=%s sender_id=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+            )
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception:  # HTTP polling remains authoritative.
+                pass
+            return "OK", 200
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply reconciliation failed "
+                "tenant_id=%s sender_id=%s error_type=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+                type(exc).__name__,
+            )
             return "RETRY", 503
     return "OK", 200

@@ -36,8 +36,43 @@ from services.voice_transfer_policy import (
     validate_pstn_voice_transfer,
 )
 from flask import jsonify
+from cutover_writer_fence import cutover_writer_view
+from global_writer_authority import (
+    configured_writer_runtime,
+    global_writer_authority_enabled,
+)
+from utils.runtime_environment import is_production_runtime
 
 voice_bp = Blueprint('voice', __name__)
+
+
+@voice_bp.before_request
+def refuse_unadmitted_vercel_voice_stream():
+    """Reject the upgrade before Flask-Sock accepts or constructs a service."""
+    if request.endpoint != "voice.voice_stream_socket":
+        return None
+    config = current_app.config
+    guarded_runtime = (
+        global_writer_authority_enabled(config)
+        and configured_writer_runtime(config) == "vercel"
+        and is_production_runtime(config_env=config.get("ENV"))
+    )
+    if not guarded_runtime:
+        return None
+    enabled = str(config.get("VERCEL_VOICE_STREAM_WRITER_ENABLED") or "").strip().lower()
+    if enabled in {"1", "true", "yes", "on"}:
+        return None
+    response = jsonify({
+        "contract_version": "voice.vercel_stream_writer.v1",
+        "status": "maintenance",
+        "reason_code": "vercel_voice_stream_writer_disabled",
+        "request_dispatched": False,
+        "retryable": True,
+    })
+    response.status_code = 503
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Retry-After"] = "60"
+    return response
 
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
@@ -919,7 +954,8 @@ def voice_status():
 
 # WebSocket Route for Media Streams
 # Using flask-sock extension
-@sock.route('/twilio/voice/stream')
+@sock.route('/twilio/voice/stream', bp=voice_bp)
+@cutover_writer_view
 def voice_stream_socket(ws):
     """
     WebSocket handler for Twilio Media Streams <-> OpenAI Realtime.

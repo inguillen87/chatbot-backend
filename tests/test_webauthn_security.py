@@ -85,13 +85,12 @@ class WebAuthnSecurityTests(unittest.TestCase):
         return user
 
     def _bearer(self, user: User) -> dict:
-        token = jwt.encode(
+        from services.auth_session_lifecycle import issue_token
+        token = issue_token(
             {
                 "user_id": user.id,
                 "exp": datetime.now(timezone.utc) + timedelta(minutes=10),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         return {"Authorization": f"Bearer {token}"}
 
@@ -505,6 +504,8 @@ class WebAuthnSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["id"], user.id)
+        self.assertEqual(payload['session_retirement']['actor_id'], str(user.id))
+        self.assertEqual(payload['session_retirement']['provider'], 'native')
         self.assertEqual(payload["tenant_slug"], tenant.slug)
         self.assertEqual(payload["tenantSlug"], tenant.slug)
         self.assertEqual(payload["tipo_chat"], "municipio")

@@ -19,13 +19,24 @@ from .common_utils import (
 )
 
 logger = logging.getLogger(__name__)
-NLP_SPACY = get_spacy_model()
+NLP_SPACY = None
+
+
+def _get_spacy_pipeline():
+    global NLP_SPACY
+    if NLP_SPACY is None:
+        NLP_SPACY = get_spacy_model()
+    return NLP_SPACY
+
 
 def limpiar_texto_spacy(texto: str) -> str:
     """Normaliza texto usando spaCy para mejorar coincidencias."""
-    if not texto or NLP_SPACY is None:
+    if not texto:
         return str(texto or "").strip() # Asegurar que siempre devuelva string
-    doc = NLP_SPACY(texto)
+    nlp_spacy = _get_spacy_pipeline()
+    if nlp_spacy is None:
+        return str(texto or "").strip()
+    doc = nlp_spacy(texto)
     tokens = [t.text for t in doc if not t.is_space]
     return " ".join(tokens).strip()
 

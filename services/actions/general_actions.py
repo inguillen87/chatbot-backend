@@ -4,7 +4,7 @@ from .base_action_handler import BaseActionHandler
 from typing import Dict, Any
 from models import User, db
 from sqlalchemy import func
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 from services.common_utils import validar_email
 from services.pyme_menu import get_pyme_menu_payload
 import uuid

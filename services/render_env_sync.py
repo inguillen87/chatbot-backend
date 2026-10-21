@@ -7,6 +7,7 @@ from urllib.parse import quote
 import os
 
 import requests
+from utils.runtime_environment import is_vercel_runtime
 
 
 CONTRACT_VERSION = "render.env_sync.v1"
@@ -69,6 +70,20 @@ def _trigger_render_deploy(*, service_id: str, api_key: str, config: Mapping[str
 
 def sync_render_env_var(env_var_key: str, env_var_value: str, config: Mapping[str, Any]) -> dict[str, Any]:
     """Store a generated secret in Render without ever returning the secret value."""
+
+    # A copied legacy setting must never give Render credential or deployment
+    # authority from the migrated runtime. Check both process and supplied
+    # runtime signals; a caller cannot conceal Vercel by passing an empty map.
+    if is_vercel_runtime() or is_vercel_runtime(config):
+        return {
+            "contract_version": CONTRACT_VERSION,
+            "enabled": False,
+            "ok": False,
+            "mode": "blocked",
+            "reason_code": "render_authority_retired_for_vercel",
+            "secret_value_stored": False,
+            "deploy": {"triggered": False},
+        }
 
     enabled = _bool_config(config, "RENDER_ENV_SYNC_ENABLED")
     service_id = _read_config_or_env(config, "RENDER_SERVICE_ID") or _read_config_or_env(config, "RENDER_BACKEND_SERVICE_ID")

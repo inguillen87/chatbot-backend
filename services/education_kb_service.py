@@ -20,7 +20,15 @@ class EducationKnowledgeService:
         try:
             from services.qdrant_search import buscar_catalogo_qdrant
 
-            results = buscar_catalogo_qdrant(tenant_id, query) if buscar_catalogo_qdrant else None
+            results = (
+                buscar_catalogo_qdrant(
+                    None,
+                    query,
+                    tenant_id=tenant_id,
+                )
+                if buscar_catalogo_qdrant
+                else None
+            )
             if not results:
                 raise ImportError("Fallback to DB")
 

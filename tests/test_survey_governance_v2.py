@@ -278,6 +278,83 @@ class SurveyGovernanceV2Test(unittest.TestCase):
         self.assertEqual(closed.status_code, 200, closed.get_json())
         return survey_id, release_id, closed.get_json()
 
+    def test_employee_needs_governance_and_close_capabilities_to_close_release(self):
+        survey_id = self._create_survey()
+        created = self._create_release(
+            survey_id,
+            key="release:employee-close:create:0001",
+        )
+        release_id = created.get_json()["release_id"]
+        snapshot_sha256 = created.get_json()["snapshot_sha256"]
+        published = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/publish",
+            json={"expected_snapshot_sha256": snapshot_sha256},
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key="release:employee-close:publish:0001",
+            ),
+        )
+        self.assertEqual(published.status_code, 200, published.get_json())
+
+        employee = User(
+            name="Survey release closer",
+            email="survey-release-closer@chatboc.test",
+            rol="empleado",
+            tenant_id=self.tenant_1.id,
+            tenant_slug=self.tenant_1.slug,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {
+                    "capabilities": ["survey.governance.manage"]
+                }
+            },
+        )
+        employee.set_password("secret123")
+        db.session.add(employee)
+        db.session.commit()
+
+        denied = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/close",
+            json={"human_review_reference": "review:EmployeeClose0001"},
+            headers=self._headers(
+                employee,
+                self.tenant_1,
+                key="release:employee-close:denied:0001",
+            ),
+        )
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+        self.assertEqual(
+            denied.get_json()["reason_code"],
+            "survey_close_capability_required",
+        )
+        self.assertEqual(
+            denied.get_json()["missing_capabilities"],
+            ["survey.close"],
+        )
+
+        employee.accesibilidad = {
+            "employee_scope": {
+                "capabilities": [
+                    "survey.governance.manage",
+                    "survey.close",
+                ]
+            }
+        }
+        db.session.add(employee)
+        db.session.commit()
+        allowed = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/close",
+            json={"human_review_reference": "review:EmployeeClose0001"},
+            headers=self._headers(
+                employee,
+                self.tenant_1,
+                key="release:employee-close:allowed:0001",
+            ),
+        )
+        self.assertEqual(allowed.status_code, 200, allowed.get_json())
+        self.assertEqual(allowed.get_json()["status"], "closed")
+
     def test_governed_release_response_pinning_replay_close_and_immutability(self):
         survey_id = self._create_survey()
         created = self._create_release(survey_id)

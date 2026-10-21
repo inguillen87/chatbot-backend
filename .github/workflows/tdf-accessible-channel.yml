@@ -1,0 +1,138 @@
+name: TDF accessible institutional channel
+on:
+  pull_request:
+    paths:
+      - 'app.py'
+      - 'routes/institutional_assistant.py'
+      - 'routes/chat.py'
+      - 'routes/whatsapp_webhook.py'
+      - 'routes/meta_tdf_sandbox.py'
+      - 'routes/tdf_meta_sandbox.py'
+      - 'services/institutional_assistant_*.py'
+      - 'services/meta_tdf_sandbox.py'
+      - 'services/tdf_meta_sandbox.py'
+      - 'services/tdf_meta_contact_identity.py'
+      - 'services/tdf_meta_audio.py'
+      - 'services/meta_whatsapp_webhook.py'
+      - 'services/audio_transcription_service.py'
+      - 'services/tts_audio_artifacts.py'
+      - 'services/tts_orchestrator.py'
+      - 'services/openai_tts_bridge.py'
+      - 'services/organization_profile_settings.py'
+      - 'services/whatsapp_receipt_branding.py'
+      - 'services/municipio_responder.py'
+      - 'services/ticket_closed_notification.py'
+      - 'services/ticket_domain_effects.py'
+      - 'routes/ticket.py'
+      - 'services/meta_whatsapp_direct.py'
+      - 'services/tenant_provider_credentials.py'
+      - 'integrations/openai_tts.py'
+      - 'config/__init__.py'
+      - 'app/__init__.py'
+      - 'tests/*institutional_assistant*'
+      - 'tests/test_tdf_meta_sandbox.py'
+      - 'tests/test_tdf_meta_audio.py'
+      - 'tests/test_web_audio_multipart.py'
+      - 'tests/test_web_audio_live_chat.py'
+      - 'tests/test_web_audio_institutional_question_limit.py'
+      - 'tests/test_audio_transcription.py'
+      - 'tests/test_meta_whatsapp_direct_foundation.py'
+      - 'tests/test_openai_tts_bridge.py'
+      - 'tests/test_openai_tts_timeout_contract.py'
+      - 'tests/test_openai_tts_error_diagnostics.py'
+      - 'tests/test_whatsapp_receipt_branding.py'
+      - 'tests/test_organization_receipt_header_settings.py'
+      - 'tests/test_static_asset_mime.py'
+      - 'tests/test_tts_local_artifact_validity.py'
+      - 'tests/test_tts_orchestrator_cache.py'
+      - 'tests/test_tts_sanitization.py'
+      - 'tests/test_tts_sanitize.py'
+      - 'tests/test_outbox_execution_budget.py'
+      - 'tests/test_whatsapp_welcome_optional_audio.py'
+      - 'tests/test_whatsapp_welcome_each_greeting.py'
+      - 'tests/test_municipio_explicit_claim_offline.py'
+      - 'tests/ticket_closed_notification_http.py'
+      - '.github/workflows/tdf-accessible-channel.yml'
+permissions:
+  contents: read
+concurrency:
+  group: tdf-accessible-channel-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  public-knowledge-and-meta-sandbox:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+      - name: Install existing runtime dependencies
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Verify public routes, revision withdrawal and audio isolation
+        run: python -X utf8 -m tests.institutional_assistant_http
+      - name: Verify Meta binding, signature, durable delivery and canonical menus offline
+        run: >-
+          python -X utf8 -m pytest -q
+          tests/test_tdf_meta_sandbox.py
+          tests/test_tdf_meta_audio.py
+          tests/test_meta_whatsapp_direct_foundation.py
+          tests/test_openai_tts_bridge.py
+          tests/test_institutional_assistant_ui_contract.py
+          tests/test_institutional_assistant_content.py
+      - name: Verify local speech artifacts, cache fallback and welcome recovery offline
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider',
+          'tests/test_tts_local_artifact_validity.py', 'tests/test_tts_orchestrator_cache.py',
+          'tests/test_tts_sanitization.py', 'tests/test_tts_sanitize.py',
+          'tests/test_outbox_execution_budget.py', 'tests/test_whatsapp_welcome_optional_audio.py']))"
+      - name: Verify receipt campaigns, public image MIME and TTS contracts offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/receipt-campaign
+          git rev-parse HEAD > .qa-artifacts/receipt-campaign/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/test_whatsapp_receipt_branding.py', 'tests/test_organization_receipt_header_settings.py', 'tests/test_static_asset_mime.py', 'tests/test_openai_tts_timeout_contract.py', 'tests/test_openai_tts_error_diagnostics.py', 'tests/test_outbox_execution_budget.py', '--junitxml=.qa-artifacts/receipt-campaign/tests.xml']))" 2>&1 | tee .qa-artifacts/receipt-campaign/tests.log
+      - name: Preserve receipt campaign regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: receipt-campaign-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/receipt-campaign
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify multipart web audio without external providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/web-audio-multipart
+          git rev-parse HEAD > .qa-artifacts/web-audio-multipart/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/test_web_audio_multipart.py', 'tests/test_web_audio_live_chat.py', 'tests/test_web_audio_institutional_question_limit.py', 'tests/test_audio_transcription.py', '--junitxml=.qa-artifacts/web-audio-multipart/tests.xml']))" 2>&1 | tee .qa-artifacts/web-audio-multipart/tests.log
+      - name: Verify explicit claims, JUNI greetings and closure receipts offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/juni-claim-receipts
+          git rev-parse HEAD > .qa-artifacts/juni-claim-receipts/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import unittest; from tests.test_municipio_explicit_claim_offline import ExplicitClaimOfflineHttpTest; from tests.test_whatsapp_welcome_each_greeting import JuniWelcomeEachGreetingTests; from tests.ticket_closed_notification_http import TicketClosedNotificationHTTPTests; loader = unittest.TestLoader(); suite = unittest.TestSuite(loader.loadTestsFromTestCase(case) for case in (ExplicitClaimOfflineHttpTest, JuniWelcomeEachGreetingTests, TicketClosedNotificationHTTPTests)); result = unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(0 if result.wasSuccessful() else 1)" 2>&1 | tee .qa-artifacts/juni-claim-receipts/tests.log
+      - name: Preserve JUNI claim and closure regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: juni-claim-receipts-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/juni-claim-receipts
+          if-no-files-found: error
+          retention-days: 7
+      - name: Preserve web audio regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: web-audio-multipart-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/web-audio-multipart
+          if-no-files-found: error
+          retention-days: 7

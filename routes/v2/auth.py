@@ -3,8 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 import jwt
+import json
 from flask import Blueprint, current_app, jsonify, request
-from flask_login import logout_user
+from models import db
+from services.auth_session_lifecycle import (
+    retire_session, complete_provider_retirement, refresh_native_token, SessionLifecycleError,
+)
 
 from models import User
 from routes.auth import google_login as legacy_google_login, login as legacy_login, me_perfil as legacy_me
@@ -63,38 +67,61 @@ def refresh_v2():
     if not user or is_user_auth_disabled(user):
         return jsonify({"error": "Usuario no encontrado"}), 401
 
-    renewed_payload = {
-        "user_id": user.id,
-        "rol": user.rol,
-        "tipo_chat": payload.get("tipo_chat") or user.tipo_chat,
-        "empresa_id": payload.get("empresa_id") or user.empresa_id,
-        "municipio_id": payload.get("municipio_id") or user.municipio_id,
-        "tenant_slug": payload.get("tenant_slug") or user.tenant_slug,
-        "demo_mode": bool(payload.get("demo_mode")),
-        "exp": datetime.utcnow() + timedelta(hours=12),
-    }
-    token = jwt.encode(renewed_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    return jsonify({"token": token})
+    try:
+        token, retirement = refresh_native_token(raw_token, expires_at=datetime.utcnow() + timedelta(hours=12))
+        response = jsonify({"token": token, "session_retirement": retirement})
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except SessionLifecycleError as error:
+        db.session.rollback()
+        return jsonify({'reason_code': error.code}), error.status
 
 
 @v2_auth_bp.route('/logout', methods=['POST'])
+@v2_auth_bp.route('/sessions/retire', methods=['POST'])
 def logout_v2():
-    logout_user()
-    response = jsonify({"ok": True, "message": "logout exitoso"})
-    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
-    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-    cookie_options = {
-        "path": "/",
-        "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
-        "httponly": True,
-        "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
-    }
-    for name in {cookie_name, widget_cookie_name}:
-        # Clear both the production domain cookie and older host-only variants.
-        if cookie_domain:
-            response.delete_cookie(name, domain=cookie_domain, **cookie_options)
-        response.delete_cookie(name, **cookie_options)
+    try:
+        if request.content_length is not None and request.content_length > 2048:
+            raise SessionLifecycleError('session_retirement_command_invalid', 400)
+        def strict_object(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError('duplicate_key')
+                value[key] = item
+            return value
+        try:
+            raw = request.stream.read(2049)
+            if len(raw) > 2048 or not request.is_json:
+                raise ValueError('invalid_command')
+            data = json.loads(raw, object_pairs_hook=strict_object)
+        except (ValueError, UnicodeError):
+            raise SessionLifecycleError('session_retirement_command_invalid', 400)
+        if not isinstance(data, dict) or set(data) != {'proof', 'request_id'} or request.args:
+            raise SessionLifecycleError('session_retirement_command_invalid', 400)
+        receipt = retire_session(data['proof'], data['request_id'])
+        try:
+            provider_status = complete_provider_retirement(receipt['lineage_id'], data['request_id'])
+            receipt['provider_revocation'] = {'status': provider_status}
+        except Exception:
+            db.session.rollback()
+            receipt['provider_revocation'] = {'status': 'pending'}
+        from socket_service import disconnect_auth_session_sockets
+        try:
+            disconnect_auth_session_sockets(receipt['lineage_id'])
+        except Exception:
+            # Durable validators deny every further use even if transport is down.
+            receipt['socket_disconnect_deferred'] = True
+        response = jsonify(receipt)
+    except SessionLifecycleError as error:
+        db.session.rollback()
+        response = jsonify({'reason_code': error.code})
+        response.status_code = error.status
+    except Exception:
+        db.session.rollback()
+        response = jsonify({'reason_code': 'session_retirement_unconfirmed'})
+        response.status_code = 503
+    response.headers['Cache-Control'] = 'no-store'
     return response
 
 

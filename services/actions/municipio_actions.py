@@ -172,6 +172,32 @@ def _durable_ticket_effect_kwargs(
             "idempotency_tenant_id": voice_tenant_id,
         }
 
+    if channel == "web":
+        web_key = str(context.get("idempotency_key") or "").strip().lower()
+        if not web_key:
+            return {}
+        if not re.fullmatch(r"chat:[0-9a-f]{64}", web_key):
+            raise TicketIdempotencyValidationError(
+                "Invalid municipal web-chat ticket idempotency key."
+            )
+        try:
+            web_tenant_id = int(context.get("tenant_id"))
+        except (TypeError, ValueError) as exc:
+            raise TicketIdempotencyValidationError(
+                "Municipal web-chat ticket idempotency requires a tenant_id."
+            ) from exc
+        if web_tenant_id <= 0 or not re.fullmatch(
+            r"[A-Za-z0-9_.:-]{1,80}",
+            str(effect or ""),
+        ):
+            raise TicketIdempotencyValidationError(
+                "Invalid municipal web-chat ticket idempotency scope."
+            )
+        return {
+            "idempotency_key": f"{web_key}:{effect}",
+            "idempotency_tenant_id": web_tenant_id,
+        }
+
     durable_turn_id = context.get("durable_turn_id")
     if not durable_turn_id:
         return {}
@@ -1615,6 +1641,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ticket_nro = ticket_creado.get('nro_ticket')
             if not ticket_nro:
                 raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
+            # A durable replay returns the original credential.  The candidate
+            # generated before creation must never replace that persisted PIN.
+            persisted_pin = str(ticket_creado.get("consulta_pin") or "").strip()
+            if len(persisted_pin) != 6 or not persisted_pin.isdigit():
+                raise ValueError("El ticket no devolvió un PIN de seguimiento válido.")
+            pin_final = persisted_pin
             nro_ticket_str = _format_ticket_code("M", ticket_nro)
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 

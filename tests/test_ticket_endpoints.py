@@ -161,6 +161,8 @@ class TicketEndpointsTest(unittest.TestCase):
         # Check for new fields
         self.assertIn('id', tickets[0])
         self.assertIn('nro_ticket', tickets[0])
+        self.assertTrue(all(ticket['source_model'] == 'MunicipioTicket' for ticket in tickets))
+        self.assertTrue(all(ticket['ticket_type'] == 'municipio' for ticket in tickets))
 
         ticket_map = {t['asunto']: t for t in tickets}
         self.assertIn('historial_chat', ticket_map['Bache en la calle'])
@@ -293,6 +295,8 @@ class TicketEndpointsTest(unittest.TestCase):
         resp = self.client.get(f'/tickets/municipio/{ticket.id}', headers=headers)
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.data)
+        self.assertEqual(data['source_model'], 'MunicipioTicket')
+        self.assertEqual(data['ticket_type'], 'municipio')
         self.assertIn('historial_chat', data)
         self.assertEqual(len(data['historial_chat']), 2)
         self.assertEqual(data['historial_chat'][0]['texto'], 'Hola')

@@ -13,6 +13,7 @@ from flask_login import current_user
 from sqlalchemy import func, or_
 from werkzeug.exceptions import RequestEntityTooLarge
 
+from cutover_writer_fence import cutover_writer_view
 from database import db
 from models import (
     CatalogoItem,
@@ -790,6 +791,7 @@ def _mercadopago_preference_items_for_checkout(
 
 
 @market_bp.get("/<slug>/catalog")
+@cutover_writer_view
 def public_catalog(slug: str):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
@@ -868,6 +870,7 @@ def public_catalog(slug: str):
 
 
 @market_bp.get("/<slug>/catalog/<int:product_id>")
+@cutover_writer_view
 def public_product_detail(slug: str, product_id: int):
     tenant = _resolve_tenant(slug)
     owner = _tenant_owner(tenant)
@@ -907,6 +910,7 @@ def public_product_detail(slug: str, product_id: int):
 
 @market_bp.get("/<slug>/cart")
 @market_bp.get("/<slug>/.cart")
+@cutover_writer_view
 @token_requerido
 def public_cart_summary(current_user, slug: str):
     tenant = _resolve_tenant(slug)

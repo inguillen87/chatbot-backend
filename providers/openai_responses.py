@@ -28,14 +28,29 @@ class OpenAIResponsesProvider:
 
     def __init__(self, client: Optional[OpenAI] = None):
         # Allow injecting a client, otherwise try to fall back to the bridge instance or create one.
+        self._uses_managed_client = client is None
         if client:
             self.client = client
         else:
             try:
-                from services.openai_bridge import client as openai_client
-                self.client = openai_client
+                from services.openai_bridge import responses_client
+                self.client = responses_client
             except ImportError:
                 self.client = OpenAI()
+
+    def _request_model(self, model: str) -> str:
+        if not self._uses_managed_client:
+            return model
+        from services.openai_bridge import _model_for_openai_transport
+
+        return _model_for_openai_transport(model)
+
+    def _uses_cloudflare_transport(self) -> bool:
+        if not self._uses_managed_client:
+            return False
+        from services.openai_bridge import _cloudflare_ai_gateway_config
+
+        return _cloudflare_ai_gateway_config() is not None
 
     def _supports_responses_api(self) -> bool:
         return bool(getattr(self.client, "responses", None))
@@ -140,11 +155,13 @@ class OpenAIResponsesProvider:
     def _responses_request_kwargs(self, request: GatewayRequest) -> Dict[str, Any]:
         tools = self._normalize_tools_for_responses(request.tools)
         kwargs: Dict[str, Any] = {
-            "model": request.model,
+            "model": self._request_model(request.model),
             "instructions": request.instructions or "",
             "input": self._build_responses_input(request),
             "parallel_tool_calls": request.parallel_tool_calls,
         }
+        if self._uses_cloudflare_transport():
+            kwargs["store"] = False
 
         if request.max_output_tokens is not None:
             kwargs["max_output_tokens"] = request.max_output_tokens
@@ -331,7 +348,7 @@ class OpenAIResponsesProvider:
             messages.extend(tool_results)
 
         kwargs = {
-            "model": request.model,
+            "model": self._request_model(request.model),
             "messages": messages,
             "max_tokens": request.max_output_tokens,
             "parallel_tool_calls": request.parallel_tool_calls,
@@ -532,7 +549,7 @@ class OpenAIResponsesProvider:
             }
 
         kwargs = {
-            "model": request.model,
+            "model": self._request_model(request.model),
             "messages": messages,
             "max_tokens": request.max_output_tokens,
             # We enforce deterministic parallel_tool_calls according to user requirement

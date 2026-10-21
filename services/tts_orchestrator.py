@@ -6,12 +6,18 @@ import re
 import tempfile
 import textwrap
 from collections import OrderedDict
+from contextlib import contextmanager
 from threading import Lock
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urlparse
 
 from config import BACKEND_URL
 from services.media_cache_policy import IMMUTABLE_PUBLIC_CACHE
+from services.tts_audio_artifacts import is_nonempty_audio_file
+from services.outbox_execution_budget import (
+    OutboxExecutionBudgetExceeded,
+    outbox_io_timeout_seconds,
+)
 
 ProviderCallable = Callable[[str], str | None]
 
@@ -34,6 +40,25 @@ _TTS_CACHE_METRIC_KEYS = (
 _TTS_CACHE_METRICS = {key: 0 for key in _TTS_CACHE_METRIC_KEYS}
 _TTS_CACHE_METRICS_LOCK = Lock()
 _TTS_GENERATION_LOCKS = tuple(Lock() for _ in range(64))
+
+
+@contextmanager
+def _bounded_generation_lock(lock: Lock) -> Iterator[None]:
+    """Bound lock contention only while the cron execution budget is active."""
+
+    bounded_timeout = outbox_io_timeout_seconds()
+    if bounded_timeout is None:
+        with lock:
+            yield
+        return
+
+    acquired = lock.acquire(timeout=bounded_timeout)
+    if not acquired:
+        raise OutboxExecutionBudgetExceeded("outbox_tts_generation_lock_timeout")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def _increment_metric(name: str, amount: int = 1) -> None:
@@ -302,7 +327,7 @@ def generar_audio(
     )
     text_hash = hashlib.sha256(cache_fingerprint.encode("utf-8")).hexdigest()
     cached_rel_path = os.path.join(cache_dir, f"{text_hash}.mp3")
-    if cache_enabled and os.path.exists(cached_rel_path):
+    if cache_enabled and is_nonempty_audio_file(cached_rel_path):
         logger.info("TTS Service: Returning cached audio.")
         _increment_metric("cache_hits")
         return _public_backend_url(cached_rel_path)
@@ -320,11 +345,14 @@ def generar_audio(
             return audio_url
 
         generated_path = audio_url.lstrip("/")
+        if not is_nonempty_audio_file(generated_path):
+            logger.warning("TTS Service: Provider returned no usable local audio file")
+            return None
         if not cache_enabled:
             return _public_backend_url(generated_path)
 
         try:
-            if os.path.exists(generated_path):
+            if is_nonempty_audio_file(generated_path):
                 temp_path = None
                 try:
                     with tempfile.NamedTemporaryFile(
@@ -335,7 +363,11 @@ def generar_audio(
                     ) as temp_file:
                         temp_path = temp_file.name
                     shutil.copyfile(generated_path, temp_path)
+                    if not is_nonempty_audio_file(temp_path):
+                        raise OSError("tts_cache_copy_has_no_audio")
                     os.replace(temp_path, cached_rel_path)
+                    if not is_nonempty_audio_file(cached_rel_path):
+                        raise OSError("tts_cache_published_file_has_no_audio")
                 finally:
                     if temp_path and os.path.exists(temp_path):
                         os.remove(temp_path)
@@ -350,7 +382,7 @@ def generar_audio(
             _increment_metric("cache_write_failures")
 
         # Fallback to returning the original URL if caching fails but URL is valid
-        return _public_backend_url(generated_path)
+        return _public_backend_url(generated_path) if is_nonempty_audio_file(generated_path) else None
 
     def _provider_factory() -> dict[str, ProviderCallable]:
         providers: dict[str, ProviderCallable] = {}
@@ -399,8 +431,8 @@ def generar_audio(
     generation_lock = _TTS_GENERATION_LOCKS[
         int(text_hash[:8], 16) % len(_TTS_GENERATION_LOCKS)
     ]
-    with generation_lock:
-        if cache_enabled and os.path.exists(cached_rel_path):
+    with _bounded_generation_lock(generation_lock):
+        if cache_enabled and is_nonempty_audio_file(cached_rel_path):
             logger.info("TTS Service: Returning audio cached by another request.")
             _increment_metric("cache_hits")
             return _public_backend_url(cached_rel_path)
@@ -425,12 +457,14 @@ def generar_audio(
                 continue
 
             if audio_url:
-                logger.info(
-                    "TTS Service: %s provider returned audio successfully.",
-                    provider_name.title(),
-                )
-                _increment_metric("provider_successes")
-                return cache_and_return(audio_url)
+                published_url = cache_and_return(audio_url)
+                if published_url:
+                    logger.info(
+                        "TTS Service: %s provider returned audio successfully.",
+                        provider_name.title(),
+                    )
+                    _increment_metric("provider_successes")
+                    return published_url
 
             logger.warning(
                 "TTS Service: %s provider returned no audio.", provider_name.title()

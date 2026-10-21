@@ -58,6 +58,23 @@ def test_legacy_worker_without_explicit_standby_still_fails_closed():
         worker.run_whatsapp_durable_worker(_app(), once=True)
 
 
+def test_expired_deadline_does_not_claim_an_outbound_attempt():
+    with patch.object(worker, "dispatch_next_whatsapp_outbound_attempt") as dispatch:
+        report = worker.dispatch_whatsapp_outbound_attempts(
+            limit=5,
+            deadline_monotonic=10.0,
+            clock=lambda: 10.0,
+        )
+
+    assert report == {
+        "contract_version": "whatsapp.outbound_worker.v1",
+        "processed": 0,
+        "accepted": 0,
+        "results": [],
+    }
+    dispatch.assert_not_called()
+
+
 def test_legacy_standby_uses_one_unbounded_signal_wait_not_polling():
     class SignalWait:
         def __init__(self):

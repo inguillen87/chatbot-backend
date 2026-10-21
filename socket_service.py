@@ -1,8 +1,7 @@
 from flask_socketio import SocketIO, join_room, emit
-from flask import current_app, request
-from config import ALLOWED_ORIGINS
+from flask import current_app, has_request_context, request
+from config import SOCKET_CORS_ALLOWED_ORIGINS
 from models import ChatSessionContext, EncEncuesta, EncLink, User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
-from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
 from services.live_chat_access import LiveChatAccessError, build_ticket_room, verify_ticket_room_token
 from services.employee_ticket_access import employee_ticket_category_access_allows
@@ -10,23 +9,35 @@ from services.omnichannel_message_policy import (
     OmnichannelMessagePolicyError,
     normalize_omnichannel_reply_body,
 )
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
 )
-from utils.auth_helpers import user_from_token
 from utils.response_utils import ensure_buttons_compatibility
 from utils.roles import canonical_role, is_authorized_superadmin_user
 from typing import Any, Optional, Set
 from urllib.parse import urlparse
 from uuid import UUID
 import jwt
+import contextlib
 import os
 import re
-
-SOCKET_CORS_ORIGINS = list(
-    dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
+import sys
+from functools import wraps
+from types import SimpleNamespace
+from cutover_writer_fence import cutover_writer_fence_enabled
+from services.global_writer_authority import (
+    HTTP_REQUEST_LEASE_ENVIRON,
+    GlobalWriterAuthorityDecision,
+    GlobalWriterAuthorityTransitionError,
+    global_writer_authority_lease,
 )
+
+# ``config`` is the single validation boundary for Socket.IO origins.  Keeping
+# the runtime list derived exclusively from it prevents a later hard-coded
+# origin from bypassing the exact-origin / HTTPS checks used in production.
+SOCKET_CORS_ORIGINS = list(dict.fromkeys(SOCKET_CORS_ALLOWED_ORIGINS))
 
 TICKET_OPERATOR_ROLES = {"admin", "empleado", "manager", "supervisor"}
 PUBLIC_TICKET_COMMENT_ORIGINS = {
@@ -49,9 +60,99 @@ PUBLIC_TICKET_COMMENT_ORIGINS = {
     "widget",
 }
 TENANT_TICKET_INVALIDATION_CONTRACT_VERSION = "tickets.collection.invalidated.v1"
+TENANT_TICKET_REPLY_DELIVERY_REALTIME_CONTRACT_VERSION = (
+    "tenant_ticket.reply_delivery.realtime.v1"
+)
 
 SURVEY_EFFECT_WORKER_ROLE = "survey-effect-worker"
 _SOCKET_QUEUE_CHANNEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+class _LazyTicketServiceProxy:
+    """Load the ticket domain only when a socket handler actually needs it."""
+
+    def __getattr__(self, name: str):
+        from services.ticket_service import servicio_tickets as ticket_service
+
+        return getattr(ticket_service, name)
+
+
+servicio_tickets = _LazyTicketServiceProxy()
+
+
+@contextlib.contextmanager
+def _socket_writer_operation():
+    """Hold ownership through all socket effects without sharing it across threads."""
+    config = current_app.config
+    if cutover_writer_fence_enabled(config):
+        yield GlobalWriterAuthorityDecision(
+            allowed=False, enabled=True, reason_code="cutover_writer_fence_enabled",
+        )
+        return
+    manager = global_writer_authority_lease(config, request_lifetime=True)
+    try:
+        lease = manager.__enter__()
+    except GlobalWriterAuthorityTransitionError as error:
+        yield GlobalWriterAuthorityDecision(
+            allowed=False, enabled=True, reason_code=error.reason_code,
+        )
+        return
+
+    socket_request = None
+    original_environ = None
+    try:
+        try:
+            socket_request = request._get_current_object() if has_request_context() else None
+            if lease.decision.allowed and socket_request is not None:
+                # Engine.IO reuses its environ for concurrent events on this SID.
+                # Publish nested reuse only on this event's Flask Request copy.
+                original_environ = socket_request.environ
+                socket_request.environ = dict(original_environ)
+                socket_request.environ[HTTP_REQUEST_LEASE_ENVIRON] = SimpleNamespace(
+                    lease=lease, manager=manager,
+                )
+            yield lease.decision
+        except BaseException:
+            manager.__exit__(*sys.exc_info())
+            raise
+        else:
+            manager.__exit__(None, None, None)
+    finally:
+        if original_environ is not None:
+            socket_request.environ = original_environ
+
+
+def _socket_writer_denial(decision):
+    return {
+        "error": decision.reason_code,
+        "contract_version": "cutover.socket_writer_fence.v1",
+        "status": "maintenance",
+        "reason_code": decision.reason_code,
+        "request_dispatched": False,
+        "retryable": True,
+    }
+
+
+def _socket_writer_handler(error_event):
+    """Guard business mutations before token resolution, DB or provider work."""
+    def decorate(handler):
+        @wraps(handler)
+        def guarded(*args, **kwargs):
+            with _socket_writer_operation() as decision:
+                if not decision.allowed:
+                    emit(error_event, _socket_writer_denial(decision))
+                    return
+                return handler(*args, **kwargs)
+        return guarded
+    return decorate
+
+
+def _user_from_token(token: str):
+    """Avoid importing demo/chat intelligence during the process cold start."""
+
+    from utils.auth_helpers import user_from_token
+
+    return user_from_token(token)
 
 
 class SurveyRealtimeTransportError(RuntimeError):
@@ -101,6 +202,48 @@ def build_fail_closed_socketio_redis_manager(
     )
 
 
+def _emit_with_outbox_budget(
+    event_name: str,
+    payload: Any,
+    *,
+    room: str | None = None,
+) -> None:
+    """Use a short-lived bounded Redis publisher only inside the cron drain."""
+
+    # python-socketio's Redis manager performs up to two publish attempts.
+    # Divide the available slice so the retry pair remains inside the current
+    # cron runway instead of granting the full remainder to each attempt.
+    timeout_seconds = outbox_io_timeout_seconds(minimum_seconds=0.2)
+    if timeout_seconds is None:
+        socketio.emit(event_name, payload, room=room)
+        return
+
+    queue_url, channel, configured_timeout = _survey_realtime_queue_config()
+    if not queue_url:
+        # No network boundary exists for the in-process manager.
+        socketio.emit(event_name, payload, room=room)
+        return
+
+    bounded_timeout = max(
+        0.1,
+        min(timeout_seconds, configured_timeout) / 2,
+    )
+    manager = build_fail_closed_socketio_redis_manager(
+        queue_url,
+        channel=channel,
+        timeout_seconds=bounded_timeout,
+    )
+    try:
+        manager.emit(event_name, payload, room=room)
+    finally:
+        for resource_name in ("pubsub", "redis"):
+            resource = getattr(manager, resource_name, None)
+            close = getattr(resource, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
+
+
 def _survey_realtime_process_role() -> str:
     configured = ""
     try:
@@ -141,7 +284,10 @@ def _survey_realtime_queue_config() -> tuple[str, str, float]:
     return queue_url, channel, timeout
 
 
-def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
+def ensure_survey_realtime_transport_ready(
+    *,
+    require_shared: bool = False,
+) -> dict[str, Any]:
     """Verify the delivery boundary used by a durable realtime effect.
 
     The web process may use its in-process Socket.IO manager when no shared
@@ -156,7 +302,8 @@ def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
 
     process_role = _survey_realtime_process_role()
     queue_url, channel, timeout = _survey_realtime_queue_config()
-    shared_required = process_role == SURVEY_EFFECT_WORKER_ROLE
+    worker_role = process_role == SURVEY_EFFECT_WORKER_ROLE
+    shared_required = worker_role or require_shared
     if not queue_url:
         if shared_required:
             raise SurveyRealtimeTransportError(
@@ -198,11 +345,11 @@ def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
             "survey_realtime_shared_manager_channel_mismatch"
         )
     manager_write_only = bool(getattr(manager, "write_only", False))
-    if shared_required and not manager_write_only:
+    if worker_role and not manager_write_only:
         raise SurveyRealtimeTransportError(
             "survey_realtime_worker_manager_not_write_only"
         )
-    if not shared_required and manager_write_only:
+    if not worker_role and not require_shared and manager_write_only:
         raise SurveyRealtimeTransportError(
             "survey_realtime_web_manager_not_subscribed"
         )
@@ -271,19 +418,73 @@ def _socket_request_token(payload: Any = None) -> Optional[str]:
 
 def _clerk_identity_rooms(user: Optional[User], token: str) -> list[str]:
     claims = _decode_chatboc_socket_token(token)
+    lineage_rooms = [f"auth_session:{claims['asid']}"] if claims.get('asid') else []
     if str(claims.get("auth_provider") or "").strip().lower() != "clerk":
-        return []
+        return lineage_rooms
     if str(claims.get("session_kind") or "").strip().lower() != "clerk":
         return []
 
     sid = str(claims.get("clerk_sid") or claims.get("sid") or "").strip()
     clerk_user_id = str(claims.get("clerk_user_id") or "").strip() or _clerk_user_id_for_user(user)
-    rooms: list[str] = []
+    rooms: list[str] = list(lineage_rooms)
     if sid:
         rooms.append(f"clerk_session:{sid}")
     if clerk_user_id:
         rooms.append(f"clerk_user:{clerk_user_id}")
     return rooms
+
+
+def disconnect_auth_session_sockets(lineage_id: str) -> int:
+    manager = socketio.server.manager
+    getter = getattr(manager, '_auth_original_get_participants', manager.get_participants)
+    participants = list(getter('/', f'auth_session:{lineage_id}'))
+    for participant in participants:
+        socket_sid = participant[0] if isinstance(participant, (tuple, list)) else participant
+        socketio.server.disconnect(str(socket_sid), namespace='/')
+    return len(participants)
+
+
+def install_auth_session_socket_guard(app) -> None:
+    """Filter recipients against PostgreSQL on this worker and Redis delivery."""
+    manager = socketio.server.manager
+    original = manager.get_participants
+    if getattr(manager, '_auth_session_guard_installed', False):
+        return
+    def participants(namespace, room):
+        from models import AuthSession
+        from services.auth_session_lifecycle import lineage_for_claims
+        from utils.auth_helpers import is_user_auth_disabled, user_tenant_auth_allowed
+        from flask import has_app_context
+        candidates = list(original(namespace, room))
+        namespace_rooms = manager.rooms.get(namespace, {})
+        for participant in candidates:
+            sid = participant[0]
+            lineages = [key.split(':', 1)[1] for key, members in list(namespace_rooms.items())
+                        if isinstance(key, str) and key.startswith('auth_session:') and sid in members]
+            if not lineages:
+                yield participant
+                continue
+            try:
+                with app.app_context():
+                    valid = True
+                    for lineage_id in lineages:
+                        row = db.session.get(AuthSession, lineage_id, populate_existing=True)
+                        if row is None:
+                            valid = False; break
+                        lineage_for_claims({'asid': row.id, 'user_id': row.actor_id,
+                            'auth_provider': row.provider, 'auth_audience': row.audience,
+                            'jti': 'socket_authority', 'sid': row.provider_session_id})
+                        actor = db.session.get(User, row.actor_id, populate_existing=True)
+                        if actor is None or is_user_auth_disabled(actor) or not user_tenant_auth_allowed(actor):
+                            valid = False; break
+                if valid:
+                    yield participant
+            except Exception:
+                # A worker without fresh authority must not deliver private data.
+                continue
+    manager.get_participants = participants
+    manager._auth_original_get_participants = original
+    manager._auth_session_guard_installed = True
 
 
 def disconnect_clerk_session_sockets(
@@ -300,8 +501,9 @@ def disconnect_clerk_session_sockets(
         identity_rooms.append(f"clerk_user:{str(clerk_user_id).strip()}")
 
     socket_sids: set[str] = set()
+    getter = getattr(socketio.server.manager, '_auth_original_get_participants', socketio.server.manager.get_participants)
     for room in identity_rooms:
-        for participant in socketio.server.manager.get_participants("/", room):
+        for participant in getter("/", room):
             socket_sid = participant[0] if isinstance(participant, (tuple, list)) else participant
             if socket_sid:
                 socket_sids.add(str(socket_sid))
@@ -484,11 +686,21 @@ def _merge_rooms_for_subscription(user: User, tenant_slug: Optional[str]) -> lis
 
 
 def _merge_authenticated_socket_rooms(user: User, tenant_slug: Optional[str], token: str) -> list[str]:
+    if not _panel_socket_credential(token):
+        return []
     rooms = _merge_rooms_for_subscription(user, tenant_slug)
     for room in _clerk_identity_rooms(user, token):
         if room not in rooms:
             rooms.append(room)
     return rooms
+
+
+def _panel_socket_credential(token: str) -> bool:
+    # user_from_token has already verified the signature and durable family.
+    # Public widget/demo capabilities never convey operator room authority.
+    claims = _decode_chatboc_socket_token(token)
+    return bool(claims.get('asid') and claims.get('auth_provider') in {'native', 'clerk'}
+        and claims.get('session_kind') not in {'widget', 'demo'} and not claims.get('demo_mode'))
 
 def _resolve_tenant_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
@@ -550,6 +762,26 @@ def _resolve_ticket_room(payload: Any) -> Optional[str]:
 def emit_ticket_update(data: Any) -> None:
     """Invalidate tenant ticket collections without broadcasting case data."""
 
+    _emit_tenant_ticket_invalidation(data)
+
+
+def emit_ticket_reply_delivery_updated(data: Any) -> None:
+    """Invalidate delivery receipts without exposing case or provider data."""
+
+    room = _resolve_tenant_ticket_room(data)
+    if not room:
+        current_app.logger.warning("Dropped unscoped ticket reply delivery invalidation")
+        return
+    _emit_with_outbox_budget(
+        "ticket.reply.delivery.updated",
+        {
+            "contract_version": TENANT_TICKET_REPLY_DELIVERY_REALTIME_CONTRACT_VERSION,
+            "resource": "reply_deliveries",
+            "reason": "delivery_status_changed",
+            "refetch": True,
+        },
+        room=room,
+    )
     _emit_tenant_ticket_invalidation(data)
 
 
@@ -767,7 +999,11 @@ def _emit_tenant_ticket_invalidation(data: Any) -> bool:
     if not room:
         current_app.logger.warning("Dropped unscoped tenant ticket invalidation")
         return False
-    socketio.emit("ticket_update", _build_tenant_ticket_invalidation(), room=room)
+    _emit_with_outbox_budget(
+        "ticket_update",
+        _build_tenant_ticket_invalidation(),
+        room=room,
+    )
     return True
 
 
@@ -792,7 +1028,11 @@ def emit_new_chat_message(data: Any) -> None:
     if public_room:
         public_payload = _build_public_ticket_comment_event(data, public_room)
         if public_payload:
-            socketio.emit("new_chat_message", public_payload, room=public_room)
+            _emit_with_outbox_budget(
+                "new_chat_message",
+                public_payload,
+                room=public_room,
+            )
 
     if not _emit_tenant_ticket_invalidation(data):
         current_app.logger.warning(
@@ -883,11 +1123,60 @@ def _survey_candidates_for_slug(slug_publico: str) -> list[EncEncuesta]:
     ]
 
 
+def _durable_demo_survey_tenant_slug(slug_publico: str) -> str:
+    """Resolve the tenant owned by an enabled durable Preview demo fixture.
+
+    Demo instruments intentionally do not exist in ``enc_encuesta``.  Their
+    room scope must therefore come from the immutable demo registry, never
+    from a client supplied tenant hint.  Static/default-off demos remain
+    polling-only and cannot open a Socket.IO room.
+    """
+
+    normalized_slug = str(slug_publico or "").strip()
+    if (
+        not normalized_slug.startswith("demo-")
+        or normalized_slug != normalized_slug.lower()
+        or not _is_valid_survey_room_segment(normalized_slug)
+    ):
+        return ""
+
+    try:
+        from services.demo_survey_participation import (
+            durable_demo_survey_participation_enabled,
+        )
+        from services.demo_surveys import build_demo_public_survey_payload
+
+        if not durable_demo_survey_participation_enabled():
+            return ""
+        public_payload = build_demo_public_survey_payload(normalized_slug)
+    except Exception:
+        # A misconfigured opt-in gate already fails the HTTP demo flow closed.
+        # Socket authorization must likewise reject without trusting hints.
+        current_app.logger.warning(
+            "Durable demo survey socket authorization unavailable slug=%s",
+            normalized_slug,
+        )
+        return ""
+
+    if not isinstance(public_payload, dict):
+        return ""
+    if str(public_payload.get("slug") or "").strip().lower() != normalized_slug:
+        return ""
+    normalized_tenant = str(public_payload.get("tenant_slug") or "").strip().lower()
+    if not _is_valid_survey_room_segment(normalized_tenant):
+        return ""
+    return normalized_tenant
+
+
 def _resolve_survey_tenant_slug(slug_publico: str, data: Any, tenant_slug: str | None) -> str:
     slug = str(slug_publico or "").strip()
     if not _is_valid_survey_room_segment(slug):
         return ""
     try:
+        demo_tenant_slug = _durable_demo_survey_tenant_slug(slug)
+        if demo_tenant_slug:
+            return demo_tenant_slug
+
         candidates = _survey_candidates_for_slug(slug)
         if len(candidates) == 1:
             return _tenant_slug_for_survey_tenant_id(candidates[0].tenant_id)
@@ -958,22 +1247,25 @@ def _is_authorized_survey_room(room: str) -> bool:
     return bool(_authorized_survey_room(room))
 
 
-def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
+def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> bool:
     """Emit a live update for a specific survey/poll."""
     rooms = _survey_realtime_rooms(slug_publico, data, tenant_slug=tenant_slug)
     if not rooms:
-        return
+        return False
     if isinstance(data, dict) and data.get("contract_version") == "surveys.live_results.v2":
         legacy_payload = data.get("legacy_results")
         modern_payload = {key: value for key, value in data.items() if key != "legacy_results"}
         for room in rooms:
-            socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
-            socketio.emit('survey_update_v2', modern_payload, room=room)
-            socketio.emit('survey.vote.created', modern_payload, room=room)
-        return
+            _emit_with_outbox_budget(
+                'survey_update', legacy_payload or modern_payload, room=room
+            )
+            _emit_with_outbox_budget('survey_update_v2', modern_payload, room=room)
+            _emit_with_outbox_budget('survey.vote.created', modern_payload, room=room)
+        return True
     for room in rooms:
-        socketio.emit('survey_update', data, room=room)
-        socketio.emit('survey.vote.created', data, room=room)
+        _emit_with_outbox_budget('survey_update', data, room=room)
+        _emit_with_outbox_budget('survey.vote.created', data, room=room)
+    return True
 
 
 def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
@@ -984,61 +1276,116 @@ def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = 
 
 
 
-def send_welcome_message(sid, auth):
+def send_welcome_message(app, sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
+    with app.app_context():
+        # The native background thread acquires its own connection. A task
+        # queued before an ownership change must re-enter the gate when it runs.
+        with _socket_writer_operation() as decision:
+            if not decision.allowed:
+                app.logger.warning(
+                    "Socket welcome refused reason=%s", decision.reason_code,
+                )
+                return False
+            return _send_admitted_welcome_message(app, sid, auth)
+
+
+def _socket_welcome_tenant_slug(auth):
+    """Require one explicit canonical identity; never infer a default tenant."""
+    from services.tenant_resolver import RESERVED_TENANT_SLUGS
+
+    payload = auth if isinstance(auth, dict) else {}
+    selectors = [payload[key] for key in ("tenant_slug", "tenantSlug")
+                 if key in payload and payload[key] not in (None, "")]
+    if not selectors:
+        return None, "tenant_context_missing"
+    normalized = []
+    for value in selectors:
+        if not isinstance(value, str):
+            return None, "tenant_context_invalid"
+        slug = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{0,148}[a-z0-9])?", slug):
+            return None, "tenant_context_invalid"
+        if slug in RESERVED_TENANT_SLUGS:
+            return None, "tenant_context_reserved"
+        normalized.append(slug)
+    if len(set(normalized)) != 1:
+        return None, "tenant_context_conflicting"
+    return normalized[0], None
+
+
+def _send_admitted_welcome_message(app, sid, auth):
+    """Run the original welcome flow only while the background lease is held."""
+    tenant_slug, reason = _socket_welcome_tenant_slug(auth)
+    if reason:
+        app.logger.warning("Socket welcome refused reason=%s", reason)
+        return False
+
+    from services.tenant_resolver import _tenant_by_slug
+    tenant = _tenant_by_slug(tenant_slug)
+    if (
+        tenant is None
+        or str(tenant.slug).lower() != tenant_slug
+        or tenant.tipo != "municipio"
+    ):
+        app.logger.warning("Socket welcome refused reason=tenant_context_unavailable")
+        return False
+    owner_user = tenant.municipio
+    if (
+        owner_user is None
+        or owner_user.id != tenant.municipio_id
+        or owner_user.tipo_chat != "municipio"
+        or canonical_role(owner_user.rol) != "admin"
+    ):
+        app.logger.warning("Socket welcome refused reason=tenant_owner_unavailable")
+        return False
+    rubro = owner_user.rubro
+    if not rubro:
+        app.logger.warning("Socket welcome refused reason=tenant_rubro_unavailable")
+        return False
+
     from services.municipio_responder import responder_municipio
-    from models import User, ChatSessionContext, Rubro, db
+    from models import ChatSessionContext, db
     from uuid import uuid4
     from flask import g
 
-    current_app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
-    with current_app.app_context():
-        owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
-        if not owner_user:
-            current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
-            return
+    app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
+    chat_session_uuid = str(uuid4())
+    chat_db_context = ChatSessionContext(
+        chat_session_id=chat_session_uuid,
+        user_id=owner_user.id,
+        context_data={}
+    )
+    db.session.add(chat_db_context)
+    db.session.commit()
 
-        rubro = owner_user.rubro
-        if not rubro:
-            current_app.logger.error(f"Rubro not found for user {owner_user.id}")
-            return
+    anon_id = str(uuid4())
+    if 'viewer' in g:
+        del g.viewer
 
-        chat_session_uuid = str(uuid4())
-        chat_db_context = ChatSessionContext(
-            chat_session_id=chat_session_uuid,
-            user_id=owner_user.id,
-            context_data={}
-        )
-        db.session.add(chat_db_context)
-        db.session.commit()
+    respuesta = responder_municipio(
+        pregunta_original="__INIT__",
+        owner_user=owner_user,
+        rubro_obj=rubro,
+        viewer_user=None,
+        chat_db_context=chat_db_context,
+        anon_id=anon_id,
+        channel='web',
+        chat_session_uuid=chat_session_uuid
+    )
 
-        anon_id = str(uuid4())
-        if 'viewer' in g:
-            del g.viewer
+    ensure_buttons_compatibility(respuesta)
 
-        respuesta = responder_municipio(
-            pregunta_original="__INIT__",
-            owner_user=owner_user,
-            rubro_obj=rubro,
-            viewer_user=None,
-            chat_db_context=chat_db_context,
-            anon_id=anon_id,
-            channel='web',
-            chat_session_uuid=chat_session_uuid
-        )
+    if respuesta.get("generar_audio"):
+        try:
+            audio_url = generar_audio(text=respuesta["message_body"])
+            if audio_url:
+                respuesta["audio_url"] = audio_url
+        except Exception as e:
+            app.logger.error(f"Error generating welcome audio: {e}")
 
-        ensure_buttons_compatibility(respuesta)
-
-        if respuesta.get("generar_audio"):
-            try:
-                audio_url = generar_audio(text=respuesta["message_body"])
-                if audio_url:
-                    respuesta["audio_url"] = audio_url
-            except Exception as e:
-                current_app.logger.error(f"Error generating welcome audio: {e}")
-
-        emit('message', respuesta, room=sid)
-        current_app.logger.info(f"Welcome message sent to sid: {sid}")
+    socketio.emit('message', respuesta, room=sid)
+    app.logger.info(f"Welcome message sent to sid: {sid}")
 
 @socketio.on('connect')
 def on_connect(auth):
@@ -1054,7 +1401,7 @@ def on_connect(auth):
 
     if token:
         try:
-            user = user_from_token(str(token))
+            user = _user_from_token(str(token))
             if not user:
                 current_app.logger.warning(
                     "Socket.IO connection rejected for sid %s due to invalid or revoked token.",
@@ -1079,8 +1426,28 @@ def on_connect(auth):
             current_app.logger.exception("Socket.IO unexpected connect error for sid %s: %s", request.sid, e)
             return False
     elif channel == 'web':
-        # Defer the welcome message to a separate thread to not block the connection
-        socketio.start_background_task(send_welcome_message, request.sid, auth)
+        tenant_slug, reason = _socket_welcome_tenant_slug(auth_payload)
+        if reason == "tenant_context_missing":
+            # Survey clients use this channel only to subscribe to public
+            # updates. No tenant means no customer welcome or provider effects.
+            return
+        if reason:
+            current_app.logger.warning("Socket web connection refused reason=%s", reason)
+            return False
+        with _socket_writer_operation() as decision:
+            if not decision.allowed:
+                current_app.logger.warning(
+                    "Socket web connection refused reason=%s", decision.reason_code,
+                )
+                return False
+            # Admission covers scheduling, while the thread reacquires its
+            # own lease over the full DB/provider/audio/emit welcome flow.
+            socketio.start_background_task(
+                send_welcome_message,
+                current_app._get_current_object(),
+                request.sid,
+                auth,
+            )
 
 
 @socketio.on('subscribe_ticket_updates')
@@ -1092,10 +1459,13 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'missing_token'})
         return
 
-    user = user_from_token(str(token))
+    user = _user_from_token(str(token))
     if not user:
         current_app.logger.warning("Socket subscribe rejected for sid %s: invalid or revoked token", request.sid)
         emit('subscription_error', {'error': 'invalid_token'})
+        return
+    if not _panel_socket_credential(str(token)):
+        emit('subscription_error', {'error': 'operator_session_required'})
         return
 
     if tenant_slug and not _user_can_access_tenant_slug(user, tenant_slug):
@@ -1124,6 +1494,13 @@ def on_join(data):
     if authorized_survey_room:
         join_room(authorized_survey_room)
         current_app.logger.debug("Client joined public survey room: %s", authorized_survey_room)
+        emit(
+            'join_ack',
+            {
+                'room': authorized_survey_room,
+                'access_mode': 'public_survey_room',
+            },
+        )
         return
 
     if room.startswith('ticket_'):
@@ -1175,6 +1552,7 @@ def on_new_chat(data):
     emit('chat_error', {'error': 'event_not_supported'})
 
 @socketio.on('send_chat_message')
+@_socket_writer_handler("chat_error")
 def handle_send_chat_message(data):
     """
     Manejador para cuando un agente envía un mensaje en el chat de un ticket.
@@ -1191,10 +1569,13 @@ def handle_send_chat_message(data):
         current_app.logger.error("Socket 'send_chat_message' recibio datos incompletos")
         return
 
-    current_user = user_from_token(str(token))
+    current_user = _user_from_token(str(token))
     if not current_user:
         current_app.logger.warning("Token invalido o revocado en 'send_chat_message'")
         emit('chat_error', {'error': 'invalid_token'})
+        return
+    if not _panel_socket_credential(str(token)):
+        emit('chat_error', {'error': 'operator_session_required'})
         return
     for identity_room in _clerk_identity_rooms(current_user, str(token)):
         join_room(identity_room)
@@ -1330,6 +1711,7 @@ def _resolve_location_response_room(data: Any) -> Optional[str]:
 
 
 @socketio.on('location')
+@_socket_writer_handler("location_error")
 def on_location(data):
     """Geocode location only for sockets already bound to an authorized room."""
 

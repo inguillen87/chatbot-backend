@@ -34,11 +34,13 @@ _NAMED_VARIABLE_RE = re.compile(r"(?:\$?\{[A-Za-z_][A-Za-z0-9_.-]*\})")
 _ALLOWED_CATEGORIES = {"UTILITY", "MARKETING", "AUTHENTICATION"}
 _ALLOWED_CTA_TYPES = {"URL", "PHONE_NUMBER", "QUICK_REPLY"}
 _INTENT_LABELS = {
+    "orientation": "Bienvenida y orientación",
     "confirmation": "Confirmacion",
     "follow_up": "Seguimiento",
     "appointment": "Turno",
     "payment": "Pago",
     "handoff": "Derivacion humana",
+    "notice": "Aviso de una consulta",
 }
 
 
@@ -286,6 +288,91 @@ _WHATSAPP_TEMPLATE_PACKS: dict[str, dict[str, Any]] = {
             ),
         ],
     },
+    "tdf": {
+        "pack_id": "tdf_orientacion_institucional_es_ar",
+        "pack_version": "1.0.0",
+        "label": "Tierra del Fuego · Orientación institucional",
+        # The caller must supply the slug of its authorized TenantProfile. A
+        # request hint, pack name, or registered number cannot establish scope.
+        "tenant_slugs": ["tierra-del-fuego"],
+        "dispatch_policy": {
+            "mode": "draft_only",
+            "runtime_dispatch_enabled": False,
+            "source_event_validation_implemented": False,
+            "tenant_provider_binding_verified": False,
+            "required_before_activation": [
+                "tenant_owned_waba_and_sender_verified",
+                "provider_approval_for_exact_template_version",
+                "recipient_opt_in_and_opt_out_enforced",
+                "persisted_source_event_validated_for_recipient",
+                "customer_service_window_or_approved_template_checked",
+            ],
+            "notice": (
+                "Son borradores de orientación. La creación local no verifica la cuenta de WhatsApp "
+                "ni habilita envíos. Los avisos requieren un evento real validado; esa validación "
+                "y la activación de este pack todavía no están implementadas."
+            ),
+        },
+        "intended_triggers": {
+            "orientation": "Consulta de orientación iniciada por la persona.",
+            "follow_up": "Continuación autorizada de una consulta iniciada por la persona.",
+            "appointment": "Novedad de un turno persistida y validada por el área responsable.",
+            "notice": "Novedad real de la consulta, validada para esa persona.",
+            "handoff": "Derivación de la consulta registrada y aceptada por el equipo.",
+        },
+        "templates": [
+            _pack_template(
+                intent="orientation",
+                name="chatboc_tdf_orientacion_v1",
+                body=(
+                    "Recibimos tu consulta de orientación a Tierra del Fuego. Podemos ayudarte a ubicar "
+                    "información y el canal institucional correspondiente. Contanos el tema, sin enviar "
+                    "documentos ni información sensible por este chat."
+                ),
+                variables=[],
+            ),
+            _pack_template(
+                intent="follow_up",
+                name="chatboc_tdf_continuidad_v1",
+                body=(
+                    "Te escribimos para continuar la consulta de orientación que iniciaste. Si todavía "
+                    "necesitás ayuda para ubicar información o el canal institucional, podés responder "
+                    "a este mensaje. No envíes información sensible por este chat."
+                ),
+                variables=[],
+            ),
+            _pack_template(
+                intent="appointment",
+                name="chatboc_tdf_turno_aviso_v1",
+                body=(
+                    "Hay una novedad sobre el turno que solicitaste. Consultá la fecha y la sede por "
+                    "el canal institucional acordado con el equipo de atención. Si necesitás orientación "
+                    "para continuar, podés responder a este mensaje."
+                ),
+                variables=[],
+            ),
+            _pack_template(
+                intent="notice",
+                name="chatboc_tdf_consulta_aviso_v1",
+                body=(
+                    "Hay una novedad registrada sobre la consulta de orientación que iniciaste. Para "
+                    "conocer el detalle, usá el canal institucional acordado con el equipo de atención. "
+                    "Este aviso no confirma la aprobación de una gestión."
+                ),
+                variables=[],
+            ),
+            _pack_template(
+                intent="handoff",
+                name="chatboc_tdf_derivacion_v1",
+                body=(
+                    "Hay una derivación registrada para tu consulta de orientación. El equipo de atención "
+                    "revisará la solicitud según su disponibilidad. Usá el canal institucional acordado "
+                    "para continuar. Este aviso no confirma una prestación ni un beneficio."
+                ),
+                variables=[],
+            ),
+        ],
+    },
 }
 
 _VERTICAL_ALIASES = {
@@ -300,6 +387,8 @@ _VERTICAL_ALIASES = {
     "empresas": "empresa",
     "pyme": "empresa",
     "commerce": "empresa",
+    "tdf": "tdf",
+    "tierra-del-fuego": "tdf",
 }
 
 
@@ -682,20 +771,31 @@ def whatsapp_template_lifecycle(
     }
 
 
-def whatsapp_template_pack(vertical: Any) -> dict[str, Any] | None:
+def _pack_available_for_tenant(pack: Mapping[str, Any], tenant_slug: Any) -> bool:
+    allowed = pack.get("tenant_slugs")
+    return not allowed or (isinstance(tenant_slug, str) and tenant_slug in allowed)
+
+
+def whatsapp_template_pack(
+    vertical: Any, *, tenant_slug: str | None = None,
+) -> dict[str, Any] | None:
     normalized_vertical = normalize_whatsapp_template_vertical(vertical)
     pack = _WHATSAPP_TEMPLATE_PACKS.get(normalized_vertical or "")
-    return copy.deepcopy(pack) if pack else None
+    return copy.deepcopy(pack) if pack and _pack_available_for_tenant(pack, tenant_slug) else None
 
 
 def whatsapp_template_pack_catalog(
     registry_by_name: Mapping[str, Mapping[str, Any]] | None = None,
+    *, tenant_slug: str | None = None,
 ) -> dict[str, Any]:
     registry_by_name = registry_by_name or {}
     packs: list[dict[str, Any]] = []
     lifecycle_counts = {state: 0 for state in WHATSAPP_TEMPLATE_LIFECYCLE_STATES}
 
     for vertical, raw_pack in _WHATSAPP_TEMPLATE_PACKS.items():
+        if not _pack_available_for_tenant(raw_pack, tenant_slug):
+            continue
+        dispatch_policy = raw_pack.get("dispatch_policy")
         templates: list[dict[str, Any]] = []
         for raw_template in raw_pack["templates"]:
             validation = validate_whatsapp_template(raw_template)
@@ -710,6 +810,13 @@ def whatsapp_template_pack_catalog(
                 observed_at=registry.get("last_sync_at"),
             )
             lifecycle_counts[lifecycle["state"]] += 1
+            if isinstance(dispatch_policy, Mapping) and dispatch_policy.get("mode") == "draft_only":
+                # Provider content approval does not enable this future pack's
+                # dispatch. No event validator/sender is connected by drafts.
+                lifecycle["production_send_allowed"] = False
+                lifecycle["blockers"] = list(dict.fromkeys(
+                    [*lifecycle["blockers"], "template_pack_dispatch_not_enabled"]
+                ))
             blockers = list(lifecycle["blockers"])
             blockers.extend(error["code"] for error in validation["errors"])
             templates.append(
@@ -738,6 +845,11 @@ def whatsapp_template_pack_catalog(
                 "pack_id": raw_pack["pack_id"],
                 "pack_version": raw_pack["pack_version"],
                 "label": raw_pack["label"],
+                **({
+                    "scope": {"tenant_slug": tenant_slug, "source": "authorized_tenant_profile"},
+                    "dispatch_policy": copy.deepcopy(dispatch_policy),
+                    "intended_triggers": copy.deepcopy(raw_pack.get("intended_triggers") or {}),
+                } if isinstance(dispatch_policy, Mapping) else {}),
                 "templates": templates,
                 "summary": {
                     "total": len(templates),
@@ -797,6 +909,10 @@ def whatsapp_template_pack_catalog(
                 "meta_approval_pending": "Meta todavia no confirmo la aprobacion.",
                 "meta_approval_rejected": "Meta rechazo esta version; requiere revision.",
                 "provider_status_stale": "La ultima evidencia del proveedor esta vencida o no es confiable.",
+                "template_pack_dispatch_not_enabled": (
+                    "Pack de borradores: faltan la validación del evento real, la cuenta del tenant "
+                    "y la activación. No habilita envíos."
+                ),
             },
         },
     }

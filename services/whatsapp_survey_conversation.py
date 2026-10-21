@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import math
 import re
 import uuid
 from typing import Any, Mapping, Optional, Sequence
@@ -808,6 +809,64 @@ def _semantic_location_fields(
     return mapped
 
 
+def _shared_location_from_context(context: Mapping[str, Any]) -> dict[str, float]:
+    """Return an explicitly shared, valid WGS84 point for the active turn."""
+
+    if context.get("es_ubicacion") is not True:
+        return {}
+    raw_location = context.get("ubicacion_usuario")
+    if not isinstance(raw_location, Mapping):
+        return {}
+
+    def _first_present(*keys: str) -> Any:
+        for key in keys:
+            if key in raw_location and raw_location.get(key) is not None:
+                return raw_location.get(key)
+        return None
+
+    def _coordinate(value: Any, *, minimum: float, maximum: float) -> Optional[float]:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(parsed) or not minimum <= parsed <= maximum:
+            return None
+        return parsed
+
+    lat = _coordinate(
+        _first_present("lat", "latitude", "latitud"),
+        minimum=-90.0,
+        maximum=90.0,
+    )
+    lng = _coordinate(
+        _first_present("lng", "lon", "longitude", "longitud"),
+        minimum=-180.0,
+        maximum=180.0,
+    )
+    if lat is None or lng is None:
+        return {}
+    return {"lat": lat, "lng": lng}
+
+
+def _remember_shared_location(
+    context: Mapping[str, Any],
+    instrument: _LoadedInstrument,
+    state: Mapping[str, Any],
+) -> None:
+    """Pin a native WhatsApp location until the governed response is saved."""
+
+    if not isinstance(state, dict):
+        return
+    if str(instrument.survey.privacy_mode or "legacy") == "source_anonymous":
+        state.pop("shared_location", None)
+        return
+    location = _shared_location_from_context(context)
+    if location:
+        state["shared_location"] = location
+
+
 def _build_submission_payload(
     context: Mapping[str, Any],
     instrument: _LoadedInstrument,
@@ -836,6 +895,13 @@ def _build_submission_payload(
         },
         **_semantic_location_fields(instrument, answers),
     }
+    shared_location = state.get("shared_location")
+    if isinstance(shared_location, Mapping):
+        lat = shared_location.get("lat")
+        lng = shared_location.get("lng")
+        if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+            payload["lat"] = float(lat)
+            payload["lng"] = float(lng)
     if instrument.survey.privacy_consent_required:
         payload["privacy_consent"] = state.get("consent_accepted") is True
         payload["privacy_policy_version"] = instrument.survey.privacy_policy_version
@@ -1220,6 +1286,7 @@ def handle_whatsapp_survey_flow_turn(
             explicit_public_url=public_url,
         )
         _validate_pinned_state(state, instrument)
+        _remember_shared_location(context, instrument, state)
     except WhatsAppSurveyConversationError as exc:
         clear_whatsapp_survey_flow(context)
         reveal_web_form = exc.reason_code in _WEB_FALLBACK_REASON_CODES

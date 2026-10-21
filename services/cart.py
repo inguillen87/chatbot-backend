@@ -49,7 +49,7 @@ def add_item_to_cart(pyme_carts_data: Dict[int, List[Dict[str, Any]]], pyme_id: 
     # Si el producto no está en el carrito, añadirlo
     nuevo_item_carrito = {
         "catalogo_item_id": producto_info['catalogo_item_id'],
-        "nombre_producto": producto_info.get('nombre', 'Producto Desconocido'), # Tomar de producto_info
+        "nombre_producto": producto_info.get('nombre_producto') or producto_info.get('nombre') or 'Producto Desconocido',
         "cantidad": cantidad,
         "precio_unitario_original": producto_info.get('precio_unitario'), # Asumiendo que esto viene de _formatear_producto
         "moneda": producto_info.get('moneda', 'ARS'), # Asumiendo que esto viene de _formatear_producto
@@ -101,8 +101,9 @@ def update_item_quantity_in_cart(pyme_carts_data: Dict[int, List[Dict[str, Any]]
 
 def clear_pyme_cart(pyme_carts_data: Dict[int, List[Dict[str, Any]]], pyme_id: int) -> None:
     """Vacía el carrito para una PYME específica, operando sobre pyme_carts_data."""
-    if pyme_id in pyme_carts_data:
-        pyme_carts_data[pyme_id] = []
+    key = str(pyme_id) if str(pyme_id) in pyme_carts_data else pyme_id
+    if key in pyme_carts_data:
+        pyme_carts_data[key] = []
         logger.info(f"Carrito para PYME {pyme_id} vaciado.")
         # No session.modified = True
 

@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import types
@@ -69,7 +70,12 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             ],
         }
 
-        current_user = SimpleNamespace(municipio_id=3, rubro_id=None)
+        current_user = SimpleNamespace(
+            municipio_id=3,
+            rubro_id=None,
+            rol='admin',
+            es_empleado=False,
+        )
 
         with self.app.test_request_context(
             '/estadisticas/dashboard?tipo=municipio'
@@ -171,6 +177,116 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             estado='nuevo',
             satisfactorio=True,
         )
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_dashboard_employee_applies_category_scope_and_k_anonymity(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.60011, "lng": -68.30011},
+                "weight": 2,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.60024, "lng": -68.30024},
+                "weight": 3,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.61011, "lng": -68.31011},
+                "weight": 1,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.62011, "lng": -68.32011},
+                "weight": 20,
+                "categoria": "Baches",
+            },
+        ]
+        employee = SimpleNamespace(
+            id=41,
+            rol='empleado',
+            es_empleado=True,
+            ticket_categorias='Luminarias',
+            categorias_ticket=[],
+            accesibilidad={},
+            municipio_id=3,
+            rubro_id=None,
+            tenant_id=None,
+            empresa_id=None,
+            tipo_chat='municipio',
+        )
+
+        with self.app.test_request_context('/estadisticas/dashboard?tipo=municipio'):
+            response = self.estadisticas_module.estadisticas_dashboard(employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get('privacy') or {}).get('mode'), 'employee_aggregated')
+        self.assertEqual((payload.get('privacy') or {}).get('k_min'), 5)
+        self.assertEqual(len(payload.get('heatmap') or []), 1)
+        point = payload['heatmap'][0]
+        self.assertEqual(point['location'], {'lat': -34.6, 'lng': -68.3})
+        self.assertEqual(point['weight'], 5.0)
+        self.assertEqual(point['categoria'], 'Luminarias')
+        self.assertEqual(
+            (payload.get('render_contract') or {}).get('privacy_mode'),
+            'employee_aggregated',
+        )
+        serialized = json.dumps(payload).lower()
+        self.assertNotIn('baches', serialized)
+        self.assertNotIn('-34.60011', serialized)
+        self.assertNotIn('-68.30011', serialized)
+        self.assertNotIn('-34.61011', serialized)
+        self.assertNotIn('-68.31011', serialized)
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_dashboard_employee_accepts_persisted_category_id_scope(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.60011, "lng": -68.30011},
+                "weight": 2,
+                "categoria": "Nombre legacy anterior",
+                "categoria_id": 17,
+            },
+            {
+                "location": {"lat": -34.60024, "lng": -68.30024},
+                "weight": 3,
+                "categoria": "Nombre actualizado",
+                "categoria_id": 17,
+            }
+        ]
+        employee = SimpleNamespace(
+            id=43,
+            rol='empleado',
+            es_empleado=True,
+            ticket_categorias='',
+            categorias_ticket=[SimpleNamespace(id=17, nombre='')],
+            accesibilidad={},
+            municipio_id=3,
+            rubro_id=None,
+            tenant_id=None,
+            empresa_id=None,
+            tipo_chat='municipio',
+        )
+
+        with self.app.test_request_context('/estadisticas/dashboard?tipo=municipio'):
+            response = self.estadisticas_module.estadisticas_dashboard(employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload.get('heatmap') or []), 1)
+        self.assertEqual(payload['heatmap'][0].get('categoria_id'), 17)
+        self.assertEqual(payload['heatmap'][0].get('weight'), 5.0)
 
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.MetricasService')

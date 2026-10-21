@@ -5,6 +5,8 @@ import pytest
 from flask import Flask
 
 from cli_commands import register_commands
+from services.global_writer_authority import GlobalWriterAuthorityDecision
+from services.survey_response_effects import dispatch_survey_response_effects
 
 
 def _dispatch_result(
@@ -212,6 +214,87 @@ def test_cli_rejects_unknown_tenant_before_dispatch(cli_app):
     assert payload["status"] == "rejected"
     assert payload["reason_code"] == "tenant_not_found"
     dispatch.assert_not_called()
+
+
+def test_global_authority_blocks_cli_before_scope_query_claim_or_effect(cli_app):
+    cli_app.config.update(
+        CUTOVER_WRITER_FENCE_ENABLED=False,
+        CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED=True,
+        CUTOVER_RUNTIME_IDENTITY="vercel",
+    )
+    denied = GlobalWriterAuthorityDecision(
+        allowed=False,
+        enabled=True,
+        reason_code="runtime_not_global_writer_owner",
+        epoch=17,
+    )
+
+    with (
+        patch(
+            "services.global_writer_authority.evaluate_global_writer_authority",
+            return_value=denied,
+        ) as evaluate,
+        patch("cli_commands._survey_effect_tenant_exists") as tenant_query,
+        patch(
+            "services.survey_response_effects.dispatch_survey_response_effects"
+        ) as dispatch,
+        patch(
+            "services.survey_response_effects.summarize_survey_response_effects"
+        ) as summarize,
+        patch("cli_commands._count_dead_survey_response_effects") as dead_query,
+    ):
+        result = _invoke(cli_app, "--tenant-id", "7")
+
+    assert result.exit_code == 0
+    payload = _payload(result)
+    assert payload["contract_version"] == "cutover.global_writer_authority.v1"
+    assert payload["status"] == "fenced"
+    assert payload["reason_code"] == "runtime_not_global_writer_owner"
+    assert payload["batches"] == 0
+    assert all(value == 0 for value in payload["totals"].values())
+    evaluate.assert_called_once()
+    tenant_query.assert_not_called()
+    dispatch.assert_not_called()
+    summarize.assert_not_called()
+    dead_query.assert_not_called()
+
+
+def test_global_authority_blocks_direct_dispatch_before_query_claim_or_effect(
+    cli_app,
+):
+    cli_app.config.update(
+        CUTOVER_WRITER_FENCE_ENABLED=False,
+        CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED=True,
+        CUTOVER_RUNTIME_IDENTITY="vercel",
+    )
+    denied = GlobalWriterAuthorityDecision(
+        allowed=False,
+        enabled=True,
+        reason_code="runtime_not_global_writer_owner",
+        epoch=18,
+    )
+
+    with (
+        cli_app.app_context(),
+        patch(
+            "services.global_writer_authority.evaluate_global_writer_authority",
+            return_value=denied,
+        ) as evaluate,
+        patch("services.survey_response_effects.db.session.query") as query,
+        patch("services.survey_response_effects._claim_effect") as claim,
+        patch("services.survey_response_effects._execute_effect") as execute,
+    ):
+        report = dispatch_survey_response_effects(tenant_id=7, limit=3)
+
+    assert report["contract_version"] == "cutover.global_writer_authority.v1"
+    assert report["status"] == "fenced"
+    assert report["reason_code"] == "runtime_not_global_writer_owner"
+    assert report["claimed"] == 0
+    assert report["processed"] == 0
+    evaluate.assert_called_once()
+    query.assert_not_called()
+    claim.assert_not_called()
+    execute.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -17,6 +17,7 @@ import difflib
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse, urlencode
 from flask import current_app, has_app_context, session as flask_session
+from sqlalchemy.exc import SQLAlchemyError
 from cachetools import TTLCache
 from models import (
     MunicipioTicket,
@@ -27,6 +28,7 @@ from models import (
     Conversacion,
     MunicipioPost,
     TenantProfile,
+    CategoriaTicket,
 )
 from services.ticket_service import servicio_tickets
 from services.tenant_ticket_scope import (
@@ -88,7 +90,6 @@ from utils.validators import extract_email, extract_phone, extract_dni, extract_
 from utils.address_parse import split_ubicacion_y_distrito
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
-from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.subastas import listar_subastas_activas
@@ -2864,8 +2865,15 @@ TWILIO_WHATSAPP_NUMBER = os.environ.get(
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
-# Configuración base (se puede sobrescribir por municipio en cada request)
-CONFIG_MUNICIPIO = cargar_configuracion_municipio("default", "config.json")
+# Neutral runtime defaults. The bundled ``default`` package is legacy Junín
+# content and must never become another government's identity or public links.
+CONFIG_MUNICIPIO = {
+    "nombre": "Municipio",
+    "nombre_municipio": "Municipio",
+    "assistant_name": "Asistente municipal",
+    "pais": "Argentina",
+    "base_chat_url": "https://www.chatboc.ar/chat",
+}
 
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
@@ -8080,6 +8088,105 @@ def _detect_location_link_info(text: str) -> Optional[dict[str, Any]]:
     return info
 
 
+def _try_start_explicit_reclamo_from_text(
+    text: str,
+    context: dict[str, Any],
+    chat_db_context,
+) -> Optional[dict[str, Any]]:
+    """Execute an explicit create command without requiring an AI provider.
+
+    This opens only the existing reviewable draft. Category keywords are not
+    authorization: direct preselection also requires one category belonging to
+    the authoritative tenant; otherwise the citizen chooses from the menu.
+    """
+    normalized = normalizar_texto(text or "")
+    if not re.fullmatch(
+        r"(?:(?:quiero|necesito|quisiera|deseo)\s+)?"
+        r"(?:hacer|iniciar|registrar|cargar|abrir)\s+(?:un\s+)?reclamo"
+        r"(?:\s+(?:por|sobre|de)\s+.+)?",
+        normalized,
+    ):
+        return None
+    if (
+        re.search(r"\b(?:cancelar|cancela|menu)\b", normalized)
+        or re.search(
+            r"\b(?:no|nunca|jamas)\s+(?:(?:quiero|necesito|quisiera|deseo)\s+)?"
+            r"(?:hacer|iniciar|registrar|cargar|abrir|reclamar)(?:lo)?\b",
+            normalized,
+        )
+        or _looks_like_ticket_status_lookup(normalized)
+    ):
+        return None
+
+    municipal_ctx = (context.get("chat_db_context_data") or {}).get(
+        CONTEXTO_MUNICIPIO, {}
+    )
+    if municipal_ctx.get("reclamo_flow_v2", {}).get("state"):
+        return None
+    tenant = context.get("tenant_profile")
+    tenant_id = getattr(tenant, "id", None)
+    owner_id = getattr(context.get("user_obj"), "id", None)
+    if (
+        not isinstance(tenant, TenantProfile)
+        or type(tenant_id) is not int
+        or type(context.get("tenant_id")) is not int
+        or type(owner_id) is not int
+        or tenant.tipo != "municipio"
+        or tenant_id != context.get("tenant_id")
+        or getattr(tenant, "municipio_id", None) != owner_id
+        or (chat_db_context is not None and chat_db_context.tenant_id != tenant_id)
+    ):
+        return None
+
+    # Reuse the bounded vocabulary, but do not rank one substantive category
+    # above another for automatic preselection. Street-context words alone
+    # are not a second issue. Missing/ambiguous catalog data leaves selection
+    # to the citizen instead of inheriting another municipality's categories.
+    weak_context = {"calle", "vereda", "perdida", "rotura", "otro", "otros", "varios"}
+    matches = {
+        category
+        for category, keywords in RECLAMO_KEYWORDS.items()
+        if any(
+            normalizar_texto(keyword) not in weak_context
+            and re.search(rf"(?<!\w){re.escape(normalizar_texto(keyword))}(?!\w)", normalized)
+            for keyword in keywords
+        )
+    }
+    category = None
+    if len(matches) == 1:
+        matched_category = next(iter(matches))
+        try:
+            # A failed optional read must not poison the transaction which
+            # already owns inbound deduplication and the conversation draft.
+            with db.session.begin_nested():
+                configured = CategoriaTicket.query.filter_by(
+                    tenant_id=tenant_id, tipo="ticket"
+                ).all()
+            candidates = [
+                row.nombre
+                for row in configured
+                if isinstance(row.nombre, str)
+                and normalizar_texto(row.nombre) in {
+                    normalizar_texto(matched_category),
+                    *(normalizar_texto(word) for word in RECLAMO_KEYWORDS[matched_category]),
+                }
+            ]
+            if len(candidates) == 1:
+                category = candidates[0]
+        except SQLAlchemyError as exc:
+            if not db.session.is_active or getattr(exc, "connection_invalidated", False):
+                raise
+            logger.warning("Explicit claim category lookup unavailable error_type=%s", type(exc).__name__)
+
+    response = ReclamoFlowHandler(context, chat_db_context).start_flow(
+        datos_iniciales={"descripcion": text.strip()},
+        categoria_inicial=category,
+    )
+    if chat_db_context:
+        safe_flag_modified(chat_db_context, "context_data")
+    return response
+
+
 def _try_start_reclamo_from_text(
     pregunta_str: str,
     context: dict[str, Any],
@@ -8092,6 +8199,12 @@ def _try_start_reclamo_from_text(
 
     if not pregunta_str:
         return None
+
+    explicit_payload = _try_start_explicit_reclamo_from_text(
+        pregunta_str, context, chat_db_context
+    )
+    if explicit_payload:
+        return explicit_payload
 
     normalized_text = normalizar_texto(pregunta_str)
     if len(normalized_text.split()) < 4 and len(pregunta_str.strip()) < 30:
@@ -10725,7 +10838,11 @@ def responder_municipio(
     )
 
     # Load from JSON file
-    loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+    loaded_specific_config = cargar_configuracion_municipio(
+        owner_user_municipio_id_str,
+        "config.json",
+        fallback_to_default=False,
+    )
     if loaded_specific_config:
         final_municipio_config.update(loaded_specific_config)
 
@@ -10738,8 +10855,14 @@ def responder_municipio(
             explicit_tenant_id=kwargs.get("tenant_id"),
         )
         if tenant_profile and isinstance(tenant_profile.configuracion, dict):
-            final_municipio_config.update(tenant_profile.configuracion)
-            if not final_municipio_config.get("nombre") and tenant_profile.nombre:
+            tenant_runtime_config = tenant_profile.configuracion
+            final_municipio_config.update(tenant_runtime_config)
+            if final_municipio_config.get("nombre") in (
+                None,
+                "",
+                "Municipio",
+                "Municipio Inteligente",
+            ) and tenant_profile.nombre:
                 final_municipio_config["nombre"] = tenant_profile.nombre
     except Exception:  # pragma: no cover - defensive for optional tenant profiles
         tenant_profile = None
@@ -10751,12 +10874,45 @@ def responder_municipio(
             or owner_email == "mauricio@junin.com"
         )
         if is_junin_tenant:
+            # Preserve the deployed Junín experience explicitly while keeping
+            # its legacy package out of every other jurisdiction.
+            tenant_overrides = (
+                tenant_profile.configuracion
+                if isinstance(tenant_profile.configuracion, dict)
+                else {}
+            )
+            junin_runtime_config = cargar_configuracion_municipio(
+                "default",
+                "config.json",
+                fallback_to_default=False,
+            )
+            final_municipio_config = {
+                **CONFIG_MUNICIPIO,
+                **junin_runtime_config,
+                **loaded_specific_config,
+                **tenant_overrides,
+            }
             updated_config = False
-            if final_municipio_config.get("nombre") in (None, "", "Municipio Inteligente"):
+            if final_municipio_config.get("nombre") in (
+                None,
+                "",
+                "Municipio",
+                "Municipio Inteligente",
+            ):
                 final_municipio_config["nombre"] = "Municipalidad de Junín"
-            if not final_municipio_config.get("assistant_name"):
+            if final_municipio_config.get("assistant_name") in (
+                None,
+                "",
+                "Asistente municipal",
+            ):
                 final_municipio_config["assistant_name"] = "JUNI"
-            final_municipio_config.setdefault("nombre_municipio", "Municipalidad de Junín")
+            if final_municipio_config.get("nombre_municipio") in (
+                None,
+                "",
+                "Municipio",
+                "Municipio Inteligente",
+            ):
+                final_municipio_config["nombre_municipio"] = "Municipalidad de Junín"
             configuracion = tenant_profile.configuracion
             if not isinstance(configuracion, dict):
                 configuracion = {}
@@ -12020,7 +12176,11 @@ def responder_municipio(
     resolved_specific_identifier = resolve_municipio_identifier(owner_user)
     if resolved_specific_identifier is not None:
         owner_user_municipio_id_str = str(resolved_specific_identifier)
-        loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+        loaded_specific_config = cargar_configuracion_municipio(
+            owner_user_municipio_id_str,
+            "config.json",
+            fallback_to_default=False,
+        )
         if loaded_specific_config:
             for config_key, config_value in loaded_specific_config.items():
                 final_municipio_config.setdefault(config_key, config_value)
@@ -12113,19 +12273,28 @@ def responder_municipio(
         if not pregunta_str.strip():
             return None
 
-        if contexto_municipio_actual.get("estado_conversacion"):
+        previous_state = contexto_municipio_actual.get("estado_conversacion")
+        if previous_state and previous_state != ConversationState.CONVERSACION_GENERAL_LLM.name:
             return None
 
         if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state"):
             return None
 
-        payload = _try_start_reclamo_from_text(
-            pregunta_str,
-            context,
-            chat_db_context,
-            default_localidad=final_municipio_config.get("ciudad"),
-            default_provincia=final_municipio_config.get("provincia"),
-        )
+        if previous_state == ConversationState.CONVERSACION_GENERAL_LLM.name:
+            # Recovery after a general AI failure only executes an explicit
+            # draft command. It does not enable model-based bootstrap for
+            # arbitrary follow-up messages or any other pending flow.
+            payload = _try_start_explicit_reclamo_from_text(
+                pregunta_str, context, chat_db_context
+            )
+        else:
+            payload = _try_start_reclamo_from_text(
+                pregunta_str,
+                context,
+                chat_db_context,
+                default_localidad=final_municipio_config.get("ciudad"),
+                default_provincia=final_municipio_config.get("provincia"),
+            )
 
         if payload:
             municipal_ctx = (

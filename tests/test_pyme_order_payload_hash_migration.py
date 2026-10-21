@@ -10,6 +10,8 @@ from alembic.script import ScriptDirectory
 import pytest
 import sqlalchemy as sa
 
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = (
@@ -94,6 +96,4 @@ def test_sqlite_upgrade_preserves_legacy_rows_and_enforces_hash_contract(tmp_pat
 def test_domain_effect_outbox_is_single_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260820_survey_content_jurisdiction_v1"
-    ]
+    assert ScriptDirectory.from_config(config).get_heads() == [REVIEWED_MIGRATION_HEAD]

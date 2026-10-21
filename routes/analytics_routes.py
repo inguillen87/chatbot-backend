@@ -31,6 +31,18 @@ def _request_id() -> str:
     return (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip() or f"req_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}"
 
 
+def _newest_cached_report(*reports):
+    candidates = [report for report in reports if isinstance(report, dict)]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda report: str(
+            (report.get("_report_metadata") or {}).get("generated_at") or ""
+        ),
+    )
+
+
 def _cors_origin() -> str | None:
     origin = (request.headers.get("Origin") or "").strip()
     if not origin:
@@ -527,7 +539,18 @@ def get_latest_report():
 
     segment = request.args.get('segment', 'pyme') # pyme or municipio
 
-    cached = analytics_service.get_cached_report(int(tenant_id), f"consultant_{segment}", max_age_hours=24*7)
+    report_type = f"consultant_{segment}"
+    weekly_cached = analytics_service.get_cached_weekly_report(
+        int(tenant_id),
+        report_type,
+        max_age_hours=24 * 7,
+    )
+    ad_hoc_cached = analytics_service.get_cached_report(
+        int(tenant_id),
+        report_type,
+        max_age_hours=24 * 7,
+    )
+    cached = _newest_cached_report(weekly_cached, ad_hoc_cached)
 
     if cached:
         cached['_cached'] = True
@@ -597,20 +620,10 @@ def _generate_report_impl():
 
     tid = tenant_id
 
-    # 0. Check Cache (e.g. 7 days for weekly reports)
-    # The cache key should ideally include date range, but for simplicity we check if *any* report was generated recently
-    # to prevent spamming.
-    cached = analytics_service.get_cached_report(tid, f"consultant_{segment}", max_age_hours=24*7)
     force_refresh = data.get('force', False)
-
-    if cached and not force_refresh:
-        # Add metadata to indicate it's cached
-        cached['_cached'] = True
-        cached.setdefault("access", _integration_access_for_tenant_id(tenant_id))
-        return jsonify(cached)
-
     from_str = data.get('from')
     to_str = data.get('to')
+    has_explicit_period = bool(from_str or to_str)
 
     now = datetime.utcnow()
     start_date = now - timedelta(days=7)
@@ -624,6 +637,42 @@ def _generate_report_impl():
         try:
              end_date = datetime.fromisoformat(to_str.replace('Z', '+00:00'))
         except: pass
+
+    report_type = f"consultant_{segment}"
+    cached = None
+    if not force_refresh and not has_explicit_period:
+        weekly_cached = analytics_service.get_cached_weekly_report(
+            tid,
+            report_type,
+            max_age_hours=24 * 7,
+        )
+        ad_hoc_cached = analytics_service.get_cached_report(
+            tid,
+            report_type,
+            max_age_hours=24 * 7,
+        )
+        cached = _newest_cached_report(weekly_cached, ad_hoc_cached)
+    if not force_refresh and cached is None:
+        cache_filters = (
+            {
+                "source": "ad_hoc",
+                "period_start": start_date,
+                "period_end": end_date,
+            }
+            if has_explicit_period
+            else None
+        )
+        if cache_filters is not None:
+            cached = analytics_service.get_cached_report(
+                tid,
+                report_type,
+                max_age_hours=24 * 7,
+                **cache_filters,
+            )
+    if cached is not None:
+        cached['_cached'] = True
+        cached.setdefault("access", _integration_access_for_tenant_id(tenant_id))
+        return jsonify(cached)
 
     try:
         # 1. Aggregate stats
@@ -654,7 +703,14 @@ def _generate_report_impl():
         report = generate_analytics_report(summary, tenant_type=segment)
 
         # 4. Cache Result
-        analytics_service.cache_report(tid, f"consultant_{segment}", report)
+        analytics_service.cache_report(
+            tid,
+            report_type,
+            report,
+            source="ad_hoc",
+            period_start=start_date,
+            period_end=end_date,
+        )
 
         return jsonify(report)
 

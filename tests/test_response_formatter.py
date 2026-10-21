@@ -467,7 +467,7 @@ class TestResponseFormatter(unittest.TestCase):
             "type": "text",
             "text": {"body": expected_body},
             "audio": {"link": audio_url},
-            "contexto_actualizado": {"last_options_sent": [
+            "contexto_actualizado": {"last_options_scope": "legacy", "last_options_sent": [
                 {"texto": "Menú", "action_id": "menu_principal"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]},
@@ -488,7 +488,7 @@ class TestResponseFormatter(unittest.TestCase):
         expected_payload = {
             "type": "text",
             "text": {"body": expected_body},
-            "contexto_actualizado": {"last_options_sent": [
+            "contexto_actualizado": {"last_options_scope": "legacy", "last_options_sent": [
                 {"texto": "Menú", "action_id": "menu_principal"},
                 {"texto": "Cancelar", "action_id": "cancelar"},
             ]},

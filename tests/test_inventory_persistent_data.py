@@ -836,6 +836,40 @@ class PersistentDataInventoryTests(unittest.TestCase):
                     expected_scope_id=TEST_SCOPE_ID,
                 )
 
+    @unittest.skipUnless(os.name == "posix", "POSIX hard-link rejection")
+    def test_posix_hardlinked_secret_and_media_fail_closed_before_inventory(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory) / "data"
+            uploads = root / "uploads"
+            root.mkdir()
+            uploads.mkdir()
+            secret = root / "google_service_key.json"
+            secret_alias = root / "service_account.json"
+            media = uploads / "citizen-photo.jpg"
+            media_alias = uploads / "citizen-photo-copy.jpg"
+            secret.write_bytes(b"must-never-be-read-or-recorded")
+            media.write_bytes(b"private-media")
+            os.link(secret, secret_alias)
+            os.link(media, media_alias)
+
+            result = build_inventory(
+                root,
+                manifest_keys=_test_keys(),
+                scope_id=TEST_SCOPE_ID,
+            )
+
+            self.assertEqual(result["status"], "unsafe")
+            self.assertEqual(result["records"], [])
+            self.assertEqual(result["summary"]["files"], 0)
+            self.assertGreaterEqual(
+                result["summary"]["issues"].get("hardlinked_file_skipped", 0),
+                4,
+            )
+            self.assertNotIn(
+                "must-never-be-read-or-recorded",
+                json.dumps(result),
+            )
+
     @unittest.skipUnless(os.name == "posix", "POSIX root-bound publication")
     def test_posix_root_swap_during_manifest_write_never_returns_an_approved_mac(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

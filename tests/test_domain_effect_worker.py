@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -48,8 +48,15 @@ def test_legacy_worker_idles_without_error(app, monkeypatch):
         "contract_version": "domain.effect_worker_run.v1",
         "cycles": 1,
         "processed": 0,
+        "succeeded": 0,
+        "skipped": 0,
+        "retry_wait": 0,
         "unknown": 0,
         "dead": 0,
+        "recovered_unknown": 0,
+        "recovered_retry_wait": 0,
+        "recovered_dead": 0,
+        "cycle_failures": 0,
     }
 
 
@@ -151,6 +158,39 @@ def test_queue_worker_rotates_canary_first_choice_when_batch_is_smaller(
     assert [call.kwargs["tenant_id"] for call in dispatch.call_args_list] == [1, 2, 3]
     assert [report["tenants"][0]["tenant_id"] for report in reports] == [1, 2, 3]
     assert all(report["processed"] == 1 for report in reports)
+
+
+def test_deadline_stops_claiming_new_domain_tenants_and_reaches_dispatch_loop(
+    app,
+    monkeypatch,
+):
+    _queue(app, monkeypatch, "101,202")
+    app.extensions.pop(worker._ROUND_ROBIN_EXTENSION_KEY, None)
+    clock = Mock(side_effect=[0.0, 2.0])
+    summary = DomainEffectDispatchSummary(
+        processed=1,
+        succeeded=1,
+        skipped=0,
+        unknown=0,
+        retry_wait=0,
+        dead=0,
+    )
+
+    with app.app_context(), patch.object(
+        worker,
+        "dispatch_domain_effects",
+        return_value=summary,
+    ) as dispatch:
+        report = worker.dispatch_domain_effect_batch(
+            limit=2,
+            deadline_monotonic=1.0,
+            clock=clock,
+        )
+
+    dispatch.assert_called_once()
+    assert callable(dispatch.call_args.kwargs["should_continue"])
+    assert report["processed"] == 1
+    assert [item["tenant_id"] for item in report["tenants"]] == [101]
 
 
 def test_celery_wakeup_is_post_commit_hint_and_canary_scoped(app, monkeypatch):

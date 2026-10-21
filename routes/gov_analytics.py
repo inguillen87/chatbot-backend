@@ -7,22 +7,14 @@ from typing import Optional, Tuple
 
 from flask import Blueprint, g, jsonify, request
 
-from services.government_pipeline import (
-    build_heatmap,
-    build_scorecards,
-    build_secretarias_traffic_light,
-    cluster_incidents,
-    demand_forecast,
-    detect_crisis_sentinel_anomalies,
-    load_incidents_for_municipio,
-    plan_routes,
-)
 from routes.auth import token_requerido
+from utils.lazy_module import LazyModule
 from utils.permissions import require_role
 from utils.time_utils import get_local_now
 
 
 gov_analytics_bp = Blueprint("gov_analytics", __name__, url_prefix="/gov/analytics")
+government_pipeline = LazyModule("services.government_pipeline")
 
 
 def _resolve_municipio_id(user) -> Optional[int]:
@@ -83,7 +75,7 @@ def _load_records(current_user):
         return None, jsonify({"error": "El usuario no posee un municipio asociado."}), 404
 
     date_from, date_to = _resolve_dates(request.args)
-    records = load_incidents_for_municipio(
+    records = government_pipeline.load_incidents_for_municipio(
         municipio_id,
         date_from=date_from,
         date_to=date_to,
@@ -104,7 +96,7 @@ def civic_scorecards(current_user):
     if error_response is not None:
         return error_response, status
 
-    payload = build_scorecards(records)
+    payload = government_pipeline.build_scorecards(records)
     return jsonify(payload)
 
 
@@ -119,7 +111,7 @@ def civic_traffic_light(current_user):
     if error_response is not None:
         return error_response, status
 
-    payload = build_secretarias_traffic_light(records)
+    payload = government_pipeline.build_secretarias_traffic_light(records)
     return jsonify(payload)
 
 
@@ -134,7 +126,7 @@ def civic_crisis_sentinel(current_user):
     if error_response is not None:
         return error_response, status
 
-    payload = detect_crisis_sentinel_anomalies(records)
+    payload = government_pipeline.detect_crisis_sentinel_anomalies(records)
     return jsonify(payload)
 
 
@@ -150,9 +142,9 @@ def civic_executive_summary(current_user):
     if error_response is not None:
         return error_response, status
 
-    scorecards = build_scorecards(records)
-    traffic_light = build_secretarias_traffic_light(records)
-    sentinel = detect_crisis_sentinel_anomalies(records)
+    scorecards = government_pipeline.build_scorecards(records)
+    traffic_light = government_pipeline.build_secretarias_traffic_light(records)
+    sentinel = government_pipeline.detect_crisis_sentinel_anomalies(records)
 
     payload = {
         "timestamp": get_local_now().isoformat(),
@@ -176,7 +168,11 @@ def civic_heatmap(current_user):
 
     resolution = request.args.get("resolution", type=int) or 7
     min_count = request.args.get("min_count", type=int) or 3
-    payload = build_heatmap(records, resolution=resolution, min_count=min_count)
+    payload = government_pipeline.build_heatmap(
+        records,
+        resolution=resolution,
+        min_count=min_count,
+    )
     return jsonify(payload)
 
 
@@ -192,7 +188,7 @@ def civic_demand(current_user):
         return error_response, status
 
     periods = request.args.get("periods", type=int) or 14
-    payload = demand_forecast(records, periods=periods)
+    payload = government_pipeline.demand_forecast(records, periods=periods)
     return jsonify(payload)
 
 
@@ -209,7 +205,11 @@ def civic_clusters(current_user):
 
     resolution = request.args.get("resolution", type=int) or 8
     min_count = request.args.get("min_count", type=int) or 5
-    payload = cluster_incidents(records, resolution=resolution, min_count=min_count)
+    payload = government_pipeline.cluster_incidents(
+        records,
+        resolution=resolution,
+        min_count=min_count,
+    )
     return jsonify(payload)
 
 
@@ -230,7 +230,12 @@ def civic_routes(current_user):
         return jsonify({"error": "Debe especificar depot_lat y depot_lng"}), 400
 
     max_stops = request.args.get("max_stops", type=int) or 25
-    payload = plan_routes(records, depot_lat=depot_lat, depot_lng=depot_lng, max_stops=max_stops)
+    payload = government_pipeline.plan_routes(
+        records,
+        depot_lat=depot_lat,
+        depot_lng=depot_lng,
+        max_stops=max_stops,
+    )
     return jsonify(payload)
 
 

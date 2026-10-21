@@ -5,6 +5,7 @@ import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import AnalyticsEventV2, TenantTicket
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
@@ -12,6 +13,10 @@ from services.employee_ticket_access import (
     employee_ticket_category_access_allows,
     employee_ticket_category_scope,
     employee_ticket_category_values_allow,
+)
+from services.ticket_assignment_policy import (
+    TicketAssignmentPolicyError,
+    assignment_transition,
 )
 from services.v2.ticket_event_service import list_ticket_events
 from services.v2.ticket_service import (
@@ -59,6 +64,15 @@ def _error_response(message: str, status_code: int, reason_code: str = "request_
     )
 
 
+def _assignment_policy_error(error: TicketAssignmentPolicyError):
+    return _error_response(
+        error.message,
+        error.status_code,
+        error.reason_code,
+        error.action_hint,
+    )
+
+
 def _viewer():
     return getattr(g, "viewer", None)
 
@@ -77,7 +91,18 @@ def _viewer_role() -> str:
 
 
 def _is_operator() -> bool:
-    return _viewer_role() in {ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, ROLE_EMPLEADO}
+    # Supervisor and manager are backoffice roles even though the legacy role
+    # canonicalizer intentionally leaves them unchanged.  Assignment remains
+    # a separate, stricter decision in ``ticket_assignment_policy``: manager
+    # can operate a case but cannot assign a third party without the explicit
+    # ``tickets.assign`` capability.
+    return _viewer_role() in {
+        ROLE_SUPERADMIN,
+        ROLE_TENANT_ADMIN,
+        ROLE_EMPLEADO,
+        "supervisor",
+        "manager",
+    }
 
 
 def _ticket_access_error(ticket: TenantTicket):
@@ -423,6 +448,7 @@ def _resolve_tenant_or_error():
 
 
 @v2_tickets_bp.route("/tickets", methods=["GET"])
+@cutover_writer_view
 def list_tickets_v2():
     tenant, error = _resolve_tenant_or_error()
     if error:
@@ -479,6 +505,16 @@ def create_ticket_v2():
         )
     ):
         return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+    if payload.get("assignee_id") not in (None, ""):
+        try:
+            assignment_transition(
+                actor=_viewer(),
+                payload=payload,
+                current_assignee_id=None,
+                target_assignee_id=payload.get("assignee_id"),
+            )
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_policy_error(exc)
     try:
         ticket = create_ticket(tenant=tenant, actor_user=_viewer(), payload=payload)
         db.session.commit()
@@ -545,11 +581,29 @@ def patch_ticket_v2(ticket_id: int):
     if role_error:
         return role_error
 
-    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
-    if error:
-        return error
-
     payload = request.get_json(silent=True) or {}
+    ticket = (
+        TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id)
+        .with_for_update()
+        .first()
+    )
+    if not ticket:
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+    ticket_error = _ticket_access_error(ticket)
+    if ticket_error:
+        return ticket_error
+
+    if "assignee_id" in payload:
+        extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+        try:
+            assignment_transition(
+                actor=_viewer(),
+                payload=payload,
+                current_assignee_id=extra.get("assignee_id"),
+                target_assignee_id=payload.get("assignee_id"),
+            )
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_policy_error(exc)
     if payload.get("category") not in (None, "") and not employee_ticket_category_values_allow(
         _viewer(),
         category=payload.get("category"),
@@ -707,6 +761,7 @@ def list_ticket_timeline_v2(ticket_id: int):
 
 
 @v2_tickets_bp.route("/tickets/<int:ticket_id>/ai-enrichment", methods=["GET", "POST"])
+@cutover_writer_view
 def ticket_ai_enrichment_v2(ticket_id: int):
     tenant, error = _resolve_tenant_or_error()
     if error:

@@ -1,4 +1,9 @@
-"""Utility helpers to seed showcase catalog items for public tenants."""
+"""Explicit provisioning helpers for synthetic demo catalog items.
+
+Public/read paths must never call this module to turn an empty tenant into a
+populated catalog.  Synthetic rows are only materialized by an explicit demo
+provisioning flow and carry machine-readable provenance.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +14,10 @@ from flask import current_app
 
 from extensions import db
 from models import CatalogoItem, TenantProfile, User
+
+
+DEMO_CATALOG_SEED_CONTRACT_VERSION = "catalog.demo_seed.v1"
+DEMO_CATALOG_DATA_ORIGIN = "synthetic_demo"
 
 
 @dataclass(frozen=True)
@@ -409,10 +418,19 @@ def seed_items_for(owner: User, tenant: Optional[TenantProfile]) -> Sequence[See
     return ()
 
 
-def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> bool:
-    """Create showcase catalog rows for the owner if it still has none."""
+def _demo_catalog_seed_enabled(tenant: Optional[TenantProfile]) -> bool:
+    """Require global demo mode plus an explicit per-tenant opt-in."""
 
-    if not owner:
+    if tenant is None or not bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
+        return False
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    return config.get("demo_mode") is True and config.get("demo_catalog_seed") is True
+
+
+def provision_demo_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> bool:
+    """Materialize an explicitly authorized, disclosed synthetic demo catalog."""
+
+    if not owner or not _demo_catalog_seed_enabled(tenant):
         return False
 
     existing_query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter_by(
@@ -431,6 +449,15 @@ def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> 
     records: List[CatalogoItem] = []
     for seed in seed_items:
         kwargs = seed.to_catalog_kwargs()
+        metadata = kwargs.get("extra_metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        kwargs["extra_metadata"] = {
+            **metadata,
+            "data_origin": DEMO_CATALOG_DATA_ORIGIN,
+            "synthetic_demo": True,
+            "seed_contract_version": DEMO_CATALOG_SEED_CONTRACT_VERSION,
+        }
         if tenant and tenant.id:
             kwargs["tenant_id"] = tenant.id
         records.append(CatalogoItem(user_id=owner.id, **kwargs))
@@ -447,8 +474,29 @@ def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> 
         return False
 
     current_app.logger.info(
-        "[catalog_seed] Catalogo demo con %s items creado para owner %s",
+        "[catalog_seed] Catalogo sintetico demo con %s items creado para owner %s",
         len(records),
         owner.id,
     )
     return True
+
+
+def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> bool:
+    """Legacy compatibility shim that deliberately performs no writes.
+
+    Historically this helper was called from anonymous GET routes and silently
+    persisted showcase rows for real tenants.  Keeping a no-op shim prevents an
+    unsafe caller from reintroducing that behaviour while older routes are
+    migrated to side-effect-free reads.
+    """
+
+    return False
+
+
+__all__ = [
+    "DEMO_CATALOG_DATA_ORIGIN",
+    "DEMO_CATALOG_SEED_CONTRACT_VERSION",
+    "ensure_seed_catalog",
+    "provision_demo_catalog",
+    "seed_items_for",
+]

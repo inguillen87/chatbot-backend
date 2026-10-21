@@ -1,33 +1,44 @@
+from __future__ import annotations
+
 import os
 import unicodedata
 from io import BytesIO
 import importlib.util
 from typing import Any, Iterator, Pattern, Union
 
-import pandas as pd
 from flask import Blueprint, jsonify, request, current_app, send_file, g
+from cutover_writer_fence import cutover_writer_view
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime, timedelta, timezone
 from utils.time_utils import get_local_now
 from utils.permissions import require_role
 # from routes.crm import _obtener_clientes
-from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.categorias import _bootstrap_municipio_categories, _serialize_categoria
 from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_
 from models import Categoria, Conversacion, MunicipioTicket, MunicipioPost, User, db, TenantProfile
 from utils.municipio_utils import get_numeric_municipio_id
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 from routes.ticket import TICKET_ALLOWED_STATES
 from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.operational_heatmap_access import (
+    build_employee_legacy_heatmap_points,
+    is_employee_heatmap_viewer,
+)
+from services.gcs_service import upload_to_gcs
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     resolve_unique_tenant_for_owner,
     scoped_municipio_ticket_query,
 )
 from socket_service import emit_tenant_update
+from utils.runtime_environment import is_production_runtime
+from utils.upload_limits import UploadFileTooLargeError
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
 
@@ -941,6 +952,7 @@ def municipal_usuarios(current_user):
     })
 
 @municipal_bp.route('/categorias', methods=['GET', 'OPTIONS'])
+@cutover_writer_view
 @token_requerido
 @require_role('admin', 'empleado')
 def municipal_categorias(current_user):
@@ -963,6 +975,7 @@ def municipal_categorias(current_user):
 
 
 @municipal_bp.route("/tickets/categorias", methods=["GET", "OPTIONS"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado")
 def municipal_tickets_categorias(current_user):
@@ -1243,6 +1256,11 @@ def municipal_tickets_map_data(current_user):
         municipio_id=municipio_id_del_admin,
         estado=estado,
     )
+    if is_employee_heatmap_viewer(current_user):
+        tickets_con_ubicacion, _privacy = build_employee_legacy_heatmap_points(
+            tickets_con_ubicacion,
+            current_user,
+        )
     return jsonify(tickets_con_ubicacion)
 
 
@@ -1260,10 +1278,37 @@ def municipal_tickets_locations(current_user):
     if municipio_id_del_admin is None:
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
-    locations = servicio_tickets.obtener_locations_de_tickets(
-        municipio_id=municipio_id_del_admin,
-        actor=current_user,
-    )
+    if is_employee_heatmap_viewer(current_user):
+        # This historical endpoint used to return one exact coordinate per
+        # ticket.  Reuse the same category-scoped, k-anonymous projection as
+        # every other employee heatmap route before reducing it to the legacy
+        # list shape.  Administrators keep the exact backwards-compatible
+        # contract below.
+        source_points = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
+            tipo_ticket="municipio",
+            actor=current_user,
+            municipio_id=municipio_id_del_admin,
+        )
+        safe_points, _privacy = build_employee_legacy_heatmap_points(
+            source_points,
+            current_user,
+        )
+        locations = [
+            {
+                "lat": point["lat"],
+                "lng": point["lng"],
+                "weight": point["weight"],
+                "count": point["count"],
+                "privacy_mode": point["privacy_mode"],
+                "k_min": point["k_min"],
+            }
+            for point in safe_points
+        ]
+    else:
+        locations = servicio_tickets.obtener_locations_de_tickets(
+            municipio_id=municipio_id_del_admin,
+            actor=current_user,
+        )
     return jsonify(locations)
 
 
@@ -1392,7 +1437,6 @@ def municipal_metrics(current_user):
 
 import os
 import json
-from werkzeug.utils import secure_filename
 from urllib.parse import urlparse
 
 
@@ -1666,17 +1710,36 @@ def create_municipal_post(current_user):
     if 'flyer_image' in request.files:
         file = request.files['flyer_image']
         if file.filename != '':
-            filename = secure_filename(file.filename)
-            # Use persistent data directory when available
-            from services.config_loader import BASE_DATA_PATH
-            upload_folder = os.path.join(BASE_DATA_PATH, 'archivos')
-            os.makedirs(upload_folder, exist_ok=True)
-            file_path = os.path.join(upload_folder, filename)
-            file.save(file_path)
-            # Publicar el archivo a través del blueprint /media en lugar de la
-            # ruta interna /data para que WhatsApp y los sitios públicos puedan
-            # descargarlo correctamente.
-            flyer_image_url = _normalize_public_media_url(f"/data/archivos/{filename}") or ''
+            try:
+                upload_result = upload_to_gcs(
+                    file,
+                    kind="eventos",
+                    require_r2=is_production_runtime(
+                        config_env=current_app.config.get("ENV")
+                    ),
+                )
+            except UploadFileTooLargeError as exc:
+                return jsonify(
+                    {
+                        "error": "El flyer supera el tamaño máximo permitido.",
+                        "code": "flyer_too_large",
+                        "max_bytes": exc.max_bytes,
+                    }
+                ), 413
+
+            flyer_image_url = _normalize_public_media_url(
+                (upload_result or {}).get("public_url")
+            ) or ''
+            if not flyer_image_url:
+                current_app.logger.error(
+                    "Municipal flyer upload failed before post persistence."
+                )
+                return jsonify(
+                    {
+                        "error": "No se pudo almacenar el flyer. Intentalo nuevamente.",
+                        "code": "flyer_storage_unavailable",
+                    }
+                ), 503
 
     fecha_publicacion = request.form.get('fecha_publicacion')
     fecha_publicacion_dt = _parse_iso_datetime(fecha_publicacion) if fecha_publicacion else get_local_now()
