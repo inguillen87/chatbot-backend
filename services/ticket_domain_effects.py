@@ -1787,6 +1787,18 @@ TICKET_DOMAIN_EFFECT_REGISTRY.register(
     payload_validator=_validate_municipio_reply_effect_payload,
 )
 
+# Closure receipts have their own system-event authority. They must never be
+# staged as ordinary human replies or added to the global WhatsApp notifier.
+from services.ticket_closed_notification import (
+    CLOSED_WHATSAPP_HANDLER, prepare_ticket_closed_whatsapp, validate_closed_whatsapp_payload,
+)
+
+TICKET_DOMAIN_EFFECT_REGISTRY.register(
+    CLOSED_WHATSAPP_HANDLER,
+    prepare_ticket_closed_whatsapp,
+    payload_validator=validate_closed_whatsapp_payload,
+)
+
 
 def stage_ticket_created_effects(
     ticket: MunicipioTicket | PymeTicket,

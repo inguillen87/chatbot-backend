@@ -4190,11 +4190,32 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         estado_ticket=nuevo_estado,
     )
     db.session.add(comentario_estado)
+    closure_whatsapp_owned = False
     try:
+        if nuevo_estado == "cerrado":
+            from services.ticket_closed_notification import stage_ticket_closed_whatsapp
+
+            db.session.flush()
+            closure_whatsapp_owned = stage_ticket_closed_whatsapp(
+                comentario_estado, ticket_obj, tipo_ticket=tipo, actor=current_user,
+                session=db.session,
+            )
         db.session.commit()
     except Exception:
         db.session.rollback()
         raise
+    if closure_whatsapp_owned:
+        try:
+            from services.domain_effect_worker import enqueue_domain_effect_dispatch
+
+            enqueue_domain_effect_dispatch(tenant_id=int(ticket_obj.tenant_id))
+        except Exception as error:
+            # The durable DB poller still owns delivery. Never duplicate it by
+            # falling back to the deployment-wide sender after a wakeup error.
+            current_app.logger.warning(
+                "Ticket closure wakeup failed tenant_id=%s error_type=%s",
+                ticket_obj.tenant_id, type(error).__name__,
+            )
     try:
         from services.notification_dispatcher import dispatch_ticket_state_change
 
@@ -4203,6 +4224,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
             tipo,
             nuevo_estado,
             comentario_estado=comentario_estado,
+            enable_whatsapp=not closure_whatsapp_owned,
         )
         current_app.logger.info(
             "[NOTIFY] Estado ticket %s tipo=%s -> %s | email=%s sms=%s whatsapp=%s",

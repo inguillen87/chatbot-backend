@@ -5419,6 +5419,71 @@ def _looks_like_junin_context(*values: Any) -> bool:
     return False
 
 
+def _juni_explicit_greeting_tenant(tenant_profile, owner) -> bool:
+    """Keep the repeated JUNÍ greeting inside its canonical municipal scope."""
+    if not tenant_profile or not owner:
+        return False
+    owner_id = getattr(owner, "municipio_id", None) or getattr(owner, "id", None)
+    return bool(
+        getattr(tenant_profile, "id", None)
+        and getattr(tenant_profile, "is_active", False) is True
+        and getattr(tenant_profile, "tipo", None) == "municipio"
+        and getattr(owner, "tipo_chat", None) == "municipio"
+        and _plain_ascii_key(getattr(tenant_profile, "slug", None)) == "junin"
+        and getattr(owner, "tenant_id", None) == tenant_profile.id
+        and getattr(tenant_profile, "municipio_id", None) == owner_id
+    )
+
+
+def _juni_pending_welcome_payload(context_data: dict) -> Optional[dict]:
+    """Remind an active step without interpreting a greeting as form data."""
+    municipal = context_data.get(CONTEXTO_MUNICIPIO)
+    municipal = municipal if isinstance(municipal, dict) else {}
+    flow = municipal.get("reclamo_flow_v2")
+    flow = flow if isinstance(flow, dict) else {}
+    state = str(flow.get("state") or municipal.get("estado_conversacion") or "").upper()
+    has_draft = bool(
+        flow
+        or any(municipal.get(key) for key in (
+            "datos_reclamo", "datos_parciales_llm_reclamo",
+            "reclamo_confirmacion_pendiente", "confirmation_required",
+        ))
+        or context_data.get("pending_sensitive_action")
+    )
+    if state == "ESPERANDO_NOMBRE_INICIAL" and not has_draft:
+        return None
+    pending = bool(
+        has_draft
+        or _esperando_info_libre(municipal)
+        or state.startswith("EN_FLUJO_")
+        or (state.startswith("ESPERANDO_") and "MENU" not in state)
+    )
+    if not pending:
+        return None
+    prompts = {
+        "ESPERANDO_CATEGORIA": "Elegí la categoría del reclamo para continuar.",
+        "ESPERANDO_DIRECCION": "Enviame la dirección exacta del problema para continuar.",
+        "ESPERANDO_DESCRIPCION": "Contame qué ocurrió para continuar con el reclamo.",
+        "ESPERANDO_FOTO": "Podés enviar una evidencia o seguir sin adjunto.",
+        "ESPERANDO_DATOS_CONTACTO": "Completá los datos de contacto pendientes para continuar.",
+        "ESPERANDO_CONFIRMACION": "Revisá los datos anteriores y elegí una opción para continuar.",
+    }
+    message = "Conservo lo que ya cargaste. " + prompts.get(
+        state, "Respondé la consulta pendiente para continuar, o escribí cancelar."
+    )
+    options = context_data.get("last_options_sent")
+    options = deepcopy(options) if isinstance(options, list) else []
+    return {
+        "message_body": message,
+        "message_type": "interactive_buttons" if 0 < len(options) <= 3 else (
+            "interactive_list" if options else "text"
+        ),
+        "options_list": options,
+        "fuente": "juni_pending_step_welcome",
+        "skip_audio_generation": True,
+    }
+
+
 def _is_placeholder_municipio_name(value: Any) -> bool:
     return _plain_ascii_key(value) in {"", "tu municipio", "municipio", "municipio inteligente", "demo municipio"}
 
@@ -7127,13 +7192,26 @@ def whatsapp_webhook():
 
     safe_flag_modified(session_context_db_entry, "context_data")
 
+    explicit_juni_greeting = bool(
+        message_sid
+        and not flow_submission_present
+        and is_plain_text_turn
+        and is_greeting
+        and not force_chatboc_demo_hub
+        and _juni_explicit_greeting_tenant(tenant_profile, client_user)
+    )
+    pending_welcome_payload = (
+        _juni_pending_welcome_payload(session_context_db_entry.context_data)
+        if explicit_juni_greeting else None
+    )
+
     # Universal greeting logic: both Pymes and Municipios now use the Boti-style welcome block.
     # _get_main_menu_payload handles generating the correct menu structure for each type.
     should_trigger_welcome = (
         not flow_submission_present
         and is_plain_text_turn
         and is_greeting
-        and not is_waiting_for_info
+        and (not is_waiting_for_info or explicit_juni_greeting)
         and not force_chatboc_demo_hub
     )
 
@@ -7163,7 +7241,7 @@ def whatsapp_webhook():
     tenant_config: Dict[str, Any] = {}
     assistant_name = None
 
-    if should_trigger_welcome and not is_rate_limited:
+    if should_trigger_welcome and (not is_rate_limited or explicit_juni_greeting):
         _log(
             "info",
             "[WELCOME] Triggering welcome tenant_id=%s greeting=%s",
@@ -7242,8 +7320,12 @@ def whatsapp_webhook():
                     )
 
                 should_send_template = bool(template_sid) and not template_state.get("disabled", False)
-                should_send_sticker = bool(resolved_sticker_url) and not sticker_state.get("disabled", False)
-                sticker_metadata_allowed = True
+                should_send_sticker = bool(resolved_sticker_url) and (
+                    explicit_juni_greeting or not sticker_state.get("disabled", False)
+                )
+                # A new user greeting owns one standalone attempt. A failure
+                # must not cause the delayed menu to attach the sticker again.
+                sticker_metadata_allowed = not explicit_juni_greeting
                 public_welcome_identity = (
                     f"{assistant_name} de {municipio_name}"
                     if is_municipio_client and assistant_name
@@ -7264,7 +7346,7 @@ def whatsapp_webhook():
                     # Permitir template + sticker cuando el canal lo soporte.
                     # Antes se forzaba False en ambos branches, deshabilitando
                     # el sticker de bienvenida para municipios.
-                    sticker_metadata_allowed = True
+                    sticker_metadata_allowed = not explicit_juni_greeting
 
                 if client_user and getattr(client_user, "tipo_chat", None) == "pyme":
                     if "sticker_cooldown_seconds" in pyme_welcome_overrides:
@@ -7329,7 +7411,7 @@ def whatsapp_webhook():
                     or sticker_state.get("last_provider_accepted_ts")
                     or sticker_state.get("last_sent_ts")  # legacy state
                 )
-                if should_send_sticker and last_sticker_ts:
+                if should_send_sticker and last_sticker_ts and not explicit_juni_greeting:
                     if (now - last_sticker_ts) < max(0, sticker_cooldown):
                         should_send_sticker = False
                         _log("info", "[WELCOME] Sticker skipped due to cooldown")
@@ -7374,6 +7456,8 @@ def whatsapp_webhook():
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 if should_send_sticker and not is_override:
+                    if explicit_juni_greeting:
+                        sticker_state["last_attempt_ts"] = now
                     try:
                         provider_message = _send_twilio_message(
                             twilio_client,
@@ -7388,6 +7472,8 @@ def whatsapp_webhook():
                         )
                         safe_flag_modified(session_context_db_entry, "context_data")
                         sticker_submitted = True
+                        if explicit_juni_greeting:
+                            sticker_state.pop("disabled", None)
                         _log(
                             "info",
                             "[WELCOME] Sticker submitted outcome=%s",
@@ -7401,7 +7487,10 @@ def whatsapp_webhook():
                             "[WELCOME] Failed to send welcome sticker error_type=%s",
                             type(exc).__name__,
                         )
-                        sticker_state["disabled"] = True
+                        if explicit_juni_greeting:
+                            sticker_state.pop("disabled", None)
+                        else:
+                            sticker_state["disabled"] = True
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 greeting_submitted = False
@@ -7441,7 +7530,9 @@ def whatsapp_webhook():
                     greeting = (
                         f"*¡Hola, {user_name}!* Acá *{greeting_name}* \U0001F44B"
                         if user_name
-                        else f"*¡Hola!* Soy *{greeting_name}* \U0001F44B ¿Cómo te llamás?"
+                        else f"*¡Hola!* Soy *{greeting_name}* \U0001F44B" + (
+                            "" if explicit_juni_greeting else " ¿Cómo te llamás?"
+                        )
                     )
                     try:
                         _send_twilio_message(
@@ -7457,7 +7548,7 @@ def whatsapp_webhook():
                             type(exc).__name__,
                         )
 
-                if not user_name and greeting_submitted:
+                if not user_name and greeting_submitted and not explicit_juni_greeting:
                     session_context_db_entry.context_data["awaiting_user_name"] = True
                     safe_flag_modified(session_context_db_entry, "context_data")
                     db.session.commit()
@@ -7506,7 +7597,9 @@ def whatsapp_webhook():
                     or sticker_submitted
                 )
                 welcome_message_override = None
-                if is_education_tenant(tenant_profile):
+                if pending_welcome_payload is not None:
+                    welcome_response_payload = pending_welcome_payload
+                elif is_education_tenant(tenant_profile):
                     welcome_response_payload = build_education_whatsapp_menu_payload(
                         tenant_profile,
                         profile_name=profile_name or None,
@@ -7568,13 +7661,16 @@ def whatsapp_webhook():
                     resolved_existing_audio = _resolve_public_media_url(existing_audio_url, request_root_stripped)
                     if resolved_existing_audio:
                         welcome_response_payload["audio_url"] = resolved_existing_audio
-                    elif resolved_audio_url:
+                    elif resolved_audio_url and pending_welcome_payload is None:
                         welcome_response_payload.setdefault("audio_url", resolved_audio_url)
 
                     _ensure_welcome_audio_payload(welcome_response_payload)
 
-                _reset_municipio_context_for_menu(session_context_db_entry)
-                if isinstance(welcome_response_payload, dict):
+                if pending_welcome_payload is None:
+                    _reset_municipio_context_for_menu(session_context_db_entry)
+                if explicit_juni_greeting:
+                    session_context_db_entry.context_data.pop("awaiting_user_name", None)
+                if isinstance(welcome_response_payload, dict) and pending_welcome_payload is None:
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list

@@ -20,6 +20,10 @@ on:
       - 'services/openai_tts_bridge.py'
       - 'services/organization_profile_settings.py'
       - 'services/whatsapp_receipt_branding.py'
+      - 'services/municipio_responder.py'
+      - 'services/ticket_closed_notification.py'
+      - 'services/ticket_domain_effects.py'
+      - 'routes/ticket.py'
       - 'services/meta_whatsapp_direct.py'
       - 'services/tenant_provider_credentials.py'
       - 'integrations/openai_tts.py'
@@ -45,6 +49,9 @@ on:
       - 'tests/test_tts_sanitize.py'
       - 'tests/test_outbox_execution_budget.py'
       - 'tests/test_whatsapp_welcome_optional_audio.py'
+      - 'tests/test_whatsapp_welcome_each_greeting.py'
+      - 'tests/test_municipio_explicit_claim_offline.py'
+      - 'tests/ticket_closed_notification_http.py'
       - '.github/workflows/tdf-accessible-channel.yml'
 permissions:
   contents: read
@@ -106,6 +113,21 @@ jobs:
           mkdir -p .qa-artifacts/web-audio-multipart
           git rev-parse HEAD > .qa-artifacts/web-audio-multipart/checkout.txt
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/test_web_audio_multipart.py', 'tests/test_web_audio_live_chat.py', 'tests/test_web_audio_institutional_question_limit.py', 'tests/test_audio_transcription.py', '--junitxml=.qa-artifacts/web-audio-multipart/tests.xml']))" 2>&1 | tee .qa-artifacts/web-audio-multipart/tests.log
+      - name: Verify explicit claims, JUNI greetings and closure receipts offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/juni-claim-receipts
+          git rev-parse HEAD > .qa-artifacts/juni-claim-receipts/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import unittest; from tests.test_municipio_explicit_claim_offline import ExplicitClaimOfflineHttpTest; from tests.test_whatsapp_welcome_each_greeting import JuniWelcomeEachGreetingTests; from tests.ticket_closed_notification_http import TicketClosedNotificationHTTPTests; loader = unittest.TestLoader(); suite = unittest.TestSuite(loader.loadTestsFromTestCase(case) for case in (ExplicitClaimOfflineHttpTest, JuniWelcomeEachGreetingTests, TicketClosedNotificationHTTPTests)); result = unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(0 if result.wasSuccessful() else 1)" 2>&1 | tee .qa-artifacts/juni-claim-receipts/tests.log
+      - name: Preserve JUNI claim and closure regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: juni-claim-receipts-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/juni-claim-receipts
+          if-no-files-found: error
+          retention-days: 7
       - name: Preserve web audio regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

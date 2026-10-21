@@ -17,6 +17,7 @@ import difflib
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse, urlencode
 from flask import current_app, has_app_context, session as flask_session
+from sqlalchemy.exc import SQLAlchemyError
 from cachetools import TTLCache
 from models import (
     MunicipioTicket,
@@ -27,6 +28,7 @@ from models import (
     Conversacion,
     MunicipioPost,
     TenantProfile,
+    CategoriaTicket,
 )
 from services.ticket_service import servicio_tickets
 from services.tenant_ticket_scope import (
@@ -8086,6 +8088,105 @@ def _detect_location_link_info(text: str) -> Optional[dict[str, Any]]:
     return info
 
 
+def _try_start_explicit_reclamo_from_text(
+    text: str,
+    context: dict[str, Any],
+    chat_db_context,
+) -> Optional[dict[str, Any]]:
+    """Execute an explicit create command without requiring an AI provider.
+
+    This opens only the existing reviewable draft. Category keywords are not
+    authorization: direct preselection also requires one category belonging to
+    the authoritative tenant; otherwise the citizen chooses from the menu.
+    """
+    normalized = normalizar_texto(text or "")
+    if not re.fullmatch(
+        r"(?:(?:quiero|necesito|quisiera|deseo)\s+)?"
+        r"(?:hacer|iniciar|registrar|cargar|abrir)\s+(?:un\s+)?reclamo"
+        r"(?:\s+(?:por|sobre|de)\s+.+)?",
+        normalized,
+    ):
+        return None
+    if (
+        re.search(r"\b(?:cancelar|cancela|menu)\b", normalized)
+        or re.search(
+            r"\b(?:no|nunca|jamas)\s+(?:(?:quiero|necesito|quisiera|deseo)\s+)?"
+            r"(?:hacer|iniciar|registrar|cargar|abrir|reclamar)(?:lo)?\b",
+            normalized,
+        )
+        or _looks_like_ticket_status_lookup(normalized)
+    ):
+        return None
+
+    municipal_ctx = (context.get("chat_db_context_data") or {}).get(
+        CONTEXTO_MUNICIPIO, {}
+    )
+    if municipal_ctx.get("reclamo_flow_v2", {}).get("state"):
+        return None
+    tenant = context.get("tenant_profile")
+    tenant_id = getattr(tenant, "id", None)
+    owner_id = getattr(context.get("user_obj"), "id", None)
+    if (
+        not isinstance(tenant, TenantProfile)
+        or type(tenant_id) is not int
+        or type(context.get("tenant_id")) is not int
+        or type(owner_id) is not int
+        or tenant.tipo != "municipio"
+        or tenant_id != context.get("tenant_id")
+        or getattr(tenant, "municipio_id", None) != owner_id
+        or (chat_db_context is not None and chat_db_context.tenant_id != tenant_id)
+    ):
+        return None
+
+    # Reuse the bounded vocabulary, but do not rank one substantive category
+    # above another for automatic preselection. Street-context words alone
+    # are not a second issue. Missing/ambiguous catalog data leaves selection
+    # to the citizen instead of inheriting another municipality's categories.
+    weak_context = {"calle", "vereda", "perdida", "rotura", "otro", "otros", "varios"}
+    matches = {
+        category
+        for category, keywords in RECLAMO_KEYWORDS.items()
+        if any(
+            normalizar_texto(keyword) not in weak_context
+            and re.search(rf"(?<!\w){re.escape(normalizar_texto(keyword))}(?!\w)", normalized)
+            for keyword in keywords
+        )
+    }
+    category = None
+    if len(matches) == 1:
+        matched_category = next(iter(matches))
+        try:
+            # A failed optional read must not poison the transaction which
+            # already owns inbound deduplication and the conversation draft.
+            with db.session.begin_nested():
+                configured = CategoriaTicket.query.filter_by(
+                    tenant_id=tenant_id, tipo="ticket"
+                ).all()
+            candidates = [
+                row.nombre
+                for row in configured
+                if isinstance(row.nombre, str)
+                and normalizar_texto(row.nombre) in {
+                    normalizar_texto(matched_category),
+                    *(normalizar_texto(word) for word in RECLAMO_KEYWORDS[matched_category]),
+                }
+            ]
+            if len(candidates) == 1:
+                category = candidates[0]
+        except SQLAlchemyError as exc:
+            if not db.session.is_active or getattr(exc, "connection_invalidated", False):
+                raise
+            logger.warning("Explicit claim category lookup unavailable error_type=%s", type(exc).__name__)
+
+    response = ReclamoFlowHandler(context, chat_db_context).start_flow(
+        datos_iniciales={"descripcion": text.strip()},
+        categoria_inicial=category,
+    )
+    if chat_db_context:
+        safe_flag_modified(chat_db_context, "context_data")
+    return response
+
+
 def _try_start_reclamo_from_text(
     pregunta_str: str,
     context: dict[str, Any],
@@ -8098,6 +8199,12 @@ def _try_start_reclamo_from_text(
 
     if not pregunta_str:
         return None
+
+    explicit_payload = _try_start_explicit_reclamo_from_text(
+        pregunta_str, context, chat_db_context
+    )
+    if explicit_payload:
+        return explicit_payload
 
     normalized_text = normalizar_texto(pregunta_str)
     if len(normalized_text.split()) < 4 and len(pregunta_str.strip()) < 30:
