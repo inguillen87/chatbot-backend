@@ -1,6 +1,7 @@
 import os
 import openai
 import logging
+import math
 import uuid
 import time
 from cachetools import TTLCache
@@ -18,6 +19,7 @@ httpx = LazyModule("httpx")
 logger = logging.getLogger(__name__)
 
 _TTS_CACHE: TTLCache[str, str] = TTLCache(maxsize=128, ttl=3600)
+_SAFE_TTS_ERROR_CODES = frozenset({"insufficient_quota", "rate_limit_exceeded"})
 
 _OPENAI_SUPPORTED_VOICES = {
     "alloy",
@@ -83,6 +85,21 @@ def _normalize_voice(requested_voice: str | None) -> str:
 def clear_tts_cache() -> None:
     """Utility mainly for tests to clear the local TTS cache."""
     _TTS_CACHE.clear()
+
+
+def _safe_tts_error_fields(error: Exception) -> tuple[int | None, str]:
+    """Read only bounded SDK fields; never inspect provider bodies or headers."""
+    try:
+        status = getattr(error, "status_code", None)
+    except Exception:
+        status = None
+    try:
+        code = getattr(error, "code", None)
+    except Exception:
+        code = None
+    safe_status = status if type(status) is int and 100 <= status <= 599 else None
+    safe_code = code if type(code) is str and code in _SAFE_TTS_ERROR_CODES else "unclassified"
+    return safe_status, safe_code
 
 
 def synthesize_mp3_bytes(text: str, *, max_bytes: int, timeout_seconds: float) -> bytes:
@@ -173,19 +190,25 @@ def generar_audio_openai(
         # unsupported `proxies` arguments into the OpenAI client. Some
         # environments (like CI) define `http_proxy`/`https_proxy` which would
         # otherwise cause `openai.OpenAI` to fail during initialization.
-        configured_timeout = os.getenv("OPENAI_TTS_TIMEOUT_SECONDS", "60")
+        try:
+            configured_timeout = float(os.getenv("OPENAI_TTS_TIMEOUT_SECONDS", "60"))
+            if not math.isfinite(configured_timeout) or configured_timeout <= 0:
+                raise ValueError("tts_timeout_must_be_finite_and_positive")
+        except (TypeError, ValueError, OverflowError):
+            configured_timeout = 60.0
         bounded_timeout = outbox_io_timeout_seconds(configured_timeout)
+        effective_timeout = bounded_timeout if bounded_timeout is not None else configured_timeout
         http_client_kwargs: dict[str, object] = {
             "proxy": None,
             "trust_env": False,
+            "timeout": effective_timeout,
         }
-        client_kwargs: dict[str, object] = {"api_key": api_key}
+        client_kwargs: dict[str, object] = {
+            "api_key": api_key,
+            "timeout": effective_timeout,
+        }
         if bounded_timeout is not None:
-            http_client_kwargs["timeout"] = bounded_timeout
-            client_kwargs.update(
-                timeout=bounded_timeout,
-                max_retries=0,
-            )
+            client_kwargs["max_retries"] = 0
         http_client = httpx.Client(**http_client_kwargs)
         client_kwargs["http_client"] = http_client
         client = openai.OpenAI(**client_kwargs)
@@ -233,10 +256,13 @@ def generar_audio_openai(
         return public_url_path
 
     except Exception as exc:
+        http_status, error_code = _safe_tts_error_fields(exc)
         logger.error(
-            "OpenAI speech synthesis failed model=%s error_type=%s",
+            "OpenAI speech synthesis failed model=%s error_type=%s http_status=%s error_code=%s",
             selected_model,
             type(exc).__name__,
+            http_status,
+            error_code,
         )
         return None
 

@@ -84,6 +84,7 @@ from services.reclamo_turn_semantics import (
     classify_reclamo_confirmation_turn,
 )
 from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
+from services.whatsapp_receipt_branding import resolve_whatsapp_receipt_header
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_surveys import (
     build_demo_survey_chat_menu,
@@ -4571,6 +4572,41 @@ def _send_twilio_message(client, **params):
     return client.messages.create(**sanitized)
 
 
+def _receipt_public_header_for_window(
+    tenant_profile: Optional[TenantProfile],
+    provider_sender: Optional[ProviderSender],
+    recipient: str,
+) -> Optional[str]:
+    """A receipt campaign image needs the actual tenant/sender/contact window."""
+    tenant_id = getattr(tenant_profile, "id", None)
+    sender_id = getattr(provider_sender, "id", None)
+    if not tenant_id or not sender_id or getattr(provider_sender, "tenant_id", None) != tenant_id:
+        return None
+    base_url = _public_media_base_url(request.url_root if has_request_context() else "")
+    image_url = resolve_whatsapp_receipt_header(tenant_profile, public_base_url=base_url)
+    if not image_url:
+        return None
+    try:
+        state = WhatsAppEnterpriseRulesService(int(tenant_id)).get_contact_state(
+            recipient=recipient,
+            provider_sender_id=sender_id,
+        )
+        last_inbound = getattr(state, "last_inbound_at", None)
+        if not isinstance(last_inbound, datetime):
+            return None
+        if last_inbound.tzinfo is None:
+            last_inbound = last_inbound.replace(tzinfo=timezone.utc)
+        age = (datetime.now(timezone.utc) - last_inbound.astimezone(timezone.utc)).total_seconds()
+        if not 0 <= age < 24 * 60 * 60:
+            return None
+        return image_url
+    except OutboxExecutionBudgetExceeded:
+        raise
+    except Exception as exc:
+        _log("warning", "[RECEIPT_HEADER] Window unavailable error_type=%s", type(exc).__name__)
+        return None
+
+
 def _dispatch_twilio_pre_messages(
     client,
     to_number: str,
@@ -4580,6 +4616,7 @@ def _dispatch_twilio_pre_messages(
     *,
     channel: str = "whatsapp",
     tenant_profile: Optional[TenantProfile] = None,
+    provider_sender: Optional[ProviderSender] = None,
 ) -> None:
     """Send auxiliary Twilio messages declared in the payload metadata."""
 
@@ -4607,6 +4644,18 @@ def _dispatch_twilio_pre_messages(
                 continue
 
         params: Dict[str, Any] = {"from_": to_number, "to": from_number}
+        template_contract = entry.get("template_contract")
+        receipt_contract = template_contract.get("receipt_contract") if isinstance(template_contract, dict) else None
+        receipt_header_url = None
+        is_operational_receipt = (
+            isinstance(receipt_contract, dict)
+            and receipt_contract.get("kind") == "municipal_claim_receipt"
+            and receipt_contract.get("surface_role") == "primary_receipt"
+        )
+        if is_operational_receipt:
+            receipt_header_url = _receipt_public_header_for_window(
+                tenant_profile, provider_sender, from_number
+            )
         content_sid = entry.get("content_sid")
         if not content_sid:
             content_sid = _resolve_approved_whatsapp_template_sid(
@@ -4654,7 +4703,10 @@ def _dispatch_twilio_pre_messages(
                 params["body"] = str(body)
 
             media_urls: List[str] = []
-            for candidate in entry.get("media_urls") or []:
+            media_candidates = (
+                [receipt_header_url] if receipt_header_url else []
+            ) if is_operational_receipt else entry.get("media_urls") or []
+            for candidate in media_candidates:
                 resolved = resolve_media_link(candidate)
                 if not resolved:
                     continue
@@ -4689,6 +4741,33 @@ def _dispatch_twilio_pre_messages(
                 )
                 continue
 
+        if content_sid and receipt_header_url:
+            # ContentSid replaces Body/MediaUrl. A separate public image
+            # can precede the existing text template only in the verified
+            # service window; no template media approval is implied.
+            try:
+                header_metadata = dict(entry.get("metadata") or {})
+                allowed, _reason = _can_send_whatsapp_freeform_pre_message(
+                    body="",
+                    tenant_profile=tenant_profile,
+                    recipient=from_number,
+                    metadata=header_metadata,
+                )
+                if allowed:
+                    _send_twilio_message(
+                        client,
+                        from_=to_number,
+                        to=from_number,
+                        body="",
+                        media_url=[receipt_header_url],
+                        _chatboc_policy_metadata=header_metadata,
+                    )
+            except OutboxExecutionBudgetExceeded:
+                raise
+            except Exception as exc:
+                _log("warning", "[RECEIPT_HEADER] Image submission failed error_type=%s", type(exc).__name__)
+                if has_app_context() and getattr(g, "whatsapp_outbound_collector", None) is not None:
+                    raise
         try:
             params["_chatboc_policy_metadata"] = (
                 entry.get("metadata")
@@ -8885,8 +8964,19 @@ def whatsapp_webhook():
             bot_response_dict["message_body"] = receipt_payload.get("body_text")
             bot_response_dict["options_list"] = []
             bot_response_dict["message_type"] = "text"
-            if receipt_payload.get("media_url"):
-                bot_response_dict["image_url"] = receipt_payload.get("media_url")
+        is_completed_order = (
+            bot_response_dict.get("fuente") == "pyme_pedido_confirmado"
+            and bot_response_dict.get("success") is True
+        )
+        if receipt_payload or is_completed_order:
+            # Receipt imagery is public organization branding, never a claim
+            # attachment or a municipal default inherited by another tenant.
+            bot_response_dict.pop("image_url", None)
+            receipt_header_url = _receipt_public_header_for_window(
+                tenant_profile, provider_sender, from_number_raw
+            )
+            if receipt_header_url:
+                bot_response_dict["image_url"] = receipt_header_url
 
         response_base_url = (
             (current_app.config.get("APP_BASE_URL") or "").rstrip("/")
@@ -9043,6 +9133,7 @@ def whatsapp_webhook():
                 bot_response_dict,
                 _resolve_pre_media_link,
                 tenant_profile=tenant_profile,
+                provider_sender=provider_sender,
             )
             _dispatch_required_whatsapp_disclosure(
                 twilio_client,
@@ -9161,6 +9252,8 @@ def whatsapp_webhook():
                         'to': from_number_raw,
                         'body': first_chunk,
                     }
+                    if message_params.get("media_url"):
+                        first_chunk_params["media_url"] = message_params["media_url"]
                     main_message = _send_twilio_message(twilio_client, **first_chunk_params)
                     _log(
                         "info",

@@ -1,4 +1,5 @@
 import os
+import mimetypes
 import re
 import sys
 
@@ -176,6 +177,8 @@ def my_on_connect_listener(dbapi_connection, connection_record):
         pass
 
 def create_app(config_class=Config):
+    # Minimal runtime MIME tables may omit WebP from their strict mapping.
+    mimetypes.add_type("image/webp", ".webp", strict=True)
     app = Flask(__name__)
     app.url_map.strict_slashes = False
     app.logger.info("Creating app")

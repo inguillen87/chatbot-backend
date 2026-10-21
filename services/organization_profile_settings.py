@@ -13,14 +13,50 @@ from urllib.parse import urlsplit
 from sqlalchemy import text, or_
 from sqlalchemy.exc import SQLAlchemyError
 from services.organization_type_presentation import organization_type_descriptor
+from services.whatsapp_receipt_branding import public_whatsapp_receipt_image_url
 
 CONTRACT = 'organization.profile_settings.v1'
 LIMITS = {'nombre_empresa':150, 'telefono':20, 'direccion':200, 'ciudad':100,
           'provincia':100, 'pais':100, 'link_web':255, 'logo_url':255, 'actividad':100}
 CONFIG_TEXT_FIELDS = {'actividad': 'organization_profile_activity'}
-FIELDS = frozenset((*LIMITS, 'latitud', 'longitud', 'horario_json'))
+RECEIPT_HEADER_KEY = 'whatsapp_receipt_header'
+FIELDS = frozenset((*LIMITS, 'latitud', 'longitud', 'horario_json', RECEIPT_HEADER_KEY))
 DAYS = ('Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo')
 HOURS_KEY = 'organization_profile_hours'
+
+
+def validate_receipt_header(value):
+    if value is None:
+        return None  # Explicitly restore the tenant's legacy inheritance.
+    if (not isinstance(value, dict) or set(value) != {'enabled', 'image_url'}
+            or type(value['enabled']) is not bool or not isinstance(value['image_url'], str)):
+        raise ProfileSettingsError('profile_receipt_header_invalid')
+    if any(ord(c) < 32 for c in value['image_url']):
+        raise ProfileSettingsError('profile_receipt_header_url_invalid')
+    image = value['image_url'].strip()
+    if not image:
+        if value['enabled']:
+            raise ProfileSettingsError('profile_receipt_header_image_required')
+        return {'enabled': False, 'image_url': ''}
+    public_image = public_whatsapp_receipt_image_url(value['image_url'])
+    if public_image is None:
+        raise ProfileSettingsError('profile_receipt_header_url_invalid',
+            message='Ingresá una imagen pública HTTPS PNG, JPG o WebP sin credenciales ni parámetros.')
+    return {'enabled': value['enabled'], 'image_url': public_image}
+
+
+def receipt_header_value(config):
+    raw = config.get(RECEIPT_HEADER_KEY)
+    if raw is None:
+        return None
+    if isinstance(raw, dict) and set(raw) in ({'image_url'}, {'enabled', 'image_url'}):
+        legacy = {'enabled': raw.get('enabled', True), 'image_url': raw.get('image_url', '')}
+        try:
+            return validate_receipt_header(legacy)
+        except ProfileSettingsError:
+            pass
+    # Reflect the effective fail-closed state without exposing malformed URLs.
+    return {'enabled': False, 'image_url': ''}
 
 class ProfileSettingsError(ValueError):
     def __init__(self, code, status=400, message=None):
@@ -48,11 +84,14 @@ def profile_values(tenant, owner):
         values[field] = stored if isinstance(stored, str) else ''
     hours = config.get(HOURS_KEY, getattr(owner,'horario_json',None))
     values['horario_json'] = deepcopy(hours) if isinstance(hours,list) else []
+    values[RECEIPT_HEADER_KEY] = receipt_header_value(config)
     return values
 
 
 def profile_revision(tenant, owner, values):
-    canonical = json.dumps([CONTRACT,tenant.id,tenant.slug,owner.id,values],
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    receipt_state = {'present': RECEIPT_HEADER_KEY in config, 'raw': config.get(RECEIPT_HEADER_KEY)}
+    canonical = json.dumps([CONTRACT,tenant.id,tenant.slug,owner.id,values,receipt_state],
         sort_keys=True,ensure_ascii=False,separators=(',',':'),allow_nan=False)
     return sha256(canonical.encode()).hexdigest()
 
@@ -83,11 +122,12 @@ def build_profile_settings(tenant, owner, *, can_edit=False, writes_blocked=Fals
     values = profile_values(tenant,owner)
     try:
         json.dumps(values, allow_nan=False)
+        revision = profile_revision(tenant, owner, values)
     except (TypeError, ValueError):
         return None
     access = profile_editability(can_edit=can_edit, writes_blocked=writes_blocked)
     return {'contract_version':CONTRACT,'tenant':{'id':tenant.id,'slug':tenant.slug},
-        'revision':profile_revision(tenant,owner,values),'values':values,
+        'revision':revision,'values':values,
         'can_edit':access['mode']=='editable','editability':access,'save_endpoint':f'/api/admin/tenants/{tenant.slug}/config',
         'ui': {**organization_type_descriptor(getattr(tenant, 'tipo', None)),
             'activity_label': 'Rubro o actividad',
@@ -116,7 +156,9 @@ def validate_changes(changes, current):
         raise ProfileSettingsError('profile_fields_invalid')
     result={}
     for key,value in changes.items():
-        if key in LIMITS:
+        if key == RECEIPT_HEADER_KEY:
+            value = validate_receipt_header(value)
+        elif key in LIMITS:
             if not isinstance(value,str) or len(value)>LIMITS[key] or any(ord(c)<32 for c in value):
                 raise ProfileSettingsError('profile_text_invalid',message=f'Revisá el formato de {key}.')
             value=value.strip()
@@ -174,9 +216,24 @@ def save_profile_settings(session, tenant_model, user_model, audit_model, *, ten
             raise ProfileSettingsError('profile_revision_conflict',412,
                 'Otra persona actualizó este perfil. Conservamos tu edición: revisá la versión actual antes de volver a guardar.')
         changes=validate_changes(data.get('organization_profile'),before['values'])
+        if RECEIPT_HEADER_KEY in changes and tenant.configuracion is not None and not isinstance(tenant.configuracion, dict):
+            raise ProfileSettingsError('profile_legacy_config_invalid',409)
         changed={key:value for key,value in changes.items() if value!=before['values'][key]}
+        if RECEIPT_HEADER_KEY in changes:
+            config = tenant.configuracion or {}
+            value = changes[RECEIPT_HEADER_KEY]
+            if ((value is None and RECEIPT_HEADER_KEY in config)
+                    or (value is not None and config.get(RECEIPT_HEADER_KEY) != value)):
+                changed[RECEIPT_HEADER_KEY] = value
         for key,value in changed.items():
-            if key=='horario_json' or key in CONFIG_TEXT_FIELDS:
+            if key == RECEIPT_HEADER_KEY:
+                config = deepcopy(tenant.configuracion or {})
+                if value is None:
+                    config.pop(RECEIPT_HEADER_KEY, None)
+                else:
+                    config[RECEIPT_HEADER_KEY] = deepcopy(value)
+                tenant.configuracion = config
+            elif key=='horario_json' or key in CONFIG_TEXT_FIELDS:
                 if tenant.configuracion is not None and not isinstance(tenant.configuracion,dict):
                     raise ProfileSettingsError('profile_legacy_config_invalid',409)
                 config_key = HOURS_KEY if key == 'horario_json' else CONFIG_TEXT_FIELDS[key]

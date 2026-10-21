@@ -560,10 +560,11 @@ def test_cohere_stt_fallback_is_also_clamped_in_cron():
     httpx_module.Client.assert_called_once_with(timeout=4.0)
 
 
-def test_openai_tts_is_bounded_and_disables_sdk_retries_only_in_cron(tmp_path, monkeypatch):
+def test_openai_tts_uses_configured_timeout_and_disables_sdk_retries_only_in_cron(tmp_path, monkeypatch):
     import services.openai_tts_bridge as openai_tts
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_TTS_TIMEOUT_SECONDS", "60")
     httpx_module = MagicMock()
     openai_module = MagicMock()
     response = openai_module.OpenAI.return_value.audio.speech.create.return_value
@@ -602,9 +603,10 @@ def test_openai_tts_is_bounded_and_disables_sdk_retries_only_in_cron(tmp_path, m
         openai_tts.clear_tts_cache()
         assert openai_tts.generar_audio_openai("normal tts unchanged") is not None
 
-    httpx_module.Client.assert_called_once_with(proxy=None, trust_env=False)
+    httpx_module.Client.assert_called_once_with(proxy=None, trust_env=False, timeout=60.0)
     openai_module.OpenAI.assert_called_once_with(
         api_key="test-key",
+        timeout=60.0,
         http_client=httpx_module.Client.return_value,
     )
 

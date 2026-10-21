@@ -2,6 +2,7 @@ name: TDF accessible institutional channel
 on:
   pull_request:
     paths:
+      - 'app.py'
       - 'routes/institutional_assistant.py'
       - 'routes/chat.py'
       - 'routes/whatsapp_webhook.py'
@@ -17,6 +18,8 @@ on:
       - 'services/tts_audio_artifacts.py'
       - 'services/tts_orchestrator.py'
       - 'services/openai_tts_bridge.py'
+      - 'services/organization_profile_settings.py'
+      - 'services/whatsapp_receipt_branding.py'
       - 'services/meta_whatsapp_direct.py'
       - 'services/tenant_provider_credentials.py'
       - 'integrations/openai_tts.py'
@@ -31,6 +34,11 @@ on:
       - 'tests/test_audio_transcription.py'
       - 'tests/test_meta_whatsapp_direct_foundation.py'
       - 'tests/test_openai_tts_bridge.py'
+      - 'tests/test_openai_tts_timeout_contract.py'
+      - 'tests/test_openai_tts_error_diagnostics.py'
+      - 'tests/test_whatsapp_receipt_branding.py'
+      - 'tests/test_organization_receipt_header_settings.py'
+      - 'tests/test_static_asset_mime.py'
       - 'tests/test_tts_local_artifact_validity.py'
       - 'tests/test_tts_orchestrator_cache.py'
       - 'tests/test_tts_sanitization.py'
@@ -76,6 +84,21 @@ jobs:
           'tests/test_tts_local_artifact_validity.py', 'tests/test_tts_orchestrator_cache.py',
           'tests/test_tts_sanitization.py', 'tests/test_tts_sanitize.py',
           'tests/test_outbox_execution_budget.py', 'tests/test_whatsapp_welcome_optional_audio.py']))"
+      - name: Verify receipt campaigns, public image MIME and TTS contracts offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/receipt-campaign
+          git rev-parse HEAD > .qa-artifacts/receipt-campaign/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', 'tests/test_whatsapp_receipt_branding.py', 'tests/test_organization_receipt_header_settings.py', 'tests/test_static_asset_mime.py', 'tests/test_openai_tts_timeout_contract.py', 'tests/test_openai_tts_error_diagnostics.py', 'tests/test_outbox_execution_budget.py', '--junitxml=.qa-artifacts/receipt-campaign/tests.xml']))" 2>&1 | tee .qa-artifacts/receipt-campaign/tests.log
+      - name: Preserve receipt campaign regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: receipt-campaign-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/receipt-campaign
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify multipart web audio without external providers
         shell: bash
         run: |
