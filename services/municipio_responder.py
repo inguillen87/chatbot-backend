@@ -12273,19 +12273,28 @@ def responder_municipio(
         if not pregunta_str.strip():
             return None
 
-        if contexto_municipio_actual.get("estado_conversacion"):
+        previous_state = contexto_municipio_actual.get("estado_conversacion")
+        if previous_state and previous_state != ConversationState.CONVERSACION_GENERAL_LLM.name:
             return None
 
         if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state"):
             return None
 
-        payload = _try_start_reclamo_from_text(
-            pregunta_str,
-            context,
-            chat_db_context,
-            default_localidad=final_municipio_config.get("ciudad"),
-            default_provincia=final_municipio_config.get("provincia"),
-        )
+        if previous_state == ConversationState.CONVERSACION_GENERAL_LLM.name:
+            # Recovery after a general AI failure only executes an explicit
+            # draft command. It does not enable model-based bootstrap for
+            # arbitrary follow-up messages or any other pending flow.
+            payload = _try_start_explicit_reclamo_from_text(
+                pregunta_str, context, chat_db_context
+            )
+        else:
+            payload = _try_start_reclamo_from_text(
+                pregunta_str,
+                context,
+                chat_db_context,
+                default_localidad=final_municipio_config.get("ciudad"),
+                default_provincia=final_municipio_config.get("provincia"),
+            )
 
         if payload:
             municipal_ctx = (

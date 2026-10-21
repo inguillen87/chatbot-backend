@@ -77,7 +77,9 @@ class ExplicitClaimOfflineHttpTest(unittest.TestCase):
             patch.object(municipal, "extract_multiple_contact_details_llm", return_value={}),
         ]
         for boundary in boundaries:
-            boundary.start()
+            mocked = boundary.start()
+            if boundary.attribute == "extract_complaint_details_llm":
+                self.complaint_extractor = mocked
             self.addCleanup(boundary.stop)
 
     def session(self):
@@ -129,6 +131,65 @@ class ExplicitClaimOfflineHttpTest(unittest.TestCase):
         self.assert_address_draft(ctx, original)
         self.assertIn("direcci", body.lower())
         self.assertNotIn("asistentes de IA", body)
+
+    def set_general_state(self):
+        row = self.session()
+        data = deepcopy(row.context_data)
+        data.setdefault(CONTEXTO_MUNICIPIO, {})["estado_conversacion"] = "CONVERSACION_GENERAL_LLM"
+        row.context_data = data
+        db.session.commit()
+
+    def test_retry_after_general_AI_state_retains_original_draft_and_continues_same_identity(self):
+        self.set_general_state()
+        original = "quiero hacer un reclamo por un arbol caido"
+        ctx, body = self.post(original)
+        flow = deepcopy(ctx["reclamo_flow_v2"])
+        self.assertEqual(flow["state"], "ESPERANDO_CATEGORIA")
+        self.assertEqual(flow["datos_reclamo"]["descripcion"], original)
+        self.assertNotIn("asistentes de IA", body)
+        ctx, _ = self.post("2")
+        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_DIRECCION")
+        self.assertEqual(ctx["reclamo_flow_v2"]["confirmation_id"], flow["confirmation_id"])
+        self.assertEqual(ctx["reclamo_flow_v2"]["datos_reclamo"]["descripcion"], original)
+        self.assertEqual(self.provider_calls, 0)
+        self.complaint_extractor.assert_not_called()
+
+    def test_empty_legacy_state_keeps_fresh_explicit_command_behavior(self):
+        row = self.session()
+        data = deepcopy(row.context_data)
+        data[CONTEXTO_MUNICIPIO] = {"estado_conversacion": ""}
+        row.context_data = data
+        db.session.commit()
+        original = "quiero hacer un reclamo por un arbol caido"
+        ctx, _ = self.post(original)
+        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_CATEGORIA")
+        self.assertEqual(ctx["reclamo_flow_v2"]["datos_reclamo"]["descripcion"], original)
+        self.assertEqual(self.provider_calls, 0)
+        self.complaint_extractor.assert_not_called()
+
+    def test_general_AI_state_information_does_not_gain_model_claim_bootstrap(self):
+        self.set_general_state()
+        ctx, _ = self.post("cual es el horario del vivero municipal")
+        self.assertFalse(ctx.get("reclamo_flow_v2", {}).get("state"))
+        self.complaint_extractor.assert_not_called()
+
+    def test_general_AI_state_status_does_not_initialize_claim(self):
+        self.set_general_state()
+        ctx, _ = self.post("quiero consultar el estado de mi reclamo por un arbol caido")
+        self.assertFalse(ctx.get("reclamo_flow_v2", {}).get("state"))
+        self.complaint_extractor.assert_not_called()
+
+    def test_general_AI_state_with_active_draft_does_not_restart_it(self):
+        self.category("Arbolado")
+        self.post("Hola")
+        original = "quiero hacer un reclamo por un arbol caido"
+        ctx, _ = self.post(original)
+        before = deepcopy(ctx["reclamo_flow_v2"])
+        self.set_general_state()
+        ctx, _ = self.post("quiero hacer un reclamo por una luminaria rota")
+        self.assertEqual(ctx["reclamo_flow_v2"], before)
+        self.assertEqual(self.provider_calls, 0)
+        self.complaint_extractor.assert_not_called()
 
     def test_accents_and_punctuation_preserve_original_description(self):
         self.category("Arbolado")
