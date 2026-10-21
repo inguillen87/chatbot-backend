@@ -46,6 +46,10 @@ _MAX_SAFE_REQUEST_WAIT_SECONDS = 4.0
 _MAX_PREVIEW_SAFE_REQUEST_WAIT_SECONDS = 5.0
 _MAX_PRODUCTION_SAFE_REQUEST_WAIT_SECONDS = 10.0
 _MAX_PRODUCTION_LOGIN_WAIT_SECONDS = 5.0
+# The inbound provider does not necessarily retry a returned HTTP 503. Let only
+# its exact production POST join startup before canonical signature validation.
+# This fixed budget covers the observed 3151 ms import, not every cold start.
+_PRODUCTION_WHATSAPP_WEBHOOK_WAIT_SECONDS = 5.0
 # Mutations retain fail-fast behavior unless Preview explicitly opts into a
 # bounded wait before the first and only canonical application dispatch.
 _DEFAULT_MUTATION_REQUEST_WAIT_SECONDS = 0.0
@@ -163,6 +167,11 @@ class LazyApplication:
         )
         self._production_login_wait_seconds = (
             min(self._safe_request_wait_seconds, _MAX_PRODUCTION_LOGIN_WAIT_SECONDS)
+            if str(os.getenv("VERCEL_ENV") or "").strip().lower() == "production"
+            else 0.0
+        )
+        self._production_whatsapp_webhook_wait_seconds = (
+            _PRODUCTION_WHATSAPP_WEBHOOK_WAIT_SECONDS
             if str(os.getenv("VERCEL_ENV") or "").strip().lower() == "production"
             else 0.0
         )
@@ -287,8 +296,8 @@ class LazyApplication:
         if not self._background_warmup:
             return self._load_and_cache()(environ, start_response)
 
-        # Only the ordinary Production login, or an explicitly opted-in Preview
-        # mutation, joins initialization before its first dispatch. No body,
+        # Only the ordinary Production login, exact inbound WhatsApp POST, or
+        # an explicitly opted-in Preview mutation joins its first dispatch. No body,
         # middleware, credential or tenant lookup is evaluated here. A timeout
         # leaves this request undispatched permanently, even if loading later
         # completes. Other mutations retain fail-fast behavior.
@@ -300,7 +309,12 @@ class LazyApplication:
             if method == "POST" and environ.get("PATH_INFO") in _PRODUCTION_LOGIN_PATHS
             else 0.0
         )
-        mutation_wait = max(self._mutation_request_wait_seconds, login_wait)
+        webhook_wait = (
+            self._production_whatsapp_webhook_wait_seconds
+            if method == "POST" and environ.get("PATH_INFO") == "/webhook/whatsapp"
+            else 0.0
+        )
+        mutation_wait = max(self._mutation_request_wait_seconds, login_wait, webhook_wait)
         if not safe_method and mutation_wait == 0:
             return self._bootstrap_response(
                 environ,

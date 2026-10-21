@@ -3,6 +3,9 @@ name: Durable sessions and private attachments
   pull_request:
     paths:
       - app.py
+      - bootstrap_wsgi.py
+      - gunicorn.conf.py
+      - Dockerfile.vercel
       - config/**
       - middleware/cutover_writer_fence.py
       - models.py
@@ -58,6 +61,10 @@ name: Durable sessions and private attachments
       - tests/test_internal_cron_request_gates.py
       - tests/test_widget_bootstrap.py
       - tests/test_production_login_bootstrap.py
+      - tests/test_production_whatsapp_webhook_bootstrap.py
+      - tests/test_bootstrap_wsgi.py
+      - tests/test_bootstrap_receipt.py
+      - tests/test_gunicorn_capacity.py
       - tests/test_global_landing_admission.py
       - tests/test_landing_experience_contract.py
       - tests/test_render_authority_retired.py
@@ -131,6 +138,14 @@ jobs:
           git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/checkout.txt
           sha256sum services/tenant_factory.py routes/admin_tenant.py tests/test_tenant_factory_owner_lock.py tests/test_admin_tenant_verification.py > .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/source-sha256.txt
           python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(["tests/test_tenant_factory_owner_lock.py", "tests/test_admin_tenant_verification.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-factory-owner-lock/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/tests.log
+      - name: Exact inbound WhatsApp cold-start admission and unchanged bootstrap contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/checkout.txt
+          sha256sum bootstrap_wsgi.py gunicorn.conf.py Dockerfile.vercel tests/test_production_whatsapp_webhook_bootstrap.py tests/test_bootstrap_wsgi.py tests/test_bootstrap_receipt.py tests/test_production_login_bootstrap.py tests/test_gunicorn_capacity.py > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/source-sha256.txt
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(["tests/test_production_whatsapp_webhook_bootstrap.py", "tests/test_bootstrap_wsgi.py", "tests/test_bootstrap_receipt.py", "tests/test_production_login_bootstrap.py", "tests/test_gunicorn_capacity.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.log
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -141,6 +156,7 @@ jobs:
             .qa-artifacts/auth-private-storage/tenant-availability/
             .qa-artifacts/auth-private-storage/landing-admission/
             .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/
+            .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/
           include-hidden-files: true
   isolated-postgres:
     runs-on: ubuntu-24.04
