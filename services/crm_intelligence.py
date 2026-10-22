@@ -21,6 +21,9 @@ from services.crm_output_safety import (
 
 
 MAX_SUMMARY_CHARS = 280
+COMMERCIAL_CONTACT_ACTIONS = frozenset({
+    "chatboc_sales_lead", "capturar_lead_comercial", "chatboc_demo_limit_contact_yes",
+})
 
 
 def utc_now() -> datetime:
@@ -100,10 +103,12 @@ def classify_reason(text: str, metadata: Optional[dict[str, Any]] = None) -> tup
     """
 
     metadata = metadata or {}
-    source = clean_text(metadata.get("source") or metadata.get("event_type"), 80).lower()
     action_id = clean_text(metadata.get("action_id"), 80).lower()
     lower = clean_text(text, 500).lower()
-    combined = f"{source} {action_id} {lower}"
+    combined = f"{action_id} {lower}"
+
+    if action_id in COMMERCIAL_CONTACT_ACTIONS or metadata.get("commercial_contact_requested") is True:
+        return "lead_hot", "Interes comercial o contratacion"
 
     checks: list[tuple[str, tuple[str, ...], str]] = [
         (
@@ -139,7 +144,10 @@ def classify_reason(text: str, metadata: Optional[dict[str, Any]] = None) -> tup
     ]
 
     for intent, needles, reason in checks:
-        if any(needle in combined for needle in needles):
+        # Transport/source names and demo-navigation IDs are not buying intent.
+        # Explicit commercial actions above and the person's text are signals.
+        candidate = lower if intent == "lead_hot" else combined
+        if any(needle in candidate for needle in needles):
             return intent, reason
 
     if lower in {"hola", "buenas", "buen dia", "buenas tardes", "menu"}:
@@ -152,14 +160,12 @@ def lead_temperature(intent: str, text: str, metadata: Optional[dict[str, Any]] 
     lower = clean_text(text, 500).lower()
     metadata = metadata or {}
     action = clean_text(metadata.get("action_id"), 120).lower()
-    combined = f"{action} {lower}"
-
-    if intent == "lead_hot" or any(
-        word in combined
+    if intent == "lead_hot" or action in COMMERCIAL_CONTACT_ACTIONS or metadata.get("commercial_contact_requested") is True or any(
+        word in lower
         for word in ("contratar", "precio", "demo", "ventas", "asesor", "cotizar", "propuesta", "llamen")
     ):
         return "hot", 85
-    if intent in {"pedido_catalogo", "reclamo", "encuestas", "educacion", "soporte"}:
+    if intent in {"pedido_catalogo", "reclamo", "encuestas", "educacion", "soporte"} or metadata.get("prospect_engaged") is True:
         return "warm", 55
     return "cold", 25
 
@@ -304,6 +310,20 @@ def record_contact_interaction(
     summary = build_summary(text, reason=reason, channel=channel, source=source or metadata.get("source"))
 
     prefs = contact.preferences if isinstance(contact.preferences, dict) else {}
+    previous_stage = prefs.get("conversation_status")
+    operator_closed_stage = bool(prefs.get("stage_updated_at")) and previous_stage in {"cliente", "perdido", "pausado"}
+    retain_commercial_priority = prefs.get("commercial_contact_requested") is True and prefs.get("lead_temperature") == "hot"
+    contact_temp, contact_score = temp, score
+    contact_status = "hot" if temp == "hot" else ("en_seguimiento" if temp == "warm" else "frio")
+    if temp != "hot" and operator_closed_stage:
+        contact_temp = prefs.get("lead_temperature") or temp
+        contact_score = prefs.get("lead_score", score)
+        contact_status = previous_stage
+    elif temp != "hot" and retain_commercial_priority:
+        # The latest turn may be a greeting while an explicit sales request
+        # still needs attention. Keep its contact priority, not a false intent.
+        contact_temp, contact_score = "hot", 85
+        contact_status = previous_stage or "hot"
     prefs.update(
         {
             "last_channel": channel,
@@ -311,9 +331,11 @@ def record_contact_interaction(
             "last_reason": reason,
             "last_summary": summary,
             "last_intent": intent,
-            "lead_temperature": temp,
-            "lead_score": score,
-            "conversation_status": "hot" if temp == "hot" else ("en_seguimiento" if temp == "warm" else "frio"),
+            "lead_temperature": contact_temp,
+            "lead_score": contact_score,
+            "conversation_status": contact_status,
+            "last_lead_temperature": temp,
+            "last_lead_score": score,
             "last_message_excerpt": clean_text(text, 180),
             "last_interaction_direction": direction,
             "service_window_until": (utc_now() + timedelta(hours=24)).isoformat() if channel == "whatsapp" else None,

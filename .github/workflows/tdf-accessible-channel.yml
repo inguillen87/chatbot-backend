@@ -19,6 +19,7 @@ on:
       - 'services/tts_orchestrator.py'
       - 'services/openai_tts_bridge.py'
       - 'services/organization_profile_settings.py'
+      - 'services/crm_intelligence.py'
       - 'services/whatsapp_receipt_branding.py'
       - 'services/municipio_responder.py'
       - 'services/ticket_closed_notification.py'
@@ -50,6 +51,9 @@ on:
       - 'tests/test_outbox_execution_budget.py'
       - 'tests/test_whatsapp_welcome_optional_audio.py'
       - 'tests/test_whatsapp_welcome_each_greeting.py'
+      - 'tests/test_crm_commercial_signal.py'
+      - 'tests/test_crm_people_directory.py'
+      - 'tests/test_whatsapp_webhook.py'
       - 'tests/test_municipio_explicit_claim_offline.py'
       - 'tests/ticket_closed_notification_http.py'
       - '.github/workflows/tdf-accessible-channel.yml'
@@ -126,6 +130,26 @@ jobs:
         with:
           name: juni-claim-receipts-${{ github.event.pull_request.head.sha }}
           path: .qa-artifacts/juni-claim-receipts
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify CRM commercial signals and separate consent offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/crm-commercial-signals
+          git rev-parse HEAD > .qa-artifacts/crm-commercial-signals/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import unittest; names = ['tests.test_crm_commercial_signal.CommercialSignalUnitTests', 'tests.test_crm_commercial_signal.DemoCrmCommercialSignalTests', 'tests.test_crm_commercial_signal.DemoEngagementConsentTests', 'tests.test_whatsapp_webhook.WhatsAppWebhookTestCase.test_chatboc_demo_limit_yes_marks_hot_lead_without_resetting_public_limit']; suite = unittest.TestLoader().loadTestsFromNames(names); result = unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(0 if result.wasSuccessful() else 1)" 2>&1 | tee .qa-artifacts/crm-commercial-signals/tests.log
+      - name: Verify authenticated CRM people directory offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-v', '-p', 'no:cacheprovider', 'tests/test_crm_people_directory.py']))" 2>&1 | tee .qa-artifacts/crm-commercial-signals/directory.log
+      - name: Preserve CRM commercial signal regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: crm-commercial-signals-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/crm-commercial-signals
           if-no-files-found: error
           retention-days: 7
       - name: Preserve web audio regression evidence
