@@ -1243,6 +1243,142 @@ class ReclamoFlowHandler:
         )
         self.flow_context["state"] = ReclamoState.ESPERANDO_CONFIRMACION.name
 
+    def _has_current_draft_scope(self) -> bool:
+        """Reuse turn context only from this active owner, tenant and session."""
+        tenant = self.context.get("tenant_profile")
+        session = self.chat_db_context
+        owner_id = getattr(self.context.get("user_obj"), "id", None)
+        tenant_id = getattr(tenant, "id", None)
+        actor_id = getattr(self.context.get("viewer_user_obj"), "id", None)
+        session_actor_id = getattr(session, "user_id", None)
+        session_anon_id = getattr(session, "anon_id", None)
+        identity_matches = (
+            type(session_actor_id) is int and type(actor_id) is int and actor_id == session_actor_id
+            if session_anon_id is None
+            else bool(self.context.get("anon_id") and self.context["anon_id"] == session_anon_id)
+        )
+        return bool(
+            isinstance(tenant, TenantProfile)
+            and type(tenant_id) is int and type(owner_id) is int
+            and tenant.tipo == "municipio" and tenant.is_active
+            and tenant.municipio_id == owner_id
+            and self.context.get("tenant_id") == tenant_id
+            and getattr(session, "tenant_id", None) == tenant_id
+            and identity_matches
+            and self.context.get("chat_db_context_data") is getattr(session, "context_data", None)
+        )
+
+    def _collect_initial_draft_data(self, initial, category=None):
+        """Merge structured inputs; never infer image/STT content or an address."""
+        scoped = self._has_current_draft_scope()
+        partials = self.municipal_ctx.get("datos_parciales_llm_reclamo")
+        merged = dict(partials) if scoped and isinstance(partials, dict) else {}
+        incoming = dict(initial) if isinstance(initial, dict) else {}
+        for candidate in (merged, incoming):
+            value = candidate.get("categoria")
+            if isinstance(value, str) and value.strip():
+                candidate["categoria"] = value.strip()
+            else:
+                candidate.pop("categoria", None)
+        if isinstance(category, str) and category.strip():
+            incoming.setdefault("categoria", category.strip())
+        if merged.get("ubicacion") and not merged.get("direccion") and isinstance(merged["ubicacion"], str):
+            merged["direccion"] = merged["ubicacion"]
+        if incoming.get("ubicacion") and not incoming.get("direccion") and isinstance(incoming["ubicacion"], str):
+            incoming["direccion"] = incoming["ubicacion"]
+
+        if merged.get("categoria"):
+            try:
+                with db.session.begin_nested():
+                    configured = CategoriaTicket.query.filter_by(tenant_id=self.context["tenant_id"], tipo="ticket").all()
+                candidates = [row.nombre for row in configured if normalizar_texto(row.nombre or "") == normalizar_texto(merged["categoria"])]
+                if len(candidates) == 1:
+                    merged["categoria"] = candidates[0]
+                else:
+                    merged.pop("categoria", None)
+            except SQLAlchemyError as exc:
+                if not db.session.is_active or getattr(exc, "connection_invalidated", False):
+                    raise
+                merged.pop("categoria", None)
+
+        def coordinates(value):
+            if not isinstance(value, dict):
+                return None
+            lat = value.get("lat", value.get("latitude"))
+            lon = value.get("lon", value.get("lng", value.get("longitude")))
+            if type(lat) in (int, float) and type(lon) in (int, float) and -90 <= lat <= 90 and -180 <= lon <= 180:
+                return {"lat": lat, "lon": lon}
+            return None
+
+        def address(value):
+            return normalizar_texto(value) if isinstance(value, str) else ""
+
+        # Compare coordinates by their values, not by the lon/lng wire alias.
+        for candidate in (merged, incoming):
+            if "coordenadas" in candidate:
+                canonical = coordinates(candidate["coordenadas"])
+                if canonical:
+                    candidate["coordenadas"] = canonical
+                else:
+                    candidate.pop("coordenadas", None)
+                    candidate.pop("map_search_url", None)
+
+        location = self.context.get("ubicacion_usuario") if scoped and self.context.get("es_ubicacion") else None
+        if scoped and location is None and self.municipal_ctx.get("estado_conversacion") == ConversationState.ESPERANDO_INTENCION_UBICACION.name:
+            location = self.municipal_ctx.get("ubicacion_contextual")
+        location_conflict = False
+        if isinstance(location, dict):
+            normalized = _normalize_location_payload(location) or {}
+            if isinstance(normalized.get("address"), str) and normalized["address"].strip():
+                location_conflict = bool(incoming.get("direccion") and address(incoming["direccion"]) != address(normalized["address"]))
+                incoming.setdefault("direccion", normalized["address"].strip())
+            lat, lon = normalized.get("latitude"), normalized.get("longitude")
+            if type(lat) in (int, float) and type(lon) in (int, float) and -90 <= lat <= 90 and -180 <= lon <= 180:
+                location_conflict = location_conflict or bool(incoming.get("coordenadas") and incoming["coordenadas"] != {"lat": lat, "lon": lon})
+                incoming.setdefault("coordenadas", {"lat": lat, "lon": lon})
+                incoming.setdefault("direccion", "Ubicación compartida")
+                incoming.setdefault("map_search_url", f"https://www.google.com/maps/search/?api=1&query={lat},{lon}")
+
+        category_conflict = bool(
+            merged.get("categoria") and incoming.get("categoria")
+            and normalizar_texto(merged["categoria"]) != normalizar_texto(incoming["categoria"])
+        )
+        prior_address, current_address = address(merged.get("direccion")), address(incoming.get("direccion"))
+        prior_coords, current_coords = merged.get("coordenadas"), incoming.get("coordenadas")
+        matching_address = bool(prior_address and prior_address == current_address)
+        matching_coords = bool(prior_coords and prior_coords == current_coords)
+        if matching_coords and incoming.get("direccion") == "Ubicación compartida" and merged.get("direccion"):
+            incoming["direccion"] = merged["direccion"]
+            current_address = prior_address
+            matching_address = True
+        location_conflict = location_conflict or bool(
+            (prior_address and current_address and not matching_address and not matching_coords)
+            or (prior_coords and current_coords and not matching_coords)
+            # Separate incomplete observations must not create an invented pair.
+            or (prior_coords and current_address and not current_coords and not matching_address)
+            or (prior_address and current_coords and not prior_coords and not matching_address)
+        )
+        prior_description, current_description = merged.get("descripcion"), incoming.get("descripcion")
+        if isinstance(prior_description, str) and isinstance(current_description, str):
+            prior_normalized, current_normalized = normalizar_texto(prior_description), normalizar_texto(current_description)
+            if current_normalized and current_normalized in prior_normalized:
+                incoming["descripcion"] = prior_description
+            elif prior_normalized and prior_normalized not in current_normalized:
+                incoming["descripcion"] = f"{prior_description}\n{current_description}"
+        merged.update({key: value for key, value in incoming.items() if value not in (None, "")})
+        if category_conflict:
+            merged.pop("categoria", None)
+        if location_conflict:
+            # Do not silently attach old coordinates to a different new address.
+            for field in ("direccion", "ubicacion", "coordenadas", "map_search_url", "direccion_geocodificada"):
+                merged.pop(field, None)
+        if scoped and isinstance(partials, dict):
+            # Consume after copying, so terminal/cancelled flows cannot reuse it.
+            self.municipal_ctx.pop("datos_parciales_llm_reclamo", None)
+        if scoped and location is not None:
+            self.municipal_ctx.pop("ubicacion_contextual", None)
+        return merged, location_conflict, category_conflict
+
     @staticmethod
     def _optional_evidence_prompt(prefix: str = "") -> dict[str, Any]:
         """Return one consistent optional-evidence prompt for every claim path.
@@ -1274,6 +1410,9 @@ class ReclamoFlowHandler:
 
     def start_flow(self, datos_iniciales=None, categoria_inicial=None):
         logger.info("Iniciando flujo de reclamo v2.")
+        categoria_inicial = categoria_inicial.strip() if isinstance(categoria_inicial, str) else None
+        current_scope = self._has_current_draft_scope()
+        merged_datos, location_conflict, category_conflict = self._collect_initial_draft_data(datos_iniciales, categoria_inicial)
         self.flow_context.clear()
         # One logical confirmation keeps this identifier across retries.  A
         # brand-new flow gets a new identifier even when all claim data is the
@@ -1286,29 +1425,12 @@ class ReclamoFlowHandler:
             datos_iniciales
             and isinstance(datos_iniciales, dict)
             and (datos_iniciales.get("foto_url") or datos_iniciales.get("image_url"))
-        ) or bool(self.context.get("foto_url"))
+        ) or bool(current_scope and self.context.get("es_foto") and self.context.get("foto_url"))
         if not current_message_has_image:
             self.context.pop("foto_url", None)
             self.context.pop("foto_url_directa", None)
             self.context.pop("foto_url_adjunta", None)
             self.context.pop("datos_interpretados_archivo", None)
-            self.municipal_ctx.pop("datos_parciales_llm_reclamo", None)
-
-        # Merge incoming initial data with any data already extracted by the LLM
-        # in previous turns (e.g. while in CONVERSACION_GENERAL_LLM state).
-        merged_datos = {}
-        llm_partials = self.municipal_ctx.get("datos_parciales_llm_reclamo", {})
-        if llm_partials:
-            logger.info(
-                "Merging partial LLM data into flow (campos=%s)",
-                sorted(str(key) for key in llm_partials.keys())
-                if isinstance(llm_partials, dict)
-                else [],
-            )
-            merged_datos.update(llm_partials)
-
-        if datos_iniciales:
-            merged_datos.update(datos_iniciales)
 
         self.flow_context['datos_reclamo'] = merged_datos
         datos = self.flow_context['datos_reclamo']
@@ -1323,18 +1445,20 @@ class ReclamoFlowHandler:
         self.municipal_ctx.pop('menu_opciones', None)
 
         # Prefill from image analysis if available
-        if self.context.get("foto_url") and not datos.get('foto_url'):
+        if current_scope and current_message_has_image and self.context.get("foto_url") and not datos.get('foto_url'):
             datos['foto_url'] = self.context.get("foto_url")
-        if self.context.get("datos_interpretados_archivo"):
+        if current_scope and current_message_has_image and self.context.get("datos_interpretados_archivo"):
             interpreted = self.context.get("datos_interpretados_archivo")
-            if not datos.get('categoria') and interpreted.get('categoria_sugerida'):
-                datos['categoria'] = interpreted.get('categoria_sugerida')
+            interpreted = interpreted if isinstance(interpreted, dict) else {}
+            suggested_category = interpreted.get('categoria_sugerida')
+            if not category_conflict and not datos.get('categoria') and isinstance(suggested_category, str) and suggested_category.strip():
+                datos['categoria'] = suggested_category.strip()
             if not datos.get('descripcion') and interpreted.get('descripcion_sugerida'):
                 descripcion_interpretada = interpreted.get('descripcion_sugerida')
                 datos['descripcion'] = descripcion_interpretada
                 datos['descripcion_resumida'] = construir_descripcion_breve(descripcion_interpretada)
                 datos['origen_descripcion'] = 'imagen'
-            if not datos.get('direccion'):
+            if not location_conflict and not datos.get('direccion'):
                 interpreted_address = (
                     interpreted.get('direccion_sugerida')
                     or interpreted.get('ubicacion_sugerida')
@@ -1519,17 +1643,20 @@ class ReclamoFlowHandler:
                 contacto_cache.setdefault(campo, datos.get(campo))
 
 
-        if categoria_inicial and not self.flow_context['datos_reclamo'].get('categoria'):
+        if categoria_inicial and not category_conflict and not self.flow_context['datos_reclamo'].get('categoria'):
             self.flow_context['datos_reclamo']['categoria'] = categoria_inicial
 
-        if categoria_inicial and not datos.get('categoria'):
+        if categoria_inicial and not category_conflict and not datos.get('categoria'):
             datos['categoria'] = categoria_inicial
 
         # Check what data is missing and transition to the correct state
         if not self.flow_context['datos_reclamo'].get('categoria'):
             self.municipal_ctx['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
             self.flow_context['state'] = ReclamoState.ESPERANDO_CATEGORIA.name
-            return _get_reclamos_menu(self.context)
+            response = _get_reclamos_menu(self.context)
+            if category_conflict:
+                response["message_body"] = "Recibí dos categorías distintas para este reclamo. Elegí la que corresponde antes de continuar."
+            return response
         # Once we have a category, mark the flow as active.
         self.municipal_ctx['estado_conversacion'] = "EN_FLUJO_RECLAMO"
 
@@ -1540,6 +1667,8 @@ class ReclamoFlowHandler:
             return {"message_body": f"Entendemos que el reclamo es por *{categoria}*. Para poder ayudarte mejor, por favor describí brevemente qué está pasando."}
         elif not self.flow_context['datos_reclamo'].get('direccion'):
             self.flow_context['state'] = ReclamoState.ESPERANDO_DIRECCION.name
+            if location_conflict:
+                return {"message_body": "Recibí dos ubicaciones distintas para este reclamo. Confirmá la dirección o compartí la ubicación correcta antes de continuar."}
             # Construct a message confirming the data we have
             categoria = self.flow_context['datos_reclamo']['categoria']
             descripcion = self.flow_context['datos_reclamo'].get('descripcion', 'No especificada')
@@ -2466,6 +2595,7 @@ class ReclamoFlowHandler:
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+        self.municipal_ctx.pop("datos_parciales_llm_reclamo", None)
         chat_data = self.context.get("chat_db_context_data")
         if isinstance(chat_data, dict):
             chat_data.pop("foto_url", None)
@@ -8100,12 +8230,13 @@ def _try_start_explicit_reclamo_from_text(
     the authoritative tenant; otherwise the citizen chooses from the menu.
     """
     normalized = normalizar_texto(text or "")
-    if not re.fullmatch(
+    command = re.fullmatch(
         r"(?:(?:quiero|necesito|quisiera|deseo)\s+)?"
         r"(?:hacer|iniciar|registrar|cargar|abrir)\s+(?:un\s+)?reclamo"
-        r"(?:\s+(?:por|sobre|de)\s+.+)?",
+        r"(?P<issue>\s+(?:por|sobre|de)\s+.+)?",
         normalized,
-    ):
+    )
+    if not command:
         return None
     if (
         re.search(r"\b(?:cancelar|cancela|menu)\b", normalized)
@@ -8179,7 +8310,7 @@ def _try_start_explicit_reclamo_from_text(
             logger.warning("Explicit claim category lookup unavailable error_type=%s", type(exc).__name__)
 
     response = ReclamoFlowHandler(context, chat_db_context).start_flow(
-        datos_iniciales={"descripcion": text.strip()},
+        datos_iniciales={"descripcion": text.strip()} if command.group("issue") else {},
         categoria_inicial=category,
     )
     if chat_db_context:
@@ -11481,6 +11612,16 @@ def responder_municipio(
 
     estado_conversacion = contexto_municipio_actual.get("estado_conversacion")
     action = received_payload.get("action") or received_payload.get("action_id")
+    if (
+        estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name
+        and not action and not received_payload.get("es_ubicacion")
+        and isinstance(pregunta_str, str) and pregunta_str.strip()
+    ):
+        # Location may arrive in the previous WhatsApp turn. An explicit claim
+        # command already supplies the intention; do not make it a menu choice.
+        explicit_draft = _try_start_explicit_reclamo_from_text(pregunta_str, context, chat_db_context)
+        if explicit_draft:
+            return _finalize_response(explicit_draft)
     if (
         estado_conversacion == ConversationState.ESPERANDO_INTENCION_UBICACION.name
         and (received_payload.get("es_foto") or context.get("datos_interpretados_archivo"))

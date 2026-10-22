@@ -248,17 +248,10 @@ class PymeTicketCreator(TicketCreator):
                 if rubro_id is None:
                     rubro_id = getattr(pyme_user, "rubro_id", None)
 
-        lat = (
-            ticket_data.get("latitud")
-            or ticket_data.get("lat")
-            or ticket_data.get("latitude")
-        )
-        lon = (
-            ticket_data.get("longitud")
-            or ticket_data.get("lon")
-            or ticket_data.get("lng")
-            or ticket_data.get("longitude")
-        )
+        lat = next((ticket_data[key] for key in ("latitud", "lat", "latitude")
+                    if ticket_data.get(key) is not None), None)
+        lon = next((ticket_data[key] for key in ("longitud", "lon", "lng", "longitude")
+                    if ticket_data.get(key) is not None), None)
         telefono_contacto = (
             ticket_data.get("telefono_cliente")
             or ticket_data.get("telefono_vecino")

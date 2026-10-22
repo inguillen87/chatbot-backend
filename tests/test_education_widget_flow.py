@@ -128,7 +128,7 @@ class EducationWidgetFlowTest(unittest.TestCase):
         self.assertIn("Opcion 1", response.get("audio_text", ""))
         self.assertNotIn("anon-edu", response.get("tts_cache_text", ""))
 
-    def test_pending_school_case_detail_creates_ticket(self):
+    def test_pending_school_case_detail_requires_confirmation_before_ticket(self):
         responder_pyme(
             {
                 "pregunta": "",
@@ -153,6 +153,17 @@ class EducationWidgetFlowTest(unittest.TestCase):
                 chat_db_context=self.session_context,
                 anon_id="anon-edu",
                 channel="widget",
+            )
+
+            self.assertEqual(response.get("fuente"), "education_widget_case_review")
+            self.assertEqual(PymeTicket.query.count(), 0)
+            self.assertEqual(SchoolCaseAlias.query.count(), 0)
+            confirm_action = response["options_list"][0]["action_id"]
+            response = responder_pyme(
+                {"pregunta": "Confirmar caso", "action_id": confirm_action,
+                 "education_context": {"is_education": True, "tenant_slug": self.tenant.slug}},
+                self.owner, None, chat_db_context=self.session_context,
+                anon_id="anon-edu", channel="widget",
             )
 
         self.assertEqual(response.get("fuente"), "education_widget_case_created")

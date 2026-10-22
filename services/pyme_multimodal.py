@@ -92,9 +92,13 @@ class PymeSessionState:
 
     STORAGE_KEY = "multimodal_state_v1"
 
-    def __init__(self, backing_store: Dict[str, Any], pyme_id: Optional[int]):
+    def __init__(
+        self, backing_store: Dict[str, Any], pyme_id: Optional[int], *,
+        session_scope: Optional[Dict[str, Any]] = None,
+    ):
         self._store = backing_store.setdefault(self.STORAGE_KEY, {})
         self.pyme_id = pyme_id
+        self.session_scope = _delivery_session_scope(session_scope, pyme_id)
         self.cart: Dict[str, Any] = self._store.setdefault(
             "cart",
             {
@@ -106,6 +110,10 @@ class PymeSessionState:
             },
         )
         self.delivery: Dict[str, Any] = self._store.setdefault("delivery", {})
+        if self._store.get("delivery_scope") is not None and self._store["delivery_scope"] != self.session_scope:
+            self.delivery.clear()
+            self._store.pop("delivery_scope", None)
+            self._store.pop("delivery_location_pending", None)
         self.last_intent: Optional[str] = self._store.get("last_intent")
 
     @property
@@ -463,6 +471,12 @@ def handle_keyword_intent(
     )
     catalog = load_catalog(owner_user_id, rubro_slug)
 
+    if context.get("selected_action_id") == "editar_direccion":
+        # Keep the old value available locally, but do not reuse it while the
+        # customer is correcting it. Only a valid new location ends this state.
+        state.raw["delivery_location_pending"] = True
+        return _delivery_location_prompt()
+
     if intent in {"ver_catalogo", "precios"}:
         if not catalog:
             return PymeFlowResult(
@@ -592,15 +606,10 @@ def handle_keyword_intent(
 
     if intent == "delivery":
         state.last_intent = "delivery"
-        body = "Perfecto, ¿me compartís la ubicación para estimar el envío?"
-        return PymeFlowResult(
-            message_body=body,
-            source="pyme_delivery_solicitud_ubicacion",
-            options_list=[
-                {"texto": "Compartir mi ubicación", "action_id": "enviar_ubicacion"},
-                {"texto": "Retiro en tienda", "action_id": "retiro_tienda"},
-            ],
-        )
+        location = _current_delivery_location(state, owner_user_id, context)
+        if location is not None:
+            return handle_location_payload(state, context.get("config") or {}, location)
+        return _delivery_location_prompt()
 
     if intent in {"ubicacion", "menu_fijo"}:
         return _menu_response(state, context, channel)
@@ -610,6 +619,8 @@ def handle_keyword_intent(
         return PymeFlowResult(message_body=body, source="pyme_info_pago")
 
     if intent == "confirmar":
+        if state.raw.get("delivery_location_pending"):
+            return _delivery_location_prompt()
         if not state.cart.get("items"):
             return PymeFlowResult(
                 message_body="Todavía no cargaste productos al carrito.",
@@ -705,6 +716,8 @@ def handle_keyword_intent(
         state.cart["subtotal"] = 0.0
         state.cart["total"] = 0.0
         state.delivery.clear()
+        state.raw.pop("delivery_scope", None)
+        state.raw.pop("delivery_location_pending", None)
 
         opciones = [
             {"texto": "Compartir comprobante", "action_id": "enviar_comprobante"},
@@ -726,6 +739,73 @@ def handle_keyword_intent(
 # ---------------------------------------------------------------------------
 
 
+def _delivery_session_scope(raw: Any, owner_id: Optional[int]) -> Optional[Dict[str, Any]]:
+    """Accept only the caller's complete current session/tenant/actor binding."""
+    if not isinstance(raw, dict) or type(owner_id) is not int or owner_id <= 0:
+        return None
+    session_id = raw.get("chat_session_id")
+    tenant_id, user_id, anon_id = raw.get("tenant_id"), raw.get("user_id"), raw.get("anon_id")
+    if (
+        raw.get("owner_id") != owner_id
+        or type(tenant_id) is not int or tenant_id <= 0
+        or not isinstance(session_id, str) or not session_id.strip()
+    ):
+        return None
+    authenticated = type(user_id) is int and user_id > 0 and not anon_id
+    anonymous = user_id is None and isinstance(anon_id, str) and bool(anon_id.strip())
+    if not (authenticated or anonymous):
+        return None
+    return {
+        "owner_id": owner_id, "tenant_id": tenant_id, "chat_session_id": session_id,
+        "user_id": user_id, "anon_id": anon_id if anonymous else None,
+    }
+
+
+def _validated_delivery_location(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    values = []
+    for aliases, bound in ((('lat', 'latitude'), 90), (('lon', 'lng', 'longitude'), 180)):
+        value = next((raw[key] for key in aliases if raw.get(key) is not None), None)
+        if isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(number) or not -bound <= number <= bound:
+            return None
+        values.append(number)
+    address = raw.get("address") or raw.get("descripcion")
+    return {"lat": values[0], "lng": values[1], "address": address if isinstance(address, str) else None}
+
+
+def _current_delivery_location(
+    state: PymeSessionState, owner_id: Optional[int], context: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    scope = state.session_scope
+    if (
+        scope is None or owner_id != state.pyme_id
+        or context.get("tenant_id") != scope["tenant_id"]
+        or state.raw.get("delivery_scope") != scope
+        or state.raw.get("delivery_location_pending")
+        or (scope["user_id"] is not None and context.get("viewer_user_id") != scope["user_id"])
+    ):
+        return None
+    return _validated_delivery_location(state.delivery)
+
+
+def _delivery_location_prompt() -> PymeFlowResult:
+    return PymeFlowResult(
+        message_body="Perfecto, ¿me compartís la ubicación para estimar el envío?",
+        source="pyme_delivery_solicitud_ubicacion",
+        options_list=[
+            {"texto": "Compartir mi ubicación", "action_id": "enviar_ubicacion"},
+            {"texto": "Retiro en tienda", "action_id": "retiro_tienda"},
+        ],
+    )
+
+
 def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6371.0
     phi1 = math.radians(lat1)
@@ -740,17 +820,18 @@ def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) ->
 def _resolve_base_location(config: Dict[str, Any]) -> Optional[Tuple[float, float]]:
     for ubicacion in (config.get("ubicaciones") or []):
         coords = ubicacion.get("coordenadas") or {}
-        lat = coords.get("lat") or coords.get("latitude")
-        lon = coords.get("lon") or coords.get("lng") or coords.get("longitude")
-        if lat is not None and lon is not None:
-            return float(lat), float(lon)
+        location = _validated_delivery_location(coords)
+        if location is not None:
+            return location["lat"], location["lng"]
     return None
 
 
 def estimate_shipping(config: Dict[str, Any], destination: Dict[str, Any]) -> Dict[str, Any]:
     base_coords = _resolve_base_location(config) or (-34.6037, -58.3816)  # Buenos Aires fallback
-    dest_lat = float(destination.get("lat") or destination.get("latitude"))
-    dest_lon = float(destination.get("lon") or destination.get("lng") or destination.get("longitude"))
+    location = _validated_delivery_location(destination)
+    if location is None:
+        raise ValueError("A valid delivery location is required")
+    dest_lat, dest_lon = location["lat"], location["lng"]
     distance_km = haversine_distance_km(base_coords[0], base_coords[1], dest_lat, dest_lon)
     base_rate = config.get("tarifa_base_envio", 1800)
     per_km = config.get("tarifa_por_km", 120)
@@ -766,13 +847,22 @@ def estimate_shipping(config: Dict[str, Any], destination: Dict[str, Any]) -> Di
 def handle_location_payload(
     state: PymeSessionState, config: Dict[str, Any], location_payload: Dict[str, Any]
 ) -> PymeFlowResult:
-    estimate = estimate_shipping(config, location_payload)
+    location = _validated_delivery_location(location_payload)
+    if location is None:
+        state.raw["delivery_location_pending"] = True
+        return _delivery_location_prompt()
+    estimate = estimate_shipping(config, location)
     state.delivery.update({
-        "lat": location_payload.get("lat") or location_payload.get("latitude"),
-        "lng": location_payload.get("lon") or location_payload.get("lng") or location_payload.get("longitude"),
-        "address": location_payload.get("address") or location_payload.get("descripcion"),
+        "lat": location["lat"],
+        "lng": location["lng"],
+        "address": location["address"],
         "shipping_total": estimate["shipping_total"],
     })
+    if state.session_scope is not None:
+        state.raw["delivery_scope"] = dict(state.session_scope)
+    else:
+        state.raw.pop("delivery_scope", None)
+    state.raw.pop("delivery_location_pending", None)
     body = (
         "Gracias por la ubicación. Estimo un costo de envío de ${:.2f} "
         "con entrega en ~{} horas ({} km)."

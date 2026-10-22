@@ -43,6 +43,10 @@ from sqlalchemy.orm import joinedload  # To potentially eager load User.rubro
 from utils.db_utils import ensure_chat_session_context_schema, safe_flag_modified
 from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
+from services.education_case_draft import (
+    advance_education_case_draft, education_attachment_matches_scope,
+    education_case_scope, education_draft_description,
+)
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.categorias_municipio import normalizar_texto
@@ -2464,7 +2468,7 @@ def _create_education_whatsapp_ticket(
 
     tipo_chat = (getattr(owner_user, "tipo_chat", None) or getattr(tenant_profile, "tipo", None) or "pyme").lower()
     tipo_ticket = "municipio" if tipo_chat == "municipio" else "pyme"
-    description = _education_case_description(
+    description = education_draft_description(pending_case) if pending_case.get("_scope") else _education_case_description(
         message_body=message_body,
         uploaded_file_info=uploaded_file_info,
         location_info=location_info,
@@ -2484,8 +2488,8 @@ def _create_education_whatsapp_ticket(
         "canal_ingreso": "whatsapp",
         "estado": "nuevo",
         "direccion": (location_info or {}).get("address") or (location_info or {}).get("label"),
-        "latitud": (location_info or {}).get("latitude") or (location_info or {}).get("lat"),
-        "longitud": (location_info or {}).get("longitude") or (location_info or {}).get("lng") or (location_info or {}).get("lon"),
+        "latitud": (location_info or {}).get("latitude"),
+        "longitud": (location_info or {}).get("longitude"),
         "telefono_cliente": anon_id,
     }
     if tipo_ticket == "municipio":
@@ -2505,7 +2509,7 @@ def _create_education_whatsapp_ticket(
     if not ticket:
         return None
 
-    attachment_id = (uploaded_file_info or {}).get("id")
+    attachments = pending_case.get("attachments") if pending_case.get("_scope") else [uploaded_file_info or {}]
     ticket_id = ticket.get("id") if isinstance(ticket, dict) else None
     alias = create_school_case_alias_for_ticket(
         tenant_profile=tenant_profile,
@@ -2522,16 +2526,19 @@ def _create_education_whatsapp_ticket(
         ticket["school_case_id"] = alias_payload.get("school_case_id")
         ticket["school_case"] = alias_payload
 
-    if attachment_id and ticket_id:
+    associated_count = 0
+    if attachments and ticket_id:
         try:
-            adjunto = db.session.get(ArchivoAdjunto, attachment_id)
-            if adjunto:
-                if tipo_ticket == "municipio":
-                    adjunto.municipio_ticket_id = ticket_id
-                else:
-                    adjunto.pyme_ticket_id = ticket_id
-                db.session.add(adjunto)
-                db.session.commit()
+            for metadata in attachments:
+                adjunto = db.session.get(ArchivoAdjunto, metadata.get("id")) if metadata.get("id") else None
+                if adjunto and (not pending_case.get("_scope") or education_attachment_matches_scope(adjunto, pending_case["_scope"])):
+                    if tipo_ticket == "municipio":
+                        adjunto.municipio_ticket_id = ticket_id
+                    else:
+                        adjunto.pyme_ticket_id = ticket_id
+                    db.session.add(adjunto)
+                    associated_count += 1
+            db.session.commit()
         except Exception as exc:
             _log(
                 "error",
@@ -2545,6 +2552,9 @@ def _create_education_whatsapp_ticket(
             ) is not None:
                 raise
             db.session.rollback()
+            associated_count = 0
+    if pending_case.get("_scope") and isinstance(ticket, dict) and attachments:
+        ticket["attachment_status"] = {"supplied": len(attachments), "associated": associated_count}
     return ticket
 
 
@@ -2561,6 +2571,7 @@ def _handle_education_whatsapp_turn(
     uploaded_file_info: dict[str, Any] | None,
     location_info: dict[str, Any] | None,
     durable_claim: Any = None,
+    original_message_body: str | None = None,
 ) -> dict[str, Any] | None:
     if not is_education_tenant(tenant_profile):
         return None
@@ -2578,60 +2589,91 @@ def _handle_education_whatsapp_turn(
         db.session.commit()
         return payload
 
-    if normalized_action in education_intents(tenant_profile):
+    scope = education_case_scope(tenant=tenant_profile, owner=owner_user, actor=end_user,
+                                 anon_id=anon_id, session=session_context, channel="whatsapp")
+    if normalized_action == "derivar_humano" and scope:
         item = education_menu_item_for_intent(normalized_action, tenant_profile) or selected_option or {}
-        pending_case = build_education_pending_case(normalized_action, item)
+        pending_case, _, _ = advance_education_case_draft(
+            context_data=context_data, scope=scope, tenant=tenant_profile, intent=normalized_action,
+            selected_option=item, action_id=selected_action_id, message_body=message_body,
+            uploaded_file_info=uploaded_file_info, location_info=location_info, prefix="education_whatsapp",
+            additional_text=original_message_body,
+        )
+        pending_case["_human_handoff"] = True
         context_data["education_pending_case"] = pending_case
-        payload = _education_prompt_payload(normalized_action, tenant_profile)
+        if not (pending_case.get("details") or pending_case.get("attachments") or pending_case.get("location")):
+            payload = _education_prompt_payload(normalized_action, tenant_profile)
+            context_data["last_options_sent"] = payload.get("options_list") or []
+            context_data["last_options_scope"] = whatsapp_menu_context_scope(payload)
+            safe_flag_modified(session_context, "context_data")
+            db.session.add(session_context)
+            db.session.commit()
+            return payload
+
+    intent = normalized_action if normalized_action in education_intents(tenant_profile) else None
+    pending_case, confirmed, payload = advance_education_case_draft(
+        context_data=context_data, scope=scope, tenant=tenant_profile, intent=intent,
+        selected_option=education_menu_item_for_intent(intent, tenant_profile) or selected_option,
+        action_id=selected_action_id, message_body=message_body,
+        uploaded_file_info=uploaded_file_info, location_info=location_info, prefix="education_whatsapp",
+        additional_text=original_message_body,
+    )
+    # The explicit secretary handoff retains its existing prompt -> detail
+    # behavior; ordinary school cases use the review/confirmation step.
+    if (pending_case and pending_case.get("_human_handoff") and pending_case.get("_scope") == scope
+            and pending_case.get("status") != "registration_uncertain"
+            and normalized_action != "education_send_detail"
+            and (str(message_body or "").strip() or uploaded_file_info or location_info)
+            and not str(selected_action_id or "").startswith("education_case_")):
+        confirmed, payload = True, None
+    if payload:
         context_data["last_options_sent"] = payload.get("options_list") or []
         context_data["last_options_scope"] = whatsapp_menu_context_scope(payload)
+        if "education_pending_case" not in context_data:
+            payload["_context_keys_to_delete"] = ["education_pending_case"]
+        session_context.context_data = context_data
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
         db.session.commit()
         return payload
-
-    pending_case = context_data.get("education_pending_case")
-    has_new_detail = bool((message_body or "").strip() or uploaded_file_info or location_info) and normalized_action not in {"education_send_detail"}
-    if isinstance(pending_case, dict) and has_new_detail:
-        created_at = pending_case.get("created_at")
-        if isinstance(created_at, (int, float)) and time.time() - created_at > 1800:
-            context_data.pop("education_pending_case", None)
-            safe_flag_modified(session_context, "context_data")
-            db.session.add(session_context)
-            db.session.commit()
-            return {
-                "message_body": "La consulta escolar anterior vencio. Elegi una opcion del menu y la retomamos.",
-                "message_type": "interactive_buttons",
-                "options_list": [{"texto": "Menu colegio", "action_id": "menu_colegio"}],
-                "fuente": "education_whatsapp_pending_expired",
-                "_context_keys_to_delete": ["education_pending_case"],
-            }
-
+    if confirmed and pending_case:
+        if scope != education_case_scope(tenant=tenant_profile, owner=owner_user, actor=end_user,
+                                        anon_id=anon_id, session=session_context, channel="whatsapp"):
+            return {"message_body": "La sesión cambió. No registré la consulta.",
+                    "fuente": "education_whatsapp_case_scope_invalid", "options_list": [], "message_type": "text"}
+        context_data["education_pending_case"] = {**pending_case, "status": "registration_uncertain"}
+        session_context.context_data = context_data
+        safe_flag_modified(session_context, "context_data")
+        db.session.add(session_context)
+        db.session.commit()
         ticket = _create_education_whatsapp_ticket(
             owner_user=owner_user,
             tenant_profile=tenant_profile,
             end_user=end_user,
             anon_id=anon_id,
             pending_case=pending_case,
-            message_body=message_body,
-            uploaded_file_info=uploaded_file_info,
-            location_info=location_info,
+            message_body="",
+            uploaded_file_info=None,
+            location_info=pending_case.get("location") or {},
             durable_claim=durable_claim,
         )
-        context_data.pop("education_pending_case", None)
+        if ticket:
+            context_data.pop("education_pending_case", None)
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
         db.session.commit()
         if ticket:
             payload = build_education_case_ack_payload(ticket, intent=pending_case.get("intent"))
+            attachment_status = ticket.get("attachment_status") or {}
+            if attachment_status.get("associated", 0) < attachment_status.get("supplied", 0):
+                payload["message_body"] += " No pude vincular todos los adjuntos al caso. Consultá a secretaría para completarlos."
             payload["_context_keys_to_delete"] = ["education_pending_case"]
             return payload
         return {
-            "message_body": "Recibi el detalle, pero no pude crear el ticket escolar en este momento. Te derivo con secretaria.",
+            "message_body": "No pude confirmar el registro. Conservo el borrador; consultá a secretaría antes de volver a enviarlo.",
             "message_type": "interactive_buttons",
             "options_list": [{"texto": "Hablar con secretaria", "action_id": "derivar_humano"}],
             "fuente": "education_whatsapp_case_error",
-            "_context_keys_to_delete": ["education_pending_case"],
         }
 
     return None
@@ -8819,6 +8861,7 @@ def whatsapp_webhook():
             uploaded_file_info=uploaded_file_info,
             location_info=location_info,
             durable_claim=durable_claim,
+            original_message_body=post_vars.get("Body"),
         )
     if education_direct_payload:
         bot_response_dict = education_direct_payload

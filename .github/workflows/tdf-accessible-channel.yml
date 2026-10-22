@@ -22,6 +22,11 @@ on:
       - 'services/crm_intelligence.py'
       - 'services/whatsapp_receipt_branding.py'
       - 'services/municipio_responder.py'
+      - 'services/chatbot_prompts.py'
+      - 'services/pymes.py'
+      - 'services/education_case_draft.py'
+      - 'services/pyme_multimodal.py'
+      - 'services/ticket_service.py'
       - 'services/ticket_closed_notification.py'
       - 'services/ticket_domain_effects.py'
       - 'routes/ticket.py'
@@ -55,6 +60,11 @@ on:
       - 'tests/test_crm_people_directory.py'
       - 'tests/test_whatsapp_webhook.py'
       - 'tests/test_municipio_explicit_claim_offline.py'
+      - 'tests/test_municipio_context_first_draft.py'
+      - 'tests/test_municipio_context_first_http.py'
+      - 'tests/test_education_widget_flow.py'
+      - 'tests/test_education_context_first_draft.py'
+      - 'tests/test_pyme_context_first_delivery.py'
       - 'tests/ticket_closed_notification_http.py'
       - '.github/workflows/tdf-accessible-channel.yml'
 permissions:
@@ -130,6 +140,21 @@ jobs:
         with:
           name: juni-claim-receipts-${{ github.event.pull_request.head.sha }}
           path: .qa-artifacts/juni-claim-receipts
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify scoped context-first drafts across municipal, school and delivery flows offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/context-first-drafts
+          git rev-parse HEAD > .qa-artifacts/context-first-drafts/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import unittest; names = ['tests.test_municipio_context_first_draft.ContextFirstDraftTests', 'tests.test_municipio_context_first_http.ContextFirstHttpTests', 'tests.test_education_context_first_draft.EducationContextFirstDraftTest', 'tests.test_education_context_first_draft.EducationContextFirstHttpTest', 'tests.test_education_widget_flow.EducationWidgetFlowTest', 'tests.test_pyme_context_first_delivery.PymeContextFirstDeliveryTests']; suite = unittest.TestLoader().loadTestsFromNames(names); result = unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(0 if result.wasSuccessful() else 1)" 2>&1 | tee .qa-artifacts/context-first-drafts/tests.log
+      - name: Preserve context-first draft regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: context-first-drafts-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/context-first-drafts
           if-no-files-found: error
           retention-days: 7
       - name: Verify CRM commercial signals and separate consent offline
