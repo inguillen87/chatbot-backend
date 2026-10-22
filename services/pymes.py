@@ -2448,21 +2448,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if is_education_context:
         pyme_ctx_actual["vertical"] = "educacion"
         chat_db_context.context_data["education_context"] = education_context
-    delivery_session_scope = None
-    viewer_id_for_scope = getattr(viewer_user, "id", None)
-    scope_actor_matches = (
-        viewer_id_for_scope == getattr(chat_db_context, "user_id", None)
-        and getattr(chat_db_context, "anon_id", None) is None
-    ) if viewer_id_for_scope else bool(anon_id and anon_id == getattr(chat_db_context, "anon_id", None))
-    if scope_actor_matches:
-        delivery_session_scope = {
-            "chat_session_id": getattr(chat_db_context, "chat_session_id", None),
-            "tenant_id": getattr(chat_db_context, "tenant_id", None),
-            "user_id": viewer_id_for_scope,
-            "anon_id": None if viewer_id_for_scope else anon_id,
-            "owner_id": getattr(owner_user, "id", None),
-        }
-    session_state = PymeSessionState(pyme_ctx_actual, getattr(owner_user, "id", None), session_scope=delivery_session_scope)
     pyme_ctx_actual["request_id"] = request_id
 
     helper_context_for_success: dict[str, Any] = {}
@@ -2610,6 +2595,30 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
     tenant_slug = tenant_profile.slug if tenant_profile else None
     tenant_id_for_turn = getattr(tenant_profile, "id", None) if tenant_profile else None
+
+    # WhatsApp keeps the business owner in session.user_id and the actual
+    # caller in session.anon_id, even when a saved contact is viewer_user.
+    # Authenticated widget sessions instead have no anonymous identity.
+    session_anon_id = getattr(chat_db_context, "anon_id", None)
+    viewer_id_for_scope = getattr(viewer_user, "id", None)
+    anonymous_session = session_anon_id is not None
+    scope_actor_matches = (
+        bool(anon_id and anon_id == session_anon_id)
+        if anonymous_session else
+        bool(viewer_id_for_scope and viewer_id_for_scope == getattr(chat_db_context, "user_id", None))
+    )
+    delivery_session_scope = None
+    if (scope_actor_matches and tenant_profile and tenant_profile.is_active
+            and tenant_profile.pyme_id == getattr(owner_user, "id", None)
+            and tenant_id_for_turn == getattr(chat_db_context, "tenant_id", None)):
+        delivery_session_scope = {
+            "chat_session_id": getattr(chat_db_context, "chat_session_id", None),
+            "tenant_id": tenant_id_for_turn,
+            "user_id": None if anonymous_session else viewer_id_for_scope,
+            "anon_id": anon_id if anonymous_session else None,
+            "owner_id": getattr(owner_user, "id", None),
+        }
+    session_state = PymeSessionState(pyme_ctx_actual, getattr(owner_user, "id", None), session_scope=delivery_session_scope)
 
     nombre_pyme_display = (
         getattr(owner_user, "nombre_empresa", None)
@@ -2885,8 +2894,18 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             extra={"intent": "delivery_location", "request_id": request_id},
         )
         if not is_education_context:
+            if pregunta_str.strip() and session_state.session_scope is None:
+                scope_error = _finalize_early_response(PymeFlowResult(
+                    message_body="No pude validar la sesión de este pedido. Volvé a abrir el chat de la tienda.",
+                    source="pyme_location_text_scope_invalid",
+                ), intent="delivery_location")
+                scope_error["success"] = False
+                return scope_error
             location_result = handle_location_payload(session_state, config_data, ubicacion_payload)
-            return _finalize_early_response(location_result, intent="delivery_location")
+            # A supplied position is context for the request in the same turn,
+            # not a reason to discard its text before existing interpretation.
+            if not pregunta_str.strip():
+                return _finalize_early_response(location_result, intent="delivery_location")
 
     uploaded_info = (
         received_payload.get("uploaded_file_info")
