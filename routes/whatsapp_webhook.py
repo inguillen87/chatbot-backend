@@ -614,13 +614,23 @@ def _upsert_chatboc_demo_crm_contact(
         tags.append(inquiry_type)
     if content_type and content_type not in {"text", "event"}:
         tags.append(f"entrada_{content_type}")
+    previous_preferences = dict(contact.preferences) if contact and isinstance(contact.preferences, dict) else {}
+    previous_commercial_request = previous_preferences.get("commercial_contact_requested") is True
+    previous_stage = previous_preferences.get("conversation_status")
+    operator_closed_stage = bool(previous_preferences.get("stage_updated_at")) and previous_stage in {"cliente", "perdido", "pausado"}
+    retain_commercial_priority = previous_commercial_request and previous_preferences.get("lead_temperature") == "hot" and not operator_closed_stage
     preferences = {
         "preferred_channel": "whatsapp",
         "source": "chatboc_demo_whatsapp_hub",
         "legacy_user_id": getattr(contact_user, "id", None),
-        "marketing_consent_status": "opted_in" if wants_contact else "unknown",
-        "commercial_contact_requested": wants_contact,
-        "lead_temperature": "hot" if wants_contact else "warm",
+        # Asking for an adviser is not marketing consent; retain separate consent.
+        "marketing_consent_status": previous_preferences.get("marketing_consent_status") or "unknown",
+        "commercial_contact_requested": wants_contact or previous_commercial_request,
+        "last_commercial_contact_requested": wants_contact,
+        "lead_temperature": (
+            previous_preferences.get("lead_temperature", "warm") if operator_closed_stage and not wants_contact
+            else ("hot" if wants_contact or retain_commercial_priority else "warm")
+        ),
         "service_window_source": "inbound_whatsapp",
         "last_demo_input_type": content_type,
         "last_demo_input_summary": input_context.get("summary"),
@@ -671,6 +681,8 @@ def _upsert_chatboc_demo_crm_contact(
         metadata={
             "event_type": "chatboc_demo_inbound",
             "action_id": action_id,
+            "commercial_contact_requested": wants_contact,
+            "prospect_engaged": True,
             "inquiry_type": inquiry_type,
             "content_type": content_type,
             "input_summary": input_context.get("summary"),
@@ -1054,7 +1066,6 @@ def _record_chatboc_demo_engagement(
                 )
             )
         if contact_user:
-            contact_user.acepta_marketing = True
             contact_user.tags = _append_tag(contact_user.tags, "lead_caliente", "quiere_contacto")
             db.session.add(contact_user)
 

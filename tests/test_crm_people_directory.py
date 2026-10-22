@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-import jwt
+from services.auth_session_lifecycle import issue_token
 
 from app import db
 from models import TenantProfile, User
@@ -9,10 +9,8 @@ from models_memory import Contact
 
 
 def _headers(app, actor: User, tenant: TenantProfile) -> dict[str, str]:
-    token = jwt.encode(
+    token = issue_token(
         {"user_id": actor.id, "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
     )
     return {"Authorization": f"Bearer {token}", "X-Tenant": tenant.slug}
 

@@ -1269,13 +1269,14 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             empresa_id=mapping.user_id,
         ).first()
         self.assertIsNotNone(contact)
-        self.assertTrue(contact.acepta_marketing)
+        self.assertFalse(contact.acepta_marketing)
         self.assertIn("lead_caliente", contact.tags or [])
 
         crm_contact = Contact.query.filter_by(phone="+5492600000001").first()
         self.assertIsNotNone(crm_contact)
         self.assertIn("lead_caliente", crm_contact.tags or [])
         self.assertTrue((crm_contact.preferences or {}).get("commercial_contact_requested"))
+        self.assertEqual((crm_contact.preferences or {}).get("marketing_consent_status"), "unknown")
         self.assertEqual((crm_contact.preferences or {}).get("lead_temperature"), "hot")
 
         notification = Notification.query.filter_by(
