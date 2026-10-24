@@ -1268,6 +1268,72 @@ class ReclamoFlowHandler:
             and self.context.get("chat_db_context_data") is getattr(session, "context_data", None)
         )
 
+    def _current_category_authority(self):
+        """Read the same tenant-bound label authority for menu and text claims."""
+        if not self._has_current_draft_scope():
+            return None
+        tenant_id = self.context["tenant_id"]
+        try:
+            with db.session.begin_nested():
+                configured = CategoriaTicket.query.filter_by(tenant_id=tenant_id).all()
+        except SQLAlchemyError as exc:
+            if not db.session.is_active or getattr(exc, "connection_invalidated", False):
+                raise
+            logger.warning("Claim category authority unavailable error_type=%s", type(exc).__name__)
+            return None
+
+        if configured:
+            source = "tenant_ticket_catalog"
+            revision_data = sorted(
+                (row.id, row.nombre, row.tipo) for row in configured
+            )
+            options = [
+                {"name": row.nombre.strip(), "category_id": row.id}
+                for row in configured
+                if row.tipo == "ticket" and isinstance(row.nombre, str) and row.nombre.strip()
+            ]
+        else:
+            # The published institutional menu already permits these legacy
+            # labels without catalog IDs on the manual route. Empty means all
+            # category types are absent; a non-ticket catalog never enables it.
+            menu = _get_reclamos_menu(self.context)
+            if menu.get("fuente") != "submenu_reclamos_estandar_v5":
+                return None
+            source = "published_institutional_menu"
+            options = [
+                {"name": option["category_name"].strip(), "category_id": None}
+                for option in menu.get("options_list", [])
+                if isinstance(option, dict)
+                and isinstance(option.get("category_name"), str)
+                and option["category_name"].strip()
+            ]
+            revision_data = {"menu": menu["fuente"], "options": options}
+        revision = hashlib.sha256(json.dumps(
+            {"tenant_id": tenant_id, "source": source, "data": revision_data},
+            sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        return {"tenant_id": tenant_id, "source": source, "revision": revision, "options": options}
+
+    def _resolve_current_category(self, category):
+        if not isinstance(category, str) or not category.strip():
+            return None
+        authority = self._current_category_authority()
+        if authority is None:
+            return None
+        normalized = normalizar_texto(category)
+        names = {normalized}
+        # Category labels use the same existing vocabulary on manual and text
+        # paths. This compares complete aliases, never parses an intention or
+        # accepts a label absent from the current authority.
+        for label, aliases in RECLAMO_KEYWORDS.items():
+            equivalents = {normalizar_texto(label), *(normalizar_texto(word) for word in aliases)}
+            if normalized in equivalents:
+                names.update(equivalents)
+        matches = [row for row in authority["options"] if normalizar_texto(row["name"]) in names]
+        if len(matches) != 1:
+            return None
+        return {key: authority[key] for key in ("tenant_id", "source", "revision")} | matches[0]
+
     def _collect_initial_draft_data(self, initial, category=None):
         """Merge structured inputs; never infer image/STT content or an address."""
         scoped = self._has_current_draft_scope()
@@ -1288,17 +1354,10 @@ class ReclamoFlowHandler:
             incoming["direccion"] = incoming["ubicacion"]
 
         if merged.get("categoria"):
-            try:
-                with db.session.begin_nested():
-                    configured = CategoriaTicket.query.filter_by(tenant_id=self.context["tenant_id"], tipo="ticket").all()
-                candidates = [row.nombre for row in configured if normalizar_texto(row.nombre or "") == normalizar_texto(merged["categoria"])]
-                if len(candidates) == 1:
-                    merged["categoria"] = candidates[0]
-                else:
-                    merged.pop("categoria", None)
-            except SQLAlchemyError as exc:
-                if not db.session.is_active or getattr(exc, "connection_invalidated", False):
-                    raise
+            resolved = self._resolve_current_category(merged["categoria"])
+            if resolved:
+                merged["categoria"] = resolved["name"]
+            else:
                 merged.pop("categoria", None)
 
         def coordinates(value):
@@ -1649,6 +1708,13 @@ class ReclamoFlowHandler:
         if categoria_inicial and not category_conflict and not datos.get('categoria'):
             datos['categoria'] = categoria_inicial
 
+        authority = self._resolve_current_category(datos.get("categoria"))
+        if authority:
+            datos["categoria"] = authority["name"]
+            self.flow_context["category_authority"] = authority
+        else:
+            datos.pop("categoria", None)
+
         # Check what data is missing and transition to the correct state
         if not self.flow_context['datos_reclamo'].get('categoria'):
             self.municipal_ctx['estado_conversacion'] = ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name
@@ -1731,6 +1797,11 @@ class ReclamoFlowHandler:
                 "message_body": "No pude reconocer la categoría. Por favor elegí una opción o describí el problema."
             }
 
+        authority = self._resolve_current_category(category)
+        if not authority:
+            return {"message_body": "No pude confirmar esa categoría entre las opciones habilitadas de esta organización. Revisemos la categoría antes de registrar el reclamo."}
+        category = authority["name"]
+        self.flow_context["category_authority"] = authority
         datos = self.flow_context.setdefault('datos_reclamo', {})
         datos['categoria'] = category
 
@@ -2472,6 +2543,13 @@ class ReclamoFlowHandler:
 
         if decision.intent is ReclamoTurnIntent.CONFIRM:
             datos = self.flow_context.get('datos_reclamo', {})
+            authority = self._resolve_current_category(datos.get("categoria"))
+            previous = self.flow_context.get("category_authority")
+            if not authority or (isinstance(previous, dict) and previous != authority):
+                self.flow_context["state"] = ReclamoState.ESPERANDO_CATEGORIA.name
+                self.municipal_ctx["estado_conversacion"] = "EN_FLUJO_RECLAMO"
+                return {"message_body": "Las categorías de atención cambiaron o no pude verificarlas. Revisemos la categoría antes de registrar el reclamo; los demás datos siguen en este borrador."}
+            self.flow_context["category_authority"] = authority
             confirmation_id = self._resolve_claim_confirmation_id()
             self._persist_pending_claim_confirmation(confirmation_id)
             action_data = {
@@ -8284,32 +8362,14 @@ def _try_start_explicit_reclamo_from_text(
         )
     }
     category = None
+    handler = ReclamoFlowHandler(context, chat_db_context)
     if len(matches) == 1:
         matched_category = next(iter(matches))
-        try:
-            # A failed optional read must not poison the transaction which
-            # already owns inbound deduplication and the conversation draft.
-            with db.session.begin_nested():
-                configured = CategoriaTicket.query.filter_by(
-                    tenant_id=tenant_id, tipo="ticket"
-                ).all()
-            candidates = [
-                row.nombre
-                for row in configured
-                if isinstance(row.nombre, str)
-                and normalizar_texto(row.nombre) in {
-                    normalizar_texto(matched_category),
-                    *(normalizar_texto(word) for word in RECLAMO_KEYWORDS[matched_category]),
-                }
-            ]
-            if len(candidates) == 1:
-                category = candidates[0]
-        except SQLAlchemyError as exc:
-            if not db.session.is_active or getattr(exc, "connection_invalidated", False):
-                raise
-            logger.warning("Explicit claim category lookup unavailable error_type=%s", type(exc).__name__)
+        authority = handler._resolve_current_category(matched_category)
+        if authority:
+            category = authority["name"]
 
-    response = ReclamoFlowHandler(context, chat_db_context).start_flow(
+    response = handler.start_flow(
         datos_iniciales={"descripcion": text.strip()} if command.group("issue") else {},
         categoria_inicial=category,
     )
