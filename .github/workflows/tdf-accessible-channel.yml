@@ -18,6 +18,7 @@ on:
       - 'services/tts_audio_artifacts.py'
       - 'services/tts_orchestrator.py'
       - 'services/openai_tts_bridge.py'
+      - 'services/openai_bridge.py'
       - 'services/organization_profile_settings.py'
       - 'services/crm_intelligence.py'
       - 'services/whatsapp_receipt_branding.py'
@@ -66,6 +67,8 @@ on:
       - 'tests/test_education_context_first_draft.py'
       - 'tests/test_pyme_context_first_delivery.py'
       - 'tests/test_pyme_location_text_context.py'
+      - 'tests/test_pyme_attachment_text_context.py'
+      - 'tests/test_openai_provider_error_diagnostics.py'
       - 'tests/ticket_closed_notification_http.py'
       - '.github/workflows/tdf-accessible-channel.yml'
 permissions:
@@ -156,6 +159,21 @@ jobs:
         with:
           name: context-first-drafts-${{ github.event.pull_request.head.sha }}
           path: .qa-artifacts/context-first-drafts
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify declared attachment text and bounded provider diagnostics offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/attachment-context-provider-diagnostics
+          git rev-parse HEAD > .qa-artifacts/attachment-context-provider-diagnostics/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-v', '-p', 'no:cacheprovider', 'tests/test_pyme_attachment_text_context.py', 'tests/test_openai_provider_error_diagnostics.py']))" 2>&1 | tee .qa-artifacts/attachment-context-provider-diagnostics/tests.log
+      - name: Preserve attachment context and provider diagnostic regression evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: attachment-context-provider-diagnostics-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/attachment-context-provider-diagnostics
           if-no-files-found: error
           retention-days: 7
       - name: Verify CRM commercial signals and separate consent offline
