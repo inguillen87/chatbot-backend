@@ -21,6 +21,8 @@ on:
       - 'services/openai_bridge.py'
       - 'services/organization_profile_settings.py'
       - 'services/crm_intelligence.py'
+      - 'services/crm_people_directory.py'
+      - 'routes/crm/routes.py'
       - 'services/whatsapp_receipt_branding.py'
       - 'services/municipio_responder.py'
       - 'services/chatbot_prompts.py'
@@ -59,6 +61,7 @@ on:
       - 'tests/test_whatsapp_welcome_each_greeting.py'
       - 'tests/test_crm_commercial_signal.py'
       - 'tests/test_crm_people_directory.py'
+      - 'tests/test_crm_people_cursor_canonical.py'
       - 'tests/test_whatsapp_webhook.py'
       - 'tests/test_municipio_explicit_claim_offline.py'
       - 'tests/test_municipio_context_first_draft.py'
@@ -187,7 +190,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-v', '-p', 'no:cacheprovider', 'tests/test_crm_people_directory.py']))" 2>&1 | tee .qa-artifacts/crm-commercial-signals/directory.log
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-v', '-p', 'no:cacheprovider', 'tests/test_crm_people_cursor_canonical.py', 'tests/test_crm_people_directory.py']))" 2>&1 | tee .qa-artifacts/crm-commercial-signals/directory.log
       - name: Preserve CRM commercial signal regression evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
