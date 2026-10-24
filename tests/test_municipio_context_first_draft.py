@@ -187,7 +187,9 @@ class ContextFirstDraftTests(unittest.TestCase):
         self.context.update(anon_id=None, viewer_user_obj=self.fixture.fixture.mock_client_user)
         self.prior(foto_url="https://example.invalid/old.webp")
         self.start({"categoria": "Arbolado", "descripcion": "Arbol caido"})
-        self.assertEqual(self.flow()["state"], "ESPERANDO_DIRECCION")
+        self.assertEqual(self.flow()["state"], "ESPERANDO_CATEGORIA")
+        self.assertNotIn("categoria", self.flow()["datos_reclamo"])
+        self.assertNotIn("direccion", self.flow()["datos_reclamo"])
         self.assertNotIn("foto_url", self.flow()["datos_reclamo"])
 
     def test_invalid_partial_category_does_not_block_valid_current_category(self):
