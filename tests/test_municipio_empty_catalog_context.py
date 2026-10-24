@@ -8,14 +8,14 @@ from sqlalchemy.orm import Query
 
 from models import CategoriaTicket, MunicipioTicket, TenantProfile, TenantTicket, db
 from services import municipio_responder as municipal
-from tests.test_municipio_explicit_claim_offline import ExplicitClaimOfflineHttpTest
+from tests import test_municipio_explicit_claim_offline as explicit_fixture
 
 
 class EmptyCatalogContextHTTPTests(unittest.TestCase):
     TEXT = "Quiero hacer un reclamo por un árbol caído"
 
     def setUp(self):
-        self.fixture = ExplicitClaimOfflineHttpTest("runTest")
+        self.fixture = explicit_fixture.ExplicitClaimOfflineHttpTest("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
 
