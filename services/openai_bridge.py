@@ -55,10 +55,18 @@ _SAFE_OPENAI_ERROR_CLASSES = frozenset({
     "AuthenticationError", "PermissionDeniedError", "NotFoundError",
     "BadRequestError", "UnprocessableEntityError", "RateLimitError", "InternalServerError",
 })
+# Review-only diagnostics for current API billing causes. These labels never
+# change credits, limits, credentials, models or the provider retry policy.
+_OPENAI_QUOTA_RECOVERY_REVIEWS = {
+    "credit_balance_exhausted": "credit_balance",
+    "organization_spend_limit_exceeded": "organization_spend_limit",
+    "project_spend_limit_exceeded": "project_spend_limit",
+    "organization_usage_limit_exceeded": "organization_usage_limit",
+}
 _SAFE_OPENAI_ERROR_CODES = frozenset({
     "insufficient_quota", "rate_limit_exceeded", "invalid_api_key", "model_not_found",
     "unsupported_parameter", "context_length_exceeded", "invalid_request_error",
-})
+}) | frozenset(_OPENAI_QUOTA_RECOVERY_REVIEWS)
 _SAFE_OPENAI_ERROR_TYPES = frozenset({
     "insufficient_quota", "rate_limit_error", "invalid_request_error",
     "authentication_error", "permission_error", "not_found_error", "server_error",
@@ -1039,12 +1047,14 @@ def llamar_openai(
         error_class, http_status, error_code, provider_error_type = _safe_openai_error_fields(exc)
         logger.error(
             "OpenAI request failed code=openai_request_failed model=%s "
-            "error_type=%s http_status=%s error_code=%s provider_error_type=%s",
+            "error_type=%s http_status=%s error_code=%s provider_error_type=%s "
+            "recovery_review=%s",
             _safe_log_identifier(provider_model),
             error_class,
             http_status,
             error_code,
             provider_error_type,
+            _OPENAI_QUOTA_RECOVERY_REVIEWS.get(error_code, "none"),
         )
         # The SDK may fail after bytes were sent; switching endpoints or providers
         # could duplicate a semantic/transactional decision, so fail closed.
