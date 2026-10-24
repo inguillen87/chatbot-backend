@@ -19,6 +19,7 @@ on:
       - 'services/tts_orchestrator.py'
       - 'services/openai_tts_bridge.py'
       - 'services/openai_bridge.py'
+      - 'services/tracking_experience.py'
       - 'services/organization_profile_settings.py'
       - 'services/crm_intelligence.py'
       - 'services/crm_people_directory.py'
@@ -72,6 +73,9 @@ on:
       - 'tests/test_pyme_location_text_context.py'
       - 'tests/test_pyme_attachment_text_context.py'
       - 'tests/test_openai_provider_error_diagnostics.py'
+      - 'tests/test_municipio_empty_catalog_context.py'
+      - 'tests/test_openai_quota_recovery_diagnostics.py'
+      - 'tests/test_tracking_address_map_contract.py'
       - 'tests/ticket_closed_notification_http.py'
       - '.github/workflows/tdf-accessible-channel.yml'
 permissions:
@@ -177,6 +181,21 @@ jobs:
         with:
           name: attachment-context-provider-diagnostics-${{ github.event.pull_request.head.sha }}
           path: .qa-artifacts/attachment-context-provider-diagnostics
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify municipal category authority, quota diagnostics and address maps offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/municipal-address-recovery
+          git rev-parse HEAD > .qa-artifacts/municipal-address-recovery/checkout.txt
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(['-v', '-p', 'no:cacheprovider', 'tests/test_municipio_empty_catalog_context.py', 'tests/test_municipio_explicit_claim_offline.py', 'tests/test_openai_quota_recovery_diagnostics.py', 'tests/test_tracking_address_map_contract.py']))" 2>&1 | tee .qa-artifacts/municipal-address-recovery/tests.log
+      - name: Preserve municipal address recovery verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: municipal-address-recovery-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/municipal-address-recovery
           if-no-files-found: error
           retention-days: 7
       - name: Verify CRM commercial signals and separate consent offline
