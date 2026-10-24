@@ -2913,6 +2913,15 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         or kwargs.get("uploaded_file_info")
     )
     if isinstance(uploaded_info, dict) and uploaded_info.get("url"):
+        mime_type = (uploaded_info.get("mime_type") or "").lower()
+        if (not is_education_context and session_state.session_scope is None
+                and (mime_type.startswith("image/") or mime_type == "application/pdf" or mime_type.endswith("+pdf"))):
+            scope_error = _finalize_early_response(PymeFlowResult(
+                message_body="No pude validar la sesión de este pedido. Volvé a abrir el chat de la tienda.",
+                source="pyme_attachment_scope_invalid",
+            ), intent="attachment")
+            scope_error["success"] = False
+            return scope_error
         ultimo_adjunto = {
             "url": uploaded_info.get("url"),
             "mime_type": uploaded_info.get("mime_type"),
@@ -2922,7 +2931,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         }
         pyme_ctx_actual["ultimo_adjunto"] = ultimo_adjunto
         usuario_info_for_llm["ultimo_adjunto"] = ultimo_adjunto
-        mime_type = (uploaded_info.get("mime_type") or "").lower()
         if mime_type.startswith("image/"):
             pyme_ctx_actual["foto_url"] = uploaded_info.get("url")
             usuario_info_for_llm["imagen_url"] = uploaded_info.get("url")
@@ -2947,6 +2955,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     channel=channel,
                     context=helper_context_for_success,
                     anon_id=anon_id,
+                    current_message_text=pregunta_str,
                 )
                 return _finalize_early_response(image_result, intent="image_catalog_match")
         elif mime_type == "application/pdf" or mime_type.endswith("+pdf"):
@@ -2971,6 +2980,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     channel=channel,
                     context=helper_context_for_success,
                     anon_id=anon_id,
+                    current_message_text=pregunta_str,
                 )
                 return _finalize_early_response(pdf_result, intent="pdf_catalog_match")
         elif mime_type.startswith("audio/"):

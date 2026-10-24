@@ -1127,6 +1127,7 @@ def _assisted_source_payload(
     channel: Optional[str],
     attachment_info: Dict[str, Any],
     text_preview: Optional[str] = None,
+    current_message_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     attachment_payload = {
         "id": attachment_info.get("id"),
@@ -1151,8 +1152,18 @@ def _assisted_source_payload(
         source["attachmentInfo"] = attachment_payload
         source["attachment_info"] = attachment_payload
         source["source_attachment"] = attachment_payload
-    if text_preview:
-        source["text_preview"] = text_preview[:500]
+    declared_text = _declared_attachment_text(attachment_info, current_message_text)
+    if declared_text:
+        source["declared_text"] = declared_text
+    if isinstance(text_preview, str) and text_preview.strip():
+        # This is supplied attachment metadata, not a claim of OCR success.
+        source["attachment_text_preview"] = text_preview.strip()[:500]
+    preview_parts: List[str] = []
+    for value in (*declared_text.values(), text_preview):
+        if isinstance(value, str) and value.strip() and value.strip() not in preview_parts:
+            preview_parts.append(value.strip())
+    if preview_parts:
+        source["text_preview"] = "\n".join(preview_parts)[:500]
     return {key: value for key, value in source.items() if value}
 
 
@@ -1207,6 +1218,17 @@ def _assisted_items_from_matches(
     return detected_items, unmatched_rows, catalog_candidates
 
 
+def _declared_attachment_text(
+    attachment_info: Dict[str, Any], current_message_text: Optional[str] = None
+) -> Dict[str, str]:
+    """Keep supplied text bounded and distinct from file interpretation."""
+    declared: Dict[str, str] = {}
+    for name, value in (("message", current_message_text), ("caption", attachment_info.get("caption"))):
+        if isinstance(value, str) and value.strip():
+            declared[name] = value.strip()[:2000]
+    return declared
+
+
 def _attachment_text_preview(attachment_info: Dict[str, Any], *extra_parts: Any) -> Optional[str]:
     parts: List[str] = []
     for value in (
@@ -1216,8 +1238,8 @@ def _attachment_text_preview(attachment_info: Dict[str, Any], *extra_parts: Any)
         attachment_info.get("description"),
         *extra_parts,
     ):
-        cleaned = _clean_text(value)
-        if cleaned:
+        cleaned = value.strip() if isinstance(value, str) else None
+        if cleaned and cleaned not in parts:
             parts.append(cleaned)
     if not parts:
         return None
@@ -1615,6 +1637,7 @@ def _persist_assisted_intake_request(
     request_id: Optional[str] = None,
     extraction_error: Optional[str] = None,
     text_preview: Optional[str] = None,
+    current_message_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     matched_count = sum(1 for item in detected_items if item.get("catalog_match"))
     unmatched_count = len(unmatched_rows)
@@ -1626,6 +1649,7 @@ def _persist_assisted_intake_request(
         channel=source_channel,
         attachment_info=attachment_info,
         text_preview=text_preview,
+        current_message_text=current_message_text,
     )
     match_summary = {
         "matched": matched_count,
@@ -1940,9 +1964,17 @@ def handle_image_payload(
     channel: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
     anon_id: Optional[str] = None,
+    current_message_text: Optional[str] = None,
 ) -> Optional[PymeFlowResult]:
     image_url = image_info.get("url")
-    detected = analyse_image_for_products(image_url)
+    declared_text = _declared_attachment_text(image_info, current_message_text)
+    try:
+        detected = analyse_image_for_products(image_url)
+    except Exception:
+        # Keep the user's request available for review without exposing a
+        # provider exception or claiming that the attachment was interpreted.
+        logger.warning("Image interpretation unavailable; retaining the request for review")
+        detected = None
 
     if not detected:
         text_preview = _attachment_text_preview(image_info)
@@ -1968,9 +2000,16 @@ def handle_image_payload(
             request_id=request_id,
             extraction_error="imagen_sin_lectura",
             text_preview=text_preview,
+            current_message_text=current_message_text,
         )
         return PymeFlowResult(
-            message_body="Recibí la imagen pero no pude leer el contenido claramente. ¿Podrías decirme qué necesitás?",
+            message_body=(
+                ("Tu texto quedó registrado junto con la imagen para revisión. Todavía no confirmé productos ni cantidades."
+                 if assisted_request.get("pedido_id") and not assisted_request.get("persistence_skipped") else
+                 "Recibí tu texto y la imagen, pero no pude registrar la solicitud. Volvé a abrir el chat de la tienda para enviarla.")
+                if declared_text else
+                "Recibí la imagen pero no pude leer el contenido claramente. ¿Podrías decirme qué necesitás?"
+            ),
             source="pyme_imagen_revision_manual",
             data={
                 "assisted_request": assisted_request,
@@ -2068,6 +2107,7 @@ def handle_image_payload(
         context=context,
         anon_id=anon_id,
         request_id=request_id,
+        current_message_text=current_message_text,
     )
 
     msg = "Leí tu pedido de la imagen:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Es correcto? Confirmame para procesarlo."
@@ -2100,9 +2140,11 @@ def handle_pdf_payload(
     channel: Optional[str] = None,
     context: Optional[Dict[str, Any]] = None,
     anon_id: Optional[str] = None,
+    current_message_text: Optional[str] = None,
 ) -> PymeFlowResult:
     extracted_items: List[Dict[str, Any]] = []
     text_blocks: List[str] = []
+    declared_text = _declared_attachment_text(pdf_info, current_message_text)
 
     analysis_data = pdf_info.get("analysis") if isinstance(pdf_info.get("analysis"), dict) else {}
     if analysis_data:
@@ -2198,7 +2240,22 @@ def handle_pdf_payload(
             request_id=request_id,
             extraction_error=extraction_error,
             text_preview=text_preview,
+            current_message_text=current_message_text,
         )
+        if declared_text:
+            return PymeFlowResult(
+                message_body=(
+                    "Tu texto quedó registrado junto con el archivo para revisión. Todavía no confirmé productos ni cantidades."
+                    if assisted_request.get("pedido_id") and not assisted_request.get("persistence_skipped") else
+                    "Recibí tu texto y el archivo, pero no pude registrar la solicitud. Volvé a abrir el chat de la tienda para enviarla."
+                ),
+                source="pyme_pdf_revision_manual",
+                data={
+                    "assisted_request": assisted_request,
+                    "pedido_id": assisted_request.get("pedido_id"),
+                    "lead_id": assisted_request.get("lead_id"),
+                },
+            )
         if not text_blocks and not extracted_items:
             return PymeFlowResult(
                 message_body=(
@@ -2253,6 +2310,7 @@ def handle_pdf_payload(
         anon_id=anon_id,
         request_id=request_id,
         text_preview="\n".join(text_blocks),
+        current_message_text=current_message_text,
     )
 
     msg = "Procesé el pedido del archivo:\n\n" + "\n".join(items_to_confirm) + "\n\n¿Confirmamos?"
