@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -100,7 +102,35 @@ def _encode_cursor(*, tenant_id: int, actor_id: int, filters_hash: str, occurred
     })
 
 
+def _is_canonical_cursor_encoding(token: str) -> bool:
+    if not isinstance(token, str) or not token or len(token) > 4096:
+        return False
+    try:
+        payload, signature = token.rsplit(".", 1)
+    except ValueError:
+        return False
+    # URLSafeSerializer may prefix its payload with one compression marker.
+    # Both forms retain the same existing unpadded base64URL wire format.
+    if payload.startswith("."):
+        payload = payload[1:]
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    for segment in (payload, signature):
+        if not segment or any(character not in alphabet for character in segment):
+            return False
+        try:
+            decoded = base64.b64decode(segment + "=" * (-len(segment) % 4), altchars=b"-_", validate=True)
+        except (ValueError, binascii.Error):
+            return False
+        # Strict alphabet checks alone do not reject alternate unused pad bits.
+        # Compare the canonical representation before any signature verification.
+        if base64.urlsafe_b64encode(decoded).rstrip(b"=").decode("ascii") != segment:
+            return False
+    return True
+
+
 def _decode_cursor(token: str, *, tenant_id: int, actor_id: int, filters_hash: str) -> tuple[datetime, str]:
+    if not _is_canonical_cursor_encoding(token):
+        raise PeopleDirectoryError("invalid_people_cursor", "Cursor invalido")
     try:
         payload = _serializer().loads(token)
     except BadSignature as exc:

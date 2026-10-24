@@ -143,12 +143,13 @@ class ExplicitClaimOfflineHttpTest(unittest.TestCase):
         self.set_general_state()
         original = "quiero hacer un reclamo por un arbol caido"
         ctx, body = self.post(original)
+        self.assert_address_draft(ctx, original)
         flow = deepcopy(ctx["reclamo_flow_v2"])
-        self.assertEqual(flow["state"], "ESPERANDO_CATEGORIA")
-        self.assertEqual(flow["datos_reclamo"]["descripcion"], original)
         self.assertNotIn("asistentes de IA", body)
-        ctx, _ = self.post("2")
-        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_DIRECCION")
+        with patch("services.address_normalizer.normalize_and_geocode", return_value=None):
+            ctx, _ = self.post("Sarmiento 123")
+        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_FOTO")
+        self.assertEqual(ctx["reclamo_flow_v2"]["datos_reclamo"]["direccion"], "Sarmiento 123")
         self.assertEqual(ctx["reclamo_flow_v2"]["confirmation_id"], flow["confirmation_id"])
         self.assertEqual(ctx["reclamo_flow_v2"]["datos_reclamo"]["descripcion"], original)
         self.assertEqual(self.provider_calls, 0)
@@ -162,7 +163,13 @@ class ExplicitClaimOfflineHttpTest(unittest.TestCase):
         db.session.commit()
         original = "quiero hacer un reclamo por un arbol caido"
         ctx, _ = self.post(original)
-        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_CATEGORIA")
+        self.assert_address_draft(ctx, original)
+        flow = deepcopy(ctx["reclamo_flow_v2"])
+        with patch("services.address_normalizer.normalize_and_geocode", return_value=None):
+            ctx, _ = self.post("Sarmiento 123")
+        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_FOTO")
+        self.assertEqual(ctx["reclamo_flow_v2"]["datos_reclamo"]["direccion"], "Sarmiento 123")
+        self.assertEqual(ctx["reclamo_flow_v2"]["confirmation_id"], flow["confirmation_id"])
         self.assertEqual(ctx["reclamo_flow_v2"]["datos_reclamo"]["descripcion"], original)
         self.assertEqual(self.provider_calls, 0)
         self.complaint_extractor.assert_not_called()
@@ -257,18 +264,19 @@ class ExplicitClaimOfflineHttpTest(unittest.TestCase):
         self.assertEqual(ctx["reclamo_flow_v2"]["confirmation_id"], flow["confirmation_id"])
         self.assertEqual(self.provider_calls, 0)
 
-    def test_empty_tenant_catalog_asks_category_without_AI(self):
+    def test_empty_tenant_catalog_uses_published_menu_authority_without_AI(self):
         self.post("Hola")
         original = "quiero hacer un reclamo por un arbol caido"
         ctx, body = self.post(original)
-        flow = ctx["reclamo_flow_v2"]
-        self.assertEqual(flow["state"], "ESPERANDO_CATEGORIA")
-        self.assertNotIn("categoria", flow["datos_reclamo"])
-        self.assertEqual(flow["datos_reclamo"]["descripcion"], original)
-        self.assertIn("opción para tu reclamo", body)
+        self.assert_address_draft(ctx, original)
+        authority = ctx["reclamo_flow_v2"]["category_authority"]
+        self.assertEqual(authority["source"], "published_institutional_menu")
+        self.assertEqual(authority["tenant_id"], self.tenant.id)
+        self.assertIsNone(authority["category_id"])
+        self.assertNotIn("opción para tu reclamo", body)
         self.assertEqual(self.provider_calls, 0)
 
-    def test_another_organization_category_does_not_preselect_current_tenant(self):
+    def test_another_organization_category_does_not_supply_current_tenant_authority(self):
         other = TenantProfile(
             slug="other-explicit-fixture", nombre="Otra organización", tipo="municipio",
             municipio_id=self.fixture.mock_client_user.id,
@@ -277,9 +285,13 @@ class ExplicitClaimOfflineHttpTest(unittest.TestCase):
         db.session.commit()
         self.category("Arbolado", other)
         self.post("Hola")
-        ctx, _ = self.post("quiero hacer un reclamo por un arbol caido")
-        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_CATEGORIA")
-        self.assertNotIn("categoria", ctx["reclamo_flow_v2"]["datos_reclamo"])
+        original = "quiero hacer un reclamo por un arbol caido"
+        ctx, _ = self.post(original)
+        self.assert_address_draft(ctx, original)
+        authority = ctx["reclamo_flow_v2"]["category_authority"]
+        self.assertEqual(authority["tenant_id"], self.tenant.id)
+        self.assertEqual(authority["source"], "published_institutional_menu")
+        self.assertIsNone(authority["category_id"])
         self.assertEqual(self.provider_calls, 0)
 
     def test_ambiguous_issues_ask_category_without_AI(self):
@@ -374,8 +386,10 @@ class ExplicitClaimOfflineHttpTest(unittest.TestCase):
         self.tenant.slug = "junin"
         db.session.commit()
         self.post("Hola")
-        original = "quiero hacer un reclamo por un arbol caido"
+        original = "quiero hacer un reclamo por un arbol caido y una luminaria rota"
         ctx, _ = self.post(original)
+        self.assertEqual(ctx["reclamo_flow_v2"]["state"], "ESPERANDO_CATEGORIA")
+        self.assertNotIn("categoria", ctx["reclamo_flow_v2"]["datos_reclamo"])
         before = deepcopy(ctx["reclamo_flow_v2"])
         ctx, body = self.post("Hola")
         self.assertEqual(ctx["reclamo_flow_v2"], before)

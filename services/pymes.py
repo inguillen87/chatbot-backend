@@ -57,6 +57,10 @@ from .llm_utils import extract_multiple_contact_details_llm, resumir_descripcion
 from .common_utils import validar_email, validar_telefono
 from services.llm_orchestrator import llamar_llm_con_fallback # Import for proactive suggestions
 from services.education_case_service import create_school_case_alias_for_ticket, school_case_alias_payload
+from services.education_case_draft import (
+    advance_education_case_draft, education_attachment_matches_scope,
+    education_case_scope, education_draft_description,
+)
 from services.education_contracts import (
     build_education_case_ack_payload,
     build_education_pending_case,
@@ -447,37 +451,30 @@ def _handle_education_widget_turn(
             data=data,
         )
 
-    if normalized_action:
-        item = education_menu_item_for_intent(normalized_action, tenant_profile) or {}
-        pending_case = build_education_pending_case(normalized_action, item)
-        context_data["education_pending_case"] = pending_case
-        prompt = education_prompt_for_intent(normalized_action, tenant_profile)
-        context_data["last_options_sent"] = prompt.get("options_list") or []
-        return PymeFlowResult(
-            message_body=prompt.get("message_body") or "Contame el detalle y lo registro para secretaria.",
-            source="education_widget_case_prompt",
-            options_list=prompt.get("options_list") or [],
-            message_type="interactive_buttons",
-            data={
-                "education_context": {
-                    "vertical": "educacion",
-                    "tenant_slug": getattr(tenant_profile, "slug", None),
-                    "pending_case": pending_case,
-                }
-            },
-        )
-
-    pending_case = context_data.get("education_pending_case")
-    has_detail = bool((pregunta_str or "").strip() or uploaded_file_info or location_info)
-    if not isinstance(pending_case, dict) or not has_detail:
-        return None
-
-    description = _education_case_description(
-        message_body=pregunta_str,
-        uploaded_file_info=uploaded_file_info,
-        location_info=location_info,
-        pending_case=pending_case,
+    scope = education_case_scope(tenant=tenant_profile, owner=owner_user, actor=viewer_user,
+                                 anon_id=anon_id, session=chat_db_context, channel=channel)
+    pending_case, confirmed, draft_payload = advance_education_case_draft(
+        context_data=context_data, scope=scope, tenant=tenant_profile, intent=normalized_action,
+        selected_option=education_menu_item_for_intent(normalized_action, tenant_profile),
+        action_id=selected_action_id, message_body=pregunta_str,
+        uploaded_file_info=uploaded_file_info, location_info=location_info,
+        prefix="education_widget",
     )
+    if draft_payload:
+        context_data["last_options_sent"] = draft_payload.get("options_list") or []
+        chat_db_context.context_data = context_data
+        return PymeFlowResult(message_body=draft_payload["message_body"], source=draft_payload["fuente"],
+                              options_list=draft_payload.get("options_list") or [],
+                              message_type=draft_payload.get("message_type") or "text", data=draft_payload.get("data") or {})
+    if not confirmed or not pending_case:
+        return None
+    # No ticket or alias is created until the displayed draft is confirmed in
+    # the same organization, owner, actor and chat session.
+    if scope != education_case_scope(tenant=tenant_profile, owner=owner_user, actor=viewer_user,
+                                    anon_id=anon_id, session=chat_db_context, channel=channel):
+        return PymeFlowResult(message_body="La sesión cambió. No registré la consulta.", source="education_widget_case_scope_invalid")
+    description = education_draft_description(pending_case)
+    location_info = pending_case.get("location") or {}
     category = pending_case.get("category") or "secretaria"
     ticket_data = {
         "tenant_id": getattr(tenant_profile, "id", None),
@@ -490,17 +487,24 @@ def _handle_education_widget_turn(
         "canal_ingreso": channel or "widget",
         "estado": "nuevo",
         "direccion": (location_info or {}).get("address") or (location_info or {}).get("label"),
-        "latitud": (location_info or {}).get("latitude") or (location_info or {}).get("lat"),
-        "longitud": (location_info or {}).get("longitude") or (location_info or {}).get("lng") or (location_info or {}).get("lon"),
+        "latitud": location_info.get("latitude"),
+        "longitud": location_info.get("longitude"),
         "nombre_cliente": pyme_ctx_actual.get("nombre_cliente"),
         "telefono_cliente": pyme_ctx_actual.get("telefono_cliente") or anon_id,
         "email_cliente": pyme_ctx_actual.get("email_cliente"),
         "pyme_id": getattr(owner_user, "id", None),
     }
+    # Persist an uncertainty fence before a service may commit the ticket but
+    # fail later (for example while creating its school alias).
+    context_data["education_pending_case"] = {**pending_case, "status": "registration_uncertain"}
+    chat_db_context.context_data = context_data
+    flag_modified(chat_db_context, "context_data")
+    db.session.add(chat_db_context)
+    db.session.commit()
     ticket = servicio_tickets.crear_nuevo_ticket("pyme", {k: v for k, v in ticket_data.items() if v is not None})
     if not ticket:
         return PymeFlowResult(
-            message_body="Recibi el detalle, pero no pude crear el caso escolar en este momento. Te derivo con secretaria.",
+            message_body="No pude confirmar el registro. Conservo el borrador; consultá a secretaría antes de volver a enviarlo.",
             source="education_widget_case_error",
             options_list=[{"texto": "Hablar con secretaria", "action_id": "talk_secretary"}],
             message_type="interactive_buttons",
@@ -522,17 +526,21 @@ def _handle_education_widget_turn(
         ticket["school_case_id"] = alias_payload.get("school_case_id")
         ticket["school_case"] = alias_payload
 
-    attachment_id = (uploaded_file_info or {}).get("id")
-    if attachment_id and ticket_id:
+    attachment_count = len(pending_case.get("attachments") or [])
+    associated_count = 0
+    if attachment_count and ticket_id:
         try:
-            adjunto = db.session.get(ArchivoAdjunto, attachment_id)
-            if adjunto:
-                adjunto.pyme_ticket_id = ticket_id
-                db.session.add(adjunto)
-                db.session.commit()
+            for metadata in pending_case["attachments"]:
+                adjunto = db.session.get(ArchivoAdjunto, metadata.get("id")) if metadata.get("id") else None
+                if education_attachment_matches_scope(adjunto, scope):
+                    adjunto.pyme_ticket_id = ticket_id
+                    db.session.add(adjunto)
+                    associated_count += 1
+            db.session.commit()
         except Exception:
             logger.exception("[EDUCATION_WIDGET] No se pudo asociar adjunto al ticket escolar")
             db.session.rollback()
+            associated_count = 0
 
     context_data = chat_db_context.context_data if isinstance(getattr(chat_db_context, "context_data", None), dict) else {}
     context_data.pop("education_pending_case", None)
@@ -541,6 +549,10 @@ def _handle_education_widget_turn(
         context_data["latest_ticket_nro"] = ticket.get("nro_ticket")
     chat_db_context.context_data = context_data
     payload = build_education_case_ack_payload(ticket, intent=pending_case.get("intent"))
+    if attachment_count:
+        payload.setdefault("data", {})["attachment_status"] = {"supplied": attachment_count, "associated": associated_count}
+        if associated_count < attachment_count:
+            payload["message_body"] += " No pude vincular todos los adjuntos al caso. Consultá a secretaría para completarlos."
     return PymeFlowResult(
         message_body=payload.get("message_body") or "Listo, deje tu consulta escolar registrada.",
         source="education_widget_case_created",
@@ -2436,7 +2448,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if is_education_context:
         pyme_ctx_actual["vertical"] = "educacion"
         chat_db_context.context_data["education_context"] = education_context
-    session_state = PymeSessionState(pyme_ctx_actual, getattr(owner_user, "id", None))
     pyme_ctx_actual["request_id"] = request_id
 
     helper_context_for_success: dict[str, Any] = {}
@@ -2584,6 +2595,30 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     )
     tenant_slug = tenant_profile.slug if tenant_profile else None
     tenant_id_for_turn = getattr(tenant_profile, "id", None) if tenant_profile else None
+
+    # WhatsApp keeps the business owner in session.user_id and the actual
+    # caller in session.anon_id, even when a saved contact is viewer_user.
+    # Authenticated widget sessions instead have no anonymous identity.
+    session_anon_id = getattr(chat_db_context, "anon_id", None)
+    viewer_id_for_scope = getattr(viewer_user, "id", None)
+    anonymous_session = session_anon_id is not None
+    scope_actor_matches = (
+        bool(anon_id and anon_id == session_anon_id)
+        if anonymous_session else
+        bool(viewer_id_for_scope and viewer_id_for_scope == getattr(chat_db_context, "user_id", None))
+    )
+    delivery_session_scope = None
+    if (scope_actor_matches and tenant_profile and tenant_profile.is_active
+            and tenant_profile.pyme_id == getattr(owner_user, "id", None)
+            and tenant_id_for_turn == getattr(chat_db_context, "tenant_id", None)):
+        delivery_session_scope = {
+            "chat_session_id": getattr(chat_db_context, "chat_session_id", None),
+            "tenant_id": tenant_id_for_turn,
+            "user_id": None if anonymous_session else viewer_id_for_scope,
+            "anon_id": anon_id if anonymous_session else None,
+            "owner_id": getattr(owner_user, "id", None),
+        }
+    session_state = PymeSessionState(pyme_ctx_actual, getattr(owner_user, "id", None), session_scope=delivery_session_scope)
 
     nombre_pyme_display = (
         getattr(owner_user, "nombre_empresa", None)
@@ -2834,6 +2869,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if loc_usuario_texto:
         usuario_info_for_llm["ubicacion_conocida"] = loc_usuario_texto
 
+    education_original_message = pregunta_str
     ubicacion_payload = (
         received_payload.get("ubicacion_usuario")
         or kwargs.get("ubicacion_usuario")
@@ -2858,8 +2894,18 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             extra={"intent": "delivery_location", "request_id": request_id},
         )
         if not is_education_context:
+            if pregunta_str.strip() and session_state.session_scope is None:
+                scope_error = _finalize_early_response(PymeFlowResult(
+                    message_body="No pude validar la sesión de este pedido. Volvé a abrir el chat de la tienda.",
+                    source="pyme_location_text_scope_invalid",
+                ), intent="delivery_location")
+                scope_error["success"] = False
+                return scope_error
             location_result = handle_location_payload(session_state, config_data, ubicacion_payload)
-            return _finalize_early_response(location_result, intent="delivery_location")
+            # A supplied position is context for the request in the same turn,
+            # not a reason to discard its text before existing interpretation.
+            if not pregunta_str.strip():
+                return _finalize_early_response(location_result, intent="delivery_location")
 
     uploaded_info = (
         received_payload.get("uploaded_file_info")
@@ -2867,6 +2913,15 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         or kwargs.get("uploaded_file_info")
     )
     if isinstance(uploaded_info, dict) and uploaded_info.get("url"):
+        mime_type = (uploaded_info.get("mime_type") or "").lower()
+        if (not is_education_context and session_state.session_scope is None
+                and (mime_type.startswith("image/") or mime_type == "application/pdf" or mime_type.endswith("+pdf"))):
+            scope_error = _finalize_early_response(PymeFlowResult(
+                message_body="No pude validar la sesión de este pedido. Volvé a abrir el chat de la tienda.",
+                source="pyme_attachment_scope_invalid",
+            ), intent="attachment")
+            scope_error["success"] = False
+            return scope_error
         ultimo_adjunto = {
             "url": uploaded_info.get("url"),
             "mime_type": uploaded_info.get("mime_type"),
@@ -2876,7 +2931,6 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         }
         pyme_ctx_actual["ultimo_adjunto"] = ultimo_adjunto
         usuario_info_for_llm["ultimo_adjunto"] = ultimo_adjunto
-        mime_type = (uploaded_info.get("mime_type") or "").lower()
         if mime_type.startswith("image/"):
             pyme_ctx_actual["foto_url"] = uploaded_info.get("url")
             usuario_info_for_llm["imagen_url"] = uploaded_info.get("url")
@@ -2901,6 +2955,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     channel=channel,
                     context=helper_context_for_success,
                     anon_id=anon_id,
+                    current_message_text=pregunta_str,
                 )
                 return _finalize_early_response(image_result, intent="image_catalog_match")
         elif mime_type == "application/pdf" or mime_type.endswith("+pdf"):
@@ -2925,6 +2980,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     channel=channel,
                     context=helper_context_for_success,
                     anon_id=anon_id,
+                    current_message_text=pregunta_str,
                 )
                 return _finalize_early_response(pdf_result, intent="pdf_catalog_match")
         elif mime_type.startswith("audio/"):
@@ -3079,7 +3135,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             anon_id=anon_id,
             chat_db_context=chat_db_context,
             pyme_ctx_actual=pyme_ctx_actual,
-            pregunta_str=pregunta_str,
+            pregunta_str=education_original_message,
             selected_action_id=selected_action_id,
             uploaded_file_info=uploaded_info if isinstance(uploaded_info, dict) else None,
             location_info=ubicacion_payload if isinstance(ubicacion_payload, dict) else None,
@@ -3115,6 +3171,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             mensaje_para_llm = f"Contexto adicional proporcionado por el usuario:\n{notas_texto}"
 
     intent_detected = detect_intent_from_text(pregunta_str or "") if pregunta_str else None
+    if selected_action_id == "editar_direccion":
+        intent_detected = "delivery"
     if not intent_detected and received_payload.get("action"):
         intent_detected = detect_intent_from_text(received_payload.get("action", ""))
 
@@ -3154,6 +3212,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                 "email_cliente": pyme_ctx_actual.get("email_cliente"),
                 "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
                 "tenant_id": tenant_id_for_turn,
+                "selected_action_id": selected_action_id,
                 **source_event_context,
             },
             channel=channel,

@@ -773,7 +773,7 @@ def list_people_directory_v2(current_user):
     if sort != "recent_desc":
         return _crm_people_error("people_sort_invalid", "use_recent_desc")
 
-    cursor = str(request.args.get("cursor") or "").strip() or None
+    cursor = str(request.args.get("cursor") or "") or None
     if cursor and (len(cursor) > 4096 or "\x00" in cursor):
         return _crm_people_error("invalid_people_cursor", "restart_people_directory")
     pii_requested = str(request.args.get("pii") or "masked").strip().lower() in {"full", "raw", "unmasked"}
