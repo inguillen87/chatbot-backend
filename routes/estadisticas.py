@@ -192,18 +192,25 @@ def _resolve_tenant_profile_or_error(args) -> object:
     return tenant
 
 
-def _stats_tenant_access_allowed(current_user, tenant, *, explicit_selection=False) -> bool:
+def _stats_tenant_access_allowed(current_user, tenant, *, requested_tipo, explicit_selection=False) -> bool:
     if tenant is None or current_user is None:
         return False
-    if normalize_tenant_type(getattr(tenant, "tipo", None), default="") == "pyme":
-        # Reuse the service's exact employee classification and keep its
-        # downstream category/privacy projection; this is not tenant-wide KPI access.
+    if requested_tipo == "pyme":
+        # The requested domain chooses the boundary. A differently typed
+        # profile must never fall through to the legacy owner policy.
+        if (normalize_tenant_type(getattr(tenant, "tipo", None), default="") != "pyme"
+                or getattr(tenant, "is_active", False) is not True):
+            return False
+        # Keep the service's exact employee classification and unchanged
+        # downstream category/privacy projection; this is not whole-tenant KPI access.
         if _is_category_limited_employee(current_user):
             resolved = resolve_consistent_user_tenant(current_user)
-            return bool(getattr(tenant, "is_active", False) is True
-                        and resolved is not None and resolved.id == tenant.id)
+            return bool(resolved is not None and resolved.id == tenant.id)
         return business_metrics_actor_can_read(current_user, tenant,
                                                explicit_selection=explicit_selection)
+    if requested_tipo != "municipio":
+        return False
+    # Preserve the prior municipal policy independently of the profile's type.
     if is_authorized_superadmin_user(current_user):
         return True
 
@@ -913,7 +920,7 @@ def estadisticas_dashboard(current_user):
         allowed = business_metrics_actor_can_read(current_user, tenant,
                                                   explicit_selection=explicit_selection)
     else:
-        allowed = _stats_tenant_access_allowed(current_user, tenant)
+        allowed = _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo)
     if not allowed:
         if tipo == "pyme":
             return _dashboard_pyme_scope_denied()
@@ -1064,7 +1071,7 @@ def mapa_calor_datos(current_user):
         if tipo_ticket == "pyme":
             return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
-    if not _stats_tenant_access_allowed(current_user, tenant, explicit_selection=explicit_selection):
+    if not _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo_ticket, explicit_selection=explicit_selection):
         if tipo_ticket == "pyme":
             return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_forbidden"}), 403
@@ -1177,7 +1184,10 @@ def estadisticas_tickets(current_user):
     `municipio_id` o `rubro_id`, se utilizan los del `current_user`.
     """
     args = request.args
-    tipo = args.get("tipo", "municipio")
+    try:
+        tipo = _resolve_heatmap_ticket_type(args)
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
 
     try:
         tenant, explicit_selection = _resolve_ticket_stats_tenant(current_user, args, tipo)
@@ -1185,7 +1195,7 @@ def estadisticas_tickets(current_user):
         if tipo == "pyme":
             return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
-    if not _stats_tenant_access_allowed(current_user, tenant, explicit_selection=explicit_selection):
+    if not _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo, explicit_selection=explicit_selection):
         if tipo == "pyme":
             return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_forbidden"}), 403
