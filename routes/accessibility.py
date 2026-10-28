@@ -127,6 +127,20 @@ def _contract_response(target_user: User):
 def accessibility_preferences_me(auth_user: User):
     if request.method == "OPTIONS":
         return "", 204
+    # Bind a view's expected account before reading or persisting preferences.
+    # This precondition is not an entitlement and cannot select another user.
+    # Keep /me without a hint compatible with existing authenticated clients.
+    expected_ids = request.args.getlist("expected_user_id")
+    if "expected_user_id" in request.args and (
+        len(expected_ids) != 1 or expected_ids[0] != str(auth_user.id)
+    ):
+        response = jsonify({
+            "reason_code": "accessibility_identity_mismatch",
+            "error": "La cuenta de esta solicitud cambió. Actualizá la vista para continuar.",
+        })
+        response.status_code = 403
+        response.headers["Cache-Control"] = "no-store"
+        return response
     if request.method == "PUT":
         saved = _save_preferences(auth_user)
         if isinstance(saved, tuple):

@@ -23,6 +23,15 @@ name: Durable sessions and private attachments
       - routes/ticket.py
       - routes/crm/**
       - services/auth_session_lifecycle.py
+      - routes/metricas.py
+      - routes/estadisticas.py
+      - services/metricas_service.py
+      - services/analytics/repository.py
+      - services/analytics/rbac.py
+      - services/tenant_ticket_scope.py
+      - tests/test_enterprise_metrics_contract.py
+      - tests/integration/test_enterprise_metrics_postgres.py
+      - tests/run_enterprise_metrics_postgres.py
       - services/tenant_factory.py
       - services/clerk_auth_service.py
       - services/runtime_readiness.py
@@ -190,10 +199,24 @@ jobs:
           mkdir -p .qa-artifacts/auth-session-postgres
           python -m tests.run_auth_session_lifecycle_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/postgres.log
           python -m tests.run_crm_template_integrity_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/crm-template-jsonb.log
+      - name: Enterprise metrics on the owned disposable PostgreSQL 18
+        shell: bash
+        env:
+          CHATBOC_ENTERPRISE_METRICS_TEST_POSTGRES: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-session-postgres
+          git rev-parse HEAD > .qa-artifacts/auth-session-postgres/enterprise-metrics-checkout.txt
+          sha256sum app.py routes/metricas.py routes/estadisticas.py services/metricas_service.py services/analytics/repository.py services/analytics/rbac.py services/tenant_ticket_scope.py tests/test_enterprise_metrics_contract.py tests/test_metricas.py tests/test_estadisticas_dashboard.py tests/integration/test_enterprise_metrics_postgres.py tests/run_enterprise_metrics_postgres.py tests/run_auth_session_lifecycle_postgres.py tests/profile_acceptance_runtime.py .github/workflows/auth-private-storage.yml > .qa-artifacts/auth-session-postgres/enterprise-metrics-source-sha256.txt
+          python -X utf8 -m tests.run_enterprise_metrics_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/enterprise-metrics.log
       - name: Preserve disposable PostgreSQL evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: disposable-auth-session-postgres
-          path: .qa-artifacts/auth-session-postgres/*.log
+          path: |
+            .qa-artifacts/auth-session-postgres/*.log
+            .qa-artifacts/auth-session-postgres/enterprise-metrics.xml
+            .qa-artifacts/auth-session-postgres/enterprise-metrics-checkout.txt
+            .qa-artifacts/auth-session-postgres/enterprise-metrics-source-sha256.txt
           include-hidden-files: true

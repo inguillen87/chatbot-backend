@@ -23,6 +23,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         stub.token_requerido = lambda f: f
         stub.admin_o_empleado_requerido = lambda f: f
         stub.anon_o_token_requerido = lambda f: f
+        stub._explicit_admin_request_tenant = lambda: (None, False)
         sys.modules['utils.auth_helpers'] = stub
 
         os.environ.setdefault('OPENAI_API_KEY', 'test')
@@ -299,7 +300,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         metricas_instance.get_total_ingresos.return_value = 1250
         metricas_instance.get_total_pedidos.return_value = 18
         metricas_instance.get_new_customers.return_value = 11
-        metricas_instance.get_conversion_rate.return_value = 1.64
+        metricas_instance.get_conversion_rate.return_value = None
         metricas_instance.get_kpis.return_value = {"growth": 0.2}
         metricas_instance.get_sales_over_time.return_value = [
             {"date": "2024-01-01", "sales": 100}
@@ -310,11 +311,19 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         metricas_instance.get_sales_by_region.return_value = [
             {"region": "Centro", "sales": 500}
         ]
+        metricas_instance.get_summary.return_value = {"currency": "ARS", "availability": {}}
+        metricas_instance.get_module_availability.return_value = {"kpis": {"state": "partial"}}
         mock_metricas_cls.return_value = metricas_instance
 
         current_user = SimpleNamespace(id=77, municipio_id=None, rubro_id=9, pyme_id=None)
 
-        with self.app.test_request_context('/estadisticas/dashboard?tipo=pyme'):
+        # Payload-only unit fixture supplies a resolved scope explicitly;
+        # real route authorization is covered by the HTTP contract tests.
+        tenant = SimpleNamespace(id=8, slug="synthetic-pyme", pyme_id=77,
+                                 municipio_id=None, rubro_id=9, tipo="pyme")
+        with self.app.test_request_context('/estadisticas/dashboard?tipo=pyme'), \
+             patch('routes.estadisticas._resolve_tenant_profile_or_error', return_value=tenant), \
+             patch('routes.estadisticas.business_metrics_actor_can_read', return_value=True):
             response = self.estadisticas_module.estadisticas_dashboard(current_user)
 
         self.assertEqual(response.status_code, 200)
@@ -339,16 +348,16 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
                 'total_ventas': 1250,
                 'total_pedidos': 18,
                 'clientes_unicos': 11,
-                'tasa_conversion': 1.64,
+                'tasa_conversion': None,
+                'currency': 'ARS',
             }
         )
         self.assertEqual(
             payload['cards'],
             [
-                {"label": "Ingresos Totales", "value": 1250},
+                {"label": "Importe de pedidos", "value": 1250},
                 {"label": "Pedidos", "value": 18},
                 {"label": "Clientes Únicos", "value": 11},
-                {"label": "Tasa de Conversión", "value": 1.64},
             ],
         )
         self.assertEqual(
@@ -358,19 +367,20 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
                 'ventas_over_time': [{"date": "2024-01-01", "sales": 100}],
                 'top_productos': [{"product": "Plan Premium", "sales": 10}],
                 'ventas_por_region': [{"region": "Centro", "sales": 500}],
+                'availability': {'kpis': {'state': 'partial'}},
             }
         )
         self.assertEqual(payload['metadata']['rubro_id'], 9)
         self.assertEqual(payload['metadata']['pyme_id'], 77)
 
-        mock_metricas_cls.assert_called_once_with(77)
+        mock_metricas_cls.assert_called_once_with(77, tenant_id=8)
         mock_build_stats.assert_not_called()
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='pyme',
             actor=current_user,
             municipio_id=None,
             rubro_id=9,
-            tenant_id=None,
+            tenant_id=8,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,

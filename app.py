@@ -700,7 +700,8 @@ def create_app(config_class=Config):
             "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Window, "
             "X-RateLimit-Reset-After, Retry-After, "
             "X-Chat-Idempotency-Contract, X-Idempotency-Status, "
-            "Idempotency-Replayed, X-Chatboc-Knowledge-Revision, X-Chatboc-Tenant-ID"
+            "Idempotency-Replayed, X-Chatboc-Knowledge-Revision, X-Chatboc-Tenant-ID, "
+            "X-Metrics-Availability, X-Metrics-Reason"
         )
 
         @app.after_request
@@ -769,6 +770,8 @@ def create_app(config_class=Config):
                 "Idempotency-Replayed",
                 "X-Chatboc-Knowledge-Revision",
                 "X-Chatboc-Tenant-ID",
+                "X-Metrics-Availability",
+                "X-Metrics-Reason",
             ],
         )
 
