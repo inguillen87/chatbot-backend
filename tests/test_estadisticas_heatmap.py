@@ -46,8 +46,26 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.app.config.from_object(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
+        # These auth-mocked tests exercise payload projection, not admission.
+        # Give the handler an explicit synthetic scope and mock that boundary.
+        self.payload_tenant_id = 101
+        self.scope_patcher = patch(
+            'routes.estadisticas._resolve_ticket_stats_tenant',
+            side_effect=lambda _actor, _args, tipo: (
+                SimpleNamespace(id=self.payload_tenant_id, tipo=tipo, is_active=True,
+                                municipio_id=None, pyme_id=None, pyme=None),
+                True,
+            ),
+        )
+        self.tenant_access_patcher = patch(
+            'routes.estadisticas._stats_tenant_access_allowed', return_value=True,
+        )
+        self.scope_patcher.start()
+        self.tenant_access_patcher.start()
 
     def tearDown(self):
+        self.tenant_access_patcher.stop()
+        self.scope_patcher.stop()
         self.token_patcher.stop()
         self.admin_patcher.stop()
         self.session_patcher.stop()
@@ -115,7 +133,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
             actor=None,
             municipio_id=None,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=self.payload_tenant_id,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
@@ -138,7 +156,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
             actor=None,
             municipio_id=None,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=self.payload_tenant_id,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
@@ -159,7 +177,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
             actor=None,
             municipio_id=None,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=self.payload_tenant_id,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
@@ -174,8 +192,8 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         with self.app.test_request_context(
             '/estadisticas/mapa_calor/datos?tipo=pyme&tipo_ticket=municipio'
         ):
-            response, status = estats.mapa_calor_datos(current_user=None)
-        self.assertEqual(status, 400)
+            response = estats.mapa_calor_datos(current_user=None)
+        self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()['error'], 'bad_request')
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_not_called()
 
@@ -183,8 +201,8 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
     def test_mapa_calor_rechaza_tipo_desconocido(self, mock_servicio):
         import routes.estadisticas as estats
         with self.app.test_request_context('/estadisticas/mapa_calor/datos?tipo=otro'):
-            response, status = estats.mapa_calor_datos(current_user=None)
-        self.assertEqual(status, 400)
+            response = estats.mapa_calor_datos(current_user=None)
+        self.assertEqual(response.status_code, 400)
         self.assertEqual(response.get_json()['error'], 'bad_request')
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_not_called()
 
@@ -202,7 +220,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
             actor=None,
             municipio_id=None,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=self.payload_tenant_id,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=['Arbol', 'Luminaria'],
@@ -320,18 +338,22 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertEqual(payload["heatmap"][0]["lng"], -68.30011)
         self.assertEqual(payload["heatmap"][0]["weight"], 1.0)
 
-    @patch('routes.estadisticas._resolve_tenant_profile_or_error')
+    @patch('routes.estadisticas._resolve_ticket_stats_tenant')
     @patch('routes.estadisticas.servicio_tickets')
     def test_employee_heatmap_rejects_foreign_tenant_before_query(
         self,
         mock_servicio,
         mock_resolve_tenant,
     ):
-        mock_resolve_tenant.return_value = SimpleNamespace(
+        # This denial case keeps the real authorization helper active.
+        self.tenant_access_patcher.stop()
+        mock_resolve_tenant.return_value = (SimpleNamespace(
             id=202,
+            tipo="municipio",
+            is_active=True,
             municipio_id=302,
             pyme_id=None,
-        )
+        ), True)
         employee = SimpleNamespace(
             id=42,
             rol="empleado",
@@ -347,9 +369,9 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         with self.app.test_request_context(
             '/estadisticas/mapa_calor/datos?tipo_ticket=municipio&tenant_slug=foreign'
         ):
-            response, status = estats.mapa_calor_datos(current_user=employee)
+            response = estats.mapa_calor_datos(current_user=employee)
 
-        self.assertEqual(status, 403)
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json().get("error"), "tenant_forbidden")
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_not_called()
 

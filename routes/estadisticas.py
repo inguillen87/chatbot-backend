@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Blueprint, current_app, jsonify, request, g
+from flask import Blueprint, current_app, jsonify, request, g, make_response
 
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from utils.time_utils import get_local_now
@@ -17,7 +17,9 @@ from services.operational_heatmap_access import (
     build_employee_legacy_heatmap_points,
     is_employee_heatmap_viewer,
 )
-from utils.roles import is_authorized_superadmin_user
+from utils.roles import is_authorized_superadmin_user, normalize_tenant_type
+from utils.tenant_admin_access import resolve_consistent_user_tenant
+from services.employee_ticket_access import _is_category_limited_employee
 
 
 estadisticas_bp = Blueprint("estadisticas", __name__, url_prefix="/estadisticas")
@@ -190,11 +192,25 @@ def _resolve_tenant_profile_or_error(args) -> object:
     return tenant
 
 
-def _stats_tenant_access_allowed(current_user, tenant) -> bool:
-    if tenant is None:
-        return bool(current_app.config.get("TESTING"))
-    if current_user is None:
+def _stats_tenant_access_allowed(current_user, tenant, *, requested_tipo, explicit_selection=False) -> bool:
+    if tenant is None or current_user is None:
         return False
+    if requested_tipo == "pyme":
+        # The requested domain chooses the boundary. A differently typed
+        # profile must never fall through to the legacy owner policy.
+        if (normalize_tenant_type(getattr(tenant, "tipo", None), default="") != "pyme"
+                or getattr(tenant, "is_active", False) is not True):
+            return False
+        # Keep the service's exact employee classification and unchanged
+        # downstream category/privacy projection; this is not whole-tenant KPI access.
+        if _is_category_limited_employee(current_user):
+            resolved = resolve_consistent_user_tenant(current_user)
+            return bool(resolved is not None and resolved.id == tenant.id)
+        return business_metrics_actor_can_read(current_user, tenant,
+                                               explicit_selection=explicit_selection)
+    if requested_tipo != "municipio":
+        return False
+    # Preserve the prior municipal policy independently of the profile's type.
     if is_authorized_superadmin_user(current_user):
         return True
 
@@ -823,8 +839,42 @@ def _build_applied_filters(
 
 def _dashboard_pyme_scope_denied():
     # Missing and unauthorized selections must disclose the same information.
-    return jsonify({"error": "tenant_forbidden",
-                    "reason_code": "metrics_tenant_scope_unavailable"}), 403
+    response = jsonify({"error": "tenant_forbidden",
+                        "reason_code": "metrics_tenant_scope_unavailable"})
+    response.headers["Cache-Control"] = "no-store"
+    return response, 403
+
+
+def _resolve_ticket_stats_tenant(current_user, args, tipo):
+    if tipo != "pyme":
+        return _resolve_tenant_profile_or_error(args), False
+    from utils.auth_helpers import _explicit_admin_request_tenant
+    tenant, explicit_selection = _explicit_admin_request_tenant()
+    if not explicit_selection:
+        tenant = resolve_consistent_user_tenant(current_user)
+    return tenant, explicit_selection
+
+
+def _legacy_ticket_stats_role_access(fn):
+    # Always execute the existing role boundary. Only normalize its PyME 403
+    # response; no persisted grant or employee flag can bypass admission.
+    protected = admin_o_empleado_requerido(fn)
+
+    @wraps(fn)
+    def decorated(current_user, *args, **kwargs):
+        response = make_response(protected(current_user, *args, **kwargs))
+        try:
+            pyme_request = _resolve_heatmap_ticket_type(request.args) == "pyme"
+        except ValueError:
+            pyme_request = False
+        if response.status_code == 403 and pyme_request:
+            denial = make_response(_dashboard_pyme_scope_denied())
+            response.set_data(denial.get_data())
+            response.content_type = denial.content_type
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    return decorated
 
 
 def _dashboard_role_access(fn):
@@ -870,7 +920,7 @@ def estadisticas_dashboard(current_user):
         allowed = business_metrics_actor_can_read(current_user, tenant,
                                                   explicit_selection=explicit_selection)
     else:
-        allowed = _stats_tenant_access_allowed(current_user, tenant)
+        allowed = _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo)
     if not allowed:
         if tipo == "pyme":
             return _dashboard_pyme_scope_denied()
@@ -1006,7 +1056,7 @@ def estadisticas_dashboard(current_user):
 
 @estadisticas_bp.route("/mapa_calor/datos", methods=["GET"])
 @token_requerido
-@admin_o_empleado_requerido
+@_legacy_ticket_stats_role_access
 def mapa_calor_datos(current_user):
     """Devuelve los puntos para el mapa de calor en formato JSON."""
     args = request.args
@@ -1016,14 +1066,18 @@ def mapa_calor_datos(current_user):
         return jsonify({"error": "bad_request", "detail": str(exc)}), 400
 
     try:
-        tenant = _resolve_tenant_profile_or_error(args)
+        tenant, explicit_selection = _resolve_ticket_stats_tenant(current_user, args, tipo_ticket)
     except TenantResolutionError as exc:
+        if tipo_ticket == "pyme":
+            return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
-    if not _stats_tenant_access_allowed(current_user, tenant):
+    if not _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo_ticket, explicit_selection=explicit_selection):
+        if tipo_ticket == "pyme":
+            return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_forbidden"}), 403
     tenant_id = getattr(tenant, "id", None)
-    if tipo_ticket == "pyme" and tenant_id is None and not current_app.config.get("TESTING"):
-        return jsonify({"error": "tenant_required"}), 403
+    if tipo_ticket == "pyme" and tenant_id is None:
+        return _dashboard_pyme_scope_denied()
 
     estados = _parse_estado_params(args)
     estado_param = None
@@ -1068,7 +1122,7 @@ def mapa_calor_datos(current_user):
             exc_info=True,
             extra={
                 "path": request.path,
-                "args": dict(request.args),
+                "request_args": dict(request.args),
                 "tenant": request.args.get("tenant"),
                 "tenant_slug": request.args.get("tenant_slug"),
             },
@@ -1121,7 +1175,7 @@ def tickets_options():
 
 @estadisticas_bp.route("/tickets", methods=["GET"])
 @token_requerido
-@admin_o_empleado_requerido
+@_legacy_ticket_stats_role_access
 def estadisticas_tickets(current_user):
     """Devuelve datos de tickets para gráficas y mapas de calor.
 
@@ -1130,17 +1184,24 @@ def estadisticas_tickets(current_user):
     `municipio_id` o `rubro_id`, se utilizan los del `current_user`.
     """
     args = request.args
-    tipo = args.get("tipo", "municipio")
+    try:
+        tipo = _resolve_heatmap_ticket_type(args)
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
 
     try:
-        tenant = _resolve_tenant_profile_or_error(args)
+        tenant, explicit_selection = _resolve_ticket_stats_tenant(current_user, args, tipo)
     except TenantResolutionError as exc:
+        if tipo == "pyme":
+            return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
-    if not _stats_tenant_access_allowed(current_user, tenant):
+    if not _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo, explicit_selection=explicit_selection):
+        if tipo == "pyme":
+            return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_forbidden"}), 403
     tenant_id = getattr(tenant, "id", None)
-    if tipo == "pyme" and tenant_id is None and not current_app.config.get("TESTING"):
-        return jsonify({"error": "tenant_required"}), 403
+    if tipo == "pyme" and tenant_id is None:
+        return _dashboard_pyme_scope_denied()
 
     municipio_id = args.get("municipio_id", type=int)
     rubro_id = args.get("rubro_id", type=int)
@@ -1187,7 +1248,7 @@ def estadisticas_tickets(current_user):
             exc_info=True,
             extra={
                 "path": request.path,
-                "args": dict(request.args),
+                "request_args": dict(request.args),
                 "tenant": request.args.get("tenant"),
                 "tenant_slug": request.args.get("tenant_slug"),
             },

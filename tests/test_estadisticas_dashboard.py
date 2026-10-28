@@ -38,6 +38,16 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         importlib.reload(estats)
 
         self.estadisticas_module = estats
+        # Payload-only fixtures already replace authentication. Supply their
+        # resolved municipal scope explicitly instead of relying on TESTING
+        # to authorize an unresolved tenant. Actual role/scope HTTP contracts
+        # are exercised in test_enterprise_metrics_contract.py.
+        self.tenant_patcher = patch(
+            'routes.estadisticas._resolve_tenant_profile_or_error',
+            return_value=SimpleNamespace(id=3, municipio_id=3, pyme_id=None,
+                                         tipo='municipio', is_active=True),
+        )
+        self.tenant_patcher.start()
 
         self.app = Flask(__name__)
         self.app.config.from_object(TestConfig)
@@ -45,6 +55,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         self.app_context.push()
 
     def tearDown(self):
+        self.tenant_patcher.stop()
         self.session_patcher.stop()
         if self.original_auth_helpers is not None:
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
@@ -170,7 +181,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=3,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=3,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=['Limpieza'],

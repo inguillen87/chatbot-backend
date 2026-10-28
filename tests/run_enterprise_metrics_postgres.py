@@ -37,7 +37,7 @@ REQUIRED_PROPERTIES = {
     "enterprise_metrics.fixture_database": FIXTURE_DATABASE,
     "enterprise_metrics.server_major": "18",
     "enterprise_metrics.owned_schema": "true",
-    "enterprise_metrics.business_candidate": "v5",
+    "enterprise_metrics.business_candidate": "tenant-closure-v2",
     "enterprise_metrics.fixture_cleanup_verified": "true",
 }
 
@@ -94,7 +94,7 @@ def junit_summary(path, *, cleanup_verified):
     verified_properties = verified_properties and observed_postgres18 and source_hashes_verified
     return {
         "server_version_num_observed": observed_version,
-        "business_candidate": "v5",
+        "business_candidate": "tenant-closure-v2",
         "business_source_hashes_verified": source_hashes_verified,
         "tests_run": len(cases), "expected_tests": len(REQUIRED_TESTS),
         "failures": failures, "errors": errors, "skipped": skipped,

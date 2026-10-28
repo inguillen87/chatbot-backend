@@ -109,7 +109,7 @@ def pg_metrics_app(enterprise_metrics_configuration, record_testsuite_property):
             "enterprise_metrics.fixture_database": FIXTURE_DATABASE,
             "enterprise_metrics.server_major": str(observed_server_version // 10000),
             "enterprise_metrics.server_version_num": str(observed_server_version),
-            "enterprise_metrics.business_candidate": "v5",
+            "enterprise_metrics.business_candidate": "tenant-closure-v2",
             "enterprise_metrics.business_source_hashes": json.dumps(business_source_hashes(), sort_keys=True),
             "enterprise_metrics.owned_schema": "true",
         }.items():
@@ -262,7 +262,7 @@ def test_postgres_missing_nonfinite_and_unsafe_amounts_are_unavailable(pg_metric
 
 
 def test_postgres_exact_profile_quarantines_shared_owner_and_legacy_rows(pg_metrics_app):
-    from models import TenantProfile
+    from models import PymeTicket, TenantProfile, User, UserRole
     runtime = pg_metrics_app
     with runtime.app.app_context():
         owner, selected = _owner_and_tenant(runtime.db, "shared-owner")
@@ -281,6 +281,98 @@ def test_postgres_exact_profile_quarantines_shared_owner_and_legacy_rows(pg_metr
         dashboard = _get(runtime, owner, selected, "/estadisticas/dashboard?tipo=pyme")
         assert dashboard.status_code == 200
         assert dashboard.get_json()["summary"]["total_ventas"] == 100
+
+        # Same legacy owner does not grant access to the other exact profile.
+        # Real persisted ticket markers distinguish A (3), B (7) and C (11).
+        # Third profile is active and shares the same legacy owner, but its
+        # persisted domain must never be accepted for requested PyME statistics.
+        domain_tenant = TenantProfile(
+            slug="shared-domain-" + uuid4().hex, nombre="Synthetic other domain",
+            tipo="colegio", pyme_id=owner.id, plan="enterprise", is_active=True,
+        )
+        runtime.db.session.add(domain_tenant)
+        runtime.db.session.flush()
+        employee = User(
+            name="Synthetic exact-profile employee", email=uuid4().hex + "@example.invalid",
+            rol="empleado", tipo_chat="pyme", es_empleado=True,
+            tenant_id=selected.id, tenant_slug=selected.slug,
+            pyme_id=owner.id, empresa_id=None,
+            ticket_categorias="synthetic-shared-owner-a,synthetic-shared-owner-c",
+            accesibilidad={"employee_scope": {"categorias": [
+                "synthetic-shared-owner-a", "synthetic-shared-owner-c",
+            ]}},
+        )
+        employee.set_password(secrets.token_urlsafe(24))
+        runtime.db.session.add(employee)
+        markers = (
+            (selected, "synthetic-shared-owner-a", 3, -34.601, -58.401),
+            (other, "synthetic-shared-owner-b", 7, -34.602, -58.402),
+            (domain_tenant, "synthetic-shared-owner-c", 11, -34.603, -58.403),
+        )
+        ticket_number = 610000
+        for tenant, marker, count, latitude, longitude in markers:
+            for _ in range(count):
+                ticket_number += 1
+                runtime.db.session.add(PymeTicket(
+                    tenant_id=tenant.id, user_id=owner.id, nro_ticket=ticket_number,
+                    pregunta="Synthetic exact-profile heatmap fixture", categoria=marker,
+                    estado="nuevo", latitud=latitude, longitud=longitude,
+                ))
+        runtime.db.session.commit()
+        assert owner.tenant_id == selected.id and owner.tenant_slug == selected.slug
+        assert UserRole.query.filter_by(user_id=owner.id, tenant_id=other.id).count() == 0
+        paths = ("/estadisticas/mapa_calor/datos?tipo=pyme", "/estadisticas/tickets?tipo=pyme")
+        assert employee.tenant_id == selected.id and employee.tenant_slug == selected.slug
+        assert employee.empresa_id is None
+        for actor in (owner, employee):
+            assert UserRole.query.filter_by(user_id=actor.id, tenant_id=domain_tenant.id).count() == 0
+        for domain_type in ("colegio", "unknown"):
+            domain_tenant.tipo = domain_type
+            runtime.db.session.flush()
+            runtime.db.session.commit()
+            assert domain_tenant.is_active is True
+            for actor in (owner, employee):
+                for path in paths:
+                    denied = _get(runtime, actor, domain_tenant, path)
+                    assert denied.status_code == 403
+
+        # The employee is admitted to A; its three records remain below k=5.
+        for path in paths:
+            allowed = _get(runtime, employee, selected, path)
+            assert allowed.status_code == 200
+            payload = allowed.get_json()
+            assert payload["privacy"]["mode"] == "employee_aggregated"
+            assert payload["heatmap"] == []
+
+        for path in paths:
+            denied = _get(runtime, owner, other, path)
+            assert denied.status_code == 403
+            allowed = _get(runtime, owner, selected, path)
+            assert allowed.status_code == 200
+            points = allowed.get_json()["heatmap"]
+            assert len(points) == 1
+            assert points[0]["categoria"] == "synthetic-shared-owner-a"
+            assert points[0]["weight"] == 3
+            assert points[0]["location"] == {"lat": -34.601, "lng": -58.401}
+
+        _grant(runtime.db, owner, other)
+        runtime.db.session.commit()
+        grant = UserRole.query.filter_by(user_id=owner.id, tenant_id=other.id).one()
+        assert grant.role.name == "admin"
+        for path in paths:
+            allowed = _get(runtime, owner, other, path)
+            assert allowed.status_code == 200
+            points = allowed.get_json()["heatmap"]
+            assert len(points) == 1
+            assert points[0]["categoria"] == "synthetic-shared-owner-b"
+            assert points[0]["weight"] == 7
+            assert points[0]["location"] == {"lat": -34.602, "lng": -58.402}
+
+        UserRole.query.filter_by(user_id=owner.id, tenant_id=other.id).delete()
+        runtime.db.session.commit()
+        for path in paths:
+            revoked = _get(runtime, owner, other, path)
+            assert revoked.status_code == 403
 
 
 def test_postgres_unique_owner_keeps_only_safe_unbound_legacy_orders(pg_metrics_app):

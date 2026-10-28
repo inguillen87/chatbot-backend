@@ -593,3 +593,414 @@ def test_dashboard_pyme_denials_do_not_disclose_profile_existence(client, select
         heatmap.assert_not_called()
     assert bodies[0] == bodies[1]
     assert bodies[0] == {"error": "tenant_forbidden", "reason_code": "metrics_tenant_scope_unavailable"}
+
+
+# Causal N2 closure contracts migrated from the immutable external HTTP RED.
+from config import TestingConfig
+from models import PymeTicket
+N2_ROUTES = ("/estadisticas/mapa_calor/datos", "/estadisticas/tickets")
+
+@pytest.fixture
+def n2_scoped_fixture(client):
+    assert TestingConfig.SQLALCHEMY_DATABASE_URI == 'sqlite:///:memory:'
+    assert str(db.engine.url) == 'sqlite:///:memory:'
+    actor = User(name='Synthetic scoped owner', email='n2-owner@example.invalid', rol='admin', tipo_chat='pyme')
+    actor.set_password('synthetic-n2-only')
+    db.session.add(actor)
+    db.session.flush()
+    a = TenantProfile(slug='n2-synthetic-a', nombre='Synthetic A', tipo='pyme', plan='enterprise', pyme_id=actor.id, is_active=True)
+    b = TenantProfile(slug='n2-synthetic-b', nombre='Synthetic B', tipo='pyme', plan='enterprise', pyme_id=actor.id, is_active=True)
+    db.session.add_all([a, b])
+    db.session.flush()
+    actor.tenant_id, actor.tenant_slug, actor.pyme_id = (a.id, a.slug, actor.id)
+    role = Role.query.filter_by(name='admin').first()
+    if role is None:
+        role = Role(name='admin')
+        db.session.add(role)
+        db.session.flush()
+    db.session.add(UserRole(user_id=actor.id, tenant_id=a.id, role_id=role.id))
+    for index in range(10):
+        selected = a if index < 3 else b
+        lat, lng = (-33.0, -60.0) if index < 3 else (-34.0, -61.0)
+        db.session.add(PymeTicket(tenant_id=selected.id, user_id=actor.id, nro_ticket=50000 + index, pregunta='Synthetic N2 scope marker', categoria='synthetic-category', estado='nuevo', latitud=lat, longitud=lng))
+    db.session.commit()
+    assert UserRole.query.filter_by(user_id=actor.id, tenant_id=b.id).count() == 0
+    return (actor, a, b, role)
+
+def _n2_observed(response):
+    payload = response.get_json(silent=True)
+    points = payload.get('heatmap', []) if isinstance(payload, dict) else []
+    return {'status_code': response.status_code, 'heatmap_groups': len(points), 'total_weight': sum((point.get('weight', 0) for point in points)), 'has_a_marker': any((point.get('location') == {'lat': -33.0, 'lng': -60.0} for point in points)), 'has_b_marker': any((point.get('location') == {'lat': -34.0, 'lng': -61.0} for point in points))}
+
+@pytest.mark.parametrize('path', N2_ROUTES)
+@pytest.mark.parametrize('selection', ['foreign_header', 'query_b_header_a'])
+def test_n2_shared_owner_does_not_authorize_other_tenant(client, n2_scoped_fixture, path, selection):
+    actor, a, b, role = n2_scoped_fixture
+    query = {'tipo': 'pyme'}
+    headers = _headers(actor, b if selection == 'foreign_header' else a)
+    if selection == 'query_b_header_a':
+        query['tenant_slug'] = b.slug
+    response = client.get(path, query_string=query, headers=headers)
+    observed = _n2_observed(response)
+    assert response.status_code == 403, observed
+
+@pytest.mark.parametrize('path', N2_ROUTES)
+def test_n2_legitimate_exact_a_and_registered_b_controls(client, n2_scoped_fixture, path):
+    actor, a, b, role = n2_scoped_fixture
+    local = client.get(path, query_string={'tipo': 'pyme'}, headers=_headers(actor, a))
+    first = _n2_observed(local)
+    assert first == {'status_code': 200, 'heatmap_groups': 1, 'total_weight': 3.0, 'has_a_marker': True, 'has_b_marker': False}
+    db.session.add(UserRole(user_id=actor.id, tenant_id=b.id, role_id=role.id))
+    db.session.commit()
+    granted = client.get(path, query_string={'tipo': 'pyme'}, headers=_headers(actor, b))
+    second = _n2_observed(granted)
+    assert second == {'status_code': 200, 'heatmap_groups': 1, 'total_weight': 7.0, 'has_a_marker': False, 'has_b_marker': True}
+
+@pytest.mark.parametrize('path', N2_ROUTES)
+def test_n2_unrelated_owner_without_grant_is_denied_control(client, n2_scoped_fixture, path):
+    actor, a, b, role = n2_scoped_fixture
+    other = User(name='Synthetic unrelated owner', email='n2-other@example.invalid', rol='admin', tipo_chat='pyme')
+    other.set_password('synthetic-n2-only')
+    db.session.add(other)
+    db.session.flush()
+    other_tenant = TenantProfile(slug='n2-synthetic-unrelated', nombre='Synthetic unrelated', tipo='pyme', pyme_id=other.id, is_active=True)
+    db.session.add(other_tenant)
+    db.session.commit()
+    denied = client.get(path, query_string={'tipo': 'pyme'}, headers=_headers(actor, other_tenant))
+    observed = _n2_observed(denied)
+    assert denied.status_code == 403
+    assert not observed['has_a_marker'] and (not observed['has_b_marker'])
+
+    # The existing outer decorator still rejects unrelated-owner grants here;
+    # unlike the metrics dashboard, this closure does not widen admission.
+    db.session.add(UserRole(user_id=actor.id, tenant_id=other_tenant.id, role_id=role.id))
+    db.session.commit()
+    still_denied = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(actor, other_tenant))
+    assert still_denied.status_code == 403
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+def test_n2_grant_revocation_blocks_next_read_before_materialization(client, n2_scoped_fixture, path):
+    from services.ticket_service import servicio_tickets
+    actor, a, b, role = n2_scoped_fixture
+    grant = UserRole(user_id=actor.id, tenant_id=b.id, role_id=role.id)
+    db.session.add(grant)
+    db.session.commit()
+    allowed = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(actor, b))
+    assert _n2_observed(allowed)["total_weight"] == 7
+    db.session.delete(grant)
+    db.session.commit()
+    with patch.object(servicio_tickets, "obtener_tickets_con_ubicacion_para_mapa", wraps=servicio_tickets.obtener_tickets_con_ubicacion_para_mapa) as source:
+        denied = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(actor, b))
+    assert denied.status_code == 403
+    source.assert_not_called()
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+def test_n2_pyme_denials_have_one_body_and_no_store(client, n2_scoped_fixture, path):
+    actor, a, b, role = n2_scoped_fixture
+    bodies = []
+    for selected, query in ((b, {"tipo": "pyme"}),
+                             (a, {"tipo": "pyme", "tenant_slug": "n2-unknown-not-created"}),
+                             (a, {"tipo": "pyme", "tenant_slug": b.slug})):
+        response = client.get(path, query_string=query, headers=_headers(actor, selected))
+        bodies.append(response.get_json())
+        assert response.status_code == 403
+        assert response.headers["Cache-Control"] == "no-store"
+    assert bodies == [{"error": "tenant_forbidden", "reason_code": "metrics_tenant_scope_unavailable"}] * 3
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+@pytest.mark.parametrize("role_name,employee_flag", [("empleado", True), ("operador", False)])
+def test_n2_employee_retains_exact_tenant_and_category_boundary(client, n2_scoped_fixture, path, role_name, employee_flag):
+    actor, a, b, role = n2_scoped_fixture
+    for index in range(4):
+        db.session.add(PymeTicket(tenant_id=a.id, user_id=actor.id, nro_ticket=51000+index,
+                                 pregunta="Synthetic allowed category", categoria="synthetic-category", latitud=-33, longitud=-60))
+    for index in range(5):
+        db.session.add(PymeTicket(tenant_id=a.id, user_id=actor.id, nro_ticket=52000+index,
+                                 pregunta="Synthetic forbidden category", categoria="out-of-scope", latitud=-32, longitud=-59))
+    employee = User(name="Synthetic scoped employee", email="n2-employee@example.invalid", rol=role_name,
+                    tipo_chat="pyme", es_empleado=employee_flag, pyme_id=actor.id,
+                    tenant_id=a.id, tenant_slug=a.slug,
+                    accesibilidad={"employee_scope": {"categorias": ["synthetic-category"]}})
+    employee.set_password("synthetic-n2-only")
+    db.session.add(employee)
+    db.session.commit()
+    allowed = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(employee, a))
+    assert allowed.status_code == 200
+    assert _n2_observed(allowed)["total_weight"] == 7
+    assert allowed.get_json()["privacy"]["mode"] == "employee_aggregated"
+    assert {point.get("categoria") for point in allowed.get_json()["heatmap"]} == {"synthetic-category"}
+    denied = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(employee, b))
+    assert denied.status_code == 403
+
+    a.is_active = False
+    db.session.commit()
+    inactive = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(employee, a))
+    # The bearer validator retires inactive-tenant identity before this wrapper.
+    # Independently verify the local employee guard also requires active scope.
+    from routes.estadisticas import _stats_tenant_access_allowed
+    assert _stats_tenant_access_allowed(employee, a, requested_tipo="pyme", explicit_selection=True) is False
+    assert inactive.status_code == 401
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+def test_n2_flags_do_not_expand_outer_role_admission(client, n2_scoped_fixture, path):
+    actor, a, b, role = n2_scoped_fixture
+    flagged = User(name="Synthetic flagged citizen", email="n2-flagged@example.invalid", rol="usuario",
+                   tipo_chat="pyme", es_empleado=True, tenant_id=a.id, tenant_slug=a.slug,
+                   empresa_id=actor.id, accesibilidad={"employee_scope": {"categorias": ["synthetic-category"]}})
+    flagged.set_password("synthetic-n2-only")
+    db.session.add(flagged)
+    actor.es_empleado = True
+    db.session.commit()
+    denied = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(flagged, a))
+    assert denied.status_code == 403
+    admitted_admin = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(actor, a))
+    assert admitted_admin.status_code == 200 and _n2_observed(admitted_admin)["total_weight"] == 3
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+def test_n2_legacy_unique_resolution_is_preserved_but_ambiguous_owner_is_denied(client, path):
+    actor, a = _owner_and_tenant("n2-legacy-unique")
+    actor.tenant_id = actor.tenant_slug = None
+    db.session.add(PymeTicket(tenant_id=a.id, user_id=actor.id, nro_ticket=53000,
+                             pregunta="Synthetic unique legacy", categoria="synthetic-category", latitud=-33, longitud=-60))
+    db.session.commit()
+    headers = _headers(actor, a)
+    headers.pop("X-Tenant-Slug")
+    allowed = client.get(path, query_string={"tipo": "pyme"}, headers=headers)
+    assert allowed.status_code == 200 and _n2_observed(allowed)["total_weight"] == 1
+    db.session.add(TenantProfile(slug="n2-legacy-ambiguous", nombre="Synthetic ambiguous",
+                                 tipo="pyme", pyme_id=actor.id, is_active=True))
+    db.session.commit()
+    denied = client.get(path, query_string={"tipo": "pyme"}, headers=headers)
+    assert denied.status_code == 403
+
+
+def test_n2_unresolved_tenant_is_denied_even_in_testing(client, n2_scoped_fixture):
+    from routes.estadisticas import _stats_tenant_access_allowed
+    actor, a, b, role = n2_scoped_fixture
+    assert _stats_tenant_access_allowed(actor, None, requested_tipo="pyme") is False
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+def test_n2_platform_selection_needs_actual_allowlist_and_one_scope(client, n2_scoped_fixture, path, monkeypatch):
+    actor, a, b, role = n2_scoped_fixture
+    platform = User(name="Synthetic platform", email="n2-platform@example.invalid", rol="super_admin", tipo_chat="pyme")
+    platform.set_password("synthetic-n2-only")
+    db.session.add(platform)
+    db.session.commit()
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", platform.email)
+    allowed = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(platform, b))
+    assert allowed.status_code == 200 and _n2_observed(allowed)["total_weight"] == 7
+    conflict = client.get(path, query_string={"tipo": "pyme", "tenant_slug": b.slug}, headers=_headers(platform, a))
+    assert conflict.status_code == 403
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "n2-other-platform@example.invalid")
+    denied = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(platform, b))
+    # Bearer identity rejection precedes the local role wrapper; preserve401.
+    assert denied.status_code == 401
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+def test_n2_ambiguous_company_reference_is_not_a_credited_employee_entitlement(client, n2_scoped_fixture, path):
+    actor, a, b, role = n2_scoped_fixture
+    employee = User(name="Synthetic ambiguous employee", email="n2-ambiguous-employee@example.invalid",
+                    rol="empleado", tipo_chat="pyme", es_empleado=True, empresa_id=actor.id, pyme_id=actor.id,
+                    tenant_id=a.id, tenant_slug=a.slug,
+                    accesibilidad={"employee_scope": {"categorias": ["synthetic-category"]}})
+    employee.set_password("synthetic-n2-only")
+    db.session.add(employee)
+    db.session.commit()
+    from utils.tenant_admin_access import resolve_consistent_user_tenant
+    assert resolve_consistent_user_tenant(employee) is None
+    denied = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(employee, a))
+    assert denied.status_code == 403
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+@pytest.mark.parametrize("role_name", ["admin", "empleado", "operador"])
+def test_n2_municipal_role_and_category_projection_remain_unchanged(client, path, role_name):
+    from models import MunicipioTicket
+    owner, tenant = _owner_and_tenant("n2-municipal", kind="municipio")
+    for index in range(12):
+        db.session.add(MunicipioTicket(tenant_id=tenant.id, municipio_id=owner.id,
+                         pregunta="Synthetic municipal scope", categoria="allowed" if index < 7 else "forbidden",
+                         latitud=-33 if index < 7 else -32, longitud=-60 if index < 7 else -59))
+    actor = owner
+    if role_name != "admin":
+        actor = User(name="Synthetic municipal employee", email="n2-municipal-employee@example.invalid",
+                     rol=role_name, tipo_chat="municipio", es_empleado=True, empresa_id=owner.id,
+                     municipio_id=owner.id, tenant_id=tenant.id, tenant_slug=tenant.slug,
+                     accesibilidad={"employee_scope": {"categorias": ["allowed"]}})
+        actor.set_password("synthetic-n2-only")
+        db.session.add(actor)
+    db.session.commit()
+    response = client.get(path, query_string={"tipo": "municipio"}, headers=_headers(actor, tenant))
+    assert response.status_code == 200
+    assert _n2_observed(response)["total_weight"] == (12 if role_name == "admin" else 7)
+    if role_name != "admin":
+        assert {point.get("categoria") for point in response.get_json()["heatmap"]} == {"allowed"}
+        assert response.get_json()["privacy"]["mode"] == "employee_aggregated"
+
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+@pytest.mark.parametrize("status", [400, 500])
+def test_n2_role_wrapper_preserves_non403_failures(client, n2_scoped_fixture, path, status):
+    actor, a, b, role = n2_scoped_fixture
+    error = ValueError("Synthetic boundary failure") if status == 400 else RuntimeError("Synthetic boundary failure")
+    with patch("routes.estadisticas.servicio_tickets.obtener_tickets_con_ubicacion_para_mapa", side_effect=error):
+        response = client.get(path, query_string={"tipo": "pyme"}, headers=_headers(actor, a))
+    assert response.status_code == status
+    if status == 400:
+        assert response.get_json() == {"error": "bad_request", "detail": "Synthetic boundary failure"}
+    else:
+        # Assert the route's own error response, with normal TESTING propagation:
+        # the reserved logging key must not raise before this500 is constructed.
+        assert response.get_json() == {"error": "server_error", "detail": "Error interno"}
+
+
+def test_n2_role_wrapper_preserves_existing_headers_when_normalizing_only403(client, n2_scoped_fixture):
+    from flask import jsonify
+    from routes.estadisticas import _legacy_ticket_stats_role_access
+    actor, a, b, role = n2_scoped_fixture
+    def original_denial(current_user):
+        return jsonify({"error": "Synthetic private detail"}), 403, {
+            "X-Synthetic-Preserved": "present",
+            "Access-Control-Allow-Origin": "https://panel.example.invalid",
+            "Vary": "Origin",
+        }
+    wrapped = _legacy_ticket_stats_role_access(original_denial)
+    with client.application.test_request_context("/estadisticas/tickets?tipo=pyme", headers=_headers(actor, a)):
+        response = wrapped(actor)
+    assert response.status_code == 403
+    assert response.get_json() == {"error": "tenant_forbidden", "reason_code": "metrics_tenant_scope_unavailable"}
+    assert response.headers["X-Synthetic-Preserved"] == "present"
+    assert response.headers["Access-Control-Allow-Origin"] == "https://panel.example.invalid"
+    assert response.headers["Vary"] == "Origin"
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+# Requested-domain closure: external real HTTP/ORM RED preserved separately.
+from sqlalchemy.exc import IntegrityError
+
+def _n2_domain_observe(response):
+    payload = response.get_json(silent=True)
+    points = payload.get('heatmap', []) if isinstance(payload, dict) else []
+    return {'status': response.status_code, 'groups': len(points), 'weight': sum((point.get('weight', 0) for point in points)), 'marker_a': any((point.get('location') == {'lat': -33.0, 'lng': -60.0} for point in points)), 'marker_c': any((point.get('location') == {'lat': -35.0, 'lng': -62.0} for point in points))}
+
+def _n2_domain_fixture(kind='colegio', active=True):
+    assert TestingConfig.SQLALCHEMY_DATABASE_URI == 'sqlite:///:memory:'
+    assert str(db.engine.url) == 'sqlite:///:memory:'
+    owner = User(name='Synthetic domain owner', email='domain-owner@example.invalid', rol='admin', tipo_chat='pyme')
+    owner.set_password('synthetic-domain-only')
+    db.session.add(owner)
+    db.session.flush()
+    a = TenantProfile(slug='domain-synthetic-a', nombre='Synthetic A', tipo='pyme', pyme_id=owner.id, is_active=True)
+    b = TenantProfile(slug='domain-synthetic-b', nombre='Synthetic B', tipo='pyme', pyme_id=owner.id, is_active=True)
+    c = TenantProfile(slug='domain-synthetic-c', nombre='Synthetic C', tipo=kind, pyme_id=owner.id, is_active=active)
+    db.session.add_all([a, b, c])
+    db.session.flush()
+    owner.tenant_id, owner.tenant_slug, owner.pyme_id = (a.id, a.slug, owner.id)
+    admin_role = Role.query.filter_by(name='admin').first()
+    if admin_role is None:
+        admin_role = Role(name='admin')
+        db.session.add(admin_role)
+        db.session.flush()
+    db.session.add(UserRole(user_id=owner.id, tenant_id=a.id, role_id=admin_role.id))
+    employee = User(name='Synthetic exact employee', email='domain-employee@example.invalid', rol='empleado', tipo_chat='pyme', es_empleado=True, tenant_id=a.id, tenant_slug=a.slug, pyme_id=owner.id, accesibilidad={'employee_scope': {'categorias': ['synthetic-category']}})
+    employee.set_password('synthetic-domain-only')
+    db.session.add(employee)
+    db.session.flush()
+    employee_role = Role.query.filter_by(name='empleado').first()
+    if employee_role is None:
+        employee_role = Role(name='empleado')
+        db.session.add(employee_role)
+        db.session.flush()
+    db.session.add(UserRole(user_id=employee.id, tenant_id=a.id, role_id=employee_role.id))
+    for index in range(18):
+        selected = a if index < 7 else c
+        lat, lng = (-33.0, -60.0) if index < 7 else (-35.0, -62.0)
+        db.session.add(PymeTicket(tenant_id=selected.id, user_id=owner.id, nro_ticket=70000 + index, pregunta='Synthetic domain marker', categoria='synthetic-category', estado='nuevo', latitud=lat, longitud=lng))
+    db.session.commit()
+    assert UserRole.query.filter_by(tenant_id=c.id).count() == 0
+    return (owner, employee, a, c)
+
+@pytest.mark.parametrize('path', N2_ROUTES)
+@pytest.mark.parametrize('actor_role', ['admin', 'empleado'])
+@pytest.mark.parametrize('kind', ['colegio', 'unknown'])
+@pytest.mark.parametrize('active', [True, False])
+def test_n2_requested_pyme_domain_cannot_fall_through_to_legacy_owner(client, path, actor_role, kind, active):
+    owner, employee, a, c = _n2_domain_fixture(kind, active)
+    actor = owner if actor_role == 'admin' else employee
+    response = client.get(path, query_string={'tipo': 'pyme'}, headers=_headers(actor, c))
+    observed = _n2_domain_observe(response)
+    assert response.status_code == 403, observed
+
+@pytest.mark.parametrize('path', N2_ROUTES)
+@pytest.mark.parametrize('actor_role', ['admin', 'empleado'])
+def test_n2_requested_pyme_exact_a_legitimate_controls(client, path, actor_role):
+    owner, employee, a, c = _n2_domain_fixture()
+    actor = owner if actor_role == 'admin' else employee
+    response = client.get(path, query_string={'tipo': 'pyme'}, headers=_headers(actor, a))
+    observed = _n2_domain_observe(response)
+    assert observed == {'status': 200, 'groups': 1, 'weight': 7.0, 'marker_a': True, 'marker_c': False}
+
+def test_n2_null_profile_domain_is_not_a_persistable_variant_in_this_schema(client):
+    assert TenantProfile.__table__.c.tipo.nullable is False
+    with pytest.raises(IntegrityError) as error:
+        with db.session.begin_nested():
+            db.session.add(TenantProfile(slug='domain-null-not-persistable', nombre='Synthetic NULL control', tipo=None, is_active=True))
+            db.session.flush()
+    assert 'NOT NULL' in str(error.value.orig) and 'tenant_profile.tipo' in str(error.value.orig)
+
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+@pytest.mark.parametrize("query", [
+    {"tipo": " PYME "}, {"tipo_ticket": "pyme"}, {"tipo_ticket": " PYME "},
+    {"tipo": "PYME", "tipo_ticket": " pyme "},
+])
+def test_n2_requested_domain_aliases_are_canonical_and_fail_closed(client, path, query):
+    owner, employee, a, c = _n2_domain_fixture("unknown", True)
+    allowed = client.get(path, query_string=query, headers=_headers(owner, a))
+    assert _n2_domain_observe(allowed) == {"status": 200, "groups": 1, "weight": 7.0,
+                                         "marker_a": True, "marker_c": False}
+    denied = client.get(path, query_string=query, headers=_headers(owner, c))
+    assert denied.status_code == 403
+    assert denied.get_json() == {"error": "tenant_forbidden", "reason_code": "metrics_tenant_scope_unavailable"}
+    assert denied.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("path", N2_ROUTES)
+@pytest.mark.parametrize("query", [
+    {"tipo": "unknown"}, {"tipo_ticket": "unknown"},
+    {"tipo": "pyme", "tipo_ticket": "municipio"},
+])
+def test_n2_requested_domain_invalid_or_conflicting_types_are400(client, path, query):
+    owner, employee, a, c = _n2_domain_fixture()
+    response = client.get(path, query_string=query, headers=_headers(owner, a))
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "bad_request"
+    assert "heatmap" not in response.get_json()
+
+
+
+def test_n2_requested_municipal_policy_is_not_selected_from_profile_type(client, monkeypatch):
+    from routes.estadisticas import _stats_tenant_access_allowed
+    owner, profile = _owner_and_tenant("n2-requested-municipal-policy")
+    platform = User(name="Synthetic municipal policy platform", email="domain-platform@example.invalid",
+                    rol="super_admin", tipo_chat="pyme")
+    platform.set_password("synthetic-domain-only")
+    db.session.add(platform)
+    db.session.commit()
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", platform.email)
+    # Policy-only contract: no HTTP data or cross-domain municipal rows claimed.
+    # Municipal admission retains its prior authorized-platform behavior.
+    assert _stats_tenant_access_allowed(platform, profile, requested_tipo="municipio") is True
+    assert _stats_tenant_access_allowed(platform, profile, requested_tipo="pyme") is False
+    assert _stats_tenant_access_allowed(platform, None, requested_tipo="municipio") is False
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "domain-other-platform@example.invalid")
+    assert _stats_tenant_access_allowed(platform, profile, requested_tipo="municipio") is False
