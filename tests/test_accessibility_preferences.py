@@ -1,14 +1,15 @@
 import json
-import jwt
+import pytest
+from services.auth_session_lifecycle import issue_token
 from datetime import datetime, timedelta, timezone
 from app import db
 
 
 def _auth_headers(app, user_id):
-    token = jwt.encode(
-        {"user_id": user_id, "exp": datetime.now(timezone.utc) + timedelta(days=1)},
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
+    # Use the application's real test-session lifecycle; bare legacy JWTs
+    # are correctly rejected by current authentication before these routes.
+    token = issue_token(
+        {"user_id": user_id, "exp": datetime.now(timezone.utc) + timedelta(hours=1)}
     )
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
@@ -163,3 +164,55 @@ def test_accessibility_preflight_preserves_credentials(
     allowed_headers = resp.headers.get("Access-Control-Allow-Headers", "")
     assert "Authorization" in allowed_headers
     assert "X-Chat-Session-Id" in allowed_headers
+
+
+@pytest.mark.parametrize("method", ["get", "put"])
+def test_me_rejects_retired_expected_identity_before_read_or_write(
+    client, app, init_database, viewer_user, owner_user, method
+):
+    # The view still belongs to owner A, but the request already authenticates B.
+    before = {"dyslexia": False, "employee_scope": {"categorias": ["test"]}}
+    viewer_user.accesibilidad = before.copy()
+    db.session.commit()
+    headers = _auth_headers(app, viewer_user.id)
+    path = f"/api/accessibility/me?expected_user_id={owner_user.id}"
+    response = getattr(client, method)(path, headers=headers,
+        **({"json": {"dyslexia": True}} if method == "put" else {}))
+    assert response.status_code == 403
+    body = response.get_json()
+    assert body["reason_code"] == "accessibility_identity_mismatch"
+    assert "preferences" not in body and "user_id" not in body
+    db.session.refresh(viewer_user)
+    assert viewer_user.accesibilidad == before
+
+
+def test_me_expected_identity_allows_current_actor_and_preserves_metadata(
+    client, app, init_database, viewer_user
+):
+    viewer_user.accesibilidad = {"employee_scope": {"categorias": ["test"]}}
+    db.session.commit()
+    headers = _auth_headers(app, viewer_user.id)
+    path = f"/api/accessibility/me?expected_user_id={viewer_user.id}"
+    initial = client.get(path, headers=headers)
+    assert initial.status_code == 200
+    assert initial.get_json()["user_id"] == viewer_user.id
+    response = client.put(path, headers=headers, json={"dyslexia": True})
+    assert response.status_code == 200
+    assert response.get_json()["preferences"]["dyslexia"] is True
+    db.session.refresh(viewer_user)
+    assert viewer_user.accesibilidad["employee_scope"] == {"categorias": ["test"]}
+
+
+def test_me_rejects_invalid_or_duplicate_expected_identity_without_mutation(
+    client, app, init_database, viewer_user
+):
+    headers = _auth_headers(app, viewer_user.id)
+    for query in ("expected_user_id=", "expected_user_id=-1", "expected_user_id=true",
+                  "expected_user_id=1.0", "expected_user_id=01",
+                  f"expected_user_id={viewer_user.id}&expected_user_id={viewer_user.id}"):
+        response = client.put("/api/accessibility/me?" + query,
+            headers=headers, json={"dyslexia": True})
+        assert response.status_code == 403
+        assert response.get_json()["reason_code"] == "accessibility_identity_mismatch"
+        db.session.refresh(viewer_user)
+        assert not viewer_user.accesibilidad

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from functools import wraps
 
 from flask import Blueprint, current_app, jsonify, request, g
 
@@ -6,7 +7,7 @@ from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from utils.time_utils import get_local_now
 from services.ticket_service import servicio_tickets
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
-from services.metricas_service import MetricasService
+from services.metricas_service import MetricasService, MetricsScopeError, business_metrics_actor_can_read
 from models import User, db
 from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
 from utils.map_config import get_map_config
@@ -820,9 +821,29 @@ def _build_applied_filters(
     }
 
 
+def _dashboard_pyme_scope_denied():
+    # Missing and unauthorized selections must disclose the same information.
+    return jsonify({"error": "tenant_forbidden",
+                    "reason_code": "metrics_tenant_scope_unavailable"}), 403
+
+
+def _dashboard_role_access(fn):
+    municipal_protected = admin_o_empleado_requerido(fn)
+
+    @wraps(fn)
+    def decorated(current_user, *args, **kwargs):
+        # Municipal dashboards retain their existing role/category policy.
+        # PyME authorization below also honors persisted scoped UserRole grants.
+        if _normalize_dashboard_tipo(request.args.get("tipo", "municipio")) != "pyme":
+            return municipal_protected(current_user, *args, **kwargs)
+        return fn(current_user, *args, **kwargs)
+
+    return decorated
+
+
 @estadisticas_bp.route("/dashboard", methods=["GET"])
 @token_requerido
-@admin_o_empleado_requerido
+@_dashboard_role_access
 def estadisticas_dashboard(current_user):
     """Fusiona estadísticas municipales/pyme en un único payload para dashboards modernos."""
 
@@ -830,14 +851,33 @@ def estadisticas_dashboard(current_user):
     tipo = _normalize_dashboard_tipo(args.get("tipo", "municipio"))
 
     try:
-        tenant = _resolve_tenant_profile_or_error(args)
+        if tipo == "pyme":
+            # Share the metrics API's selector contract: query/header hints
+            # must identify one coherent profile, even for a granted admin.
+            from utils.auth_helpers import _explicit_admin_request_tenant
+            tenant, explicit_selection = _explicit_admin_request_tenant()
+            if explicit_selection and tenant is None:
+                return _dashboard_pyme_scope_denied()
+            if not explicit_selection:
+                tenant = _resolve_tenant_profile_or_error(args)
+        else:
+            tenant = _resolve_tenant_profile_or_error(args)
     except TenantResolutionError as exc:
+        if tipo == "pyme":
+            return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
-    if not _stats_tenant_access_allowed(current_user, tenant):
+    if tipo == "pyme":
+        allowed = business_metrics_actor_can_read(current_user, tenant,
+                                                  explicit_selection=explicit_selection)
+    else:
+        allowed = _stats_tenant_access_allowed(current_user, tenant)
+    if not allowed:
+        if tipo == "pyme":
+            return _dashboard_pyme_scope_denied()
         return jsonify({"error": "tenant_forbidden"}), 403
     tenant_id = getattr(tenant, "id", None)
-    if tipo == "pyme" and tenant_id is None and not current_app.config.get("TESTING"):
-        return jsonify({"error": "tenant_required"}), 403
+    if tipo == "pyme" and tenant_id is None:
+        return _dashboard_pyme_scope_denied()
 
     estados = _parse_estado_params(args)
     estado_param = None
@@ -925,7 +965,10 @@ def estadisticas_dashboard(current_user):
         stats_pyme: dict[str, object] = {}
 
         if pyme_id:
-            metricas = MetricasService(pyme_id)
+            try:
+                metricas = MetricasService(pyme_id, tenant_id=tenant_id)
+            except MetricsScopeError:
+                return jsonify({"error": "metrics_tenant_scope_unavailable"}), 403
             total_ventas = metricas.get_total_ingresos()
             total_pedidos = metricas.get_total_pedidos()
             clientes_unicos = metricas.get_new_customers()
@@ -936,13 +979,13 @@ def estadisticas_dashboard(current_user):
                 "total_pedidos": total_pedidos,
                 "clientes_unicos": clientes_unicos,
                 "tasa_conversion": tasa_conversion,
+                "currency": metricas.get_summary()["currency"],
             }
 
             cards_pyme = [
-                {"label": "Ingresos Totales", "value": total_ventas},
+                {"label": "Importe de pedidos", "value": total_ventas},
                 {"label": "Pedidos", "value": total_pedidos},
                 {"label": "Clientes Únicos", "value": clientes_unicos},
-                {"label": "Tasa de Conversión", "value": tasa_conversion},
             ]
 
             stats_pyme = {
@@ -950,6 +993,7 @@ def estadisticas_dashboard(current_user):
                 "ventas_over_time": metricas.get_sales_over_time(),
                 "top_productos": metricas.get_top_products(),
                 "ventas_por_region": metricas.get_sales_by_region(),
+                "availability": metricas.get_module_availability(),
             }
 
         payload["stats"] = stats_pyme
