@@ -37,12 +37,26 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         import routes.estadisticas as estats
         importlib.reload(estats)
 
+        # These payload tests already replace authentication. Give them an
+        # explicit municipal profile consistent with each synthetic actor;
+        # retain the real scope-access helper instead of TESTING/None admission.
+        def resolved_payload_scope(actor, args, tipo):
+            assert tipo == 'municipio'
+            assert actor.municipio_id is not None
+            return SimpleNamespace(id=101, municipio_id=actor.municipio_id,
+                                   pyme_id=None, tipo='municipio', is_active=True), False
+
+        self.scope_patcher = patch('routes.estadisticas._resolve_ticket_stats_tenant',
+                                   side_effect=resolved_payload_scope)
+        self.scope_patcher.start()
+
         self.app = Flask(__name__)
         self.app.config.from_object(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
 
     def tearDown(self):
+        self.scope_patcher.stop()
         self.session_patcher.stop()
         if self.original_auth_helpers is not None:
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
@@ -123,7 +137,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=1,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=101,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
@@ -216,7 +230,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=1,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=101,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
@@ -289,7 +303,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=42,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=101,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=['Arbol', 'Luminaria'],
