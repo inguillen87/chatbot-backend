@@ -8,11 +8,12 @@ from utils.time_utils import get_local_now
 from services.ticket_service import servicio_tickets
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.metricas_service import MetricasService, MetricsScopeError, business_metrics_actor_can_read
-from models import User, db
+from models import Role, User, UserRole, db
 from utils.heatmap import aggregate_heatmap_points, build_feature_collection, enrich_heatmap_points
 from utils.map_config import get_map_config
 from utils.tenant import get_current_tenant, get_current_tenant_profile, get_current_tenant_slug
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+from services.tenant_ticket_scope import TicketTenantScopeError, _is_structurally_municipal_tenant
 from services.operational_heatmap_access import (
     build_employee_legacy_heatmap_points,
     is_employee_heatmap_viewer,
@@ -210,37 +211,40 @@ def _stats_tenant_access_allowed(current_user, tenant, *, requested_tipo, explic
                                                explicit_selection=explicit_selection)
     if requested_tipo != "municipio":
         return False
-    # Preserve the prior municipal policy independently of the profile's type.
+    # The selected owner is mandatory before every actor exception.
+    municipal_owner_id = getattr(tenant, "municipio_id", None)
+    if (not _is_structurally_municipal_tenant(tenant)
+            or type(municipal_owner_id) is not int or municipal_owner_id <= 0
+            or getattr(tenant, "is_active", False) is not True):
+        return False
     if is_authorized_superadmin_user(current_user):
+        return bool(explicit_selection)
+    if (explicit_selection and municipal_owner_id is not None
+            and getattr(current_user, "id", None) == municipal_owner_id):
         return True
 
-    owner = current_user
-    empresa_id = getattr(current_user, "empresa_id", None)
-    if empresa_id:
-        owner = db.session.get(User, empresa_id) or current_user
+    resolved = resolve_consistent_user_tenant(current_user)
+    exact_membership = resolved is not None and resolved.id == tenant.id
+    # Use the same classifier as the row service. A role on another profile
+    # cannot promote an employee past their organization/category boundary.
+    if _is_category_limited_employee(current_user):
+        return exact_membership
 
-    tenant_ids = {
-        getattr(current_user, "tenant_id", None),
-        getattr(owner, "tenant_id", None),
-    } - {None}
-    if getattr(tenant, "id", None) in tenant_ids:
+    from utils.roles import ROLE_ANALYTICS_VIEWER, ROLE_TENANT_ADMIN, canonical_role
+    if canonical_role(getattr(current_user, "rol", None)) not in {
+        ROLE_TENANT_ADMIN, ROLE_ANALYTICS_VIEWER,
+    }:
+        return False
+    if exact_membership:
         return True
-
-    owner_id = getattr(owner, "id", None)
-    municipality_ids = {
-        getattr(current_user, "municipio_id", None),
-        getattr(owner, "municipio_id", None),
-        owner_id if getattr(owner, "tipo_chat", None) == "municipio" else None,
-    } - {None}
-    business_ids = {
-        getattr(current_user, "pyme_id", None),
-        getattr(owner, "pyme_id", None),
-        owner_id if getattr(owner, "tipo_chat", None) == "pyme" else None,
-    } - {None}
-    return bool(
-        getattr(tenant, "municipio_id", None) in municipality_ids
-        or getattr(tenant, "pyme_id", None) in business_ids
-    )
+    # This local entitlement is evaluated only after the unchanged outer
+    # municipal role/target admission; it cannot widen cross-owner admission.
+    assignments = (UserRole.query.join(Role, UserRole.role_id == Role.id)
+                   .filter(UserRole.user_id == current_user.id,
+                           UserRole.tenant_id == tenant.id).all())
+    return any(canonical_role(assignment.role.name) in {
+        ROLE_TENANT_ADMIN, ROLE_ANALYTICS_VIEWER,
+    } for assignment in assignments)
 
 
 def _resolve_stats_rubro_id(current_user, tenant) -> int | None:
@@ -846,8 +850,7 @@ def _dashboard_pyme_scope_denied():
 
 
 def _resolve_ticket_stats_tenant(current_user, args, tipo):
-    if tipo != "pyme":
-        return _resolve_tenant_profile_or_error(args), False
+    # Both private statistics domains require one coherent explicit target.
     from utils.auth_helpers import _explicit_admin_request_tenant
     tenant, explicit_selection = _explicit_admin_request_tenant()
     if not explicit_selection:
@@ -856,18 +859,18 @@ def _resolve_ticket_stats_tenant(current_user, args, tipo):
 
 
 def _legacy_ticket_stats_role_access(fn):
-    # Always execute the existing role boundary. Only normalize its PyME 403
-    # response; no persisted grant or employee flag can bypass admission.
+    # Always execute the existing role boundary. Normalize only the local
+    # statistics 403; no grant or employee flag can bypass outer admission.
     protected = admin_o_empleado_requerido(fn)
 
     @wraps(fn)
     def decorated(current_user, *args, **kwargs):
         response = make_response(protected(current_user, *args, **kwargs))
         try:
-            pyme_request = _resolve_heatmap_ticket_type(request.args) == "pyme"
+            scoped_request = _resolve_heatmap_ticket_type(request.args) in {"pyme", "municipio"}
         except ValueError:
-            pyme_request = False
-        if response.status_code == 403 and pyme_request:
+            scoped_request = False
+        if response.status_code == 403 and scoped_request:
             denial = make_response(_dashboard_pyme_scope_denied())
             response.set_data(denial.get_data())
             response.content_type = denial.content_type
@@ -878,7 +881,7 @@ def _legacy_ticket_stats_role_access(fn):
 
 
 def _dashboard_role_access(fn):
-    municipal_protected = admin_o_empleado_requerido(fn)
+    municipal_protected = _legacy_ticket_stats_role_access(fn)
 
     @wraps(fn)
     def decorated(current_user, *args, **kwargs):
@@ -911,20 +914,17 @@ def estadisticas_dashboard(current_user):
             if not explicit_selection:
                 tenant = _resolve_tenant_profile_or_error(args)
         else:
-            tenant = _resolve_tenant_profile_or_error(args)
-    except TenantResolutionError as exc:
-        if tipo == "pyme":
-            return _dashboard_pyme_scope_denied()
-        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+            tenant, explicit_selection = _resolve_ticket_stats_tenant(current_user, args, tipo)
+    except TenantResolutionError:
+        return _dashboard_pyme_scope_denied()
     if tipo == "pyme":
         allowed = business_metrics_actor_can_read(current_user, tenant,
                                                   explicit_selection=explicit_selection)
     else:
-        allowed = _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo)
+        allowed = _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo,
+                                               explicit_selection=explicit_selection)
     if not allowed:
-        if tipo == "pyme":
-            return _dashboard_pyme_scope_denied()
-        return jsonify({"error": "tenant_forbidden"}), 403
+        return _dashboard_pyme_scope_denied()
     tenant_id = getattr(tenant, "id", None)
     if tipo == "pyme" and tenant_id is None:
         return _dashboard_pyme_scope_denied()
@@ -945,7 +945,7 @@ def estadisticas_dashboard(current_user):
     rubro_id = args.get("rubro_id", type=int)
 
     if tipo == "municipio":
-        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(current_user)
+        municipio_id = tenant.municipio_id
     if tipo == "pyme":
         rubro_id = _resolve_stats_rubro_id(current_user, tenant)
 
@@ -993,10 +993,15 @@ def estadisticas_dashboard(current_user):
     heatmap = _prepare_legacy_heatmap_payload(payload, heatmap, current_user)
 
     if tipo == "municipio":
-        if stats_filters:
-            stats = build_stats_for_municipio(municipio_id, filters=stats_filters, actor=current_user)
-        else:
-            stats = build_stats_for_municipio(municipio_id, actor=current_user)
+        try:
+            if stats_filters:
+                stats = build_stats_for_municipio(municipio_id, filters=stats_filters,
+                                                  actor=current_user, tenant_id=tenant_id)
+            else:
+                stats = build_stats_for_municipio(municipio_id, actor=current_user,
+                                                  tenant_id=tenant_id)
+        except TicketTenantScopeError:
+            return _dashboard_pyme_scope_denied()
 
         resumen = dict(stats.get("resumen", {})) if isinstance(stats, dict) else {}
         payload["stats"] = stats
@@ -1067,14 +1072,10 @@ def mapa_calor_datos(current_user):
 
     try:
         tenant, explicit_selection = _resolve_ticket_stats_tenant(current_user, args, tipo_ticket)
-    except TenantResolutionError as exc:
-        if tipo_ticket == "pyme":
-            return _dashboard_pyme_scope_denied()
-        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+    except TenantResolutionError:
+        return _dashboard_pyme_scope_denied()
     if not _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo_ticket, explicit_selection=explicit_selection):
-        if tipo_ticket == "pyme":
-            return _dashboard_pyme_scope_denied()
-        return jsonify({"error": "tenant_forbidden"}), 403
+        return _dashboard_pyme_scope_denied()
     tenant_id = getattr(tenant, "id", None)
     if tipo_ticket == "pyme" and tenant_id is None:
         return _dashboard_pyme_scope_denied()
@@ -1089,7 +1090,7 @@ def mapa_calor_datos(current_user):
 
     municipio_id = args.get("municipio_id", type=int)
     if tipo_ticket == "municipio":
-        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(current_user)
+        municipio_id = tenant.municipio_id
 
     rubro_id = args.get("rubro_id", type=int)
     if tipo_ticket == "pyme":
@@ -1133,10 +1134,15 @@ def mapa_calor_datos(current_user):
     puntos = _prepare_legacy_heatmap_payload(payload, puntos, current_user)
 
     if tipo_ticket == "municipio":
-        if stats_filters:
-            stats = build_stats_for_municipio(municipio_id, filters=stats_filters, actor=current_user)
-        else:
-            stats = build_stats_for_municipio(municipio_id, actor=current_user)
+        try:
+            if stats_filters:
+                stats = build_stats_for_municipio(municipio_id, filters=stats_filters,
+                                                  actor=current_user, tenant_id=tenant_id)
+            else:
+                stats = build_stats_for_municipio(municipio_id, actor=current_user,
+                                                  tenant_id=tenant_id)
+        except TicketTenantScopeError:
+            return _dashboard_pyme_scope_denied()
 
         resumen = dict(stats.get("resumen", {})) if isinstance(stats, dict) else {}
         payload["stats"] = stats
@@ -1191,14 +1197,10 @@ def estadisticas_tickets(current_user):
 
     try:
         tenant, explicit_selection = _resolve_ticket_stats_tenant(current_user, args, tipo)
-    except TenantResolutionError as exc:
-        if tipo == "pyme":
-            return _dashboard_pyme_scope_denied()
-        return jsonify({"error": "tenant_desconocido", "detail": str(exc)}), 404
+    except TenantResolutionError:
+        return _dashboard_pyme_scope_denied()
     if not _stats_tenant_access_allowed(current_user, tenant, requested_tipo=tipo, explicit_selection=explicit_selection):
-        if tipo == "pyme":
-            return _dashboard_pyme_scope_denied()
-        return jsonify({"error": "tenant_forbidden"}), 403
+        return _dashboard_pyme_scope_denied()
     tenant_id = getattr(tenant, "id", None)
     if tipo == "pyme" and tenant_id is None:
         return _dashboard_pyme_scope_denied()
@@ -1216,7 +1218,7 @@ def estadisticas_tickets(current_user):
         distrito = distrito.strip() or None
 
     if tipo == "municipio":
-        municipio_id = getattr(tenant, "municipio_id", None) or _resolve_municipio_id(current_user)
+        municipio_id = tenant.municipio_id
     if tipo == "pyme":
         rubro_id = _resolve_stats_rubro_id(current_user, tenant)
 
@@ -1262,10 +1264,15 @@ def estadisticas_tickets(current_user):
     heatmap = _prepare_legacy_heatmap_payload(respuesta, heatmap, current_user)
 
     if tipo == "municipio":
-        if stats_filters:
-            stats = build_stats_for_municipio(municipio_id, filters=stats_filters, actor=current_user)
-        else:
-            stats = build_stats_for_municipio(municipio_id, actor=current_user)
+        try:
+            if stats_filters:
+                stats = build_stats_for_municipio(municipio_id, filters=stats_filters,
+                                                  actor=current_user, tenant_id=tenant_id)
+            else:
+                stats = build_stats_for_municipio(municipio_id, actor=current_user,
+                                                  tenant_id=tenant_id)
+        except TicketTenantScopeError:
+            return _dashboard_pyme_scope_denied()
 
         resumen = dict(stats.get("resumen", {})) if isinstance(stats, dict) else {}
         respuesta["stats"] = stats

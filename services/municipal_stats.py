@@ -22,8 +22,11 @@ from models import (
 from utils.time_utils import get_local_now
 from services.employee_ticket_access import apply_employee_ticket_category_scope
 from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    _is_structurally_municipal_tenant,
     municipio_ticket_scope_filter,
     resolve_unique_tenant_for_owner,
+    tenant_unique_legacy_owner_id,
 )
 
 
@@ -304,20 +307,38 @@ def _normalize_label(value: str | None, fallback: str) -> str:
 def build_stats_for_municipio(
     municipio_id: int | None,
     *,
+    tenant_id: int | None = None,
     filters: StatsFilters | None = None,
     now: datetime | None = None,
     actor=None,
 ) -> dict:
     """Return detailed analytics for tickets and citizen suggestions."""
 
+    tenant = None
     tenant_resolution = None
-    if municipio_id:
+    if tenant_id is not None:
+        if type(tenant_id) is not int or tenant_id <= 0:
+            raise TicketTenantScopeError(
+                "ticket_tenant_scope_unavailable", "Municipal statistics scope is unavailable."
+            )
+        tenant = db.session.get(TenantProfile, tenant_id)
+        if (not _is_structurally_municipal_tenant(tenant)
+                or getattr(tenant, "is_active", False) is not True
+                or type(municipio_id) is not int or municipio_id <= 0
+                or type(getattr(tenant, "municipio_id", None)) is not int
+                or tenant.municipio_id <= 0 or tenant.municipio_id != municipio_id):
+            raise TicketTenantScopeError(
+                "ticket_tenant_scope_unavailable", "Municipal statistics scope is unavailable."
+            )
+    elif municipio_id:
         try:
             tenant_resolution = resolve_unique_tenant_for_owner(municipio_id)
         except ValueError:
             tenant_resolution = None
 
-    if not municipio_id or tenant_resolution is None or tenant_resolution.status != "unique":
+    if tenant_id is None and (
+        not municipio_id or tenant_resolution is None or tenant_resolution.status != "unique"
+    ):
         return {
             "resumen": {
                 "total": 0,
@@ -360,7 +381,7 @@ def build_stats_for_municipio(
 
     ahora = now or get_local_now()
     active_filters = filters if filters and not filters.is_empty() else None
-    tenant = tenant_resolution.tenant
+    tenant = tenant if tenant_id is not None else tenant_resolution.tenant
     ticket_scope = municipio_ticket_scope_filter(tenant)
 
     def _tickets_query(*columns):
@@ -716,13 +737,17 @@ def build_stats_for_municipio(
     ]
 
     # --- Sugerencias -------------------------------------------------------
+    # These legacy rows have no tenant_id. Shared-owner rows are unattributable.
+    suggestions_available = (tenant_id is None
+                             or tenant_unique_legacy_owner_id(tenant) == municipio_id)
     sugerencia_query = db.session.query(func.count(SugerenciaCiudadano.id)).filter(
         SugerenciaCiudadano.municipio_id == municipio_id
     )
     sugerencia_rows = _apply_suggestion_filters(
         sugerencia_query, active_filters
-    ).first()
-    sugerencias_total = int((sugerencia_rows or (0,))[0] or 0)
+    ).first() if suggestions_available else None
+    sugerencias_total = (int((sugerencia_rows or (0,))[0] or 0)
+                         if suggestions_available else None)
 
     sugerencias_por_estado_rows = (
         _apply_suggestion_filters(
@@ -734,7 +759,7 @@ def build_stats_for_municipio(
         )
         .group_by(SugerenciaCiudadano.estado)
         .all()
-    )
+    ) if suggestions_available else []
     sugerencias_por_estado = [
         {
             "estado": _normalize_label(row.estado, "Sin estado"),
@@ -753,7 +778,7 @@ def build_stats_for_municipio(
         )
         .group_by(SugerenciaCiudadano.categoria)
         .all()
-    )
+    ) if suggestions_available else []
     sugerencias_por_categoria = [
         {
             "categoria": _normalize_label(row.categoria, "Sin categoría"),
@@ -774,7 +799,7 @@ def build_stats_for_municipio(
         .group_by(sugerencia_month_col)
         .order_by(sugerencia_month_col)
         .all()
-    )
+    ) if suggestions_available else []
     sugerencias_tendencia = [
         {"label": row.mes, "total": int(row[1] or 0)} for row in sugerencias_mensual_rows
     ]
@@ -816,4 +841,9 @@ def build_stats_for_municipio(
         },
     }
 
+    if tenant_id is not None:
+        datos["sugerencias"].update(
+            available=suggestions_available,
+            reason_code=None if suggestions_available else "legacy_owner_scope_unattributable",
+        )
     return datos

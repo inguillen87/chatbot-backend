@@ -49,12 +49,30 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         )
         self.tenant_patcher.start()
 
+        # Authentication is already replaced above. Model its resolved profile
+        # and effective actor membership coherently; keep the real scope guard.
+        def resolved_payload_identity(actor):
+            actor.tenant_id = 3
+            actor.tenant_slug = 'payload-municipal'
+            actor.id = getattr(actor, 'id', None) or 3001
+            actor.rol = getattr(actor, 'rol', None) or 'admin'
+            actor.tipo_chat = 'municipio'
+            return SimpleNamespace(id=3, slug=actor.tenant_slug,
+                                   municipio_id=actor.municipio_id, pyme_id=None,
+                                   tipo='municipio', is_active=True)
+        self.identity_patcher = patch(
+            'routes.estadisticas.resolve_consistent_user_tenant',
+            side_effect=resolved_payload_identity,
+        )
+        self.identity_patcher.start()
+
         self.app = Flask(__name__)
         self.app.config.from_object(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
 
     def tearDown(self):
+        self.identity_patcher.stop()
         self.tenant_patcher.stop()
         self.session_patcher.stop()
         if self.original_auth_helpers is not None:
@@ -189,6 +207,8 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             estado='nuevo',
             satisfactorio=True,
         )
+        mock_build_stats.assert_called_once()
+        self.assertEqual(mock_build_stats.call_args.kwargs['tenant_id'], 3)
 
     @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
     @patch('routes.estadisticas.servicio_tickets')
@@ -255,6 +275,8 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         self.assertNotIn('-68.30011', serialized)
         self.assertNotIn('-34.61011', serialized)
         self.assertNotIn('-68.31011', serialized)
+        _mock_stats.assert_called_once()
+        self.assertEqual(_mock_stats.call_args.kwargs['tenant_id'], 3)
 
     @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
     @patch('routes.estadisticas.servicio_tickets')
@@ -299,6 +321,8 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         self.assertEqual(len(payload.get('heatmap') or []), 1)
         self.assertEqual(payload['heatmap'][0].get('categoria_id'), 17)
         self.assertEqual(payload['heatmap'][0].get('weight'), 5.0)
+        _mock_stats.assert_called_once()
+        self.assertEqual(_mock_stats.call_args.kwargs['tenant_id'], 3)
 
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.MetricasService')
