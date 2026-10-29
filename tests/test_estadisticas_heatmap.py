@@ -49,11 +49,13 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         # These auth-mocked tests exercise payload projection, not admission.
         # Give the handler an explicit synthetic scope and mock that boundary.
         self.payload_tenant_id = 101
+        self.payload_owner_id = 301
         self.scope_patcher = patch(
             'routes.estadisticas._resolve_ticket_stats_tenant',
             side_effect=lambda _actor, _args, tipo: (
                 SimpleNamespace(id=self.payload_tenant_id, tipo=tipo, is_active=True,
-                                municipio_id=None, pyme_id=None, pyme=None),
+                                municipio_id=self.payload_owner_id if tipo == 'municipio' else None,
+                                pyme_id=None, pyme=None),
                 True,
             ),
         )
@@ -63,7 +65,18 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.scope_patcher.start()
         self.tenant_access_patcher.start()
 
+        # Payload-only stub: enforce the exact new internal service signature.
+        # The independent client/DB scope test below does not use this class.
+        def payload_stats(municipio_id, *, tenant_id, filters=None, actor=None):
+            self.assertEqual(municipio_id, self.payload_owner_id)
+            self.assertEqual(tenant_id, self.payload_tenant_id)
+            return {"resumen": {}}
+        self.stats_patcher = patch('routes.estadisticas.build_stats_for_municipio',
+                                   side_effect=payload_stats)
+        self.stats_patcher.start()
+
     def tearDown(self):
+        self.stats_patcher.stop()
         self.tenant_access_patcher.stop()
         self.scope_patcher.stop()
         self.token_patcher.stop()
@@ -131,7 +144,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             actor=None,
-            municipio_id=None,
+            municipio_id=self.payload_owner_id,
             rubro_id=None,
             tenant_id=self.payload_tenant_id,
             fecha_inicio=None,
@@ -154,7 +167,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             actor=None,
-            municipio_id=None,
+            municipio_id=self.payload_owner_id,
             rubro_id=None,
             tenant_id=self.payload_tenant_id,
             fecha_inicio=None,
@@ -218,7 +231,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
             actor=None,
-            municipio_id=None,
+            municipio_id=self.payload_owner_id,
             rubro_id=None,
             tenant_id=self.payload_tenant_id,
             fecha_inicio=None,
@@ -338,42 +351,6 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertEqual(payload["heatmap"][0]["lng"], -68.30011)
         self.assertEqual(payload["heatmap"][0]["weight"], 1.0)
 
-    @patch('routes.estadisticas._resolve_ticket_stats_tenant')
-    @patch('routes.estadisticas.servicio_tickets')
-    def test_employee_heatmap_rejects_foreign_tenant_before_query(
-        self,
-        mock_servicio,
-        mock_resolve_tenant,
-    ):
-        # This denial case keeps the real authorization helper active.
-        self.tenant_access_patcher.stop()
-        mock_resolve_tenant.return_value = (SimpleNamespace(
-            id=202,
-            tipo="municipio",
-            is_active=True,
-            municipio_id=302,
-            pyme_id=None,
-        ), True)
-        employee = SimpleNamespace(
-            id=42,
-            rol="empleado",
-            es_empleado=True,
-            tenant_id=201,
-            empresa_id=None,
-            municipio_id=301,
-            pyme_id=None,
-            tipo_chat="municipio",
-        )
-
-        import routes.estadisticas as estats
-        with self.app.test_request_context(
-            '/estadisticas/mapa_calor/datos?tipo_ticket=municipio&tenant_slug=foreign'
-        ):
-            response = estats.mapa_calor_datos(current_user=employee)
-
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.get_json().get("error"), "tenant_forbidden")
-        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_not_called()
 
     @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
     @patch('routes.estadisticas.servicio_tickets')
@@ -422,3 +399,72 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+# This scope denial uses the ordinary application/client/DB fixture, rather
+# than the class above whose authentication and services are payload stubs.
+def test_employee_heatmap_rejects_foreign_tenant_before_query(client):
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import event
+    from models import MunicipioTicket, Role, TenantProfile, User, UserRole, db
+    from services.auth_session_lifecycle import issue_token
+
+    assert str(db.engine.url) == "sqlite:///:memory:"
+    owners = []
+    tenants = []
+    for label in ("a", "b"):
+        owner = User(name="Synthetic municipal owner", email="heatmap-owner-" + label + "@example.invalid",
+                     rol="admin", tipo_chat="municipio")
+        owner.set_password("synthetic-heatmap-only")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug="heatmap-foreign-" + label, nombre="Synthetic municipality",
+                               tipo="municipio", municipio_id=owner.id, is_active=True)
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id, owner.tenant_slug = tenant.id, tenant.slug
+        owners.append(owner)
+        tenants.append(tenant)
+    employee = User(name="Synthetic exact employee", email="heatmap-employee@example.invalid",
+                    rol="empleado", tipo_chat="municipio", es_empleado=True,
+                    tenant_id=tenants[0].id, tenant_slug=tenants[0].slug,
+                    municipio_id=owners[0].id,
+                    accesibilidad={"employee_scope": {"categorias": ["synthetic-allowed"]}})
+    employee.set_password("synthetic-heatmap-only")
+    db.session.add(employee)
+    db.session.flush()
+    role = Role.query.filter_by(name="empleado").first()
+    if role is None:
+        role = Role(name="empleado")
+        db.session.add(role)
+        db.session.flush()
+    db.session.add(UserRole(user_id=employee.id, tenant_id=tenants[0].id, role_id=role.id))
+    for tenant, owner, count, lat, lng in (
+        (tenants[0], owners[0], 7, -33, -60), (tenants[1], owners[1], 11, -34, -61)):
+        for _ in range(count):
+            db.session.add(MunicipioTicket(tenant_id=tenant.id, municipio_id=owner.id,
+                pregunta="Synthetic foreign-scope marker", categoria="synthetic-allowed",
+                latitud=lat, longitud=lng))
+    db.session.commit()
+    token = issue_token({"user_id": employee.id, "rol": employee.rol, "tipo_chat": employee.tipo_chat,
+                         "exp": datetime.now(timezone.utc) + timedelta(hours=1)})
+    headers = {"Authorization": "Bearer " + token, "X-Tenant-Slug": tenants[0].slug}
+    own = client.get("/estadisticas/mapa_calor/datos?tipo=municipio", headers=headers)
+    assert own.status_code == 200
+    assert sum(point["weight"] for point in own.get_json()["heatmap"]) == 7
+    assert own.get_json()["privacy"]["mode"] == "employee_aggregated"
+
+    reads = []
+    def record(_connection, _cursor, statement, _parameters, _context, _many):
+        if "select" in statement.lower() and "municipio_ticket" in statement.lower():
+            reads.append(statement)
+    event.listen(db.engine, "before_cursor_execute", record)
+    try:
+        headers["X-Tenant-Slug"] = tenants[1].slug
+        denied = client.get("/estadisticas/mapa_calor/datos?tipo=municipio", headers=headers)
+    finally:
+        event.remove(db.engine, "before_cursor_execute", record)
+    assert denied.status_code == 403
+    assert denied.get_json() == {"error": "tenant_forbidden",
+                                 "reason_code": "metrics_tenant_scope_unavailable"}
+    assert denied.headers["Cache-Control"] == "no-store"
+    assert reads == []

@@ -109,7 +109,7 @@ def pg_metrics_app(enterprise_metrics_configuration, record_testsuite_property):
             "enterprise_metrics.fixture_database": FIXTURE_DATABASE,
             "enterprise_metrics.server_major": str(observed_server_version // 10000),
             "enterprise_metrics.server_version_num": str(observed_server_version),
-            "enterprise_metrics.business_candidate": "tenant-closure-v2",
+            "enterprise_metrics.business_candidate": "municipal-tenant-closure-v3",
             "enterprise_metrics.business_source_hashes": json.dumps(business_source_hashes(), sort_keys=True),
             "enterprise_metrics.owned_schema": "true",
         }.items():
@@ -160,8 +160,14 @@ def _order(db, owner, tenant_id, amount, currency="ARS", *, customer=_DEFAULT_CU
 
 def _headers(owner, tenant):
     from services.auth_session_lifecycle import issue_token
-    token = issue_token({"user_id": owner.id, "rol": owner.rol, "tipo_chat": owner.tipo_chat,
-                         "exp": datetime.now(timezone.utc) + timedelta(hours=1)})
+    claims = {"user_id": owner.id, "rol": owner.rol, "tipo_chat": owner.tipo_chat,
+              "exp": datetime.now(timezone.utc) + timedelta(hours=1)}
+    if owner.rol == "super_admin":
+        from utils.auth_helpers import auth_session_version
+        claims.update(auth_provider="clerk", session_kind="clerk",
+                      clerk_sid=f"synthetic-metrics-session-{owner.id}",
+                      sv=auth_session_version(owner))
+    token = issue_token(claims)
     return {"Authorization": "Bearer " + token, "X-Tenant-Slug": tenant.slug}
 
 
@@ -259,6 +265,368 @@ def test_postgres_missing_nonfinite_and_unsafe_amounts_are_unavailable(pg_metric
             assert data["total_orders"] == 1 and data["unique_customers"] == 1
             assert data["total_sales"] is None and data["avg_order_value"] is None
             assert data["availability"]["total_sales"]["reason_code"] == reason
+
+
+def _exercise_municipal_statistics_scope(runtime):
+    """Exercise selected-scope statistics and legacy attribution on real PG18."""
+    from contextlib import contextmanager
+    from sqlalchemy import event
+    from models import (
+        MunicipioTicket, Role, SugerenciaCiudadano, TenantProfile,
+        TicketSatisfaccion, User, UserRole,
+    )
+    from utils.auth_helpers import admin_surface_access_allowed
+    from utils.tenant_admin_access import resolve_consistent_user_tenant
+
+    database = runtime.db
+    suffix = uuid4().hex
+    allowed_category = "synthetic-municipal-allowed-" + suffix
+    excluded_category = "synthetic-municipal-excluded-" + suffix
+    legacy_category = "synthetic-municipal-quarantined-" + suffix
+    paths = (
+        "/estadisticas/dashboard",
+        "/estadisticas/tickets",
+        "/estadisticas/mapa_calor/datos",
+    )
+    request_count = 0
+    expected_districts = {}
+    expected_satisfaction = {}
+
+    def user(label, role="admin", **values):
+        actor = User(name="Synthetic municipal " + label,
+                     email=label + "-" + uuid4().hex + "@example.invalid",
+                     rol=role, tipo_chat="municipio", **values)
+        actor.set_password(secrets.token_urlsafe(24))
+        database.session.add(actor)
+        database.session.flush()
+        return actor
+
+    def tenant(owner, label):
+        selected = TenantProfile(slug=label + "-" + uuid4().hex,
+                                 nombre="Synthetic municipal organization",
+                                 tipo="municipio", municipio_id=owner.id,
+                                 plan="enterprise", is_active=True)
+        database.session.add(selected)
+        database.session.flush()
+        return selected
+
+    def role(name):
+        assigned = Role.query.filter_by(name=name).first()
+        if assigned is None:
+            assigned = Role(name=name)
+            database.session.add(assigned)
+            database.session.flush()
+        return assigned
+
+    def assign(actor, selected, name):
+        assignment = UserRole(user_id=actor.id, tenant_id=selected.id,
+                              role_id=role(name).id)
+        database.session.add(assignment)
+        database.session.flush()
+        return assignment
+
+    def tickets(owner, selected, category, count, latitude, longitude, *, district):
+        created = []
+        for _ in range(count):
+            row = MunicipioTicket(
+                tenant_id=selected.id if selected is not None else None,
+                municipio_id=owner.id, pregunta="Synthetic municipal scope fixture",
+                categoria=category, estado="nuevo", latitud=latitude,
+                longitud=longitude, distrito=district,
+            )
+            database.session.add(row)
+            created.append(row)
+        return created
+
+    def get(actor, selected, path):
+        nonlocal request_count
+        suggestion_selects = []
+        def observe(_connection, _cursor, statement, _parameters, _context, _many):
+            lowered = statement.lower()
+            if "sugerencia_ciudadano" in lowered and "select" in lowered:
+                suggestion_selects.append(statement)
+        event.listen(database.engine, "before_cursor_execute", observe)
+        try:
+            request_count += 1
+            response = _get(runtime, actor, selected, path, query={"tipo": "municipio"})
+            response.synthetic_suggestion_select_count = len(suggestion_selects)
+            return response
+        finally:
+            event.remove(database.engine, "before_cursor_execute", observe)
+
+    @contextmanager
+    def no_municipal_row_read():
+        reached = []
+        def observe(_connection, _cursor, statement, _parameters, _context, _many):
+            lowered = statement.lower()
+            if ("select" in lowered and
+                    ("municipio_ticket" in lowered or "sugerencia_ciudadano" in lowered)):
+                reached.append(statement)
+        event.listen(database.engine, "before_cursor_execute", observe)
+        try:
+            yield
+        finally:
+            event.remove(database.engine, "before_cursor_execute", observe)
+            assert not reached, "Municipal rows must not be read before a scope403"
+
+    def denied(actor, selected, path):
+        with no_municipal_row_read():
+            response = get(actor, selected, path)
+        assert response.status_code == 403
+        assert response.get_json() == {
+            "error": "tenant_forbidden",
+            "reason_code": "metrics_tenant_scope_unavailable",
+        }
+        assert response.headers["Cache-Control"] == "no-store"
+
+    def points(response, selected, expected, *, employee=False,
+               unique_summary=False, suggestion_count=0):
+        assert response.status_code == 200
+        payload = response.get_json()
+        observed = sorted(
+            (point["categoria"], point["location"]["lat"],
+             point["location"]["lng"], point["weight"])
+            for point in payload["heatmap"]
+        )
+        assert observed == sorted(expected)
+        assert legacy_category not in {point[0] for point in observed}
+        total = sum(point[3] for point in expected)
+        assert payload["summary"]["total"] == total
+        assert payload["stats"]["resumen"]["total"] == total
+        assert sorted((row["categoria"], row["total"])
+                      for row in payload["stats"]["por_categoria"]) == sorted(
+                          (point[0], point[3]) for point in expected
+                      )
+        assert [(row["distrito"], row["total"])
+                for row in payload["stats"]["por_distrito"]] == [
+                    (expected_districts[selected.id], total)
+                ]
+        responses, average = expected_satisfaction[(selected.id, employee)]
+        assert payload["stats"]["satisfaccion"]["respuestas"] == responses
+        assert payload["stats"]["satisfaccion"]["promedio"] == pytest.approx(average)
+        assert payload["summary"]["respuestas_satisfaccion"] == responses
+        assert payload["summary"]["promedio_satisfaccion"] == pytest.approx(average)
+        if employee:
+            assert payload["privacy"]["mode"] == "employee_aggregated"
+            assert payload["privacy"]["k_min"] == 5
+        if response.request.path == "/estadisticas/dashboard":
+            assert payload["metadata"]["tenant_id"] == selected.id
+        suggestions = payload["stats"]["sugerencias"]
+        if unique_summary:
+            assert suggestions["available"] is True
+            assert suggestions["reason_code"] is None
+            assert suggestions["total"] == suggestion_count
+            assert response.synthetic_suggestion_select_count > 0
+            if suggestion_count:
+                assert sum(row["total"] for row in suggestions["por_estado"]) == suggestion_count
+                assert sum(row["total"] for row in suggestions["por_categoria"]) == suggestion_count
+                assert sum(row["total"] for row in suggestions["tendencia_mensual"]) == suggestion_count
+            else:
+                assert suggestions["por_estado"] == suggestions["por_categoria"] == suggestions["tendencia_mensual"] == []
+        else:
+            assert suggestions == {
+                "total": None, "por_estado": [], "por_categoria": [], "tendencia_mensual": [],
+                "available": False, "reason_code": "legacy_owner_scope_unattributable",
+            }
+            assert response.synthetic_suggestion_select_count == 0
+        return payload
+
+    owner = user("shared-owner")
+    selected = tenant(owner, "municipal-a")
+    other = tenant(owner, "municipal-b")
+    owner.tenant_id, owner.tenant_slug, owner.municipio_id = (
+        selected.id, selected.slug, owner.id,
+    )
+    admin = user("admin-a", tenant_id=selected.id, tenant_slug=selected.slug,
+                 municipio_id=owner.id)
+    employee = user(
+        "employee-a", role="empleado", tenant_id=selected.id,
+        tenant_slug=selected.slug, municipio_id=owner.id, empresa_id=None,
+        es_empleado=True, ticket_categorias=allowed_category,
+        accesibilidad={"employee_scope": {"categorias": [allowed_category]}},
+    )
+    assign(admin, selected, "admin")
+    assign(employee, selected, "empleado")
+    district_a, district_b = "synthetic-district-a-" + suffix, "synthetic-district-b-" + suffix
+    a_allowed = tickets(owner, selected, allowed_category, 7, -33.0, -60.0, district=district_a)
+    a_excluded = tickets(owner, selected, excluded_category, 5, -33.2, -60.2, district=district_a)
+    b_allowed = tickets(owner, other, allowed_category, 11, -34.0, -61.0, district=district_b)
+    b_excluded = tickets(owner, other, excluded_category, 6, -34.2, -61.2, district=district_b)
+    tickets(owner, None, legacy_category, 13, -35.0, -62.0, district="synthetic-legacy-district")
+    database.session.flush()
+    for row, score in ((a_allowed[0], 1), (a_excluded[0], 1),
+                       (b_allowed[0], 5), (b_excluded[0], 5)):
+        database.session.add(TicketSatisfaccion(
+            ticket_id=row.id, tipo="municipio", puntuacion=score,
+        ))
+    for _ in range(3):
+        database.session.add(SugerenciaCiudadano(
+            municipio_id=owner.id, texto_sugerencia="Synthetic unassigned shared-owner suggestion",
+            categoria=legacy_category, estado="nueva",
+        ))
+    database.session.commit()
+    expected_districts.update({selected.id: district_a, other.id: district_b})
+    expected_satisfaction.update({
+        (selected.id, False): (2, 1.0), (selected.id, True): (1, 1.0),
+        (other.id, False): (2, 5.0),
+    })
+    assert MunicipioTicket.query.filter_by(
+        municipio_id=owner.id, tenant_id=None, categoria=legacy_category,
+    ).count() == 13
+    assert SugerenciaCiudadano.query.filter_by(municipio_id=owner.id).count() == 3
+    for actor in (admin, employee):
+        assert actor.id != owner.id
+        assert resolve_consistent_user_tenant(actor).id == selected.id
+        assert UserRole.query.filter_by(user_id=actor.id, tenant_id=other.id).count() == 0
+
+    expected_a = [
+        (allowed_category, -33.0, -60.0, 7),
+        (excluded_category, -33.2, -60.2, 5),
+    ]
+    expected_b = [
+        (allowed_category, -34.0, -61.0, 11),
+        (excluded_category, -34.2, -61.2, 6),
+    ]
+    for path in paths:
+        denied(admin, other, path)
+        denied(employee, other, path)
+        points(get(admin, selected, path), selected, expected_a)
+        points(get(employee, selected, path), selected, expected_a[:1], employee=True)
+        # The actual owner explicitly selects B; its ticket statistics must
+        # agree with B's heatmap while unbound legacy suggestions stay unknown.
+        points(get(owner, other, path), other, expected_b)
+
+    for name in ("admin", "analytics_viewer"):
+        assignment = assign(admin, other, name)
+        database.session.commit()
+        for path in paths:
+            points(get(admin, other, path), other, expected_b)
+        database.session.delete(assignment)
+        database.session.commit()
+        for path in paths:
+            denied(admin, other, path)
+
+        assignment = assign(employee, other, name)
+        database.session.commit()
+        for path in paths:
+            denied(employee, other, path)
+            points(get(employee, selected, path), selected, expected_a[:1], employee=True)
+        database.session.delete(assignment)
+        database.session.commit()
+
+    unrelated_owner = user("unrelated-owner")
+    unrelated = tenant(unrelated_owner, "municipal-unrelated")
+    unrelated_owner.tenant_id = unrelated.id
+    unrelated_owner.tenant_slug = unrelated.slug
+    foreign_assignment = assign(admin, unrelated, "admin")
+    database.session.commit()
+    for path in paths:
+        denied(admin, unrelated, path)
+    database.session.delete(foreign_assignment)
+    database.session.commit()
+
+    # This sole owner's legacy rows are attributable. Real scalar date and
+    # aggregate queries run on stock PG18; no geometry stub or extension exists.
+    unique_owner = user("unique-owner")
+    unique = tenant(unique_owner, "municipal-legacy-unique")
+    unique_owner.tenant_id, unique_owner.tenant_slug, unique_owner.municipio_id = (
+        unique.id, unique.slug, unique_owner.id,
+    )
+    legacy = user("unique-legacy-delegate", municipio_id=unique_owner.id)
+    unique_category = "synthetic-municipal-unique-" + suffix
+    unique_district = "synthetic-district-unique-" + suffix
+    tickets(unique_owner, unique, unique_category, 2, -36.0, -63.0, district=unique_district)
+    tickets(unique_owner, None, unique_category, 3, -36.0, -63.0, district=unique_district)
+    database.session.commit()
+    expected_districts[unique.id] = unique_district
+    expected_satisfaction[(unique.id, False)] = (0, 0.0)
+    assert legacy.tenant_id is None and legacy.tenant_slug is None
+    assert resolve_consistent_user_tenant(legacy).id == unique.id
+    for path in paths:
+        points(get(legacy, unique, path), unique,
+               [(unique_category, -36.0, -63.0, 5)], unique_summary=True)
+
+    for _ in range(2):
+        database.session.add(SugerenciaCiudadano(
+            municipio_id=unique_owner.id, texto_sugerencia="Synthetic attributable suggestion",
+            categoria=unique_category, estado="nueva",
+        ))
+    database.session.commit()
+    for path in paths:
+        points(get(legacy, unique, path), unique,
+               [(unique_category, -36.0, -63.0, 5)],
+               unique_summary=True, suggestion_count=2)
+
+    ambiguous = user("ambiguous-legacy-delegate", municipio_id=owner.id)
+    database.session.commit()
+    assert resolve_consistent_user_tenant(ambiguous) is None
+    for path in paths:
+        denied(ambiguous, other, path)
+
+    # Legal profiles can have only a PyME owner reference. An explicit role
+    # cannot let this municipal request fall back to its actor's foreign owner,
+    # whose unique organization has five tickets and two actual suggestions.
+    pyme_owner = user("owner-reference-p")
+    pyme_owner.tipo_chat = "pyme"
+    missing_owner = TenantProfile(
+        slug="municipal-missing-owner-" + uuid4().hex,
+        nombre="Synthetic missing municipal owner", tipo="municipio",
+        municipio_id=None, pyme_id=pyme_owner.id,
+        plan="enterprise", is_active=True,
+    )
+    database.session.add(missing_owner)
+    database.session.flush()
+    pyme_owner.tenant_id, pyme_owner.tenant_slug, pyme_owner.pyme_id = (
+        missing_owner.id, missing_owner.slug, pyme_owner.id,
+    )
+    for reference, role_name in (("municipio_id", "admin"), ("empresa_id", "analytics_viewer")):
+        delegate = user(
+            "missing-owner-" + reference, tenant_id=missing_owner.id,
+            tenant_slug=missing_owner.slug, **{reference: unique_owner.id},
+        )
+        assign(delegate, missing_owner, role_name)
+        database.session.commit()
+        assert missing_owner.municipio_id is None and missing_owner.is_active is True
+        assert resolve_consistent_user_tenant(delegate) is None
+        for path in paths:
+            with runtime.app.test_request_context(
+                path, query_string={"tipo": "municipio"}, headers=_headers(delegate, missing_owner)
+            ):
+                assert admin_surface_access_allowed(delegate, allow_employee=True) is True
+            denied(delegate, missing_owner, path)
+
+    # A legal single-owner profile can still belong to the wrong domain.
+    # Neither actual ownership nor an authenticated, allowlisted platform actor
+    # can turn this explicit PyME profile into municipal statistics authority.
+    from services.municipal_stats import build_stats_for_municipio
+    from services.tenant_ticket_scope import TicketTenantScopeError
+    from utils.roles import is_authorized_superadmin_user
+
+    wrong_domain = TenantProfile(
+        slug="municipal-wrong-domain-" + uuid4().hex,
+        nombre="Synthetic non-municipal profile", tipo="pyme",
+        municipio_id=owner.id, pyme_id=None, plan="enterprise", is_active=True,
+    )
+    platform = user("structural-platform", role="super_admin")
+    database.session.add(wrong_domain)
+    database.session.commit()
+    assert wrong_domain.is_active is True and wrong_domain.tipo == "pyme"
+    assert wrong_domain.municipio_id == owner.id and wrong_domain.pyme_id is None
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("CLERK_SUPERADMIN_EMAILS", platform.email)
+        assert is_authorized_superadmin_user(platform) is True
+        for actor in (owner, platform):
+            for path in paths:
+                denied(actor, wrong_domain, path)
+
+    with no_municipal_row_read():
+        with pytest.raises(TicketTenantScopeError) as rejected:
+            build_stats_for_municipio(owner.id, tenant_id=wrong_domain.id, actor=owner)
+    assert rejected.value.code == "ticket_tenant_scope_unavailable"
+
+    assert request_count == 63
+    return request_count
+
 
 
 def test_postgres_exact_profile_quarantines_shared_owner_and_legacy_rows(pg_metrics_app):
@@ -373,6 +741,8 @@ def test_postgres_exact_profile_quarantines_shared_owner_and_legacy_rows(pg_metr
         for path in paths:
             revoked = _get(runtime, owner, other, path)
             assert revoked.status_code == 403
+
+        _exercise_municipal_statistics_scope(runtime)
 
 
 def test_postgres_unique_owner_keeps_only_safe_unbound_legacy_orders(pg_metrics_app):
