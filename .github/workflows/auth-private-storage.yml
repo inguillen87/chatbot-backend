@@ -63,6 +63,10 @@ name: Durable sessions and private attachments
       - tests/test_r2_service.py
       - tests/test_runtime_readiness.py
       - tests/test_admin_tenant_verification.py
+      - tests/test_employee_scope_revocation.py
+      - tests/test_employee_scope_and_assignment.py
+      - services/employee_routing.py
+      - services/ticket_assignment_policy.py
       - tests/test_tenant_factory_owner_lock.py
       - tests/test_tenant_dependency_availability.py
       - tests/test_request_lifecycle_database_availability.py
@@ -155,6 +159,53 @@ jobs:
           git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/checkout.txt
           sha256sum bootstrap_wsgi.py gunicorn.conf.py Dockerfile.vercel tests/test_production_whatsapp_webhook_bootstrap.py tests/test_bootstrap_wsgi.py tests/test_bootstrap_receipt.py tests/test_production_login_bootstrap.py tests/test_gunicorn_capacity.py > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/source-sha256.txt
           python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(["tests/test_production_whatsapp_webhook_bootstrap.py", "tests/test_bootstrap_wsgi.py", "tests/test_bootstrap_receipt.py", "tests/test_production_login_bootstrap.py", "tests/test_gunicorn_capacity.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.log
+      - name: Employee scope revocation and legacy compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/employee-scope
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/employee-scope/checkout.txt
+          sha256sum .github/workflows/auth-private-storage.yml vercel.json app.py config/__init__.py models.py routes/admin_tenant.py middleware/tenant_context.py services/employee_routing.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_scope_revocation.py tests/test_employee_scope_and_assignment.py > .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt
+          python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/employee-scope/tests.log
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          import os
+          os.environ["CORS_ALLOWED_ORIGINS"] = "https://panel.example.invalid"
+          os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+          import json
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          import pytest
+          code = pytest.main([
+              "--noconftest", "-p", "tests.conftest", "-q",
+              "-p", "no:cacheprovider", "--tb=short",
+              "tests/test_employee_scope_revocation.py",
+              "tests/test_employee_scope_and_assignment.py",
+              "--junitxml=.qa-artifacts/auth-private-storage/employee-scope/tests.xml",
+          ])
+          tree = ET.parse(".qa-artifacts/auth-private-storage/employee-scope/tests.xml").getroot()
+          cases = list(tree.iter("testcase"))
+          summary = {
+              "tests": len(cases),
+              "failures": len(list(tree.iter("failure"))),
+              "errors": len(list(tree.iter("error"))),
+              "skipped": len(list(tree.iter("skipped"))),
+              "pytest_exit_code": int(code),
+              "expected_tests": 46,
+              "scope_permanent": sum(c.attrib.get("classname") == "tests.test_employee_scope_revocation" for c in cases),
+              "existing_regression": sum(c.attrib.get("classname") == "tests.test_employee_scope_and_assignment" for c in cases),
+              "database": "isolated SQLite memory",
+          }
+          Path(".qa-artifacts/auth-private-storage/employee-scope/summary.json").write_text(
+              json.dumps(summary, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(summary, sort_keys=True))
+          if int(code) != 0 or summary["tests"] != 46 or summary["scope_permanent"] != 40 or summary["existing_regression"] != 6:
+              raise SystemExit(1)
+          if any(summary[key] for key in ("failures", "errors", "skipped")):
+              raise SystemExit(1)
+          PY
+          sha256sum --check .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt > .qa-artifacts/auth-private-storage/employee-scope/source-recheck.log
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -166,6 +217,7 @@ jobs:
             .qa-artifacts/auth-private-storage/landing-admission/
             .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/
             .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/
+            .qa-artifacts/auth-private-storage/employee-scope/
           include-hidden-files: true
   isolated-postgres:
     runs-on: ubuntu-24.04
