@@ -1,16 +1,18 @@
-import jwt
+from datetime import datetime, timedelta, timezone
 
 from app import db
 from models import CategoriaTicket, TenantProfile, User
 from services.employee_routing import filter_employee_category_labels
+from services.auth_session_lifecycle import issue_token
 
 
 def _headers(app, user):
-    token = jwt.encode(
-        {"user_id": user.id, "rol": user.rol, "tipo_chat": user.tipo_chat},
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
-    )
+    token = issue_token({
+        "user_id": user.id,
+        "rol": user.rol,
+        "tipo_chat": user.tipo_chat,
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+    })
     return {"Authorization": f"Bearer {token}", "X-Tenant": "tenant-scope"}
 
 

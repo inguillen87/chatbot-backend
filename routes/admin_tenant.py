@@ -3149,12 +3149,21 @@ def update_employee_admin(current_user, user_id):
     if isinstance(data.get('scope'), dict) or has_categories:
         scope_raw = data.get('scope') if isinstance(data.get('scope'), dict) else {}
         current_scope = _employee_scope(user)
+
+        def _updated_scope_value(canonical_key, alias_key):
+            # Explicit lists may clear; other values keep the legacy fallback.
+            for key in (canonical_key, alias_key):
+                value = scope_raw.get(key)
+                if isinstance(value, list) or value:
+                    return value
+            return current_scope.get(canonical_key)
+
         _set_employee_scope(
             user,
             categorias=normalize_scope_list(scope_raw.get('categorias') or scope_raw.get('categories') or category_names),
-            zonas=normalize_scope_list(scope_raw.get('zonas') or scope_raw.get('zones') or current_scope.get('zonas')),
-            permisos=normalize_scope_list(scope_raw.get('permisos') or scope_raw.get('permissions') or current_scope.get('permisos')),
-            channels=normalize_scope_list(scope_raw.get('channels') or scope_raw.get('canales') or current_scope.get('channels')),
+            zonas=normalize_scope_list(_updated_scope_value('zonas', 'zones')),
+            permisos=normalize_scope_list(_updated_scope_value('permisos', 'permissions')),
+            channels=normalize_scope_list(_updated_scope_value('channels', 'canales')),
         )
 
     db.session.add(user)
