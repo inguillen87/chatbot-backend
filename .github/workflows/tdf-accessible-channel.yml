@@ -15,6 +15,11 @@ on:
       - 'services/tdf_meta_contact_identity.py'
       - 'services/tdf_meta_audio.py'
       - 'services/meta_whatsapp_webhook.py'
+      - 'services/meta_whatsapp_runtime.py'
+      - 'services/meta_whatsapp_outbox.py'
+      - 'services/whatsapp_inbound_worker.py'
+      - 'tests/test_meta_whatsapp_outbox.py'
+      - 'tests/test_twilio_provider_network_policy.py'
       - 'services/audio_transcription_service.py'
       - 'services/tts_audio_artifacts.py'
       - 'services/tts_orchestrator.py'
@@ -100,6 +105,78 @@ jobs:
           cache: pip
       - name: Install existing runtime dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Verify production Meta outbox dispatch offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/meta-whatsapp-outbox
+          git rev-parse HEAD > .qa-artifacts/meta-whatsapp-outbox/checkout.txt
+          test "$(cat .qa-artifacts/meta-whatsapp-outbox/checkout.txt)" = "$EXPECTED_HEAD"
+          python -I -B -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/meta-whatsapp-outbox/tests.log
+          import hashlib, json, os, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path.cwd()
+          out = root / '.qa-artifacts/meta-whatsapp-outbox'
+          paths = ['services/meta_whatsapp_runtime.py', 'services/meta_whatsapp_outbox.py',
+                   'services/whatsapp_inbound_worker.py', 'tests/test_meta_whatsapp_outbox.py',
+                   'tests/test_outbox_execution_budget.py', 'tests/test_twilio_provider_network_policy.py',
+                   'tests/test_whatsapp_inbound_queue_webhook.py', 'tests/test_whatsapp_inbound_turns.py',
+                   'services/meta_whatsapp_cloud.py', 'services/meta_whatsapp_webhook.py',
+                   'services/meta_whatsapp_credentials.py', 'services/outbox_execution_budget.py',
+                   'services/whatsapp_inbound_turns.py', 'services/whatsapp_inbound_durability.py',
+                   'models.py', 'tests/profile_acceptance_runtime.py',
+                   '.github/workflows/tdf-accessible-channel.yml']
+          def pins(): return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+          before = pins()
+          (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+          import pytest
+          targets = [
+              "tests/test_meta_whatsapp_outbox.py",
+              "tests/test_twilio_provider_network_policy.py::test_durable_worker_blocks_before_twilio_client_and_keeps_attempt_retryable",
+              "tests/test_whatsapp_inbound_queue_webhook.py::WhatsAppInboundQueueWebhookTestCase::test_pre_provider_configuration_failure_is_retryable_not_uncertain",
+              "tests/test_whatsapp_inbound_queue_webhook.py::WhatsAppInboundQueueWebhookTestCase::test_provider_timeout_is_uncertain_and_never_claimed_again",
+              "tests/test_whatsapp_inbound_turns.py::test_outbound_attempts_are_fifo_within_a_stream",
+              "tests/test_whatsapp_inbound_turns.py::test_expired_outbound_sending_becomes_uncertain_and_is_never_retried",
+          ]
+          result = pytest.main(['--noconftest', '-q', '-p', 'no:cacheprovider',
+                                *targets, '--junitxml=' + str(out / 'tests.xml')])
+          after = pins()
+          (out / 'source-after.json').write_text(json.dumps(after, indent=2), encoding='utf-8')
+          counts = None
+          testcase_elements = None
+          if (out / 'tests.xml').is_file():
+              report = ET.parse(out / 'tests.xml').getroot()
+              suites = [node for node in report.iter('testsuite') if not node.findall('testsuite')]
+              counts = {key: sum(int(node.attrib.get(key, 0)) for node in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+              testcase_elements = len(list(report.iter('testcase')))
+          valid = (int(result) == 0 and before == after and counts is not None
+                   and counts['tests'] > 0 and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped')))
+          summary = {'checkout': (out / 'checkout.txt').read_text().strip(), 'exit_code': int(result),
+                     'targets': targets, 'counts': counts, 'native_testcase_elements': testcase_elements,
+                     'source_pins_unchanged': before == after, 'passed': valid}
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Preserve Meta outbox native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: meta-whatsapp-outbox-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/meta-whatsapp-outbox/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify source catalog navigation and channel isolation offline
         shell: bash
         env:
