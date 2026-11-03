@@ -803,7 +803,6 @@ def detect_sla_breaches_for_tenant(
     *,
     materialize: bool = True,
 ) -> list[dict[str, Any]]:
-    policies = get_policies_for_tenant(tenant)
     breaches: list[dict[str, Any]] = []
 
     query = TenantTicket.query.filter_by(tenant_id=tenant.id)
@@ -818,16 +817,15 @@ def detect_sla_breaches_for_tenant(
         query = query.with_for_update(skip_locked=True)
     tickets = query.all()
     for ticket in tickets:
-        sla_fields = _sla_fields_for_ticket(ticket, policies)
+        # Detection observes the same persisted evidence as ticket display.
+        # Only explicit SLA writers may allocate or recalculate deadlines;
+        # today's policy cannot retroactively create an overdue obligation.
+        extra = copy.deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
+        sla_fields = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
         sla_evaluation = evaluate_ticket_sla(ticket, sla_override=sla_fields)
-        if materialize:
-            extra_with_sla = copy.deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
-            extra_with_sla["sla"] = sla_fields
-            ticket.datos_extra = extra_with_sla
         if sla_evaluation["overdue"] is not True:
             continue
 
-        extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
         breach_key = "sla_breach_event_emitted_at"
         raw_receipts = extra.get("sla_breach_receipts")
         stored_receipts = {
