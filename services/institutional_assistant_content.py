@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import re
+import unicodedata
 from urllib.parse import urlsplit
 from werkzeug.utils import secure_filename
 
@@ -265,6 +266,23 @@ lista vacía corresponde a preguntas sin ningún nodo pertinente en las fuentes.
 No infieras diagnósticos ni incapacidad por la manera de escribir. No ejecutes herramientas.
 La respuesta se construirá con los textos canónicos y fuentes, no con redacción libre.
 '''
+
+def is_source_navigation(question):
+    """Recognize explicit catalog navigation, not document requirements for a task.
+
+    This is a bounded UI command vocabulary. Topic questions, including documents
+    to present for a procedure, retain the existing canonical node selector.
+    """
+    value = unicodedata.normalize('NFD', _text(question, MAX_QUESTION_CHARS).casefold())
+    value = ''.join(c for c in value if not unicodedata.combining(c))
+    value = ' '.join(re.sub(r'[¿?¡!.,;:]', ' ', value).split())
+    target = (r'(?:las? )?fuentes(?: (?:de respaldo|de (?:esta|la) informacion))?'
+              r'|(?:los )?documentos (?:y fuentes|de respaldo|que respaldan (?:esta|la) informacion)'
+              r'|(?:la )?documentacion de respaldo')
+    return value in ('fuentes', 'documentos de respaldo', 'documentos y fuentes') or re.fullmatch(
+        r'(?:(?:donde|como) (?:puedo |podemos )?(?:ver|consultar|leer|encontrar|descargar|acceder a) '
+        r'|(?:quiero |quisiera |necesito )?(?:ver|consultar|leer|listar|abrir) '
+        r'|(?:mostrame|muestrame|mostrar|listame) )(' + target + r')', value) is not None
 
 def _selection_request(bundle, question, current_node):
     candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text'],

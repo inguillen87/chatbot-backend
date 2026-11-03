@@ -8,6 +8,7 @@ on:
       - 'routes/whatsapp_webhook.py'
       - 'routes/meta_tdf_sandbox.py'
       - 'routes/tdf_meta_sandbox.py'
+      - 'services/institutional_assistant.py'
       - 'services/institutional_assistant_*.py'
       - 'services/meta_tdf_sandbox.py'
       - 'services/tdf_meta_sandbox.py'
@@ -40,6 +41,7 @@ on:
       - 'config/__init__.py'
       - 'app/__init__.py'
       - 'tests/*institutional_assistant*'
+      - 'tests/test_institutional_source_navigation.py'
       - 'tests/test_tdf_meta_sandbox.py'
       - 'tests/test_tdf_meta_audio.py'
       - 'tests/test_web_audio_multipart.py'
@@ -98,6 +100,56 @@ jobs:
           cache: pip
       - name: Install existing runtime dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Verify source catalog navigation and channel isolation offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/source-navigation
+          git rev-parse HEAD > .qa-artifacts/source-navigation/checkout.txt
+          test "$(cat .qa-artifacts/source-navigation/checkout.txt)" = "$EXPECTED_HEAD"
+          python -I -B -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/source-navigation/tests.log
+          import hashlib, json, os, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path.cwd()
+          out = root / '.qa-artifacts/source-navigation'
+          paths = ['services/institutional_assistant.py', 'services/institutional_assistant_content.py',
+                   'services/response_formatter.py', 'routes/institutional_assistant.py',
+                   'tests/test_institutional_source_navigation.py', 'tests/profile_acceptance_runtime.py',
+                   'tests/conftest.py']
+          def pins(): return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+          before = pins()
+          (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+          import pytest
+          result = pytest.main(['--noconftest', '-p', 'tests.conftest', '-q', '-p', 'no:cacheprovider',
+                                'tests/test_institutional_source_navigation.py', '--junitxml=' + str(out / 'tests.xml')])
+          suite = ET.parse(out / 'tests.xml').getroot().find('testsuite')
+          counts = {key: int(suite.attrib[key]) for key in ('tests', 'failures', 'errors', 'skipped')}
+          after = pins()
+          (out / 'source-after.json').write_text(json.dumps(after, indent=2), encoding='utf-8')
+          valid = result == 0 and counts == {'tests': 20, 'failures': 0, 'errors': 0, 'skipped': 0} and before == after
+          summary = {'checkout': (out / 'checkout.txt').read_text().strip(), 'exit_code': int(result),
+                     'counts': counts, 'source_pins_unchanged': before == after, 'passed': valid}
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Preserve source navigation native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-navigation-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/source-navigation
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify public routes, revision withdrawal and audio isolation
         run: python -X utf8 -m tests.institutional_assistant_http
       - name: Verify Meta binding, signature, durable delivery and canonical menus offline
