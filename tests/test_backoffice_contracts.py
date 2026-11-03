@@ -1,4 +1,6 @@
 import json
+import csv
+import io
 import pytest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -1250,8 +1252,6 @@ def test_backoffice_v2_export_and_executive_summary_are_traceable(
     monkeypatch,
     tmp_path,
 ):
-    monkeypatch.setattr("routes.backoffice._export_dir", lambda: tmp_path)
-
     owner = User(email="export-junin@test.com", name="Export Junin", rol="admin", tipo_chat="municipio")
     owner.set_password("pw")
     db.session.add(owner)
@@ -1272,15 +1272,16 @@ def test_backoffice_v2_export_and_executive_summary_are_traceable(
 
     export_response = client.post(
         "/api/v2/backoffice/export",
-        json={"tenant_slug": tenant.slug, "resource": "tickets", "format": "csv", "filters": {}, "include_ai_summary": True},
+        json={"tenant_slug": tenant.slug, "tenant_id": tenant.id, "resource": "tickets", "format": "csv", "filters": {}, "delivery": "inline"},
         headers={**_auth_headers(owner), "X-Request-Id": "req-export-contract"},
     )
     assert export_response.status_code == 200
-    export_payload = export_response.get_json()
-    assert export_payload["ok"] is True
-    assert export_payload["request_id"] == "req-export-contract"
-    assert export_payload["download_url"].endswith(".csv")
-    assert export_payload["expires_at"]
+    assert export_response.mimetype == "text/csv"
+    assert export_response.headers["X-Request-Id"] == "req-export-contract"
+    assert export_response.headers["X-Export-Contract"] == "backoffice.export.v2"
+    rows = list(csv.DictReader(io.StringIO(export_response.data.decode("utf-8-sig"))))
+    assert len(rows) == 1 and rows[0]["title"] == "Exportar caso"
+    assert export_response.headers["X-Export-Row-Count"] == "1"
 
     summary_response = client.post(
         "/api/v2/backoffice/executive-summary",
@@ -1331,8 +1332,8 @@ def test_backoffice_v2_rejects_end_user_before_pii_or_export_side_effects(client
 
     export_dir_calls = []
     write_calls = []
-    monkeypatch.setattr("routes.backoffice._export_dir", lambda: export_dir_calls.append(True))
-    monkeypatch.setattr("routes.backoffice._write_csv_export", lambda path, rows: write_calls.append(rows))
+    monkeypatch.setattr("routes.backoffice._export_rows", lambda *args: export_dir_calls.append(True))
+    monkeypatch.setattr("routes.backoffice._export_bytes", lambda *args: write_calls.append(args))
 
     for blocked_user in (end_user, client_alias):
         headers = _auth_headers(blocked_user)
@@ -1425,16 +1426,14 @@ def test_backoffice_v2_employee_sees_and_exports_only_allowed_ticket_categories(
     assert allowed.id in item_ids
     assert restricted.id not in item_ids
 
-    written_rows = []
-    monkeypatch.setattr("routes.backoffice._export_dir", lambda: tmp_path)
-    monkeypatch.setattr("routes.backoffice._write_csv_export", lambda path, rows: written_rows.extend(rows))
     export_response = client.post(
         "/api/v2/backoffice/export",
-        json={"tenant_slug": tenant.slug, "resource": "contacts", "format": "csv"},
+        json={"tenant_slug": tenant.slug, "tenant_id": tenant.id, "resource": "contacts", "format": "csv", "delivery": "inline"},
         headers=headers,
     )
 
     assert export_response.status_code == 200
+    written_rows = list(csv.DictReader(io.StringIO(export_response.data.decode("utf-8-sig"))))
     exported_emails = {row.get("email") for row in written_rows}
     assert "allowed-citizen@test.com" in exported_emails
     assert "restricted-citizen@test.com" not in exported_emails
@@ -1649,7 +1648,7 @@ def test_backoffice_mutation_selector_denial_precedes_export_or_summary_effects(
     owner, tenant, _, other = _backoffice_membership_fixture()
     db.session.commit()
     calls = []
-    monkeypatch.setattr("routes.backoffice._export_dir", lambda: calls.append("directory"))
+    monkeypatch.setattr("routes.backoffice._export_rows", lambda *args: calls.append("rows"))
     monkeypatch.setattr("routes.backoffice._executive_summary_payload", lambda *args: calls.append("summary"))
     slug = {
         "unknown": "missing-team-tenant", "foreign": other.slug, "contradictory": other.slug,

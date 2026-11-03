@@ -183,6 +183,31 @@ def create_app(config_class=Config):
     app.url_map.strict_slashes = False
     app.logger.info("Creating app")
 
+    @app.before_request
+    def deny_legacy_backoffice_export_files():
+        """Historical exports are private for every actor; other assets stay public."""
+        if request.endpoint != "static":
+            return None
+        import posixpath
+        from urllib.parse import unquote
+
+        filename = (request.view_args or {}).get("filename", "")
+        if not isinstance(filename, str):
+            return None
+        # Flask already decodes URL paths. Also reject encoded/Windows aliases
+        # of the same subtree before any auth/tenant lookup or static read.
+        for _ in range(3):
+            normalized = posixpath.normpath(filename.replace("\\", "/")).lstrip("/").casefold()
+            if normalized == "exports/backoffice" or normalized.startswith("exports/backoffice/"):
+                response = app.response_class(status=404)
+                response.headers["Cache-Control"] = "private, no-store"
+                return response
+            decoded = unquote(filename)
+            if decoded == filename:
+                break
+            filename = decoded
+        return None
+
     # Detrás de proxy/reverse-proxy
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
@@ -708,6 +733,9 @@ def create_app(config_class=Config):
         def ensure_cors_headers(resp):
             origin = request.headers.get("Origin")
             if not origin:
+                if (request.endpoint == "backoffice_v2.backoffice_v2_export"
+                    and resp.headers.get("X-Export-Contract") == "backoffice.export.v2"):
+                    _set_single_header(resp, "Access-Control-Expose-Headers", resp.headers.get("Access-Control-Expose-Headers", ""))
                 return resp
 
             if _is_public_cross_origin_path(request.path, request.method):
@@ -740,7 +768,15 @@ def create_app(config_class=Config):
             # "x-anon-id" are accepted by browsers.
             _set_single_header(resp, "Access-Control-Allow-Headers", ", ".join(allow_headers))
             _set_single_header(resp, "Access-Control-Allow-Methods", ", ".join(allow_methods))
-            _set_single_header(resp, "Access-Control-Expose-Headers", exposed_headers)
+            # Private export responses expose only their bounded file contract;
+            # keep the existing origin/credential policy unchanged.
+            response_exposed_headers = (
+                resp.headers.get("Access-Control-Expose-Headers", "")
+                if request.endpoint == "backoffice_v2.backoffice_v2_export"
+                and resp.headers.get("X-Export-Contract") == "backoffice.export.v2"
+                else exposed_headers
+            )
+            _set_single_header(resp, "Access-Control-Expose-Headers", response_exposed_headers)
             _set_cors_vary(resp)
 
             return resp

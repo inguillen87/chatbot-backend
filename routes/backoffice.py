@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import csv
+import io
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, current_app, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import selectinload
 
@@ -21,6 +22,7 @@ from models import (
     PymePedido,
     PymeTicket,
     TenantProfile,
+    TenantTicket,
     TicketComentario,
     TicketRealtimeState,
     User,
@@ -1705,13 +1707,93 @@ def _team_coverage_payload(tenant: TenantProfile, actor: User, request_id: str) 
     }
 
 
-def _export_rows(resource: str, tenant: TenantProfile, current_user: User, request_id: str) -> list[dict[str, Any]]:
+def _export_filters(resource: str, tenant: TenantProfile, raw: Any) -> dict[str, Any]:
+    """Reject filters this resource cannot apply rather than echoing them."""
+    if not isinstance(raw, dict):
+        raise ValueError("invalid_export_filters")
+    supported = {
+        "tickets": {"scope", "statuses", "categories"},
+        "orders": {"scope", "statuses"},
+        "contacts": {"scope"},
+        "team": {"scope"},
+    }[resource]
+    if set(raw) - supported:
+        raise ValueError("invalid_export_filters")
+    scope = _tenant_scope(tenant)
+    if "scope" in raw:
+        if not isinstance(raw["scope"], str) or raw["scope"].strip().lower() != scope:
+            raise ValueError("invalid_export_filters")
+    result: dict[str, Any] = {"scope": scope}
+    for field in ("statuses", "categories"):
+        if field not in raw:
+            continue
+        values = raw[field]
+        if not isinstance(values, list) or not values or len(values) > 100:
+            raise ValueError("invalid_export_filters")
+        normalized = []
+        for value in values:
+            if not isinstance(value, str) or not value.strip() or len(value) > 100:
+                raise ValueError("invalid_export_filters")
+            normalized.append(value.strip().casefold())
+        result[field] = frozenset(normalized)
+    return result
+
+
+def _export_rows(
+    resource: str, tenant: TenantProfile, current_user: User, request_id: str,
+    filters: dict[str, Any],
+) -> list[dict[str, Any]]:
     if resource == "tickets":
-        payload = _inbox_summary_payload(current_user, tenant, request_id)
-        return payload.get("items", [])
+        ticket_type, tickets = _ticket_records_for(tenant, filters["scope"], current_user)
+        selected = [ticket for ticket in tickets if
+                    ("statuses" not in filters or _normalized_state(ticket.estado) in filters["statuses"])
+                    and ("categories" not in filters or str(ticket.categoria or "").strip().casefold() in filters["categories"])]
+        eligible_assignee_ids = (
+            {user.id for user in _users_for_tenant(tenant)}
+            if any(getattr(ticket, "asignado_a_id", None) for ticket in selected) else set()
+        )
+        now = datetime.now(timezone.utc)
+        source_model = "PymeTicket" if ticket_type == "pyme" else "MunicipioTicket"
+        rows = [{
+            **_ticket_item(ticket_type, ticket, now=now, request_id=request_id,
+                           eligible_assignee_ids=eligible_assignee_ids),
+            "source_model": source_model,
+            "record_key": f"{source_model}:{ticket.id}",
+        } for ticket in selected]
+        # The omnichannel inbox also owns canonical cases, including schools.
+        # Preserve both model identities: equal numeric IDs or unverified extra
+        # metadata do not establish that two persisted records are mirrors.
+        canonical = apply_employee_ticket_category_scope(
+            TenantTicket.query.filter_by(tenant_id=tenant.id), current_user, TenantTicket,
+        ).order_by(TenantTicket.created_at.desc(), TenantTicket.id.desc()).all()
+        for ticket in canonical:
+            if "statuses" in filters and _normalized_state(ticket.estado) not in filters["statuses"]:
+                continue
+            if "categories" in filters and str(ticket.categoria or "").strip().casefold() not in filters["categories"]:
+                continue
+            extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+            rows.append({
+                "id": ticket.id, "source_model": "TenantTicket",
+                "record_key": f"TenantTicket:{ticket.id}", "request_id": request_id,
+                "type": "tenant", "number": str(ticket.id),
+                "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
+                "description": ticket.descripcion, "status": ticket.estado,
+                "area": ticket.categoria, "channel": extra.get("channel") or ticket.origen,
+                "created_at": _iso(ticket.created_at), "updated_at": _iso(ticket.updated_at),
+                "priority": extra.get("priority"),
+                "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=TenantTicket",
+            })
+        rows.sort(key=lambda row: (row.get("created_at") or "", row["source_model"], row["id"]), reverse=True)
+        return rows
     if resource == "orders":
-        payload = _orders_summary_payload(tenant, request_id)
-        return payload.get("active_orders", [])
+        orders = _orders_for_tenant(tenant)
+        return [{
+            "id": order.id, "number": order.nro_pedido, "status": order.estado,
+            "total": order.monto_total, "customer": order.nombre_cliente,
+            "created_at": _iso(order.fecha),
+            "detail_endpoint": f"/api/public/tracking/experience?kind=order&code={order.nro_pedido}",
+            "allowed_actions": _order_actions_for_status(order.estado),
+        } for order in orders if "statuses" not in filters or _normalized_state(order.estado) in filters["statuses"]]
     if resource == "contacts":
         return _collect_contacts(tenant, current_user)
     if resource == "team":
@@ -1724,78 +1806,75 @@ def _flatten_for_export(row: dict[str, Any]) -> dict[str, Any]:
     flattened: dict[str, Any] = {}
     for key, value in row.items():
         if isinstance(value, (dict, list, set, tuple)):
-            flattened[key] = str(value)
+            if isinstance(value, set):
+                value = sorted(value, key=str)
+            flattened[key] = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
         else:
             flattened[key] = value
     return flattened
 
 
-def _export_dir() -> Path:
-    static_folder = Path(current_app.static_folder or (Path(current_app.root_path) / "static"))
-    path = static_folder / "exports" / "backoffice"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+# This is a synchronous operational export, not a backup or AIF data-return
+# bundle. Fail explicitly instead of truncating or emitting a partial file.
+_EXPORT_MAX_BYTES = 16 * 1024 * 1024
+_EXPORT_EXPOSE_HEADERS = (
+    "Content-Disposition", "X-Export-Contract", "X-Tenant-Slug", "X-Tenant-Id",
+    "X-Export-Resource", "X-Export-Format", "X-Export-Total-Rows",
+    "X-Export-Row-Count", "X-Export-Complete",
+)
 
 
-def _write_csv_export(path: Path, rows: list[dict[str, Any]]) -> None:
-    normalized_rows = [_flatten_for_export(row) for row in rows]
-    fieldnames = sorted({key for row in normalized_rows for key in row.keys()}) or ["empty"]
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+class _ExportTooLarge(ValueError):
+    pass
+
+
+class _ExportBuffer(io.BytesIO):
+    def write(self, data):
+        if self.tell() + len(data) > _EXPORT_MAX_BYTES:
+            raise _ExportTooLarge()
+        return super().write(data)
+
+
+def _csv_safe_cell(value: Any) -> Any:
+    # Quoting alone does not stop spreadsheet formula evaluation. Prefix only
+    # dangerous strings; numeric values retain their actual numeric type.
+    if isinstance(value, str) and value.lstrip("\x00\ufeff\t\r\n\v\f ").startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def _export_bytes(export_format: str, title: str, rows: list[dict[str, Any]]) -> bytes:
+    normalized = [_flatten_for_export(row) for row in rows]
+    fields = sorted({key for row in normalized for key in row}) or ["empty"]
+    output = _ExportBuffer()
+    if export_format == "csv":
+        text = io.StringIO(newline="")
+        writer = csv.DictWriter(text, fieldnames=fields)
         writer.writeheader()
-        for row in normalized_rows:
-            writer.writerow(row)
-
-
-def _pdf_escape(text: Any) -> str:
-    return str(text).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-
-
-def _write_pdf_export(path: Path, title: str, rows: list[dict[str, Any]]) -> None:
-    lines = [title, f"Filas: {len(rows)}"]
-    for row in rows[:20]:
-        label = row.get("title") or row.get("number") or row.get("email") or row.get("label") or row.get("name") or row.get("id")
-        lines.append(str(label))
-    stream = "BT /F1 12 Tf 72 760 Td " + " ".join(
-        f"({_pdf_escape(line)}) Tj 0 -18 Td" for line in lines[:35]
-    ) + " ET"
-    objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>",
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-        f"<< /Length {len(stream.encode('utf-8'))} >>\nstream\n{stream}\nendstream",
-    ]
-    output = "%PDF-1.4\n"
-    offsets = [0]
-    for index, obj in enumerate(objects, start=1):
-        offsets.append(len(output.encode("utf-8")))
-        output += f"{index} 0 obj\n{obj}\nendobj\n"
-    xref_offset = len(output.encode("utf-8"))
-    output += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n"
-    for offset in offsets[1:]:
-        output += f"{offset:010d} 00000 n \n"
-    output += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
-    path.write_bytes(output.encode("utf-8"))
-
-
-def _write_xlsx_export(path: Path, rows: list[dict[str, Any]]) -> None:
-    from openpyxl import Workbook
-
-    normalized_rows = [_flatten_for_export(row) for row in rows]
-    fieldnames = sorted({key for row in normalized_rows for key in row.keys()}) or ["empty"]
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "backoffice"
-    sheet.append(fieldnames)
-    for row in normalized_rows:
-        sheet.append([row.get(field) for field in fieldnames])
-    workbook.save(path)
-
-
-def _build_download_url(filename: str) -> str:
-    base = request.host_url.rstrip("/")
-    return f"{base}/static/exports/backoffice/{filename}"
+        output.write(b"\xef\xbb\xbf" + text.getvalue().encode("utf-8"))
+        for row in normalized:
+            text.seek(0)
+            text.truncate(0)
+            writer.writerow({key: _csv_safe_cell(value) for key, value in row.items()})
+            output.write(text.getvalue().encode("utf-8"))
+        return output.getvalue()
+    if export_format == "xlsx":
+        from openpyxl import Workbook
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "backoffice"
+        sheet.append(fields)
+        for row in normalized:
+            sheet.append([row.get(field) for field in fields])
+            for cell in sheet[sheet.max_row]:
+                if isinstance(cell.value, str):
+                    cell.data_type = "s"
+        workbook.save(output)
+        workbook.close()
+    else:
+        from services.backoffice_export_pdf import render_backoffice_export_pdf
+        render_backoffice_export_pdf(output, title, rows)
+    return output.getvalue()
 
 
 def _executive_summary_payload(tenant: TenantProfile, current_user: User, request_id: str) -> dict[str, Any]:
@@ -1918,6 +1997,12 @@ def backoffice_v2_export(current_user: User):
     role_error = _operator_role_error(current_user, request_id)
     if role_error:
         return role_error
+    if not isinstance(body, dict):
+        return _json(
+            {"ok": False, "reason_code": "invalid_export_request",
+             "message": "La solicitud de exportación debe ser un objeto."},
+            status=400, request_id=request_id,
+        )
     tenant, error = _authorized_tenant_or_response(
         current_user, request_id, explicit_slug=body.get("tenant_slug", _TENANT_SELECTOR_ABSENT),
     )
@@ -1939,39 +2024,81 @@ def backoffice_v2_export(current_user: User):
             status=400,
             request_id=request_id,
         )
-    rows = _export_rows(resource, tenant, current_user, request_id)
-    filename = f"{request_id}_{resource}.{export_format}"
-    path = _export_dir() / filename
+    if body.get("delivery") != "inline":
+        return _json(
+            {"ok": False, "reason_code": "export_client_upgrade_required",
+             "message": "Actualizá el panel para descargar la exportación de forma privada."},
+            status=409, request_id=request_id,
+        )
+    tenant_id = body.get("tenant_id")
+    if isinstance(tenant_id, bool) or not isinstance(tenant_id, int) or tenant_id <= 0:
+        return _json(
+            {"ok": False, "reason_code": "export_scope_required",
+             "message": "Seleccioná nuevamente la organización antes de exportar."},
+            status=400, request_id=request_id,
+        )
+    if tenant_id != tenant.id:
+        return _json(
+            {"ok": False, "reason_code": "export_scope_mismatch",
+             "message": "La organización cambió. Actualizá el panel antes de exportar."},
+            status=404, request_id=request_id,
+        )
     try:
-        if export_format == "csv":
-            _write_csv_export(path, rows)
-        elif export_format == "pdf":
-            _write_pdf_export(path, f"Export {resource} - {tenant.slug}", rows)
-        else:
-            _write_xlsx_export(path, rows)
+        filters = _export_filters(resource, tenant, body.get("filters", {}))
+    except ValueError:
+        return _json(
+            {"ok": False, "reason_code": "invalid_export_filters",
+             "message": "Los filtros de exportación no son válidos para este recurso."},
+            status=400, request_id=request_id,
+        )
+    rows = _export_rows(resource, tenant, current_user, request_id, filters)
+    try:
+        data = _export_bytes(export_format, f"Exportación de {resource} · {tenant.slug}", rows)
+    except _ExportTooLarge:
+        return _json(
+            {"ok": False, "reason_code": "export_too_large",
+             "message": "La descarga supera el límite de esta exportación operativa. Usá filtros para reducirla; no se generó un archivo parcial."},
+            status=413, request_id=request_id,
+        )
     except ImportError:
         return _json(
             {
                 "ok": False,
                 "reason_code": "export_dependency_missing",
-                "message": "No esta disponible la dependencia para generar XLSX.",
+                "message": "No está disponible la dependencia para generar este formato.",
             },
             status=501,
             request_id=request_id,
         )
-
-    return _json(
-        {
-            "ok": True,
-            "request_id": request_id,
-            "download_url": _build_download_url(filename),
-            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat(),
-            "resource": resource,
-            "format": export_format,
-            "filters": body.get("filters") or {},
-        },
-        request_id=request_id,
-    )
+    except (ValueError, TypeError):
+        return _json(
+            {"ok": False, "reason_code": "export_content_invalid",
+             "message": "No se pudo generar el formato solicitado. No se emitió un archivo parcial."},
+            status=422, request_id=request_id,
+        )
+    except Exception:
+        return _json(
+            {"ok": False, "reason_code": "export_generation_failed",
+             "message": "No se pudo completar la descarga. No se emitió un archivo parcial."},
+            status=500, request_id=request_id,
+        )
+    response = Response(data, mimetype={
+        "csv": "text/csv", "pdf": "application/pdf",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }[export_format])
+    response.headers["Content-Disposition"] = f'attachment; filename="backoffice-{resource}-{uuid.uuid4().hex}.{export_format}"'
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Export-Contract"] = "backoffice.export.v2"
+    response.headers["X-Tenant-Slug"] = tenant.slug
+    response.headers["X-Tenant-Id"] = str(tenant.id)
+    response.headers["X-Export-Resource"] = resource
+    response.headers["X-Export-Format"] = export_format
+    response.headers["X-Export-Total-Rows"] = str(len(rows))
+    response.headers["X-Export-Row-Count"] = str(len(rows))
+    response.headers["X-Export-Complete"] = "true"
+    response.headers["Access-Control-Expose-Headers"] = ", ".join(_EXPORT_EXPOSE_HEADERS)
+    return response
 
 
 @backoffice_v2_bp.post("/executive-summary")
