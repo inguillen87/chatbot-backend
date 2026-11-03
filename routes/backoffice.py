@@ -37,6 +37,7 @@ from services.employee_ticket_access import (
     employee_ticket_category_scope,
 )
 from services.operational_intelligence import observe_legacy_ticket_sla
+from services.contact_intake import normalize_email, normalize_name
 from services.encuestas_service import build_survey_availability_contract
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
@@ -1436,16 +1437,39 @@ def _orders_summary_payload(tenant: TenantProfile, request_id: str) -> dict[str,
 
 
 def _contact_key(contact: dict[str, Any]) -> str:
-    email = str(contact.get("email") or "").strip().lower()
+    email = normalize_email(contact.get("email"))
     phone = "".join(ch for ch in str(contact.get("phone") or "") if ch.isdigit())
     if email:
         return f"email:{email}"
     if phone:
         return f"phone:{phone}"
-    name = str(contact.get("name") or "").strip().lower()
-    if name:
-        return f"name:{name}"
-    return f"anon:{contact.get('source')}:{contact.get('source_id')}"
+    # A display name is not an identity. IDs are unique only within a model.
+    return f"anon:{contact.get('source_model') or contact.get('source')}:{contact.get('source_id')}"
+
+
+def _canonical_ticket_contact(ticket: TenantTicket) -> dict[str, Any]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    contact = extra.get("contact")
+    contact = contact if isinstance(contact, dict) else {}
+
+    def text(*keys: str) -> str | None:
+        for key in keys:
+            value = contact.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    # Use the persisted contact snapshot, never the creator's User or arbitrary
+    # metadata. Visitor-supplied preferences do not establish marketing consent.
+    return {
+        "source": "tenant_ticket",
+        "source_model": "TenantTicket",
+        "source_id": ticket.id,
+        "name": normalize_name(text("name", "nombre", "contact_name")),
+        "email": normalize_email(text("email", "correo", "contact_email", "email_address")),
+        "phone": text("phone", "telefono", "whatsapp", "contact_phone", "phone_number", "wa_id"),
+        "channel": ticket.origen,
+    }
 
 
 def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]]:
@@ -1476,7 +1500,10 @@ def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]
             current["channels"].add(str(raw.get("channel")))
         if raw.get("source"):
             current["sources"].add(str(raw.get("source")))
-        current["accepts_marketing"] = bool(current["accepts_marketing"] or raw.get("accepts_marketing"))
+        current["accepts_marketing"] = bool(
+            current["accepts_marketing"]
+            or (raw.get("source") == "user" and raw.get("accepts_marketing") is True)
+        )
         current["records"] = int(current["records"] or 0) + 1
 
     ticket_type, tickets = _ticket_records_for(tenant, _tenant_scope(tenant), actor)
@@ -1485,6 +1512,7 @@ def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]
             add_contact(
                 {
                     "source": "ticket",
+                    "source_model": "MunicipioTicket",
                     "source_id": ticket.id,
                     "name": getattr(ticket, "nombre_vecino", None) or getattr(ticket, "nombre_display_whatsapp", None),
                     "email": getattr(ticket, "email_vecino", None),
@@ -1496,6 +1524,7 @@ def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]
             add_contact(
                 {
                     "source": "ticket",
+                    "source_model": "PymeTicket",
                     "source_id": ticket.id,
                     "name": None,
                     "email": getattr(ticket, "email", None),
@@ -1503,6 +1532,12 @@ def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]
                     "channel": _ticket_channel(ticket),
                 }
             )
+
+    canonical = apply_employee_ticket_category_scope(
+        TenantTicket.query.filter_by(tenant_id=tenant.id), actor, TenantTicket
+    ).order_by(TenantTicket.id.asc()).all()
+    for ticket in canonical:
+        add_contact(_canonical_ticket_contact(ticket))
 
     for order in _orders_for_tenant(tenant):
         add_contact(
