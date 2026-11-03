@@ -24,6 +24,7 @@ from extensions import db
 from models import (
     ArchivoAdjunto,
     CatalogoItem,
+    CategoriaTicket,
     DomainEffectOutbox,
     EncEncuesta,
     EncRespuesta,
@@ -69,6 +70,7 @@ from services.ticket_assignment_policy import (
     actor_can_assign_tickets,
     assignment_transition,
 )
+from services.territorial_evidence import canonicalize_territorial_category
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.channel_activation import build_channel_activation_payload
 from services.attachment_delivery import serialize_attachment_for_delivery
@@ -1959,6 +1961,22 @@ def update_employee_routing_scope_v2(current_user, employee_id: int, tenant_slug
     }
     employee.accesibilidad = data
     employee.categorias_lista = categorias
+    # This endpoint replaces the complete category scope. Reconcile the
+    # persisted relation too: routing/detail/assignment readers include its IDs.
+    requested_category_keys = {
+        canonicalize_territorial_category(category)["category"]
+        for category in categorias
+    }
+    tenant_categories = (
+        CategoriaTicket.query.filter_by(tenant_id=tenant.id).all()
+        if requested_category_keys else []
+    )
+    employee.categorias_ticket = [
+        category for category in tenant_categories
+        if str(category.nombre or "").strip()
+        and canonicalize_territorial_category(category.nombre)["category"]
+        in requested_category_keys
+    ]
     flag_modified(employee, "accesibilidad")
     db.session.add(employee)
     db.session.commit()
