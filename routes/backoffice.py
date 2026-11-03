@@ -1465,8 +1465,17 @@ def _canonical_ticket_contact(ticket: TenantTicket) -> dict[str, Any]:
         "source": "tenant_ticket",
         "source_model": "TenantTicket",
         "source_id": ticket.id,
-        "name": normalize_name(text("name", "nombre", "contact_name")),
-        "email": normalize_email(text("email", "correo", "contact_email", "email_address")),
+        "name": (
+            normalize_name(text("name"))
+            or normalize_name(text("nombre"))
+            or normalize_name(text("contact_name"))
+        ),
+        "email": (
+            normalize_email(text("email"))
+            or normalize_email(text("correo"))
+            or normalize_email(text("contact_email"))
+            or normalize_email(text("email_address"))
+        ),
         "phone": text("phone", "telefono", "whatsapp", "contact_phone", "phone_number", "wa_id"),
         "channel": ticket.origen,
     }

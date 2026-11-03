@@ -318,3 +318,74 @@ def test_canonical_contact_batch_does_not_lazy_load_creators_per_case(client, co
     assert len(anonymous) == 13 and summary["summary"]["missing_minimum_data"] == 13
     assert summary["summary"]["total"] == 28  # 15 actual User contacts + 13 independent empty snapshots.
     assert large_count <= small_count + 2, {"small_selects": small_count, "large_selects": large_count}
+
+
+def test_placeholder_primary_keeps_valid_name_and_email_aliases(client, contacts_context):
+    own, _ = contacts_context
+    expected = {"name": "Synthetic valid alias", "email": "valid-alias@example.invalid"}
+    contact = {
+        "name": "Vecino/a", "nombre": expected["name"],
+        "email": "synthetic-placeholder@anon.chatboc.com", "correo": expected["email"],
+        "phone": "+5491100000044",
+    }
+    case = _produce(own, contact)
+    assert case.user_id is None and case.datos_extra["contact"] == contact
+    summary, rows, _ = _observed(client, own)
+    visitor = [row for row in rows if json.loads(row["sources"]) == ["tenant_ticket"]]
+    assert len(visitor) == 1
+    actual = {"name": visitor[0]["name"], "email": visitor[0]["email"]}
+    assert actual == expected, {"actual": actual, "expected": expected}
+    assert summary["summary"]["with_email"] == 3
+    assert summary["summary"]["total"] == 3
+
+
+def test_valid_primary_contact_fields_keep_precedence_over_other_valid_aliases(client, contacts_context):
+    own, _ = contacts_context
+    _produce(own, {
+        "name": "Synthetic primary", "nombre": "Synthetic alternate", "contact_name": "Synthetic last",
+        "email": " FIRST@example.invalid ", "correo": "second@example.invalid",
+        "contact_email": "third@example.invalid", "email_address": "last@example.invalid",
+    })
+    summary, rows, _ = _observed(client, own)
+    visitor = [row for row in rows if json.loads(row["sources"]) == ["tenant_ticket"]]
+    assert len(visitor) == 1
+    assert visitor[0]["name"] == "Synthetic primary"
+    assert visitor[0]["email"] == "first@example.invalid"
+    assert summary["summary"]["with_email"] == 3
+
+
+def test_all_placeholder_contact_aliases_remain_missing_without_invented_values(client, contacts_context):
+    own, _ = contacts_context
+    _produce(own, {
+        "name": "Vecino/a", "nombre": " Anónimo ", "contact_name": "Usuario",
+        "email": "first@anon.chatboc.com", "correo": "second@whatsapp.chatboc.com",
+        "contact_email": "third@anon.chatboc.com", "email_address": "  ",
+    })
+    summary, rows, _ = _observed(client, own)
+    visitor = [row for row in rows if json.loads(row["sources"]) == ["tenant_ticket"]]
+    assert len(visitor) == 1
+    assert visitor[0]["name"] == visitor[0]["email"] == visitor[0]["phone"] == ""
+    assert summary["summary"]["missing_minimum_data"] == 1
+    assert summary["summary"]["with_email"] == 2
+    assert summary["summary"]["with_phone"] == 0
+    assert summary["summary"]["total"] == 3
+
+
+def test_nonstring_contact_aliases_are_not_coerced_and_phone_selection_stays_strict(client, contacts_context):
+    own, _ = contacts_context
+    marker = "NONSTRING-ALIAS-PRIVATE-MARKER"
+    _produce(own, {
+        "name": True, "nombre": [marker], "contact_name": "Synthetic strict fallback",
+        "email": 47, "correo": {"raw": marker}, "contact_email": [marker],
+        "email_address": " STRICT@example.invalid ",
+        "phone": 991, "telefono": False, "whatsapp": [marker],
+        "contact_phone": " +5491100000055 ",
+    })
+    summary, rows, data = _observed(client, own)
+    visitor = [row for row in rows if json.loads(row["sources"]) == ["tenant_ticket"]]
+    assert len(visitor) == 1
+    assert visitor[0]["name"] == "Synthetic strict fallback"
+    assert visitor[0]["email"] == "strict@example.invalid"
+    assert visitor[0]["phone"] == "'+5491100000055"
+    assert summary["summary"]["with_email"] == 3 and summary["summary"]["with_phone"] == 1
+    assert marker.encode() not in data + json.dumps(summary).encode()
