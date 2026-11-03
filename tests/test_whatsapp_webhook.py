@@ -248,9 +248,13 @@ class TestConfig(Config):
 class WhatsAppWebhookTestCase(unittest.TestCase):
 
     def setUp(self):
-        os.environ["TWILIO_ACCOUNT_SID"] = TestConfig.TWILIO_ACCOUNT_SID
-        os.environ["TWILIO_AUTH_TOKEN"] = TestConfig.TWILIO_AUTH_TOKEN
-        os.environ.setdefault("OPENAI_API_KEY", "test")
+        environment = patch.dict(os.environ, {
+            "TWILIO_ACCOUNT_SID": TestConfig.TWILIO_ACCOUNT_SID,
+            "TWILIO_AUTH_TOKEN": TestConfig.TWILIO_AUTH_TOKEN,
+            "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "test"),
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
 
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
@@ -1910,6 +1914,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         # Arrange
         self._set_owner_tipo_chat("municipio")
         tenant = self._attach_tenant_to_owner(slug="junin", tipo="municipio")
+        sender = ProviderSender(tenant_id=tenant.id, channel="whatsapp",
+            phone_number=self.test_whatsapp_number_str,
+            sender_id=f"whatsapp:{self.test_whatsapp_number_str}", status="active")
+        db.session.add(sender)
+        db.session.commit()
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
 
@@ -1951,6 +1960,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_welcome.assert_not_called()
         contact_state = WhatsAppContactState.query.filter_by(
             tenant_id=tenant.id,
+            provider_sender_id=sender.id,
             recipient=self.test_user_number_str,
         ).first()
         self.assertIsNotNone(contact_state)

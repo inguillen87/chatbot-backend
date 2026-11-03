@@ -32,7 +32,7 @@ from services.outbox_execution_budget import (
     require_outbox_time_remaining,
 )
 from services.whatsapp_inbound_turns import (
-    InboundTurnClaim, dead_whatsapp_outbound_attempt,
+    InboundTurnClaim, PAYLOAD_SCRUB_CONTRACT_VERSION, dead_whatsapp_outbound_attempt,
     uncertain_whatsapp_outbound_attempt, retry_whatsapp_outbound_attempt,
     derive_whatsapp_stream_key, _validate_session_identity_scope,
 )
@@ -294,6 +294,78 @@ def _canary(tenant_id):
         raise MetaRuntimeError("meta_outbox_tenant_not_canary")
 
 
+def _completed_meta_source_matches(turn, reference, *, now):
+    """Recognize the exact source or the real privacy scrub's full tombstone.
+
+    A marker alone never authorizes sending. Caller still validates envelope,
+    current binding/window/credential, native outbox scope, sequence and lease.
+    """
+    if not isinstance(reference, dict):
+        return False
+    identity, source = reference.get("identity"), reference.get("source")
+    result = turn.result_json if isinstance(turn.result_json, dict) else {}
+    if (not isinstance(identity, dict) or not isinstance(source, dict)
+            or reference.get("contract_version") != SOURCE_CONTRACT
+            or turn.provider != "meta" or turn.status != WhatsAppInboundTurn.STATUS_COMPLETED
+            or (turn.tenant_id, turn.provider_connection_id, turn.provider_sender_id)
+            != (identity.get("tenant_id"), identity.get("connection_id"), identity.get("sender_id"))
+            or turn.provider_message_sid != source.get("message_id")
+            or turn.message_kind != source.get("content_type")
+            or result.get("contract_version") != CONTRACT):
+        return False
+    source_digest = _canonical(reference)
+    if result.get("meta_source_digest") != source_digest:
+        return False
+    if turn.payload_json == reference:
+        return True
+    payload = turn.payload_json
+    if not isinstance(payload, dict) or set(payload) != {"_chatboc_payload_scrub"}:
+        return False
+    marker = payload["_chatboc_payload_scrub"]
+    keys = {"contract_version", "payload_digest_sha256", "message_kind", "original_bytes",
+            "original_fields", "reason", "retained_payload", "scrubbed_at"}
+    if (not isinstance(marker, dict) or set(marker) != keys
+            or marker.get("contract_version") != PAYLOAD_SCRUB_CONTRACT_VERSION
+            or marker.get("reason") != "completed" or marker.get("retained_payload") is not False
+            or marker.get("message_kind") != turn.message_kind
+            or type(marker.get("original_fields")) is not int or marker["original_fields"] != len(reference)
+            or type(marker.get("original_bytes")) is not int):
+        return False
+    encoded = json.dumps(reference, ensure_ascii=False, sort_keys=True, allow_nan=False,
+                         separators=(",", ":")).encode("utf-8")
+    if marker["original_bytes"] != len(encoded):
+        return False
+    original = turn.payload_digest
+    if (not isinstance(original, str) or not re.fullmatch(r"[0-9a-f]{64}", original)
+            or marker.get("payload_digest_sha256") != original):
+        return False
+    # New completions preserve only the original hash, never readable input.
+    # Older convenience rows can prove it directly from the SOURCEreference.
+    if "meta_inbound_payload_digest" in result:
+        if result["meta_inbound_payload_digest"] != original:
+            return False
+    elif original != source_digest:
+        return False
+    stamp = marker.get("scrubbed_at")
+    if not isinstance(stamp, str) or not 1 <= len(stamp) <= 64:
+        return False
+    try:
+        parsed = datetime.fromisoformat(stamp)
+        if (parsed.tzinfo is None or parsed.utcoffset().total_seconds() != 0
+                or parsed.isoformat() != stamp or not isinstance(turn.completed_at, datetime)):
+            return False
+        completed = turn.completed_at
+        if completed.tzinfo is None:
+            completed = completed.replace(tzinfo=timezone.utc)
+        # Runtime authority clocks are integer seconds; a real scrub can carry
+        # microseconds in that same observed second. No future second is valid.
+        if not completed.timestamp() <= parsed.timestamp() or int(parsed.timestamp()) > now:
+            return False
+    except (ValueError, TypeError, OverflowError):
+        return False
+    return True
+
+
 def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, binding=None):
     """Shared finalizer for the event convenience API and a future claimed inbox."""
     identity = _identity(source_record.get("identity"))
@@ -320,8 +392,7 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
     semantic = _canonical({"source_record": source_record, "messages": messages})
     if turn.status == WhatsAppInboundTurn.STATUS_COMPLETED:
         if ((turn.result_json or {}).get("meta_reply_digest") != semantic
-                or (turn.result_json or {}).get("meta_source_digest") != _canonical(source_record)
-                or turn.payload_json != source_record):
+                or not _completed_meta_source_matches(turn, source_record, now=runtime.now())):
             raise MetaRuntimeError("meta_reply_event_conflict")
         rows = session.scalars(select(WhatsAppOutboundAttempt).where(
             WhatsAppOutboundAttempt.inbound_turn_id == turn.id,
@@ -370,6 +441,7 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
     turn.lease_token = turn.leased_until = None
     turn.result_json = {"contract_version": CONTRACT, "meta_reply_digest": semantic,
                         "meta_source_digest": _canonical(source_record),
+                        "meta_inbound_payload_digest": turn.payload_digest,
                         "reply_staged": bool(messages), "outbound_count": len(messages),
                         "delivery_verified": False}
     # Only the bounded source reference remains; never retain the incoming body.
@@ -491,8 +563,8 @@ def _claim_envelope(claim, now):
                 or (turn.provider_connection_id, turn.provider_sender_id)
                 != (identity.connection_id, identity.sender_id)
                 or (turn.result_json or {}).get("outbound_count") != payload["bundle_size"]
-                or turn.payload_json != {"contract_version": SOURCE_CONTRACT,
-                    "identity": asdict(identity), "source": source}):
+                or not _completed_meta_source_matches(turn,
+                    {"contract_version": SOURCE_CONTRACT, "identity": asdict(identity), "source": source}, now=now)):
             raise MetaRuntimeError("meta_outbox_turn_scope_mismatch")
     return payload, identity, source, message
 

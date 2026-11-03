@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from models import (
+    CategoriaTicket,
     ChatSessionContext,
     MunicipioTicket,
     TenantProfile,
@@ -23,6 +24,54 @@ from services.constants import CONTEXTO_MUNICIPIO
 from services.response_formatter import build_interactive_response
 from services.municipio_responder import ReclamoFlowHandler, ReclamoState
 from services.whatsapp_receipts import build_claim_created_followup_text
+
+
+def _bind_confirmation_scope(context, stored=None):
+    """Supply real disposable draft authority; never patch the authority guard."""
+    owner = User(name="Synthetic confirmation owner", email="confirmation@example.invalid",
+                 rol="admin", tipo_chat="municipio", password_hash="synthetic-not-a-login")
+    db.session.add(owner)
+    db.session.flush()
+    owner.municipio_id = owner.id
+    tenant = TenantProfile(slug="synthetic-confirmation", nombre="Synthetic confirmation",
+                           tipo="municipio", municipio_id=owner.id, is_active=True)
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    category = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]["datos_reclamo"]["categoria"]
+    db.session.add(CategoriaTicket(tenant_id=tenant.id, nombre=category, tipo="ticket"))
+    if stored is None:
+        stored = ChatSessionContext(chat_session_id=context["chat_session_uuid"],
+                                    context_data=context["chat_db_context_data"])
+    stored.user_id, stored.tenant_id = owner.id, tenant.id
+    stored.anon_id = context.get("anon_id") or stored.anon_id or "synthetic-confirmation-contact"
+    db.session.add(stored)
+    db.session.commit()
+    context.update(user_obj=owner, tenant_profile=tenant, tenant_id=tenant.id,
+                   viewer_user_obj=None, anon_id=stored.anon_id,
+                   chat_db_context_data=stored.context_data)
+    return context, stored
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_parent_credentials_for_legacy_route_cases(request, monkeypatch):
+    # These old cases already mock their validator and transport. Supply only
+    # the missing synthetic credential scope; the production auth code stays real.
+    route_cases = {
+        "test_webhook_pin_question_short_circuits_bot_after_created_ticket",
+        "test_closed_ticket_media_is_not_attached_or_reinterpreted",
+        "test_open_ticket_media_is_attached_and_followup_window_stays_active",
+        "test_open_ticket_non_evidence_media_is_not_auto_attached",
+        "test_open_ticket_document_is_validated_contextual_evidence",
+        "test_real_session_tail_keeps_two_intentional_claims_after_correction_photo_and_pin",
+        "test_open_ticket_audio_keeps_transcript_as_ticket_evidence",
+        "test_media_bridge_failure_returns_retry_and_never_falls_into_assisted_intake",
+    }
+    if request.node.name.split("[", 1)[0] in route_cases:
+        app = request.getfixturevalue("client").application
+        assert app.testing
+        monkeypatch.setitem(app.config, "TWILIO_ACCOUNT_SID", "AC" + "0" * 32)
+        monkeypatch.setitem(app.config, "TWILIO_AUTH_TOKEN", "synthetic-fixture-token")
 
 
 def _seed_open_followup(*, ticket_state: str = "nuevo"):
@@ -175,7 +224,7 @@ def test_callback_receipt_is_explicitly_pending_and_never_claims_call_completed(
     assert "realizado" in text.lower()
 
 
-def test_guided_claim_adapter_preserves_terminal_navigation_and_audio_flags():
+def test_guided_claim_adapter_preserves_terminal_navigation_and_audio_flags(client):
     context_data = {
         CONTEXTO_MUNICIPIO: {
             "reclamo_flow_v2": {
@@ -193,14 +242,12 @@ def test_guided_claim_adapter_preserves_terminal_navigation_and_audio_flags():
             }
         }
     }
-    handler = ReclamoFlowHandler(
-        {
-            "chat_db_context_data": context_data,
-            "chat_session_uuid": "wa-terminal-flags",
-            "channel": "whatsapp",
-        },
-        chat_db_context=None,
-    )
+    context, stored = _bind_confirmation_scope({
+        "chat_db_context_data": context_data,
+        "chat_session_uuid": "wa-terminal-flags",
+        "channel": "whatsapp",
+    })
+    handler = ReclamoFlowHandler(context, stored)
     action_result = {
         "success": True,
         "message_body": "Reclamo recibido.",
