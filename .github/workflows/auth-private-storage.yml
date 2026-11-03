@@ -311,9 +311,9 @@ jobs:
               "canonical_contacts": sum(c.attrib.get("classname") == "tests.test_canonical_contact_backoffice" for c in cases),
           }
           print(json.dumps(summary, sort_keys=True))
-          if int(code) != 0 or summary["tests"] != 54:
+          if int(code) != 0 or summary["tests"] != 61:
               raise SystemExit(1)
-          if (summary["export_integrity"], summary["existing_compatibility"], summary["pdf_layout"], summary["canonical_contacts"]) != (20, 13, 6, 15):
+          if (summary["export_integrity"], summary["existing_compatibility"], summary["pdf_layout"], summary["canonical_contacts"]) != (20, 13, 6, 22):
               raise SystemExit(1)
           if any(summary[key] for key in ("failures", "errors", "skipped")):
               raise SystemExit(1)

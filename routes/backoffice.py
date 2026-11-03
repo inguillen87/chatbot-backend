@@ -1486,6 +1486,16 @@ def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]
 
     def add_contact(raw: dict[str, Any]) -> None:
         key = _contact_key(raw)
+        existing = contacts.get(key)
+        if raw.get("source") == "user" and existing is not None:
+            existing_phone = existing.get("phone")
+            existing_digits = "".join(ch for ch in str(existing_phone or "") if ch.isdigit())
+            user_digits = "".join(ch for ch in str(raw.get("phone") or "") if ch.isdigit())
+            if existing_phone and (not user_digits or existing_digits != user_digits):
+                # A matching declared email does not bind a visitor's phone to
+                # the User's preference. Preserve both operational and User
+                # records; this namespace is derived only from the stored ID.
+                key = f"user:{raw['source_id']}"
         current = contacts.setdefault(
             key,
             {

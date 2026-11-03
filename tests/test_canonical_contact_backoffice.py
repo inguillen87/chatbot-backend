@@ -389,3 +389,113 @@ def test_nonstring_contact_aliases_are_not_coerced_and_phone_selection_stays_str
     assert visitor[0]["phone"] == "'+5491100000055"
     assert summary["summary"]["with_email"] == 3 and summary["summary"]["with_phone"] == 1
     assert marker.encode() not in data + json.dumps(summary).encode()
+
+
+def _assert_visitor_phone_does_not_borrow_user_consent(client, own, user_phone):
+    owner = own["owner"]
+    owner.telefono = user_phone
+    owner.acepta_marketing = True
+    db.session.commit()
+    visitor_phone = "+5491100000088"
+    contact = {"name": "Synthetic operational visitor", "email": owner.email,
+               "phone": visitor_phone, "accepts_marketing": True}
+    case = _produce(own, contact)
+    assert case.user_id is None and case.datos_extra["contact"] == contact
+    summary, rows, _ = _observed(client, own)
+    unsafe = [row for row in rows if row["phone"] == "'" + visitor_phone
+              and row["accepts_marketing"] == "True"]
+    assert unsafe == [], {"user_phone": user_phone, "unsafe_rows": unsafe}
+    operational = [row for row in rows if json.loads(row["sources"]) == ["tenant_ticket"]]
+    assert len(operational) == 1 and operational[0]["name"] == contact["name"]
+    assert operational[0]["phone"] == "'" + visitor_phone
+    assert operational[0]["accepts_marketing"] == "False"
+    user = [row for row in rows if row["email"] == owner.email
+            and json.loads(row["sources"]) == ["user"]]
+    assert len(user) == 1 and user[0]["name"] == owner.name
+    assert user[0]["phone"] == ("'" + user_phone if user_phone else "")
+    assert user[0]["accepts_marketing"] == "True"
+    assert user[0]["key"] != operational[0]["key"]
+    assert summary["summary"]["total"] == 3
+    assert summary["summary"]["opt_in_marketing"] == 1
+
+
+def test_visitor_phone_cannot_borrow_consent_from_user_with_other_phone(client, contacts_context):
+    own, _ = contacts_context
+    _assert_visitor_phone_does_not_borrow_user_consent(client, own, "+5491100000077")
+
+
+def test_visitor_phone_cannot_borrow_consent_from_user_without_phone(client, contacts_context):
+    own, _ = contacts_context
+    _assert_visitor_phone_does_not_borrow_user_consent(client, own, None)
+
+
+def test_matching_normalized_user_phone_keeps_legitimate_contact_merge_and_consent(client, contacts_context):
+    own, _ = contacts_context
+    owner = own["owner"]
+    owner.telefono, owner.acepta_marketing = "+5491100000077", True
+    db.session.commit()
+    _produce(own, {"email": owner.email, "phone": "+54 9 11 0000 0077"})
+    summary, rows, _ = _observed(client, own)
+    merged = [row for row in rows if row["email"] == owner.email]
+    assert len(merged) == 1 and int(merged[0]["records"]) == 2
+    assert merged[0]["key"] == "email:" + owner.email
+    assert merged[0]["phone"] == "'+54 9 11 0000 0077"
+    assert json.loads(merged[0]["sources"]) == ["tenant_ticket", "user"]
+    assert merged[0]["accepts_marketing"] == "True"
+    assert summary["summary"]["total"] == 2 and summary["summary"]["opt_in_marketing"] == 1
+
+
+def test_visitor_preference_cannot_opt_in_unconsented_user_with_matching_phone(client, contacts_context):
+    own, _ = contacts_context
+    owner = own["owner"]
+    owner.telefono, owner.acepta_marketing = "+5491100000077", False
+    db.session.commit()
+    _produce(own, {"email": owner.email, "phone": owner.telefono, "accepts_marketing": True})
+    summary, rows, _ = _observed(client, own)
+    merged = [row for row in rows if row["email"] == owner.email]
+    assert len(merged) == 1 and int(merged[0]["records"]) == 2
+    assert merged[0]["accepts_marketing"] == "False"
+    assert summary["summary"]["opt_in_marketing"] == 0
+
+
+def test_conflicting_phone_preserves_unconsented_user_and_operational_records(client, contacts_context):
+    own, _ = contacts_context
+    owner = own["owner"]
+    owner.telefono, owner.acepta_marketing = "+5491100000077", False
+    db.session.commit()
+    _produce(own, {"email": owner.email, "phone": "+5491100000088", "accepts_marketing": True})
+    summary, rows, _ = _observed(client, own)
+    same_email = [row for row in rows if row["email"] == owner.email]
+    assert len(same_email) == 2 and {row["phone"] for row in same_email} == {
+        "'+5491100000077", "'+5491100000088"}
+    assert {row["accepts_marketing"] for row in same_email} == {"False"}
+    assert any(row["key"] == f"user:{owner.id}" and json.loads(row["sources"]) == ["user"]
+               for row in same_email)
+    assert summary["summary"]["total"] == 3 and summary["summary"]["opt_in_marketing"] == 0
+
+
+def test_missing_visitor_phone_can_use_user_destination_without_losing_declared_consent(client, contacts_context):
+    own, _ = contacts_context
+    owner = own["owner"]
+    owner.telefono, owner.acepta_marketing = "+5491100000077", True
+    db.session.commit()
+    _produce(own, {"email": owner.email})
+    summary, rows, _ = _observed(client, own)
+    merged = [row for row in rows if row["email"] == owner.email]
+    assert len(merged) == 1 and int(merged[0]["records"]) == 2
+    assert merged[0]["phone"] == "'+5491100000077" and merged[0]["accepts_marketing"] == "True"
+    assert summary["summary"]["total"] == 2 and summary["summary"]["opt_in_marketing"] == 1
+
+
+def test_email_only_user_declared_consent_is_not_removed_when_both_phones_absent(client, contacts_context):
+    own, _ = contacts_context
+    owner = own["owner"]
+    owner.telefono, owner.acepta_marketing = None, True
+    db.session.commit()
+    _produce(own, {"email": owner.email})
+    summary, rows, _ = _observed(client, own)
+    merged = [row for row in rows if row["email"] == owner.email]
+    assert len(merged) == 1 and int(merged[0]["records"]) == 2
+    assert merged[0]["phone"] == "" and merged[0]["accepts_marketing"] == "True"
+    assert summary["summary"]["with_phone"] == 0 and summary["summary"]["opt_in_marketing"] == 1
+
