@@ -6,6 +6,8 @@ chooses a tenant from user text. Existing business handler commits are retained;
 this movement does not assert global transaction atomicity.
 """
 from __future__ import annotations
+
+from services.contact_service import read_contact_projection, store_contact_projection, current_contact_phone
 from copy import deepcopy
 import re
 import time
@@ -1040,13 +1042,11 @@ def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSele
             resolved_contact = resolve_input_contact(from_number_cleaned, profile_name)
             if resolved_contact:
                 kwargs_for_bot["resolved_contact"] = resolved_contact
-                if isinstance(session_context_db_entry.context_data, dict):
-                    session_context_db_entry.context_data["resolved_contact"] = resolved_contact
-                    session_context_db_entry.context_data.setdefault("contact_cache", {}).update(
-                        {k: v for k, v in resolved_contact.items() if v}
-                    )
-                if not profile_name and resolved_contact.get("nombre"):
-                    profile_name = resolved_contact.get("nombre")
+                resolved_contact = store_contact_projection(
+                    session_context_db_entry.context_data, resolved_contact,
+                    tenant_id=tenant_id, phone=from_number_cleaned,
+                )
+                kwargs_for_bot["resolved_contact"] = resolved_contact
             if profile_name:
                 kwargs_for_bot["profile_name"] = profile_name
 

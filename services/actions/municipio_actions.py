@@ -1,3 +1,4 @@
+from services.contact_service import read_contact_projection, current_contact_phone
 # services/actions/municipio_actions.py
 import logging
 import hashlib
@@ -961,7 +962,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
         viewer_user = self.context.get("viewer_user_obj")
         datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         contacto_ctx = contexto_reclamo.get("contacto_usuario", {})
-        resolved_contact = self.context.get("resolved_contact") or {}
+        resolved_contact = read_contact_projection(self.context.get("resolved_contact"),
+            tenant_id=self.context.get("tenant_id"),
+            phone=current_contact_phone(self.context.get("anon_id"),
+                getattr(viewer_user, "telefono", None)))
 
         if resolved_contact:
             contacto_ctx.setdefault("nombre", resolved_contact.get("nombre"))

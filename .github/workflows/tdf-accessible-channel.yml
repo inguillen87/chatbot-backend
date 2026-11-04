@@ -3,6 +3,16 @@ on:
   pull_request:
     paths:
       - 'app.py'
+      - 'services/contact_service.py'
+      - 'services/actions/municipio_actions.py'
+      - 'services/voice_stream_service.py'
+      - 'services/whatsapp_survey_conversation.py'
+      - 'tests/contact_scope_fixtures.py'
+      - 'tests/test_contact_scope_core.py'
+      - 'tests/test_contact_scope_consumers.py'
+      - 'tests/test_contact_scope_inline_readers.py'
+      - 'tests/test_voice_stream_service.py'
+      - 'tests/test_whatsapp_survey_conversation.py'
       - 'routes/institutional_assistant.py'
       - 'routes/chat.py'
       - 'routes/whatsapp_webhook.py'
@@ -112,6 +122,130 @@ jobs:
           cache: pip
       - name: Install existing runtime dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Verify tenant-scoped contact projections and current readers offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/contact-scope
+          git rev-parse HEAD > .qa-artifacts/contact-scope/checkout.txt
+          test "$(cat .qa-artifacts/contact-scope/checkout.txt)" = "$EXPECTED_HEAD"
+          for cohort in new voice-context-cold survey-cold; do
+            mkdir -p ".qa-artifacts/contact-scope/$cohort"
+            python -I -B -X utf8 - "$cohort" <<'PY' 2>&1 | tee ".qa-artifacts/contact-scope/$cohort/tests.log"
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path.cwd()
+          cohort = sys.argv[1]
+          out = root / '.qa-artifacts/contact-scope' / cohort
+          paths = [
+              'routes/whatsapp_webhook.py', 'services/contact_service.py',
+              'services/municipio_responder.py', 'services/pymes.py',
+              'services/voice_stream_service.py', 'services/whatsapp_conversation_turn.py',
+              'services/whatsapp_survey_conversation.py', 'services/actions/municipio_actions.py',
+              'tests/contact_scope_fixtures.py', 'tests/test_contact_scope_core.py',
+              'tests/test_contact_scope_consumers.py', 'tests/test_contact_scope_inline_readers.py',
+              'tests/test_whatsapp_welcome_each_greeting.py', 'tests/test_whatsapp_welcome_optional_audio.py',
+              'tests/test_whatsapp_webhook.py', 'tests/test_whatsapp_inbound_queue_webhook.py',
+              'tests/test_voice_stream_service.py', 'tests/test_whatsapp_survey_conversation.py',
+              'models.py', 'models_memory.py', 'services/common_utils.py', 'services/pyme_menu.py',
+              'tests/profile_acceptance_runtime.py', 'tests/conftest.py', 'pytest.ini',
+              '.github/workflows/tdf-accessible-channel.yml',
+          ]
+          def pins():
+              return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+          before = pins()
+          committed = {
+              path: hashlib.sha256(subprocess.run(
+                  ['git', 'show', 'HEAD:' + path], check=True, capture_output=True,
+              ).stdout).hexdigest() for path in paths
+          }
+          (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
+          (out / 'source-git-head.json').write_text(json.dumps(committed, indent=2), encoding='utf-8')
+          if before != committed:
+              raise RuntimeError('contact_scope_checkout_blob_mismatch')
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+          watched = ('TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'OPENAI_API_KEY')
+          environment_before = [key for key in watched if key in os.environ]
+          if environment_before:
+              raise RuntimeError('contact_scope_fixture_environment_not_clean')
+          targets_by_cohort = {
+              'new': [
+                  'tests/test_contact_scope_core.py',
+                  'tests/test_contact_scope_consumers.py',
+                  'tests/test_contact_scope_inline_readers.py',
+              ],
+              'voice-context-cold': [
+                  'tests/test_voice_stream_service.py::VoiceStreamServiceTenantResolutionTests::test_provider_sender_routes_voice_to_dedicated_tenant',
+              ],
+              'survey-cold': [
+                  'tests/test_whatsapp_survey_conversation.py::WhatsAppSurveyConversationTest::test_governed_yes_no_and_city_vote_pins_release_and_emits_realtime',
+                  'tests/test_whatsapp_survey_conversation.py::WhatsAppSurveyConversationTest::test_duplicate_is_prevented_and_uncertain_retry_replays_same_submission',
+              ],
+          }
+          targets = targets_by_cohort[cohort]
+          import pytest
+          collected = []
+          class Collection:
+              def pytest_collection_finish(self, session):
+                  collected.extend(item.nodeid for item in session.items)
+          args = ['-q', '-p', 'no:cacheprovider']
+          if cohort == 'new':
+              args.extend(['-p', 'tests.contact_scope_fixtures'])
+          result = pytest.main([*args, *targets, '--junitxml=' + str(out / 'tests.xml')], plugins=[Collection()])
+          after = pins()
+          environment_after = [key for key in watched if key in os.environ]
+          (out / 'source-after.json').write_text(json.dumps(after, indent=2), encoding='utf-8')
+          (out / 'collected-nodeids.json').write_text(json.dumps(collected, indent=2), encoding='utf-8')
+          (out / 'environment-presence.json').write_text(json.dumps({
+              'watched_keys': watched, 'before': environment_before, 'after': environment_after,
+              'values_recorded': False,
+          }, indent=2), encoding='utf-8')
+          counts = None
+          native_testcase_elements = None
+          if (out / 'tests.xml').is_file():
+              report = ET.parse(out / 'tests.xml').getroot()
+              suites = [node for node in report.iter('testsuite') if not node.findall('testsuite')]
+              counts = {key: sum(int(node.attrib.get(key, 0)) for node in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+              native_testcase_elements = len(list(report.iter('testcase')))
+          covered = bool(collected) and len(collected) == len(set(collected)) and all(
+              any(node == target or node.startswith(target + '::') or node.startswith(target + '[')
+                  for node in collected) for target in targets
+          )
+          valid = (int(result) == 0 and before == committed == after and covered
+                   and counts is not None and counts['tests'] > 0
+                   and environment_before == environment_after
+                   and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped')))
+          summary = {
+              'checkout': (out.parent / 'checkout.txt').read_text().strip(), 'cohort': cohort,
+              'exit_code': int(result), 'targets': targets, 'collected_items': len(collected),
+              'native_xml_counts': counts, 'native_testcase_elements': native_testcase_elements,
+              'source_pins_unchanged': before == after, 'checkout_blob_equal': before == committed,
+              'fixture_environment_restored': environment_before == environment_after,
+              'provider_delivery_verified': False, 'production_state_verified': False, 'passed': valid,
+          }
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+          done
+      - name: Preserve tenant-scoped contact native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: contact-scope-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/contact-scope/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify production Meta outbox dispatch offline
         shell: bash
         env:

@@ -1,3 +1,4 @@
+from services.contact_service import read_contact_projection, current_contact_phone
 import os
 from flask import jsonify
 import pandas as pd
@@ -1532,11 +1533,11 @@ class ReclamoFlowHandler:
             if resumen:
                 datos['descripcion_resumida'] = resumen
 
-        def _apply_prefill(field: str, *candidates) -> None:
+        def _apply_prefill(field: str, *candidates) -> bool:
             """Populate ``datos`` with the first meaningful value available."""
             existing = datos.get(field)
             if existing and existing != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(existing):
-                return
+                return False
             for candidate in candidates:
                 if not candidate:
                     continue
@@ -1561,7 +1562,8 @@ class ReclamoFlowHandler:
                             continue
                         candidate = cleaned_candidate
                 datos[field] = candidate
-                break
+                return True
+            return False
 
         # --- Comprehensive Contact Prefill (Refactored) ---
         viewer = self.context.get("viewer_user_obj")
@@ -1693,11 +1695,16 @@ class ReclamoFlowHandler:
         # 5. From WhatsApp profile name if no other name is found
         _apply_prefill('nombre', self.context.get('profile_name'))
 
+        # This lookup can prefill this claim, without becoming reusable identity.
+        lookup_name_prefill = _apply_prefill('nombre', self.context.get('contact_lookup_display_name'))
+
         # 6. From anon_id as a fallback for phone number
         _apply_prefill('telefono', _phone_from_anon_id(self.context.get('anon_id')))
 
         # Remember any newly found data in the session cache
         for campo in ['nombre', 'dni', 'email', 'telefono']:
+            if campo == 'nombre' and lookup_name_prefill:
+                continue
             if datos.get(campo):
                 contacto_cache.setdefault(campo, datos.get(campo))
 
@@ -3757,8 +3764,14 @@ class GreetingHandler(BaseMunicipioHandler):
             f"[GreetingHandler] Nuevo estado de conversación: {contexto_municipio_actual['estado_conversacion']}"
         )
 
-        # Usar la función centralizada para obtener el payload del menú.
-        return _get_main_menu_payload(self.context)
+        # A current lookup may personalize this menu, but must never become
+        # profile_name in the shared flow context or a stored declaration.
+        menu_context = dict(self.context)
+        declared_contact = contexto_municipio_actual.get("contacto_usuario", {})
+        if not (menu_context.get("profile_name") or chat_db_context_data.get("profile_name")
+                or (declared_contact.get("nombre") if isinstance(declared_contact, dict) else None)):
+            menu_context["profile_name"] = self.context.get("contact_lookup_display_name")
+        return _get_main_menu_payload(menu_context)
 
 
 
@@ -12453,15 +12466,26 @@ def responder_municipio(
     # --- END CONTEXT INITIALIZATION ---
 
     profile_name = kwargs.get("profile_name")
-    resolved_contact = kwargs.get("resolved_contact") or chat_db_context_live_data.get("resolved_contact")
+    resolved_contact = (read_contact_projection(kwargs.get("resolved_contact"),
+        tenant_id=getattr(tenant_profile, "id", None),
+        phone=current_contact_phone(anon_id, getattr(viewer_user, "telefono", None),
+            getattr(chat_db_context, "anon_id", None))) or read_contact_projection(
+            chat_db_context_live_data.get("resolved_contact"),
+            tenant_id=getattr(tenant_profile, "id", None),
+            phone=current_contact_phone(anon_id, getattr(viewer_user, "telefono", None),
+                getattr(chat_db_context, "anon_id", None))))
+    # Only channel/declaration input may populate flat profile and draft fields.
+    # The database lookup remains separately available to this turn.
+    declared_profile_name = profile_name
     if resolved_contact and not profile_name:
         profile_name = resolved_contact.get("nombre")
-    if isinstance(profile_name, str) and profile_name.strip():
+    context["contact_lookup_display_name"] = resolved_contact.get("nombre")
+    if isinstance(declared_profile_name, str) and declared_profile_name.strip():
         if not chat_db_context_live_data.get("profile_name"):
-            chat_db_context_live_data["profile_name"] = profile_name.strip()
+            chat_db_context_live_data["profile_name"] = declared_profile_name.strip()
         contacto_usuario = contexto_municipio_actual.setdefault("contacto_usuario", {})
         if isinstance(contacto_usuario, dict) and not contacto_usuario.get("nombre"):
-            contacto_usuario["nombre"] = profile_name.strip()
+            contacto_usuario["nombre"] = declared_profile_name.strip()
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
 

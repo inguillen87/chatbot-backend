@@ -1,3 +1,4 @@
+from services.contact_service import read_contact_projection, current_contact_phone
 import logging
 import re
 import json
@@ -1141,10 +1142,16 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
     chat_context_data = context.get("chat_db_context_data")
     if not isinstance(chat_context_data, dict):
         chat_context_data = {}
-    contact_cache = chat_context_data.get("contact_cache")
+    contact_cache = read_contact_projection(chat_context_data.get("contact_cache"),
+        tenant_id=context.get("tenant_id"),
+        phone=current_contact_phone(context.get("anon_id"),
+            getattr(context.get("viewer_user_obj"), "telefono", None)))
     if not isinstance(contact_cache, dict):
         contact_cache = {}
-    resolved_contact = chat_context_data.get("resolved_contact")
+    resolved_contact = read_contact_projection(chat_context_data.get("resolved_contact"),
+        tenant_id=context.get("tenant_id"),
+        phone=current_contact_phone(context.get("anon_id"),
+            getattr(context.get("viewer_user_obj"), "telefono", None)))
     if not isinstance(resolved_contact, dict):
         resolved_contact = {}
     viewer = context.get("viewer_user_obj")
@@ -2537,6 +2544,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                 "viewer_user_obj": viewer_user,
                 "user_id": getattr(owner_user, "id", None),
                 "cliente_id": getattr(viewer_user, "id", None),
+                "anon_id": anon_id,
             }
 
             enriched_payload = _build_pyme_order_success_payload(effective_context, snapshot)
@@ -2769,23 +2777,36 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
 
     profile_name = kwargs.get("profile_name")
     context_data = chat_db_context.context_data if isinstance(chat_db_context.context_data, dict) else {}
-    contact_cache = context_data.get("contact_cache")
+    contact_cache = read_contact_projection(context_data.get("contact_cache"),
+        tenant_id=tenant_id_for_turn,
+        phone=current_contact_phone(anon_id, getattr(viewer_user, "telefono", None),
+            getattr(chat_db_context, "anon_id", None)))
     if not isinstance(contact_cache, dict):
         contact_cache = {}
-    resolved_contact = context_data.get("resolved_contact")
+    resolved_contact = read_contact_projection(context_data.get("resolved_contact"),
+        tenant_id=tenant_id_for_turn,
+        phone=current_contact_phone(anon_id, getattr(viewer_user, "telefono", None),
+            getattr(chat_db_context, "anon_id", None)))
     if not isinstance(resolved_contact, dict):
         resolved_contact = {}
     viewer_name = getattr(viewer_user, "name", None) or getattr(viewer_user, "nombre", None)
-    usuario_nombre = _first_real_customer_name(
-        profile_name,
-        context_data.get("profile_name"),
-        contact_cache.get("nombre"),
-        resolved_contact.get("nombre"),
-        viewer_name,
-        pyme_ctx_actual.get("nombre_cliente"),
-    ) or "Cliente"
+    usuario_nombre = "Cliente"
+    usuario_nombre_from_lookup = False
+    for name_candidate, from_lookup in (
+        (profile_name, False),
+        (context_data.get("profile_name"), False),
+        (contact_cache.get("nombre"), True),
+        (resolved_contact.get("nombre"), True),
+        (viewer_name, False),
+        (pyme_ctx_actual.get("nombre_cliente"), False),
+    ):
+        selected_name = _first_real_customer_name(name_candidate)
+        if selected_name:
+            usuario_nombre = selected_name
+            usuario_nombre_from_lookup = from_lookup
+            break
 
-    if not _is_generic_customer_name(usuario_nombre):
+    if not usuario_nombre_from_lookup and not _is_generic_customer_name(usuario_nombre):
         pyme_ctx_actual["nombre_cliente"] = usuario_nombre
     if getattr(viewer_user, "email", None):
         pyme_ctx_actual.setdefault("email_cliente", getattr(viewer_user, "email", None))
@@ -2809,6 +2830,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "user_id": getattr(owner_user, "id", None),
             "cliente_id": getattr(viewer_user, "id", None),
             "viewer_user_obj": viewer_user,
+            "anon_id": anon_id,
             "profile_name": profile_name,
             "nombre_pyme": nombre_pyme_display,
             "rubro_nombre": rubro_nombre_contexto or rubro_info_value or "general",

@@ -75,7 +75,7 @@ from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 from utils.roles import is_authorized_superadmin_email
-from services.contact_service import resolve_contact, sanitize_profile_name
+from services.contact_service import resolve_contact, sanitize_profile_name, read_contact_projection, store_contact_projection, current_contact_phone
 from services.ticket_service import build_whatsapp_ticket_effect_key, servicio_tickets
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
@@ -2167,12 +2167,13 @@ def _clean_contact_name(value: Optional[Any]) -> Optional[str]:
     return cleaned.strip()
 
 
-def _context_contact_name(context_data: Optional[dict[str, Any]]) -> Optional[str]:
+def _context_contact_name(context_data: Optional[dict[str, Any]], *, tenant_id=None, phone=None) -> Optional[str]:
     if not isinstance(context_data, dict):
         return None
 
     candidates: list[Any] = [context_data.get("profile_name")]
-    contact_cache = context_data.get("contact_cache")
+    contact_cache = read_contact_projection(context_data.get("contact_cache"),
+                                            tenant_id=tenant_id, phone=phone)
     if isinstance(contact_cache, dict):
         candidates.append(contact_cache.get("nombre"))
 
@@ -2199,9 +2200,7 @@ def _remember_contact_name(session_context: ChatSessionContext, name: Optional[s
 
     context_data = session_context.context_data
     context_data["profile_name"] = cleaned
-    contact_cache = context_data.setdefault("contact_cache", {})
-    if isinstance(contact_cache, dict):
-        contact_cache["nombre"] = cleaned
+    # Explicit names remain in profile/draft; auto cache needs its own marker.
 
     municipio_ctx = context_data.setdefault(CONTEXTO_MUNICIPIO, {})
     if isinstance(municipio_ctx, dict):
@@ -2222,7 +2221,10 @@ def _resolve_welcome_user_name(
     resolved_contact: Optional[dict[str, Any]],
 ) -> Optional[str]:
     candidates = [
-        _context_contact_name(session_context.context_data if session_context else None),
+        _context_contact_name(session_context.context_data if session_context else None,
+                              tenant_id=getattr(session_context, "tenant_id", None),
+                              phone=current_contact_phone(getattr(end_user, "telefono", None),
+                                  getattr(session_context, "anon_id", None))),
         getattr(end_user, "name", None) if end_user else None,
         (resolved_contact or {}).get("nombre"),
         profile_name,
@@ -6735,7 +6737,7 @@ def whatsapp_webhook():
                 profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
                 resolved_contact_for_welcome = resolve_contact(
                     from_number_cleaned,
-                    profile_name_from_request,
+                    profile_name_from_request, tenant=tenant_profile,
                 )
                 user_name = _resolve_welcome_user_name(
                     end_user=end_user,
@@ -6743,9 +6745,9 @@ def whatsapp_webhook():
                     profile_name=profile_name_from_request,
                     resolved_contact=resolved_contact_for_welcome,
                 )
-                if user_name:
-                    _remember_contact_name(session_context_db_entry, user_name)
-                else:
+                # Lookup names are presentation-only; only an explicit name reply
+                # may populate the flat profile/draft via _remember_contact_name.
+                if not user_name:
                     user_name = ""
 
                 municipio_config = {}
@@ -7036,14 +7038,24 @@ def whatsapp_webhook():
 
                 profile_name = (
                     user_name
-                    or _context_contact_name(session_context_db_entry.context_data)
+                    or _context_contact_name(session_context_db_entry.context_data,
+                                             tenant_id=getattr(tenant_profile, "id", None),
+                                             phone=current_contact_phone(from_number_cleaned,
+                                                 getattr(end_user, "telefono", None)))
                     or _clean_contact_name(post_vars.get("ProfileName"))
                 )
-                resolved_contact = resolve_contact(from_number_cleaned, profile_name or None)
+                resolved_contact = resolve_contact(from_number_cleaned, post_vars.get("ProfileName"),
+                                                   tenant=tenant_profile)
+                # Keep the automatic lookup separate from declared profile/draft.
+                resolved_contact = store_contact_projection(
+                    session_context_db_entry.context_data, resolved_contact,
+                    tenant_id=getattr(tenant_profile, "id", None),
+                    phone=current_contact_phone(from_number_cleaned,
+                        getattr(end_user, "telefono", None)),
+                )
+                safe_flag_modified(session_context_db_entry, "context_data")
                 if resolved_contact and not profile_name:
                     profile_name = _clean_contact_name(resolved_contact.get("nombre"))
-                if profile_name:
-                    _remember_contact_name(session_context_db_entry, profile_name)
 
                 menu_context = {
                     "user_obj": client_user,
@@ -8111,7 +8123,7 @@ def whatsapp_webhook():
         public_base_url=(request.url_root or "").rstrip("/"), engine=responder_chatboc,
         classify_attachment=clasificar_adjunto_whatsapp,
         extract_contact_details=extract_multiple_contact_details_llm,
-        resolve_input_contact=resolve_contact,
+        resolve_input_contact=lambda phone, name: resolve_contact(phone, name, tenant=tenant_profile),
         receipt_header=lambda: _receipt_public_header_for_window(
             tenant_profile, provider_sender, from_number_raw),
         normalize_flow_contract=_normalize_whatsapp_flow_contract,
