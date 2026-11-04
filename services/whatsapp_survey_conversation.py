@@ -10,6 +10,8 @@ was recorded.
 
 from __future__ import annotations
 
+from services.contact_service import read_contact_projection, current_contact_phone
+
 from dataclasses import dataclass
 import hashlib
 import math
@@ -406,7 +408,10 @@ def _participant_phone(context: Mapping[str, Any]) -> Optional[str]:
     contact = municipal.get("contacto_usuario")
     if isinstance(contact, Mapping):
         candidates.extend((contact.get("telefono"), contact.get("phone")))
-    resolved_contact = context.get("resolved_contact")
+    resolved_contact = read_contact_projection(context.get("resolved_contact"),
+        tenant_id=context.get("tenant_id"),
+        phone=current_contact_phone(context.get("anon_id"),
+            getattr(viewer, "telefono", None)))
     if isinstance(resolved_contact, Mapping):
         candidates.extend((resolved_contact.get("telefono"), resolved_contact.get("phone")))
     candidates.append(context.get("anon_id"))

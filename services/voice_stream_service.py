@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
 from utils.db_utils import safe_flag_modified
-from services.contact_service import resolve_contact, sanitize_profile_name
+from services.contact_service import resolve_contact, sanitize_profile_name, read_contact_projection, store_contact_projection, current_contact_phone
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
 from services.config_loader import cargar_configuracion_municipio
@@ -674,7 +674,10 @@ class VoiceStreamService:
     def _resolve_identity_from_context(self, context_data: dict) -> dict:
         contacto = self._extract_contacto_usuario(context_data)
         profile_name = context_data.get("profile_name") if isinstance(context_data, dict) else None
-        resolved_contact = context_data.get("resolved_contact") if isinstance(context_data, dict) else None
+        resolved_contact = read_contact_projection(
+            context_data.get("resolved_contact") if isinstance(context_data, dict) else None,
+            tenant_id=getattr(self.tenant_profile, "id", None), phone=current_contact_phone(self.from_number,
+                getattr(self.user, "telefono", None)))
         resolved_name = None
         if isinstance(resolved_contact, dict):
             resolved_name = resolved_contact.get("nombre")
@@ -689,7 +692,9 @@ class VoiceStreamService:
     def _resolve_greeting_name(self) -> str | None:
         identity = self._resolve_identity_from_context(self.context_data_snapshot)
         resolved_contact = (
-            self.context_data_snapshot.get("resolved_contact")
+            read_contact_projection(self.context_data_snapshot.get("resolved_contact"),
+                tenant_id=getattr(self.tenant_profile, "id", None), phone=current_contact_phone(self.from_number,
+                getattr(self.user, "telefono", None)))
             if isinstance(self.context_data_snapshot, dict)
             else {}
         )
@@ -2067,14 +2072,14 @@ class VoiceStreamService:
             identity = self._resolve_identity_from_context(self.context_data_snapshot)
             resolved_contact = resolve_contact(
                 user_phone_clean,
-                self.context_data_snapshot.get("profile_name"),
+                None, tenant=self.tenant_profile,  # No raw profile is supplied by voice.
             )
             if resolved_contact:
-                self.context_data_snapshot["resolved_contact"] = resolved_contact
+                store_contact_projection(self.context_data_snapshot, resolved_contact,
+                    tenant_id=tenant_id, phone=user_phone_clean)
                 if isinstance(session_context.context_data, dict):
-                    session_context.context_data["resolved_contact"] = resolved_contact
-                    if resolved_contact.get("nombre") and not session_context.context_data.get("profile_name"):
-                        session_context.context_data["profile_name"] = resolved_contact.get("nombre")
+                    store_contact_projection(session_context.context_data, resolved_contact,
+                        tenant_id=tenant_id, phone=user_phone_clean)
                     safe_flag_modified(session_context, "context_data")
                     db.session.commit()
             if self.user:
@@ -2096,7 +2101,11 @@ class VoiceStreamService:
                         if ticket_match and getattr(ticket_match, "nombre_vecino", None):
                             ticket_name = ticket_match.nombre_vecino
 
-                    identity_name = (identity.get("nombre") or "").strip()
+                    # A lookup name is ephemeral; only an existing declaration
+                    # or ticket may update the persistent User name.
+                    declared_identity = self._extract_contacto_usuario(self.context_data_snapshot)
+                    identity_name = (declared_identity.get("nombre")
+                        or self.context_data_snapshot.get("profile_name") or "").strip()
                     banned = {"hola", "buenas", "eh", "mmm", "hola hola"}
                     candidate_name = ticket_name or identity_name
                     if candidate_name and candidate_name.lower() not in banned:
@@ -2803,9 +2812,13 @@ class VoiceStreamService:
                         "municipio_config_actual": self.tenant_profile.configuracion if self.tenant_profile else {},
                     }
                     ctx["contexto_municipio_v2"] = chat_data.get("contexto_municipio_v2", {})
-                    ctx["resolved_contact"] = resolve_contact(
-                        getattr(self.user, "telefono", None) or self.from_number,
-                        self.context_data_snapshot.get("profile_name") if isinstance(self.context_data_snapshot, dict) else None,
+                    contact_phone_for_action = current_contact_phone(
+                        self.from_number, getattr(self.user, "telefono", None),
+                    )
+                    ctx["resolved_contact"] = read_contact_projection(
+                        resolve_contact(contact_phone_for_action, None, tenant=self.tenant_profile),
+                        tenant_id=getattr(self.tenant_profile, "id", None),
+                        phone=contact_phone_for_action,
                     )
 
                     nombre_raw = args.get("nombre")
@@ -2917,7 +2930,9 @@ class VoiceStreamService:
                                 municipio_cfg = self._resolve_municipio_config()
                                 base_chat_url = municipio_cfg.get("base_chat_url", "https://www.chatboc.ar/chat")
                                 resolved_contact = (
-                                    self.context_data_snapshot.get("resolved_contact")
+                                    read_contact_projection(self.context_data_snapshot.get("resolved_contact"),
+                tenant_id=getattr(self.tenant_profile, "id", None), phone=current_contact_phone(self.from_number,
+                getattr(self.user, "telefono", None)))
                                     if isinstance(self.context_data_snapshot, dict)
                                     else {}
                                 )

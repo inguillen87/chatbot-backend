@@ -101,15 +101,16 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         db.session.commit()
 
     def _admin_headers(self) -> dict[str, str]:
-        token = jwt.encode(
+        # Use the real panel issuer in this disposable SQLite fixture.  The
+        # verifier still checks persisted session lineage, actor and tenant.
+        from services.auth_session_lifecycle import issue_token
+        token = issue_token(
             {
                 "user_id": self.owner.id,
                 "rol": self.owner.rol,
                 "tenant_slug": self.tenant.slug,
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         return {
             "Authorization": f"Bearer {token}",

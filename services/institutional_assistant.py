@@ -10,6 +10,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
     ContentError, CONTRACT, MAX_QUESTION_CHARS, normalize_bundle, overview, digest, select_nodes, materialize_node,
+    is_source_navigation,
 )
 KEY, CHANNEL = 'institutional_assistant', 'knowledge'
 UI = {
@@ -20,6 +21,7 @@ UI = {
     'more_options': 'Más opciones', 'previous_options': 'Opciones anteriores',
     'options_page': 'Opciones: grupo {current} de {total}',
     'unknown': 'Esta información no está incluida en las fuentes disponibles. Podés elegir otro tema.',
+    'source_navigation': 'Podés consultar el catálogo de documentos en Documentos y fuentes.',
     'error': 'No se pudo completar la consulta. Volvé a intentarlo o elegí un tema.',
     'retry': 'Volver a consultar', 'import': 'Incorporar conocimiento',
     'import_help': 'Cargá la versión integrada de documentos, respuestas y menús de esta organización.',
@@ -132,7 +134,10 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
         raise ContentError('knowledge_node_not_found', 400)
     question = command.get('question')
     called = question is not None
-    if called:
+    navigation = called and is_source_navigation(question)
+    if navigation:
+        nodes = []
+    elif called:
         if selector is None:
             from services.llm_utils import llamar_llm_para_json_estructurado
             selector = llamar_llm_para_json_estructurado
@@ -151,10 +156,14 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
             raise ContentError('knowledge_forbidden', 403)
     if latest is None or latest['revision'] != state['revision']:
         raise ContentError('knowledge_revision_conflict', 412)
-    return {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
+    result = {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
         'revision': state['revision'], 'nodes': [materialize_node(n, public=public) for n in nodes],
         'text': UI['unknown'] if not nodes else '\n\n'.join(n['text'] for n in nodes),
-        'selection_performed': called, 'business_writes_performed': False}
+        'selection_performed': called and not navigation, 'business_writes_performed': False}
+    if navigation:
+        result.update(result_type='source_navigation', text=UI['source_navigation'],
+                      sources=overview(latest['bundle'], public=public)['sources'])
+    return result
 
 def _channel_source_label(source):
     label = source['title']
@@ -324,6 +333,28 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
         result = answer(tenant, command, public=True)
     except ContentError:
         return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_unavailable'}
+    if result.get('result_type') == 'source_navigation':
+        # Catalog metadata is not evidence for a fabricated answer/node. Public
+        # projection retains the existing document ACL and never exposes origins.
+        sources = result['sources']
+        lines = []
+        for source in sources[:8]:
+            label = source['title']
+            visibility = source.get('document_visibility')
+            if visibility == 'private': label += ' · documento de uso interno'
+            elif visibility == 'public': label += ' · acceso público habilitado'
+            lines.append('• ' + label)
+        if len(sources) > 8:
+            lines.append('Y ' + str(len(sources) - 8) + ' fuentes más en el catálogo del asistente web.')
+        for source in sources[:8]:
+            link = source['title'] + ': ' + source['url'] if source.get('url') else None
+            if link and len(result['text']) + len('\n'.join(lines)) + len(link) + 4 <= 3500:
+                lines.append(link)
+        return {'message_body': result['text'] + '\n\n' + '\n'.join(lines),
+            'message_type': 'text', 'fuente': 'institutional_knowledge_sources',
+            'knowledge_sources': deepcopy(sources), 'knowledge_tenant': deepcopy(result['tenant']),
+            'knowledge_ui': {key: UI[key] for key in ('sources', 'source_details', 'large_text')},
+            'context_revision': result['revision']}
     nodes = result['nodes']
     unknown_question = not nodes and command.get('question') is not None
     if unknown_question:

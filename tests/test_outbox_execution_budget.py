@@ -232,6 +232,7 @@ def test_whatsapp_outbound_dispatch_injects_the_bounded_transport():
         attempt_id="attempt-1",
         tenant_id=17,
         lease_token="lease-1",
+        provider="twilio",
         payload={"from_": "whatsapp:+15005550001", "body": "respuesta"},
     )
     credentials = SimpleNamespace(account_sid="AC-test", auth_token="token")

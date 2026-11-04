@@ -817,6 +817,26 @@ def dispatch_next_whatsapp_outbound_attempt(
         provider_call_started = True
 
     try:
+        # The claim's provider is read from the persisted outbox, not a user DTO.
+        # Meta must never enter Twilio credential resolution or its send path.
+        provider = getattr(claim, "provider", None)
+        if provider == "meta":
+            from services.meta_whatsapp_outbox import dispatch_meta_outbound_claim
+
+            meta_result = dispatch_meta_outbound_claim(
+                claim, on_post_started=mark_provider_call_started,
+            )
+            return OutboundDispatchResult(
+                status=meta_result.status,
+                attempt_id=meta_result.attempt_id,
+                tenant_id=meta_result.tenant_id,
+                provider_message_sid=meta_result.provider_message_sid,
+                error_code=meta_result.error_code,
+            )
+        if provider != "twilio":
+            unsupported = WhatsAppWorkerScopeError("outbound_provider_unsupported")
+            unsupported.whatsapp_outbound_permanent = True
+            raise unsupported
         _, sender, credentials = _load_claim_scope(claim)
         _validate_outbound_sender(claim, sender)
         params = dict(claim.payload)
