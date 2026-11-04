@@ -11,6 +11,7 @@ on:
       - 'tests/test_contact_scope_core.py'
       - 'tests/test_contact_scope_consumers.py'
       - 'tests/test_contact_scope_inline_readers.py'
+      - 'tests/test_contact_explicit_e164.py'
       - 'tests/test_voice_stream_service.py'
       - 'tests/test_whatsapp_survey_conversation.py'
       - 'routes/institutional_assistant.py'
@@ -147,6 +148,7 @@ jobs:
               'services/whatsapp_survey_conversation.py', 'services/actions/municipio_actions.py',
               'tests/contact_scope_fixtures.py', 'tests/test_contact_scope_core.py',
               'tests/test_contact_scope_consumers.py', 'tests/test_contact_scope_inline_readers.py',
+              'tests/test_contact_explicit_e164.py',
               'tests/test_whatsapp_welcome_each_greeting.py', 'tests/test_whatsapp_welcome_optional_audio.py',
               'tests/test_whatsapp_webhook.py', 'tests/test_whatsapp_inbound_queue_webhook.py',
               'tests/test_voice_stream_service.py', 'tests/test_whatsapp_survey_conversation.py',
@@ -181,6 +183,7 @@ jobs:
                   'tests/test_contact_scope_core.py',
                   'tests/test_contact_scope_consumers.py',
                   'tests/test_contact_scope_inline_readers.py',
+                  'tests/test_contact_explicit_e164.py',
               ],
               'voice-context-cold': [
                   'tests/test_voice_stream_service.py::VoiceStreamServiceTenantResolutionTests::test_provider_sender_routes_voice_to_dedicated_tenant',

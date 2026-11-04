@@ -37,12 +37,26 @@ _PROJECTION_FIELDS = ("nombre", "email", "dni", "telefono", "user_id", "is_known
 
 
 def _normalized_phone(phone):
-    if not phone:
+    if not isinstance(phone, str):
+        return None
+    value = phone.strip()
+    if value.lower().startswith("whatsapp:"):
+        value = value.split(":", 1)[1].strip()
+    # An explicit E164 already includes its country. Never add another prefix.
+    if value.startswith("+"):
+        # Only telephone separators are removable; letters or another plus stay
+        # invalid. The explicit country code is never inferred or replaced.
+        normalized = re.sub(r"[()\s.\-]", "", value)
+        return normalized if re.fullmatch(r"\+[1-9][0-9]{7,14}", normalized) else None
+    # Preserve the established local legacy policy, without accepting arbitrary
+    # strings or coercing malformed explicit international numbers into it.
+    if not value or not re.fullmatch(r"[0-9()\s.\-]+", value):
         return None
     try:
-        return formatear_telefono_e164(phone)
+        normalized = formatear_telefono_e164(value)
     except Exception:
-        return str(phone).strip() or None
+        return None
+    return normalized if re.fullmatch(r"\+[1-9][0-9]{7,14}", normalized or "") else None
 
 
 def _positive_id(value):
