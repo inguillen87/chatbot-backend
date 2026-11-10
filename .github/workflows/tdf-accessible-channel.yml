@@ -37,6 +37,39 @@ on:
       - 'tests/test_whatsapp_flow_submissions.py'
       - 'tests/test_meta_whatsapp_scrub.py'
       - 'tests/test_meta_whatsapp_outbox.py'
+      - 'routes/meta_whatsapp_callback.py'
+      - 'services/channel_session_identity.py'
+      - 'services/domain_effect_gate.py'
+      - 'services/logic.py'
+      - 'services/meta_whatsapp_batch_admission.py'
+      - 'services/meta_whatsapp_cloud.py'
+      - 'services/meta_whatsapp_conversation_sink.py'
+      - 'services/meta_whatsapp_credentials.py'
+      - 'services/meta_whatsapp_media.py'
+      - 'services/municipal_conversation_uow.py'
+      - 'services/whatsapp_conversation_uow.py'
+      - 'services/whatsapp_inbound_durability.py'
+      - 'services/whatsapp_inbound_turns.py'
+      - 'services/whatsapp_receipts.py'
+      - 'models.py'
+      - 'tests/conftest.py'
+      - 'tests/profile_acceptance_runtime.py'
+      - 'tests/test_meta_channel_identity_admission.py'
+      - 'tests/test_meta_media_url_binding.py'
+      - 'tests/test_meta_native_media_output.py'
+      - 'tests/test_meta_raw_batch_admission.py'
+      - 'tests/test_meta_whatsapp_callback.py'
+      - 'tests/test_meta_whatsapp_crm_acceptance.py'
+      - 'tests/test_meta_whatsapp_inbound_execution_fence.py'
+      - 'tests/test_meta_whatsapp_inbound_worker.py'
+      - 'tests/test_meta_whatsapp_outbound_hold.py'
+      - 'tests/test_municipal_conversation_uow.py'
+      - 'tests/test_whatsapp_conversation_domain_writers.py'
+      - 'tests/test_whatsapp_conversation_forwarding.py'
+      - 'tests/test_whatsapp_conversation_uow.py'
+      - 'tests/test_whatsapp_conversation_uow_direct_scope.py'
+      - 'tests/test_whatsapp_conversation_uow_scope.py'
+      - 'tests/test_whatsapp_inbound_turns.py'
       - 'tests/test_twilio_provider_network_policy.py'
       - 'services/audio_transcription_service.py'
       - 'services/tts_audio_artifacts.py'
@@ -320,6 +353,144 @@ jobs:
         with:
           name: meta-whatsapp-outbox-${{ github.event.pull_request.head.sha }}
           path: .qa-artifacts/meta-whatsapp-outbox/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify dormant Meta callback, claim and CRM circuit offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          out=.qa-artifacts/meta-native-claim
+          mkdir -p "$out"
+          git rev-parse HEAD > "$out/checkout.txt"
+          test "$(cat "$out/checkout.txt")" = "$EXPECTED_HEAD"
+          python -I -B -X utf8 - <<'PY' 2>&1 | tee "$out/tests.log"
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          root = Path.cwd()
+          out = root / '.qa-artifacts/meta-native-claim'
+          checkout = (out / 'checkout.txt').read_text().strip()
+          targets = [
+              'tests/test_meta_channel_identity_admission.py',
+              'tests/test_meta_media_url_binding.py',
+              'tests/test_meta_native_media_output.py',
+              'tests/test_meta_raw_batch_admission.py',
+              'tests/test_meta_whatsapp_callback.py',
+              'tests/test_meta_whatsapp_crm_acceptance.py',
+              'tests/test_meta_whatsapp_inbound_execution_fence.py',
+              'tests/test_meta_whatsapp_inbound_worker.py',
+              'tests/test_meta_whatsapp_outbound_hold.py',
+              'tests/test_meta_whatsapp_outbox.py',
+              'tests/test_municipal_conversation_uow.py',
+              'tests/test_whatsapp_conversation_domain_writers.py',
+              'tests/test_whatsapp_conversation_forwarding.py',
+              'tests/test_whatsapp_conversation_uow.py',
+              'tests/test_whatsapp_conversation_uow_direct_scope.py',
+              'tests/test_whatsapp_conversation_uow_scope.py',
+          ]
+          paths = [
+              'app.py', 'config/__init__.py', 'database.py', 'extensions.py', 'models.py',
+              'routes/meta_whatsapp_callback.py', 'routes/whatsapp_webhook.py',
+              'services/actions/municipio_actions.py', 'services/channel_session_identity.py',
+              'services/contact_service.py', 'services/crm_intelligence.py',
+              'services/domain_effect_gate.py', 'services/logic.py',
+              'services/meta_whatsapp_batch_admission.py', 'services/meta_whatsapp_cloud.py',
+              'services/meta_whatsapp_conversation_sink.py', 'services/meta_whatsapp_credentials.py',
+              'services/meta_whatsapp_media.py', 'services/meta_whatsapp_outbox.py',
+              'services/meta_whatsapp_runtime.py', 'services/meta_whatsapp_webhook.py',
+              'services/municipal_conversation_uow.py', 'services/municipio_responder.py',
+              'services/outbox_execution_budget.py', 'services/ticket_service.py',
+              'services/whatsapp_conversation_contract.py', 'services/whatsapp_conversation_turn.py',
+              'services/whatsapp_conversation_uow.py', 'services/whatsapp_inbound_durability.py',
+              'services/whatsapp_inbound_turns.py', 'services/whatsapp_inbound_worker.py',
+              'services/whatsapp_receipt_branding.py', 'services/whatsapp_receipts.py',
+              'tests/test_whatsapp_inbound_turns.py', 'tests/conftest.py',
+              'tests/profile_acceptance_runtime.py', 'pytest.ini',
+              '.github/workflows/tdf-accessible-channel.yml', *targets,
+          ]
+          def digest(value):
+              return hashlib.sha256(value).hexdigest()
+
+          def pins():
+              return {path: digest((root / path).read_bytes()) for path in paths}
+
+          def evidence(name, value):
+              (out / name).write_text(json.dumps(value, indent=2), encoding='utf-8')
+
+          before = pins()
+          committed = {path: digest(subprocess.check_output(['git', 'show', checkout + ':' + path]))
+                       for path in paths}
+          evidence('source-before.json', before)
+          evidence('checkout-blobs.json', committed)
+          if before != committed:
+              raise SystemExit('Meta circuit files do not match checked-out blobs')
+
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          import pytest
+
+          watched = ('OPENAI_API_KEY', 'TWILIO_AUTH_TOKEN', 'META_WHATSAPP_APP_SECRETS_JSON',
+                     'META_WHATSAPP_CALLBACK_VERIFY_TOKENS_JSON', 'META_WHATSAPP_CALLBACK_CANARY_RECIPIENTS_JSON',
+                     'META_WHATSAPP_CALLBACK_ENABLED', 'META_WHATSAPP_INBOUND_WORKER_ENABLED',
+                     'META_WHATSAPP_OUTBOUND_ENABLED')
+          env_before = [key for key in watched if key in os.environ]
+          if env_before or os.environ.get('DATABASE_URL') != 'sqlite:///:memory:':
+              raise SystemExit('Meta circuit test environment is not isolated')
+
+          collected = []
+          class CollectionEvidence:
+              def pytest_collection_finish(self, session):
+                  collected.extend(item.nodeid for item in session.items)
+
+          report_path = out / 'tests.xml'
+          result = pytest.main(['-q', '-p', 'no:cacheprovider', *targets,
+                                '--junitxml=' + str(report_path)], plugins=[CollectionEvidence()])
+          after = pins()
+          head_after = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          env_after = [key for key in watched if key in os.environ]
+          evidence('source-after.json', after)
+          evidence('collected-nodeids.json', collected)
+          evidence('environment-presence.json', {'before': env_before, 'after': env_after,
+                                                 'values_recorded': False})
+          counts = None
+          testcase_elements = None
+          if report_path.is_file():
+              report = ET.parse(report_path).getroot()
+              suites = [node for node in report.iter('testsuite') if not node.findall('testsuite')]
+              counts = {key: sum(int(node.attrib.get(key, 0)) for node in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+              testcase_elements = len(list(report.iter('testcase')))
+          covered = bool(collected) and len(collected) == len(set(collected)) and all(
+              any(node.startswith(target + '::') for node in collected) for target in targets)
+          valid = (int(result) == 0 and checkout == head_after and before == committed == after
+                   and covered and not env_after and counts is not None
+                   and counts['tests'] == testcase_elements == len(collected)
+                   and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped')))
+          summary = {
+              'checkout': checkout, 'checkout_after': head_after, 'exit_code': int(result),
+              'targets': targets, 'collected_items': len(collected), 'native_xml_counts': counts,
+              'native_testcase_elements': testcase_elements, 'source_pins_unchanged': before == after,
+              'checkout_blob_equal': before == committed, 'fixture_environment_restored': env_before == env_after,
+              'report_sha256': digest(report_path.read_bytes()) if report_path.is_file() else None,
+              'provider_delivery_verified': False, 'production_state_verified': False, 'passed': valid,
+          }
+          evidence('summary.json', summary)
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Preserve Meta native claim and CRM evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: meta-native-claim-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/meta-native-claim/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7

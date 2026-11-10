@@ -26,6 +26,7 @@ from models import WhatsAppInboundTurn, WhatsAppOutboundAttempt, db
 from services import meta_whatsapp_cloud as cloud
 from services.meta_whatsapp_runtime import MetaOutboundRuntime, MetaRuntimeError
 from services.meta_whatsapp_webhook import MetaWebhookEvent
+from services.meta_whatsapp_media import MetaMediaReference, parse_media_reference, revalidate_media_reference
 from services.whatsapp_inbound_durability import resolve_whatsapp_inbound_queue_tenants
 from services.outbox_execution_budget import (
     OutboxExecutionBudgetExceeded, outbox_persistence_operation,
@@ -33,6 +34,7 @@ from services.outbox_execution_budget import (
 )
 from services.whatsapp_inbound_turns import (
     InboundTurnClaim, PAYLOAD_SCRUB_CONTRACT_VERSION, dead_whatsapp_outbound_attempt,
+    hold_meta_whatsapp_outbound_before_post, meta_whatsapp_outbound_enabled,
     uncertain_whatsapp_outbound_attempt, retry_whatsapp_outbound_attempt,
     derive_whatsapp_stream_key, _validate_session_identity_scope,
 )
@@ -54,6 +56,7 @@ class MetaReplyContent:
     kind: str
     body: str
     rows: tuple[Mapping[str, str], ...] = ()
+    media: MetaMediaReference | None = None
 
 
 @dataclass(frozen=True)
@@ -202,13 +205,17 @@ def _inbound_reference(value, now):
 
 
 def _reply_payload(reply: MetaReplyContent, recipient: str):
-    if not isinstance(reply, MetaReplyContent):
+    if not isinstance(reply, MetaReplyContent) or not isinstance(reply.kind, str):
         raise MetaRuntimeError("meta_reply_content_required")
-    if reply.kind == "text" and not reply.rows:
+    if reply.kind == "text" and not reply.rows and reply.media is None:
         return cloud.text_payload(recipient=recipient, body=reply.body)
-    if reply.kind == "interactive_list":
+    if reply.kind == "interactive_list" and reply.media is None:
         return cloud.list_payload(recipient=recipient, body=reply.body,
                                   rows=tuple(copy.deepcopy(reply.rows)))
+    if (reply.kind in {"image", "sticker"} and reply.body == "" and not reply.rows
+            and isinstance(reply.media, MetaMediaReference)
+            and reply.kind == ("sticker" if reply.media.role == "welcome_sticker" else "image")):
+        return cloud.media_payload(recipient=recipient, kind=reply.kind, media_id=reply.media.media_id)
     raise MetaRuntimeError("meta_outbound_media_unsupported")
 
 
@@ -228,10 +235,18 @@ def _reply_messages(reply, recipient):
     return messages
 
 
+def _durable_outbound_kind(message):
+    # The shared outbox stores a coarse media kind. Meta uses the exact
+    # image/sticker type from the validated provider envelope when sending.
+    kind = message["type"]
+    return "media" if kind in {"image", "sticker"} else kind
+
+
 def _validate_envelope(payload, now):
     required = {"contract_version", "identity", "credential_revision", "source",
                 "authorization_kind", "message", "sequence_no", "bundle_size"}
-    if (not isinstance(payload, dict) or set(payload) != required
+    media_keys = {"media_reference"} if isinstance(payload, dict) and isinstance(payload.get("message"), dict) and isinstance(payload["message"].get("type"), str) and payload["message"]["type"] in {"image", "sticker"} else set()
+    if (not isinstance(payload, dict) or set(payload) != required | media_keys
             or payload.get("contract_version") != CONTRACT
             or payload.get("authorization_kind") != "inbound_service_reply"
             or type(payload.get("credential_revision")) is not int
@@ -256,6 +271,15 @@ def _validate_envelope(payload, now):
             safe = cloud.list_payload(recipient=source["recipient"], body=item["body"]["text"],
                 rows=tuple(sections[0]["rows"]), button=item["action"]["button"],
                 section=sections[0]["title"])
+        elif message.get("type") in {"image", "sticker"}:
+            reference = parse_media_reference(payload["media_reference"], now=now)
+            if ((reference.tenant_id, reference.connection_id, reference.sender_id,
+                    reference.app_id, reference.waba_id, reference.phone_number_id)
+                    != (identity.tenant_id, identity.connection_id, identity.sender_id,
+                        identity.app_id, identity.waba_id, identity.phone_number_id)
+                    or message["type"] != ("sticker" if reference.role == "welcome_sticker" else "image")):
+                raise MetaRuntimeError("meta_media_scope_invalid")
+            safe = cloud.media_payload(recipient=source["recipient"], kind=message["type"], media_id=reference.media_id)
         else:
             raise MetaRuntimeError("meta_outbound_media_unsupported")
         if message != safe:
@@ -381,12 +405,17 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
     if binding.sender != identity:
         raise MetaRuntimeError("meta_turn_binding_mismatch")
     messages = _reply_messages(reply, source["recipient"])
+    contents = (reply,) if isinstance(reply, MetaReplyContent) else reply.messages
     envelopes = []
     for sequence_no, message in enumerate(messages, start=1):
         envelope = {"contract_version": CONTRACT, "identity": asdict(identity),
             "credential_revision": binding.credential.revision, "source": source,
             "authorization_kind": "inbound_service_reply", "message": message,
             "sequence_no": sequence_no, "bundle_size": len(messages)}
+        reference = contents[sequence_no - 1].media
+        if reference is not None:
+            reference = revalidate_media_reference(reference, identity, session=session, now=runtime.now())
+            envelope["media_reference"] = asdict(reference)
         _validate_envelope(envelope, runtime.now())
         envelopes.append(envelope)
     semantic = _canonical({"source_record": source_record, "messages": messages})
@@ -404,6 +433,7 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
             # Delivery/lease state may evolve; the original scope and payload
             # must remain identical for a duplicate calculated reply.
             if (row.sequence_no != index or row.payload_json != envelope
+                    or row.message_kind != _durable_outbound_kind(envelope["message"])
                     or row.payload_digest != _canonical(envelope)
                     or (row.provider_connection_id, row.provider_sender_id)
                     != (identity.connection_id, identity.sender_id)):
@@ -428,7 +458,7 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
             inbound_turn_id=turn.id, provider_connection_id=turn.provider_connection_id,
             provider_sender_id=turn.provider_sender_id, provider=turn.provider,
             stream_key=turn.stream_key, sequence_no=sequence_no,
-            message_kind=envelope["message"]["type"],
+            message_kind=_durable_outbound_kind(envelope["message"]),
             idempotency_key="meta-service-reply:" + turn.turn_id + ":" + str(sequence_no),
             payload_digest=_canonical(envelope), payload_json=copy.deepcopy(envelope),
             status=WhatsAppOutboundAttempt.STATUS_PENDING, provider_status="unknown",
@@ -439,6 +469,7 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
     turn.status = WhatsAppInboundTurn.STATUS_COMPLETED
     turn.completed_at = now
     turn.lease_token = turn.leased_until = None
+    turn.last_error_code = None
     turn.result_json = {"contract_version": CONTRACT, "meta_reply_digest": semantic,
                         "meta_source_digest": _canonical(source_record),
                         "meta_inbound_payload_digest": turn.payload_digest,
@@ -552,6 +583,10 @@ def _claim_envelope(claim, now):
                 or payload != claim.payload):
             raise MetaRuntimeError("meta_outbox_payload_changed")
         identity, source, message = _validate_envelope(payload, now)
+        if row.message_kind != _durable_outbound_kind(message) or claim.message_kind != row.message_kind:
+            raise MetaRuntimeError("meta_outbox_message_kind_mismatch")
+        if "media_reference" in payload:
+            revalidate_media_reference(payload["media_reference"], identity, session=active, now=now)
         _canary(identity.tenant_id)
         if row.sequence_no != payload["sequence_no"] or claim.sequence_no != row.sequence_no:
             raise MetaRuntimeError("meta_outbox_sequence_mismatch")
@@ -596,6 +631,20 @@ def dispatch_meta_outbound_claim(claim, *, on_post_started, runtime=None):
     """The worker must pass its own hook so outer DB failures retain uncertainty."""
     if not callable(on_post_started):
         raise MetaRuntimeError("meta_outbound_post_hook_required")
+
+    def hold_disabled():
+        try:
+            released = hold_meta_whatsapp_outbound_before_post(claim)
+            status = "held" if released else "lost_lease"
+        except Exception:
+            # A hold commit might have succeeded. Do not enter worker retry/dead
+            # recovery; the lease can become uncertain without any new send.
+            status = "hold_uncertain"
+        return MetaDispatchOutcome(status, claim.attempt_id, claim.tenant_id,
+                                   error_code="meta_outbound_disabled")
+
+    if not meta_whatsapp_outbound_enabled():
+        return hold_disabled()
     runtime = _runtime(runtime)
     started = False
     try:
@@ -608,6 +657,8 @@ def dispatch_meta_outbound_claim(claim, *, on_post_started, runtime=None):
         # Resolve remote authority before send_once captures its reference time.
         # Its loader then rechecks persisted local authority without backdating.
         observed = loader()
+        if not meta_whatsapp_outbound_enabled():
+            return hold_disabled()
         def binding_loader():
             with Session(bind=db.engine) as active:
                 return runtime.recheck_local_binding(observed, session=active)
@@ -617,7 +668,7 @@ def dispatch_meta_outbound_claim(claim, *, on_post_started, runtime=None):
             _claim_envelope(claim, runtime.now())
             from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
             allowed, _reason = WhatsAppEnterpriseRulesService(identity.tenant_id).reserve_outbound(
-                body=message.get("text", {}).get("body") or message["interactive"]["body"]["text"],
+                body=message.get("text", {}).get("body") or message.get("interactive", {}).get("body", {}).get("text", ""),
                 reservation_key=claim.attempt_id,
                 metadata={"recipient": source["recipient"], "provider_sender_id": identity.sender_id,
                           "within_24h_window": True, "is_template": False},
@@ -634,6 +685,8 @@ def dispatch_meta_outbound_claim(claim, *, on_post_started, runtime=None):
                 _claim_envelope(claim, runtime.now())
                 with Session(bind=db.engine) as active:
                     runtime.recheck_local_binding(observed, session=active)
+                if not meta_whatsapp_outbound_enabled():
+                    raise MetaRuntimeError("meta_outbound_disabled")
             except OutboxExecutionBudgetExceeded:
                 failure = MetaRuntimeError("meta_outbound_budget_exhausted", transient=True)
                 pre_post_failures.append(failure)
@@ -677,8 +730,12 @@ def dispatch_meta_outbound_claim(claim, *, on_post_started, runtime=None):
                                                         "meta_outbound_processing_uncertain")
             return MetaDispatchOutcome("send_uncertain" if saved else "lost_lease", claim.attempt_id, claim.tenant_id,
                                        error_code="meta_outbound_processing_uncertain")
-        transient = isinstance(exc, MetaRuntimeError) and exc.transient
+        if ((isinstance(exc, MetaRuntimeError) and exc.code == "meta_outbound_disabled")
+                or not meta_whatsapp_outbound_enabled()):
+            return hold_disabled()
+        transient = isinstance(exc, OutboxExecutionBudgetExceeded) or (isinstance(exc, MetaRuntimeError) and exc.transient)
         transition = retry_whatsapp_outbound_attempt if transient else dead_whatsapp_outbound_attempt
-        code = exc.code if isinstance(exc, MetaRuntimeError) else "meta_outbound_precondition_failed"
+        code = ("meta_outbound_budget_exhausted" if isinstance(exc, OutboxExecutionBudgetExceeded)
+                else exc.code if isinstance(exc, MetaRuntimeError) else "meta_outbound_precondition_failed")
         state = transition(claim.attempt_id, claim.lease_token, code)
         return MetaDispatchOutcome(state or "lost_lease", claim.attempt_id, claim.tenant_id, error_code=code)

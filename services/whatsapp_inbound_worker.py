@@ -1,4 +1,4 @@
-"""DB-backed WhatsApp inbound replay and ordered Twilio outbox dispatch.
+"""DB-backed WhatsApp inbound processing and ordered provider outbox dispatch.
 
 The public webhook validates the provider request and persists an allowlisted
 turn.  This module claims that durable row, re-resolves its tenant/provider
@@ -64,11 +64,13 @@ from services.whatsapp_inbound_turns import (
     InboundTurnClaim,
     OutboundAttemptClaim,
     accept_whatsapp_outbound_attempt,
+    arm_meta_whatsapp_inbound_execution,
     claim_next_whatsapp_inbound_turn,
     claim_next_whatsapp_outbound_attempt,
     complete_whatsapp_inbound_turn,
     dead_whatsapp_outbound_attempt,
     dead_whatsapp_inbound_turn,
+    fail_meta_whatsapp_inbound_execution,
     normalize_whatsapp_outbound_payload,
     renew_whatsapp_inbound_turn_lease,
     retry_whatsapp_outbound_attempt,
@@ -458,11 +460,131 @@ def _response_status_code(response: Any) -> int:
     return 200
 
 
+def _inbound_worker_providers(tenant_id: int) -> tuple[str, ...]:
+    if current_app.config.get("META_WHATSAPP_INBOUND_WORKER_ENABLED") is not True:
+        return ("twilio",)
+    from services.domain_effect_gate import (
+        DomainEffectOutboxConfigurationError, resolve_domain_effect_outbox_policy,
+    )
+
+    try:
+        policy = resolve_domain_effect_outbox_policy(current_app.config, tenant_id=tenant_id)
+    except DomainEffectOutboxConfigurationError:
+        return ("twilio",)
+    return ("twilio", "meta") if policy.enabled else ("twilio",)
+
+
+def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProcessingResult:
+    """Run the supported municipal text slice and stage its native reply."""
+    from models import ChatSessionContext, User
+    from services.meta_whatsapp_conversation_sink import MetaConversationSink
+    from services.meta_whatsapp_outbox import _canonical, _runtime
+    from services.meta_whatsapp_runtime import MetaRuntimeError
+    from services.municipio_responder import try_execute_municipal_meta_claim_draft
+    from services.whatsapp_conversation_contract import ConversationMode, ConversationTurn
+    from services.whatsapp_conversation_turn import execute_municipal_meta_text_followup
+    from services.whatsapp_conversation_uow import (
+        ConversationCommitUncertain,
+        ConversationUnitOfWork,
+        ConversationUnitOfWorkError,
+    )
+
+    def result(status, error_code=None, outbound_count=0):
+        return InboundProcessingResult(status, claim.turn_id, claim.tenant_id,
+                                       outbound_count=outbound_count, error_code=error_code)
+
+    _worker_tenant_ids(claim.tenant_id)
+    try:
+        if not arm_meta_whatsapp_inbound_execution(claim.turn_id, claim.lease_token):
+            return result("lost_lease", "meta_execution_fence_not_owned")
+    except Exception:
+        # The arming transaction may have committed without an acknowledgement.
+        return result("commit_uncertain", "meta_execution_fence_uncertain")
+
+    # A new app context owns a clean Flask-SQLAlchemy Session. The parent
+    # worker context may already hold its own read transaction.
+    app = current_app._get_current_object()
+    with app.app_context():
+        session = db.session()
+        rollback_confirmed = False
+        permanent = False
+        try:
+            runtime = _runtime()
+            transaction = session.begin()
+            connection = session.connection()
+            if (connection.dialect.name == "sqlite"
+                    and not connection.connection.driver_connection.in_transaction):
+                connection.exec_driver_sql("BEGIN")
+            with ConversationUnitOfWork(session=session, transaction=transaction,
+                                        claim=claim, clock=runtime.now) as unit:
+                if _canonical(claim.payload) != claim.payload_digest:
+                    unit.fail("meta_inbound_payload_digest_mismatch")
+                source = claim.payload["reference"]["source"]
+                kind = claim.message_kind
+                if kind not in {"text", "location"} or source["content_type"] != kind:
+                    unit.fail("meta_inbound_worker_kind_unsupported")
+                tenant = session.get(TenantProfile, claim.tenant_id)
+                context = session.get(ChatSessionContext, claim.chat_session_id)
+                owner = session.get(User, context.user_id)
+                if owner is None:
+                    unit.fail("meta_inbound_owner_missing")
+                incoming = claim.payload["input"]
+                location = None
+                if kind == "location":
+                    lat, lon = incoming["location"]
+                    location = {"latitude": lat, "longitude": lon}
+                turn = ConversationTurn(
+                    owner_user=owner, tenant_profile=tenant, tenant_id=claim.tenant_id,
+                    end_user=None, session_context=context, chat_session_id=claim.chat_session_id,
+                    contact_identity=unit.contact_identity, message_body=incoming["text"] or "",
+                    location=location, action_id=None,
+                    source_event_id=claim.provider_message_sid, durable_claim=claim,
+                    mode=ConversationMode(False, False), unit_of_work=unit,
+                )
+                sink = MetaConversationSink(unit)
+                if not try_execute_municipal_meta_claim_draft(turn, sink):
+                    if kind != "text":
+                        unit.fail("meta_inbound_worker_kind_unsupported")
+                    execute_municipal_meta_text_followup(turn, sink)
+                committed = unit.commit_reply(sink.bundle(), runtime=runtime)
+            return result("completed", outbound_count=len(committed.receipt.outbound_attempt_ids))
+        except ConversationCommitUncertain:
+            error_code = "meta_commit_uncertain"
+        except Exception as exc:
+            error_code = type(exc).__name__
+            permanent = isinstance(exc, ConversationUnitOfWorkError)
+            if permanent:
+                error_code = str(exc)
+            elif isinstance(exc, MetaRuntimeError):
+                permanent, error_code = not exc.transient, exc.code
+            try:
+                session.rollback()
+                rollback_confirmed = not session.in_transaction()
+            except Exception:
+                error_code = "meta_rollback_uncertain"
+
+    try:
+        state = fail_meta_whatsapp_inbound_execution(
+            claim.turn_id, claim.lease_token, error_code,
+            rollback_confirmed=rollback_confirmed, permanent=permanent,
+        )
+    except Exception:
+        return result("commit_uncertain", "meta_execution_disposition_uncertain")
+    if not rollback_confirmed:
+        return result("commit_uncertain", error_code)
+    return result(state or "lost_lease", error_code)
+
+
 def process_whatsapp_inbound_claim(
     claim: InboundTurnClaim,
 ) -> InboundProcessingResult:
     """Replay one claimed turn locally and stage all outbound messages."""
 
+    if claim.provider not in _inbound_worker_providers(claim.tenant_id):
+        return InboundProcessingResult(
+            status="fenced", turn_id=claim.turn_id, tenant_id=claim.tenant_id,
+            error_code="inbound_provider_not_enabled",
+        )
     lease_seconds = int(
         current_app.config.get("WHATSAPP_INBOUND_LEASE_SECONDS", 180) or 180
     )
@@ -478,6 +600,9 @@ def process_whatsapp_inbound_claim(
             tenant_id=claim.tenant_id,
             error_code="inbound_lease_not_owned",
         )
+
+    if claim.provider == "meta":
+        return _process_meta_whatsapp_inbound_claim(claim)
 
     collector = WhatsAppOutboundCollector(turn_id=claim.turn_id)
     app = current_app._get_current_object()
@@ -692,6 +817,7 @@ def process_whatsapp_inbound_stream(
             claim = claim_next_whatsapp_inbound_turn(
                 tenant_id=current_tenant_id,
                 stream_key=stream_key,
+                providers=_inbound_worker_providers(current_tenant_id),
                 lease_seconds=lease_seconds,
             )
             if claim is None:

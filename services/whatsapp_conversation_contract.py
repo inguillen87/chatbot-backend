@@ -1,8 +1,11 @@
 """Server-only post-auth contracts; callers retain transport and authority."""
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from services.whatsapp_conversation_uow import ConversationUnitOfWork
 
 
 class ConversationOutputUnsupported(RuntimeError):
@@ -43,6 +46,8 @@ class ConversationTurn:
     interpreted_media: Mapping[str, Any] | None = None
     skip_media_analysis: bool = False
     validated_flow_submission: Mapping[str, Any] | None = None
+    # Internal transaction ownership only. Never put this object in JSON/LLM kwargs.
+    unit_of_work: ConversationUnitOfWork | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)

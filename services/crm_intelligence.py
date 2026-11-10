@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
+from functools import wraps
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from flask import current_app, has_app_context
 from sqlalchemy import or_
+from sqlalchemy.orm import object_session
 from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
@@ -208,6 +211,110 @@ def merge_summary(previous: Optional[str], latest: str) -> str:
     return clean_text(f"{latest_clean} Historial previo: {previous_clean}", MAX_SUMMARY_CHARS)
 
 
+
+
+def _uow_phone_matches(value, expected):
+    """Compare to the signed recipient; never infer a country or repair history."""
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    if value.lower().startswith("whatsapp:"):
+        value = value.split(":", 1)[1].strip()
+    value = re.sub(r"[()\s.\-]", "", value)
+    return bool(re.fullmatch(r"\+?[1-9][0-9]{6,14}", value)
+                and value.removeprefix("+") == expected.removeprefix("+"))
+
+
+def _uow_require_phones(unit, expected, *values):
+    present = [value for value in values
+               if value is not None and not (isinstance(value, str) and not value.strip())]
+    if not present or not all(_uow_phone_matches(value, expected) for value in present):
+        unit.fail("conversation_uow_crm_recipient_mismatch")
+
+
+def _uow_recipient_contact(unit, tenant_id, expected):
+    # Read persisted columns under the wrapper's no_autoflush. Do not refresh
+    # or overwrite a caller's ORM changes, scan/rewrite legacy phone columns,
+    # or select by a user-supplied email/external ID.
+    variants = (expected, expected.removeprefix("+"))
+    rows = (Contact.query.with_entities(Contact.id, Contact.phone, Contact.whatsapp_id)
+        .filter(Contact.tenant_id == tenant_id,
+                or_(Contact.phone.in_(variants), Contact.whatsapp_id.in_(variants)))
+        .order_by(Contact.id).limit(2).all())
+    if len(rows) > 1:
+        unit.fail("conversation_uow_crm_recipient_ambiguous")
+    if not rows:
+        return None
+    row = rows[0]
+    _uow_require_phones(unit, expected, row.phone, row.whatsapp_id)
+    contact = db.session.get(Contact, row.id)
+    if contact is None or contact.tenant_id != tenant_id:
+        unit.fail("conversation_uow_crm_contact_scope_mismatch")
+    _uow_require_phones(unit, expected, contact.phone, contact.whatsapp_id)
+    return contact
+
+
+def _uow_require_legacy_user(unit, tenant, user, expected):
+    from services.contact_service import resolve_contact, sanitize_profile_name
+    actual = db.session()
+    if (user in actual.new or user in actual.dirty or user in actual.deleted
+            or type(user.id) is not int or not _uow_phone_matches(user.telefono, expected)):
+        unit.fail("conversation_uow_crm_legacy_user_scope_unproven")
+    # The fresh shared resolver, not a marker supplied by the caller, decides
+    # whether this User is the unique current contact. Contact precedence,
+    # ambiguous Users or a revoked profile require legacy_user=None.
+    fresh = resolve_contact(expected, None, tenant=tenant)
+    if (fresh.get("is_known_contact") is not True
+            or (fresh.get("_scope") or {}).get("source") != "User"
+            or type(fresh.get("user_id")) is not int or fresh["user_id"] != user.id
+            or sanitize_profile_name(user.name) != fresh.get("nombre")
+            or user.email != fresh.get("email")):
+        unit.fail("conversation_uow_crm_legacy_user_scope_unproven")
+
+
+def _conversation_crm_writer(method):
+    """Scope new explicit UoW calls without changing the legacy call graph."""
+    @wraps(method)
+    def wrapped(*args, **kwargs):
+        unit = kwargs.get("unit_of_work")
+        if unit is None:
+            return method(*args, **kwargs)
+        from services.whatsapp_conversation_uow import (
+            ConversationUnitOfWork, ConversationUnitOfWorkError,
+        )
+        if not isinstance(unit, ConversationUnitOfWork):
+            raise ConversationUnitOfWorkError("conversation_uow_writer_capability_invalid")
+        try:
+            with db.session.no_autoflush:
+                actual = db.session()
+                tenant = kwargs.get("tenant") if "tenant" in kwargs else args[0]
+                if not isinstance(tenant, TenantProfile) or object_session(tenant) is not actual:
+                    unit.fail("conversation_uow_crm_tenant_session_mismatch")
+                unit.require_writer_scope(session=actual, tenant_id=tenant.id,
+                    turn_id=kwargs.get("conversation_turn_id"))
+                contact = kwargs.get("contact")
+                if contact is not None and (not isinstance(contact, Contact)
+                        or object_session(contact) is not actual or contact.tenant_id != tenant.id):
+                    unit.fail("conversation_uow_crm_contact_scope_mismatch")
+                legacy_user = kwargs.get("legacy_user")
+                if legacy_user is not None and (not isinstance(legacy_user, User)
+                        or object_session(legacy_user) is not actual
+                        or legacy_user.tenant_id != tenant.id):
+                    unit.fail("conversation_uow_crm_legacy_user_scope_unproven")
+                expected = unit.contact_identity
+                if legacy_user is not None:
+                    _uow_require_legacy_user(unit, tenant, legacy_user, expected)
+                if contact is not None:
+                    current = _uow_recipient_contact(unit, tenant.id, expected)
+                    if current is None or current.id != contact.id:
+                        unit.fail("conversation_uow_crm_contact_recipient_mismatch")
+                return method(*args, **kwargs)
+        except Exception as exc:
+            unit.fail("conversation_uow_crm_writer_failed", cause=exc)
+    return wrapped
+
+
+@_conversation_crm_writer
 def resolve_or_create_contact(
     tenant: TenantProfile,
     *,
@@ -219,6 +326,8 @@ def resolve_or_create_contact(
     legacy_user: Optional[User] = None,
     contact_type: str = "lead",
     source: Optional[str] = None,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> Contact:
     phone_norm = normalize_phone(phone)
     email_norm = normalize_email(str(email or "")) if email and not is_placeholder_email(str(email)) else None
@@ -236,7 +345,27 @@ def resolve_or_create_contact(
         filters.append(Contact.external_id == external_norm)
 
     contact = None
-    if filters:
+    if unit_of_work is not None:
+        expected = unit_of_work.contact_identity
+        _uow_require_phones(unit_of_work, expected, phone, whatsapp_id)
+        contact = _uow_recipient_contact(unit_of_work, tenant.id, expected)
+        # Aliases may be values declared on this turn, never selectors for a
+        # different recipient. Shared/conflicting aliases fail closed in UoW.
+        alias_filters = []
+        if email_norm:
+            alias_filters.append(Contact.email == email_norm)
+        if external_norm:
+            alias_filters.append(Contact.external_id == external_norm)
+        if alias_filters:
+            alias_query = Contact.query.with_entities(Contact.id).filter(
+                Contact.tenant_id == tenant.id, or_(*alias_filters))
+            if contact is not None:
+                alias_query = alias_query.filter(Contact.id != contact.id)
+            if alias_query.first() is not None:
+                unit_of_work.fail("conversation_uow_crm_alias_recipient_conflict")
+        # Canonicalize only this new server-bound input, not stored history.
+        phone_norm = whatsapp_norm = expected
+    elif filters:
         contact = Contact.query.filter(Contact.tenant_id == tenant.id, or_(*filters)).first()
 
     display_name = display_contact_name(
@@ -268,7 +397,10 @@ def resolve_or_create_contact(
             last_interaction_at=utc_now(),
         )
         db.session.add(contact)
-        db.session.flush()
+        if unit_of_work is not None:
+            unit_of_work.flush()
+        else:
+            db.session.flush()
         return contact
 
     current_prefs = contact.preferences if isinstance(contact.preferences, dict) else {}
@@ -286,9 +418,12 @@ def resolve_or_create_contact(
     contact.preferences = current_prefs
     contact.last_interaction_at = utc_now()
     db.session.add(contact)
+    if unit_of_work is not None:
+        unit_of_work.flush()
     return contact
 
 
+@_conversation_crm_writer
 def record_contact_interaction(
     *,
     tenant: TenantProfile,
@@ -301,6 +436,8 @@ def record_contact_interaction(
     content_type: str = "text",
     media_url: Optional[str] = None,
     emit: bool = False,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> dict[str, Any]:
     metadata = dict(metadata or {})
     text = clean_text(message_body, 1200)
@@ -377,11 +514,19 @@ def record_contact_interaction(
             metadata_payload=event_metadata,
         )
     )
-    db.session.flush()
+    if unit_of_work is not None:
+        unit_of_work.flush()
+    else:
+        db.session.flush()
 
     payload = serialize_crm_contact(contact, snapshot=snapshot)
     if emit:
-        emit_crm_contact_update(tenant, payload)
+        if unit_of_work is not None:
+            snapshot_payload = deepcopy(payload)
+            unit_of_work.defer_after_commit("crm_contact_update",
+                lambda: emit_crm_contact_update(tenant, snapshot_payload))
+        else:
+            emit_crm_contact_update(tenant, payload)
     return payload
 
 

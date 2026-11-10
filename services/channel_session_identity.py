@@ -18,8 +18,8 @@ import uuid
 from typing import Any, Mapping, Optional
 
 from sqlalchemy import and_, or_, select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import Session, SessionTransaction
 
 from database import db
 from models import (
@@ -576,10 +576,163 @@ def verify_channel_session_identity_binding(
         )
 
 
+@dataclass(frozen=True)
+class ChannelSessionIdentityStaging:
+    """Uncommitted admission result, not provider/actor authorization."""
+
+    resolution: ChannelSessionIdentityResolution
+    committed: bool = False
+
+
+def _require_meta_admission_transaction(session, transaction):
+    if not isinstance(session, Session) or session is not db.session():
+        raise ChannelSessionIdentityError("session_identity_admission_session_mismatch")
+    if (not isinstance(transaction, SessionTransaction) or transaction.nested
+            or transaction is not session.get_transaction() or not transaction.is_active
+            or session.in_nested_transaction()):
+        raise ChannelSessionIdentityError("session_identity_admission_transaction_required")
+    if session.new or session.dirty or session.deleted:
+        raise ChannelSessionIdentityError("session_identity_admission_pending_work")
+    connection = session.connection()
+    if connection.dialect.name == "sqlite":
+        if connection.connection.driver_connection.in_transaction is not True:
+            raise ChannelSessionIdentityError("session_identity_admission_physical_transaction_required")
+
+
+def stage_meta_channel_session_identity(
+    session: Session,
+    transaction: SessionTransaction,
+    *,
+    config: Mapping[str, Any],
+    tenant_id: int,
+    owner_user_id: int,
+    provider_identity: Any,
+    identity_version: Any = None,
+    explicit_legacy_chat_session_id: Any = None,
+    now: Optional[datetime] = None,
+) -> ChannelSessionIdentityStaging:
+    """Stage identity BEFORE a Meta batch's pending inbox in the caller TX.
+
+    The trusted admission caller supplies its already validated event/binding
+    partition. This helper does not authenticate JSON, verify Meta HMAC, check
+    token authority, create inbox/claims, or repair identity during execution.
+    It neither commits, rolls back, opens a Session nor retries a failed insert.
+    Any error requires the batch owner to roll back the WHOLE outer transaction.
+    The caller explicitly flushes prior batch rows before calling again; unrelated
+    unflushed work is never implicitly flushed by this API. Admission and later
+    claim execution are separate transactions by design.
+    """
+    _require_meta_admission_transaction(session, transaction)
+    mode = channel_session_identity_mode(config)
+    if mode == MODE_LEGACY:
+        raise ChannelSessionIdentityError("session_identity_mode_legacy")
+    if type(tenant_id) is not int or tenant_id <= 0:
+        raise ChannelSessionIdentityError("session_identity_tenant_invalid")
+    if type(owner_user_id) is not int or owner_user_id <= 0:
+        raise ChannelSessionIdentityError("session_identity_owner_invalid")
+    version = _identity_version(identity_version or config.get("CHANNEL_SESSION_IDENTITY_VERSION_V1"))
+    normalized_identity = _normalize_provider_identity(provider_identity)
+    explicit_id = str(explicit_legacy_chat_session_id or "").strip() or None
+    instant = _utc_now() if now is None else now
+    if not isinstance(instant, datetime) or instant.tzinfo is None or instant.utcoffset() is None:
+        raise ChannelSessionIdentityError("session_identity_admission_clock_invalid")
+    instant = instant.astimezone(timezone.utc)
+    secret = resolve_channel_session_identity_secret(config, mode=mode)
+    digest = derive_channel_session_identity_hmac(secret=secret, tenant_id=tenant_id,
+        provider="meta", identity_version=version, provider_identity=normalized_identity)
+    try:
+        with session.no_autoflush:
+            profile = session.execute(select(TenantProfile.id, TenantProfile.slug,
+                TenantProfile.municipio_id, TenantProfile.pyme_id, TenantProfile.is_active)
+                .where(TenantProfile.id == tenant_id)).one_or_none()
+            profile_object = session.get(TenantProfile, tenant_id)
+            observed = None if profile_object is None else tuple(getattr(profile_object, key)
+                for key in ("id", "slug", "municipio_id", "pyme_id", "is_active"))
+            if (profile is None or profile.is_active is not True or observed != tuple(profile)
+                    or owner_user_id not in {profile.municipio_id, profile.pyme_id}):
+                raise ChannelSessionIdentityConflict("session_identity_admission_owner_scope_mismatch")
+            binding = session.scalar(_binding_statement(tenant_id=tenant_id, channel="whatsapp",
+                provider="meta", identity_version=version, identity_hmac=digest)
+                .with_for_update().execution_options(populate_existing=True))
+            outcome, conflict_code, preserved = "existing", None, True
+            if binding is not None:
+                if (binding.contract_version != CONTRACT_VERSION or type(binding.generation) is not int
+                        or binding.generation < 1):
+                    raise ChannelSessionIdentityConflict("session_identity_admission_binding_invalid")
+                context = session.scalar(select(ChatSessionContext).where(
+                    ChatSessionContext.chat_session_id == binding.chat_session_id)
+                    .execution_options(populate_existing=True))
+                context_valid = (context is not None and context.tenant_id == tenant_id
+                    and context.user_id == owner_user_id
+                    and context.anon_id in (None, normalized_identity))
+                if binding.status != ChannelSessionIdentityBinding.STATUS_ACTIVE or not context_valid:
+                    previous_digest = _session_digest(binding.chat_session_id, secret=secret)
+                    conflict_code = "binding_context_scope_conflict"
+                    outcome, preserved = "isolated", False
+                else:
+                    previous_digest = None
+            else:
+                candidates, conflict_code = _legacy_candidates(session, tenant_id=tenant_id,
+                    owner_user_id=owner_user_id, normalized_identity=normalized_identity,
+                    explicit_chat_session_id=explicit_id)
+                previous_digest = None
+                if len(candidates) == 1 and not conflict_code:
+                    context = session.scalar(select(ChatSessionContext).where(
+                        ChatSessionContext.chat_session_id == candidates[0].chat_session_id)
+                        .execution_options(populate_existing=True))
+                    if context is None or not _context_is_owned(context, tenant_id=tenant_id,
+                            owner_user_id=owner_user_id, owner_is_authoritative=True,
+                            normalized_identity=normalized_identity):
+                        raise ChannelSessionIdentityConflict("session_identity_admission_legacy_scope_changed")
+                    outcome, preserved = "adopted", True
+                else:
+                    if candidates:
+                        previous_digest = hmac.new(secret, b"chatboc:quarantined-session-set:v1\0"
+                            + "\0".join(sorted(str(item.chat_session_id) for item in candidates)).encode("utf-8"),
+                            hashlib.sha256).hexdigest()
+                    outcome, preserved = ("isolated" if conflict_code else "created"), False
+        if outcome in {"created", "isolated"}:
+            context = _new_context(session, tenant_id=tenant_id, owner_user_id=owner_user_id,
+                channel="whatsapp", provider="meta", identity_version=version,
+                continuity_status=(ChannelSessionIdentityBinding.CONTINUITY_ISOLATED
+                    if conflict_code else ChannelSessionIdentityBinding.CONTINUITY_NEW),
+                conflict_code=conflict_code)
+        elif outcome == "adopted" and context.tenant_id is None:
+            context.tenant_id = tenant_id
+        continuity = {"created": "new", "adopted": "adopted", "isolated": "isolated"}
+        if binding is None:
+            binding = ChannelSessionIdentityBinding(tenant_id=tenant_id, channel="whatsapp",
+                provider="meta", identity_version=version, identity_hmac=digest,
+                chat_session_id=context.chat_session_id, status="active",
+                continuity_status=continuity[outcome], generation=1, last_conflict_code=conflict_code,
+                previous_session_digest=previous_digest, quarantined_at=instant if conflict_code else None,
+                last_verified_at=instant, contract_version=CONTRACT_VERSION, created_at=instant, updated_at=instant)
+            session.add(binding)
+        else:
+            if outcome == "isolated":
+                binding.chat_session_id = context.chat_session_id
+                binding.status, binding.continuity_status = "active", "isolated"
+                binding.generation += 1
+                binding.last_conflict_code, binding.previous_session_digest = conflict_code, previous_digest
+                binding.quarantined_at = instant
+            binding.last_verified_at, binding.updated_at = instant, instant
+        session.flush()
+    except IntegrityError:
+        # The UNIQUE fence remains the arbiter. No savepoint retry or hidden
+        # rollback may preserve a partially admitted batch after this failure.
+        raise ChannelSessionIdentityConflict("session_identity_admission_constraint_conflict") from None
+    except SQLAlchemyError:
+        raise ChannelSessionIdentityError("session_identity_admission_storage_failed") from None
+    _require_meta_admission_transaction(session, transaction)
+    return ChannelSessionIdentityStaging(_resolution(binding, outcome=outcome,
+        continuity_preserved=preserved, conflict_code=conflict_code), committed=False)
+
+
 __all__ = [
     "ChannelSessionIdentityConflict",
     "ChannelSessionIdentityError",
     "ChannelSessionIdentityResolution",
+    "ChannelSessionIdentityStaging",
     "MODE_ENFORCE",
     "MODE_LEGACY",
     "MODE_SHADOW",
@@ -588,5 +741,6 @@ __all__ = [
     "derive_channel_session_identity_hmac",
     "resolve_channel_session_identity",
     "resolve_channel_session_identity_secret",
+    "stage_meta_channel_session_identity",
     "verify_channel_session_identity_binding",
 ]

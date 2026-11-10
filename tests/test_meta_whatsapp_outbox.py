@@ -55,6 +55,7 @@ def environment(monkeypatch):
         CHANNEL_SESSION_IDENTITY_MODE="enforce",
         CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1=secrets.token_hex(32),
         META_WHATSAPP_GRAPH_VERSION="v25.0",
+        META_WHATSAPP_OUTBOUND_ENABLED=True,
         **{APP_SECRETS_KEY: {APP: app_secret}},
     )
     db.init_app(app)

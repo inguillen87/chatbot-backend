@@ -11,6 +11,7 @@ from services.contact_service import read_contact_projection, store_contact_proj
 from copy import deepcopy
 import re
 import time
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from flask import current_app
 from sqlalchemy import or_
@@ -26,7 +27,7 @@ from services.tenant_ticket_scope import (TicketTenantScopeError,
     resolve_unique_tenant_for_owner, scoped_municipio_ticket_query, tenant_owner_ids)
 from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
-from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
+from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact, emit_crm_contact_update
 from services.whatsapp_inbound_content import is_audio_media_type
 from services.whatsapp_conversation_contract import (ConversationTurn, ConversationSink,
     ConversationSelection, ConversationPreparation, ConversationFinish)
@@ -378,6 +379,8 @@ def _handle_recent_municipal_ticket_followup(
     sink: ConversationSink,
     durable_claim: Any = None,
     now_ts: Optional[float] = None,
+    unit_of_work=None,
+    authorized_ticket: Optional[MunicipioTicket] = None,
 ) -> Optional[Tuple[str, int]]:
     """Handle one safe text turn against the newly-created open ticket.
 
@@ -407,7 +410,7 @@ def _handle_recent_municipal_ticket_followup(
             _clear_municipal_ticket_followup(context_data)
             safe_flag_modified(session_context, "context_data")
             db.session.add(session_context)
-            db.session.commit()
+            _persist_conversation_changes(unit_of_work)
         return None
 
     decision = classify_reclamo_confirmation_turn(message_body, action=action)
@@ -450,14 +453,14 @@ def _handle_recent_municipal_ticket_followup(
         context_data.pop("pending_sensitive_action", None)
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
         return None
 
     ticket_tenant_id = getattr(tenant_profile, "id", None) or session_context.tenant_id
     municipio_owner_id = (
         getattr(client_user, "municipio_id", None) or getattr(client_user, "id", None)
     )
-    ticket = _find_municipio_ticket_for_reference(
+    ticket = authorized_ticket if authorized_ticket is not None else _find_municipio_ticket_for_reference(
         followup["ticket_nro"],
         tenant_id=ticket_tenant_id,
         municipio_id=municipio_owner_id,
@@ -468,7 +471,7 @@ def _handle_recent_municipal_ticket_followup(
         context_data.pop("last_options_sent", None)
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
         return None
 
     context_data.pop("last_options_sent", None)
@@ -477,14 +480,14 @@ def _handle_recent_municipal_ticket_followup(
 
     if decision.intent is ReclamoTurnIntent.FOLLOW_UP_QUESTION:
         db.session.add(session_context)
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
         if sink.enabled:
             sink.emit_text(_build_municipal_followup_tracking_text(followup, ticket))
         return "OK", 200
 
     if decision.intent is ReclamoTurnIntent.ADD_PHOTO:
         db.session.add(session_context)
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
         if sink.enabled:
             sink.emit_text(f"Enviá la foto o el audio y lo voy a sumar al reclamo "
                     f"*{followup['ticket_nro']}*.")
@@ -492,7 +495,7 @@ def _handle_recent_municipal_ticket_followup(
 
     if decision.intent is ReclamoTurnIntent.EDIT and not decision.corrections:
         db.session.add(session_context)
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
         if sink.enabled:
             sink.emit_text("Decime qué dato querés corregir. Lo voy a registrar como "
                     f"actualización del reclamo *{followup['ticket_nro']}*.")
@@ -504,7 +507,7 @@ def _handle_recent_municipal_ticket_followup(
 
     if decision.reason == "isolated_emoji" or decision.intent is ReclamoTurnIntent.CONFIRM:
         db.session.add(session_context)
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
         if sink.enabled:
             sink.emit_text(f"Recibí tu mensaje. El reclamo *{followup['ticket_nro']}* "
                     "sigue abierto.")
@@ -527,12 +530,13 @@ def _handle_recent_municipal_ticket_followup(
             durable_claim,
             ticket_tenant_id,
             f"ticket_followup_comment:{ticket.id}",
+            unit_of_work=unit_of_work,
         ),
     )
     if comment is None:
         raise RuntimeError("municipal_ticket_followup_comment_not_persisted")
     db.session.add(session_context)
-    db.session.commit()
+    _persist_conversation_changes(unit_of_work)
     if sink.enabled:
         sink.emit_text(f"✅ Sumé tu mensaje al reclamo *{followup['ticket_nro']}*.")
     return "OK", 200
@@ -542,15 +546,24 @@ def _durable_whatsapp_ticket_effect_kwargs(
     durable_claim: Any,
     tenant_id: Any,
     effect: str,
+    *,
+    unit_of_work=None,
 ) -> dict[str, Any]:
     if durable_claim is None:
+        if unit_of_work is not None:
+            unit_of_work.fail("conversation_writer_claim_required")
         return {}
     durable_turn_id = getattr(durable_claim, "turn_id", None)
     key = build_whatsapp_ticket_effect_key(tenant_id, durable_turn_id, effect)
-    return {
+    result = {
         "idempotency_key": key,
         "idempotency_tenant_id": int(tenant_id),
     }
+    if unit_of_work is not None:
+        result.update(_conversation_writer_kwargs(unit_of_work, durable_claim))
+        unit_of_work.require_writer_scope(session=db.session(), tenant_id=int(tenant_id),
+            turn_id=durable_turn_id, effect_key=key)
+    return result
 
 
 def _tenant_profile_for_user(user: Optional[User]) -> Optional[TenantProfile]:
@@ -695,7 +708,102 @@ def _selected_option_text_for_bot(selected_option: Optional[dict[str, Any]]) -> 
     return cleaned or None
 
 
+def _conversation_unit(turn):
+    unit = turn.unit_of_work
+    if unit is not None:
+        from services.whatsapp_conversation_uow import ConversationUnitOfWork, ConversationUnitOfWorkError
+        if not isinstance(unit, ConversationUnitOfWork):
+            raise ConversationUnitOfWorkError("conversation_uow_server_unit_required")
+        unit.require_turn(turn)
+    return unit
+
+
+def execute_municipal_meta_text_followup(turn: ConversationTurn, sink: ConversationSink) -> None:
+    """Add a comment only to the current Meta participant's open municipal claim."""
+    from services.whatsapp_conversation_uow import ConversationUnitOfWorkError
+
+    unit = _conversation_unit(turn)
+    if unit is None or unit.claim.message_kind != "text":
+        raise ConversationUnitOfWorkError("meta_municipal_followup_unit_required")
+    tenant = turn.tenant_profile
+    if (tenant.tipo != "municipio" or tenant.municipio_id != turn.owner_user.id
+            or turn.owner_user.tipo_chat != "municipio"):
+        unit.fail("meta_municipal_followup_scope_invalid")
+    # This slice does not offer attachment, editing or PIN/tracking responses.
+    intent = classify_reclamo_confirmation_turn(turn.message_body).intent
+    if intent not in {ReclamoTurnIntent.UNKNOWN, ReclamoTurnIntent.CORRECTION}:
+        unit.fail("meta_municipal_followup_intent_unsupported")
+    context_data = turn.session_context.context_data
+    followup = context_data.get("active_ticket_followup") if isinstance(context_data, dict) else None
+    now = unit.clock()
+    if not isinstance(followup, dict):
+        unit.fail("meta_municipal_followup_missing")
+    until = followup.get("until")
+    ticket_id = followup.get("ticket_id")
+    if (type(until) not in (int, float) or not now < until <= now + CLAIM_FOLLOWUP_WINDOW_SECONDS
+            or type(ticket_id) is not int or ticket_id <= 0):
+        unit.fail("meta_municipal_followup_expired_or_invalid")
+    ticket = (
+        scoped_municipio_ticket_query(tenant)
+        .filter(MunicipioTicket.id == ticket_id)
+        .with_for_update()
+        .populate_existing()
+        .one_or_none()
+    )
+    now = unit.clock()
+    if now >= until:
+        unit.fail("meta_municipal_followup_expired_or_invalid")
+    if (not _municipal_ticket_is_open(ticket) or ticket.tenant_id != tenant.id
+            or str(ticket.nro_ticket).strip() not in _normalize_ticket_reference(followup.get("ticket_nro"))
+            or current_contact_phone(ticket.telefono_vecino, ticket.anon_id) != turn.contact_identity):
+        unit.fail("meta_municipal_followup_ticket_scope_invalid")
+    result = _handle_recent_municipal_ticket_followup(
+        session_context=turn.session_context,
+        client_user=turn.owner_user,
+        tenant_profile=tenant,
+        end_user=None,
+        from_number_cleaned=turn.contact_identity,
+        message_body=turn.message_body,
+        action=None,
+        sink=sink,
+        durable_claim=unit.claim,
+        now_ts=now,
+        unit_of_work=unit,
+        authorized_ticket=ticket,
+    )
+    if result != ("OK", 200):
+        unit.fail("meta_municipal_followup_not_handled")
+
+
+def _conversation_writer_kwargs(unit, durable_claim):
+    """Private server arguments, never part of context/metadata/LLM payloads."""
+    if unit is None:
+        return {}
+    from services.whatsapp_conversation_uow import ConversationUnitOfWork, ConversationUnitOfWorkError
+    if not isinstance(unit, ConversationUnitOfWork):
+        raise ConversationUnitOfWorkError("conversation_uow_server_unit_required")
+    if durable_claim is None or durable_claim != unit.claim:
+        unit.fail("conversation_writer_claim_required")
+    turn_id = getattr(durable_claim, "turn_id", None)
+    unit.require_writer_scope(session=db.session(), tenant_id=unit.claim.tenant_id,
+        turn_id=turn_id)
+    return {"unit_of_work": unit, "conversation_turn_id": turn_id}
+
+
+def _persist_conversation_changes(unit):
+    if unit is None:
+        db.session.commit()
+    else:
+        unit.flush()
+
+
+def _emit_live_chat_event(payload):
+    from socket_service import emit_new_chat_message
+    emit_new_chat_message(payload)
+
+
 def prepare_conversation_turn(turn: ConversationTurn, sink: ConversationSink, *, on_failure, log, safe_reference):
+    unit_of_work = _conversation_unit(turn)
     session_context_db_entry = turn.session_context
     client_user, tenant_profile, end_user = turn.owner_user, turn.tenant_profile, turn.end_user
     from_number_cleaned, chat_session_id_internal = turn.contact_identity, turn.chat_session_id
@@ -720,8 +828,11 @@ def prepare_conversation_turn(turn: ConversationTurn, sink: ConversationSink, *,
             action=turn.action_id,
             sink=sink,
             durable_claim=durable_claim,
+            unit_of_work=unit_of_work,
         )
     except Exception as followup_exc:
+        if unit_of_work is not None:
+            unit_of_work.fail("conversation_followup_failed", followup_exc)
         db.session.rollback()
         log(
             "error",
@@ -758,11 +869,11 @@ def prepare_conversation_turn(turn: ConversationTurn, sink: ConversationSink, *,
             selected_action_id = pending_sensitive_action.get("action_id") or selected_action_id
             session_context_db_entry.context_data.pop("pending_sensitive_action", None)
             safe_flag_modified(session_context_db_entry, "context_data")
-            db.session.commit()
+            _persist_conversation_changes(unit_of_work)
         elif normalized_message in SENSITIVE_ACTION_CONFIRM_REJECT:
             session_context_db_entry.context_data.pop("pending_sensitive_action", None)
             safe_flag_modified(session_context_db_entry, "context_data")
-            db.session.commit()
+            _persist_conversation_changes(unit_of_work)
             selected_action_id = "menu_principal"
 
     if selected_option and (selected_action_id or "").strip().lower() in SENSITIVE_MENU_ACTIONS:
@@ -775,7 +886,7 @@ def prepare_conversation_turn(turn: ConversationTurn, sink: ConversationSink, *,
                 "selected_option": selected_option,
             }
             safe_flag_modified(session_context_db_entry, "context_data")
-            db.session.commit()
+            _persist_conversation_changes(unit_of_work)
 
             confirmation_text = _build_sensitive_action_confirmation_text(selected_option)
             if sink.enabled:
@@ -889,12 +1000,15 @@ def prepare_conversation_turn(turn: ConversationTurn, sink: ConversationSink, *,
                         or getattr(tenant_profile, "id", None)
                         or session_context_db_entry.tenant_id,
                         f"live_chat_comment:{tipo_ticket}:{live_ticket.id}",
+                        unit_of_work=unit_of_work,
                     ),
                 )
 
                 try:
-                    db.session.commit()
+                    _persist_conversation_changes(unit_of_work)
                 except Exception as exc:
+                    if unit_of_work is not None:
+                        unit_of_work.fail("conversation_live_chat_write_failed", exc)
                     log(
                         "error",
                         "[WHATSAPP_WEBHOOK] Error guardando mensaje de chat en vivo error_type=%s",
@@ -903,25 +1017,32 @@ def prepare_conversation_turn(turn: ConversationTurn, sink: ConversationSink, *,
                     db.session.rollback()
                 else:
                     if nuevo_comentario:
-                        try:
-                            from socket_service import emit_new_chat_message
+                        if unit_of_work is not None:
+                            payload = deepcopy({"socket_room": f"ticket_{tipo_ticket}_{live_ticket.id}",
+                                "tenant_type": tipo_ticket, "ticket_id": live_ticket.id,
+                                "channel": "whatsapp", "message": nuevo_comentario.to_dict()})
+                            unit_of_work.defer_after_commit("live_chat_message",
+                                lambda payload=payload: _emit_live_chat_event(payload))
+                        else:
+                            try:
+                                from socket_service import emit_new_chat_message
 
-                            room_name = f"ticket_{tipo_ticket}_{live_ticket.id}"
-                            emit_new_chat_message(
-                                {
-                                    "socket_room": room_name,
-                                    "tenant_type": tipo_ticket,
-                                    "ticket_id": live_ticket.id,
-                                    "channel": "whatsapp",
-                                    "message": nuevo_comentario.to_dict(),
-                                }
-                            )
-                        except Exception as socket_exc:
-                            log(
-                                "error",
-                                "[WHATSAPP_WEBHOOK] Error emitiendo mensaje en vivo error_type=%s",
-                                type(socket_exc).__name__,
-                            )
+                                room_name = f"ticket_{tipo_ticket}_{live_ticket.id}"
+                                emit_new_chat_message(
+                                    {
+                                        "socket_room": room_name,
+                                        "tenant_type": tipo_ticket,
+                                        "ticket_id": live_ticket.id,
+                                        "channel": "whatsapp",
+                                        "message": nuevo_comentario.to_dict(),
+                                    }
+                                )
+                            except Exception as socket_exc:
+                                log(
+                                    "error",
+                                    "[WHATSAPP_WEBHOOK] Error emitiendo mensaje en vivo error_type=%s",
+                                    type(socket_exc).__name__,
+                                )
 
                 return ConversationPreparation(None, ("OK", 200))
 
@@ -942,12 +1063,13 @@ def prepare_conversation_turn(turn: ConversationTurn, sink: ConversationSink, *,
         session_context_db_entry.context_data.pop("live_chat_status", None)
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
 
     return ConversationPreparation(ConversationSelection(message_body, selected_option, selected_action_id, selected_option_label, skip_media_analysis))
 
 
 def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSelection, sink: ConversationSink, *, prepared_response, public_base_url, engine, classify_attachment, extract_contact_details, resolve_input_contact, receipt_header, normalize_flow_contract, on_failure, replay_error, log, safe_reference, safe_context_metadata):
+    unit_of_work = _conversation_unit(turn)
     session_context_db_entry = turn.session_context
     client_user, tenant_profile, end_user = turn.owner_user, turn.tenant_profile, turn.end_user
     from_number_cleaned, chat_session_id_internal = turn.contact_identity, turn.chat_session_id
@@ -1062,6 +1184,7 @@ def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSele
                 anon_id=from_number_cleaned,
                 chat_session_uuid=chat_session_id_internal,
                 channel="whatsapp",
+                **_conversation_writer_kwargs(unit_of_work, durable_claim),
                 **kwargs_for_bot
             )
 
@@ -1153,6 +1276,8 @@ def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSele
                 }
 
     except Exception as exc:
+        if unit_of_work is not None:
+            unit_of_work.fail("conversation_engine_failed", exc)
         log(
             "error",
             "Error calling real chatbot logic (responder_chatboc) error_type=%s",
@@ -1247,6 +1372,10 @@ def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSele
         )
 
 
+        # An engine may have changed ORM identity fields before returning.
+        # Recheck partition before CRM can consume legacy_user attributes.
+        if unit_of_work is not None:
+            unit_of_work.require_turn(turn)
         # Save the merged context
         session_context_db_entry.context_data = merged_context
         safe_flag_modified(session_context_db_entry, "context_data")
@@ -1261,8 +1390,9 @@ def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSele
                     legacy_user=end_user,
                     contact_type="neighbor" if client_user.tipo_chat == "municipio" else "customer",
                     source="whatsapp_inbound",
+                    **_conversation_writer_kwargs(unit_of_work, durable_claim),
                 )
-                record_contact_interaction(
+                crm_payload = record_contact_interaction(
                     tenant=tenant_profile,
                     contact=contact,
                     message_body=message_body or selected_option_label or "",
@@ -1279,16 +1409,25 @@ def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSele
                         "bot_fuente": bot_response_dict.get("fuente"),
                     },
                     content_type="text" if message_body else "event",
-                    emit=True,
+                    emit=unit_of_work is None,
+                    **_conversation_writer_kwargs(unit_of_work, durable_claim),
                 )
+                if unit_of_work is not None:
+                    realtime_tenant = SimpleNamespace(id=tenant_id, slug=tenant_profile.slug)
+                    realtime_payload = deepcopy(crm_payload)
+                    unit_of_work.defer_after_commit("crm_contact_update",
+                        lambda tenant=realtime_tenant, payload=realtime_payload:
+                            emit_crm_contact_update(tenant, payload))
             except Exception as crm_err:
+                if unit_of_work is not None:
+                    unit_of_work.fail("conversation_crm_write_failed", crm_err)
                 log(
                     "warning",
                     "[CRM] WhatsApp contact enrichment skipped tenant_id=%s error_type=%s",
                     getattr(tenant_profile, "id", None),
                     type(crm_err).__name__,
                 )
-        db.session.commit()
+        _persist_conversation_changes(unit_of_work)
         log(
             "info",
             "Session saved. tenant_id=%s user_id=%s context_metadata=%s",
@@ -1298,6 +1437,8 @@ def finish_conversation_turn(turn: ConversationTurn, selection: ConversationSele
         )
 
     except Exception as exc:
+        if unit_of_work is not None:
+            unit_of_work.fail("conversation_response_or_context_failed", exc)
         db.session.rollback()
         log(
             "error",
