@@ -16,6 +16,7 @@ from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
 from services.analytics.rbac import legacy_tenant_wide_analytics_denial
+from services.analytics.ticket_satisfaction import ticket_satisfaction_overview
 from services.ai_provider_status import build_ai_provider_status_public_view
 from services.llm_orchestrator import build_llm_task_policy
 from services.openai_bridge import generate_analytics_report
@@ -510,12 +511,13 @@ def overview_v2(current_user):
         return error
 
     start_date, end_date = _date_range()
+    channel = request.args.get("channel")
     summary = analytics_service.get_summary(
         tenant_id=tenant.id,
         start_date=start_date,
         end_date=end_date,
         context=request.args.get("context", "overview"),
-        filters={"channel": request.args.get("channel")} if request.args.get("channel") else {},
+        filters={"channel": channel} if channel else {},
     )
     survey_summary = analytics_service.get_survey_summary(tenant.id) or {}
     survey_stats = survey_summary.get("stats") or {}
@@ -548,8 +550,8 @@ def overview_v2(current_user):
         "overdue_tickets": overdue_tickets,
         "response_time": 0,
         "survey_responses": survey_responses,
-        "nps": 0,
-        "csat": 0,
+        "nps": None,
+        "csat": None,
         "handoff_rate": 0,
     }
 
@@ -557,6 +559,7 @@ def overview_v2(current_user):
         {
             "contract_version": "analytics.overview.v2",
             "tenant_id": tenant.id,
+            "tenant_slug": tenant.slug,
             "summary": contract_summary,
             "total_conversations": conversations,
             "total_tickets": total_tickets,
@@ -569,8 +572,9 @@ def overview_v2(current_user):
             "survey_completion_rate_metadata": survey_completion_rate_metadata,
             "survey_participation_rate": survey_stats.get("participation_rate"),
             "survey_participation_rate_metadata": survey_stats.get("participation_rate_metadata"),
-            "csat_score": 0,
-            "nps_score": 0,
+            "csat_score": None,
+            "nps_score": None,
+            "ticket_satisfaction": ticket_satisfaction_overview(tenant, start_date, end_date, channel=channel),
             "access": _integration_access(tenant),
         }
     )

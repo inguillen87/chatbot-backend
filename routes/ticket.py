@@ -84,6 +84,7 @@ from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_
 from utils.permissions import require_role
 from collections import defaultdict
 from sqlalchemy import case, or_, func, exists, false, literal_column, select
+from sqlalchemy.exc import SQLAlchemyError
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from utils.upload_limits import set_upload_request_limit
@@ -5261,56 +5262,96 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
     })
 
 # ---------- ENCUESTA DE SATISFACCION ----------
+def _ticket_satisfaction_access_allows(current_user: User, tipo: str, ticket_obj) -> bool:
+    return ticket_obj.user_id == current_user.id or _ticket_scope_access_allows(tipo, ticket_obj, current_user)
+
+
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['POST'])
 @token_requerido
 def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
     if tipo not in {"municipio", "pyme"}:
         return jsonify({"error": "Tipo de ticket no válido."}), 400
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Falta la puntuacion."}), 400
     puntuacion = data.get('puntuacion')
     comentario = data.get('comentario')
     if puntuacion is None:
         return jsonify({"error": "Falta la puntuacion."}), 400
+    if comentario is not None and not isinstance(comentario, str):
+        return jsonify({"error": "El comentario debe ser texto."}), 400
+    score_error = {"error": "La puntuacion debe ser un entero entre 0 y 10."}
+    try:
+        score = int(puntuacion)
+    except (TypeError, ValueError, OverflowError):
+        return jsonify(score_error), 400
+    if (
+        isinstance(puntuacion, bool)
+        or (isinstance(puntuacion, float) and puntuacion != score)
+        or not 0 <= score <= 10
+    ):
+        return jsonify(score_error), 400
 
     TicketModel = MunicipioTicket if tipo == 'municipio' else PymeTicket
     ticket_obj = db.session.get(TicketModel, ticket_id)
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
-
-    es_dueño = ticket_obj.user_id == current_user.id
-    es_admin = False
-    if tipo == 'municipio' and _ticket_scope_access_allows("municipio", ticket_obj, current_user):
-        es_admin = True
-    if tipo == 'pyme' and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
-        es_admin = True
-
-    if not (es_dueño or es_admin):
+    if not _ticket_satisfaction_access_allows(current_user, tipo, ticket_obj):
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
 
-    encuesta = servicio_tickets.guardar_encuesta(ticket_id, tipo, int(puntuacion), comentario)
-    if encuesta:
-        return jsonify({"success": True, "encuesta_id": encuesta.id})
-    return jsonify({"error": "No se pudo guardar"}), 500
+    try:
+        locked_ticket = db.session.get(
+            TicketModel, ticket_id, populate_existing=True, with_for_update={"of": TicketModel},
+        )
+        if locked_ticket is None:
+            db.session.rollback()
+            return jsonify({"error": "Ticket no encontrado."}), 404
+        if not _ticket_satisfaction_access_allows(current_user, tipo, locked_ticket):
+            db.session.rollback()
+            return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+
+        # Serialize participating writers on the parent before looking for
+        # the same accepted score and comment. Preserve distinct submissions.
+        encuesta_id = (
+            db.session.query(TicketSatisfaccion.id)
+            .filter_by(tipo=tipo, ticket_id=ticket_id, puntuacion=score, comentario=comentario)
+            .order_by(TicketSatisfaccion.id)
+            .limit(1)
+            .scalar()
+        )
+        if encuesta_id is None:
+            encuesta = servicio_tickets.guardar_encuesta(ticket_id, tipo, score, comentario)
+            if encuesta is not None:
+                db.session.flush()
+                encuesta_id = encuesta.id
+            if encuesta_id is None:
+                db.session.rollback()
+                return jsonify({"error": "No se pudo guardar"}), 500
+        db.session.commit()
+    except SQLAlchemyError as exc:
+        db.session.rollback()
+        logger.error("Error al guardar encuesta de ticket: tipo=%s error=%s", tipo, type(exc).__name__)
+        return jsonify({"error": "No se pudo guardar"}), 500
+    return jsonify({"success": True, "encuesta_id": encuesta_id})
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
 @token_requerido
 def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     if tipo not in {"municipio", "pyme"}:
         return jsonify({"error": "Tipo de ticket no válido."}), 400
-    encuesta = TicketSatisfaccion.query.filter_by(ticket_id=ticket_id, tipo=tipo).first()
-    if not encuesta:
-        return jsonify({})
-    # Permiso: solo dueño o admin/empleado de la empresa/municipio
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
     ticket_obj = db.session.get(TicketModel, ticket_id)
-    es_dueño = ticket_obj and ticket_obj.user_id == current_user.id
-    es_admin = False
-    if tipo == 'municipio' and ticket_obj and _ticket_scope_access_allows("municipio", ticket_obj, current_user):
-        es_admin = True
-    if tipo == 'pyme' and ticket_obj and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
-        es_admin = True
-    if not (es_dueño or es_admin):
+    if not ticket_obj:
+        return jsonify({"error": "Ticket no encontrado."}), 404
+    if not _ticket_satisfaction_access_allows(current_user, tipo, ticket_obj):
         return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
+    encuesta = (
+        TicketSatisfaccion.query.filter_by(ticket_id=ticket_id, tipo=tipo)
+        .order_by(TicketSatisfaccion.id)
+        .first()
+    )
+    if not encuesta:
+        return jsonify({})
 
     return jsonify({
         "ticket_id": encuesta.ticket_id,
