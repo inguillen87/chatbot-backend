@@ -264,7 +264,11 @@ def build_ticket_coordinate_applier(
             metadata["territorial_coordinate_provenance"] = {
                 "contract_version": "operations.coordinate_provenance.v1",
                 "coordinate_reference": "WGS84",
-                "source": "approved_geocoding_proposal",
+                "source": (
+                    "manual_operator"
+                    if isinstance(provenance, dict) and provenance.get("source") == "manual_operator"
+                    else "approved_geocoding_proposal"
+                ),
                 "provider": (
                     provenance.get("provider")
                     if isinstance(provenance, dict)

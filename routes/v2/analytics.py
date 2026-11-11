@@ -15,6 +15,8 @@ from models import TenantTicket, db
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
+from services.analytics.inbox_first_reply import inbox_first_reply_overview
+from services.analytics.municipal_handoff import municipal_handoff_overview
 from services.analytics.rbac import legacy_tenant_wide_analytics_denial
 from services.analytics.ticket_satisfaction import ticket_satisfaction_overview
 from services.ai_provider_status import build_ai_provider_status_public_view
@@ -48,6 +50,7 @@ from services.territorial_geocoding_sync import (
 from services.territorial_geocoding import google_geocoding_adapter
 from services.territorial_geocoding_execution import (
     apply_territorial_geocoding_job,
+    propose_manual_territorial_geocoding_job,
     resolve_territorial_geocoding_job,
 )
 from services.global_writer_authority import (
@@ -548,11 +551,11 @@ def overview_v2(current_user):
         "conversations": conversations,
         "open_tickets": open_tickets,
         "overdue_tickets": overdue_tickets,
-        "response_time": 0,
+        "response_time": None,
         "survey_responses": survey_responses,
         "nps": None,
         "csat": None,
-        "handoff_rate": 0,
+        "handoff_rate": None,
     }
 
     return _json_response(
@@ -575,6 +578,9 @@ def overview_v2(current_user):
             "csat_score": None,
             "nps_score": None,
             "ticket_satisfaction": ticket_satisfaction_overview(tenant, start_date, end_date, channel=channel),
+            "inbox_first_public_reply": inbox_first_reply_overview(tenant, start_date, end_date, channel=channel),
+            **({"municipal_inbox_handoff": municipal_handoff_overview(tenant, start_date, end_date, channel=channel)}
+               if _tenant_analytics_segment(tenant) == "municipio" else {}),
             "access": _integration_access(tenant),
         }
     )
@@ -936,6 +942,49 @@ def operations_geocoding_job_resolve_v2(current_user, job_id: str):
         return _geocoding_admin_error_response(
             TerritorialGeocodingAdminError(
                 "geocoding_resolve_persistence_failed",
+                status_code=500,
+                action_hint="retry_with_same_idempotency_key",
+            )
+        )
+    return _geocoding_admin_response(
+        payload, 200 if payload.get("idempotent_replay") else 201
+    )
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/<string:job_id>/manual-location", methods=["POST"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_job_manual_location_v2(current_user, job_id: str):
+    """Audit a manual proposal without consulting a provider or writing the ticket."""
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+    try:
+        payload = propose_manual_territorial_geocoding_job(
+            db.session,
+            tenant=tenant,
+            job_id=job_id,
+            actor_user_id=current_user.id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            payload=request.get_json(silent=True),
+        )
+        db.session.commit()
+    except TerritorialGeocodingAdminError as exc:
+        db.session.rollback()
+        return _geocoding_admin_error_response(exc)
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.error(
+            "Territorial manual location persistence failed error_type=%s", type(exc).__name__
+        )
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_manual_location_persistence_failed",
                 status_code=500,
                 action_hint="retry_with_same_idempotency_key",
             )

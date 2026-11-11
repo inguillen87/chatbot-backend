@@ -481,6 +481,7 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
     from services.meta_whatsapp_outbox import _canonical, _runtime
     from services.meta_whatsapp_runtime import MetaRuntimeError
     from services.municipio_responder import try_execute_municipal_meta_claim_draft
+    from services.meta_whatsapp_survey import try_execute_meta_survey
     from services.whatsapp_conversation_contract import ConversationMode, ConversationTurn
     from services.whatsapp_conversation_turn import execute_municipal_meta_text_followup
     from services.whatsapp_conversation_uow import (
@@ -542,7 +543,7 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
                     mode=ConversationMode(False, False), unit_of_work=unit,
                 )
                 sink = MetaConversationSink(unit)
-                if not try_execute_municipal_meta_claim_draft(turn, sink):
+                if not try_execute_meta_survey(turn, sink) and not try_execute_municipal_meta_claim_draft(turn, sink):
                     if kind != "text":
                         unit.fail("meta_inbound_worker_kind_unsupported")
                     execute_municipal_meta_text_followup(turn, sink)

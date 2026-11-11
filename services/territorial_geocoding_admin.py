@@ -346,6 +346,13 @@ def _actions(
                 "provider_lookup_available" if can_resolve else "job_already_applied"
             ),
         },
+        "manual_location": {
+            "href": f"{base}/manual-location",
+            "enabled": can_resolve,
+            "confirmation_required": True,
+            "idempotency_header": "Idempotency-Key",
+            "mutates_ticket": False,
+        },
         "apply": {
             "method": "POST",
             "href": f"{base}/apply",

@@ -36,6 +36,20 @@ name: Survey and organization evidence
       - routes/backoffice.py
       - routes/ticket.py
       - services/ticket_service.py
+      - routes/v2/analytics.py
+      - services/analytics/ticket_satisfaction.py
+      - services/tenant_ticket_scope.py
+      - models.py
+      - tests/test_ticket_csat_http.py
+      - tests/test_v2_analytics_overview.py
+      - tests/profile_acceptance_runtime.py
+      - tests/conftest.py
+      - services/territorial_geocoding_admin.py
+      - services/territorial_geocoding_execution.py
+      - services/territorial_geocoding_store.py
+      - tests/test_territorial_geocoding_execution.py
+      - tests/test_territorial_geocoding_admin_api.py
+      - tests/test_territorial_geocoding_store.py
       - tests/test_ticket_public_history_scope.py
       - services/operational_intelligence.py
       - services/ticket_workflow_policy.py
@@ -148,6 +162,40 @@ jobs:
         with:
           name: tenant-portability-inventory-${{ github.event.pull_request.head.sha }}
           path: .qa-artifacts/tenant-portability-inventory/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify ticket ratings, analytics overview and territorial review offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          out=.qa-artifacts/ticket-satisfaction
+          mkdir -p "$out"
+          git rev-parse HEAD > "$out/checkout.txt"
+          test "$(cat "$out/checkout.txt")" = "$EXPECTED_HEAD"
+          sources=(routes/ticket.py services/ticket_service.py routes/v2/analytics.py services/analytics/ticket_satisfaction.py services/tenant_ticket_scope.py models.py tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/profile_acceptance_runtime.py tests/conftest.py services/territorial_geocoding_admin.py services/territorial_geocoding_execution.py services/territorial_geocoding_store.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py)
+          sha256sum "${sources[@]}" > "$out/source-before.txt"
+          result=0
+          for suite in tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py; do
+            name="${suite##*/}"
+            name="${name%.py}"
+            suite_args=()
+            case "$suite" in
+              tests/test_territorial_geocoding_*.py) suite_args+=(--noconftest) ;;
+            esac
+            python -I -B -X utf8 -c "import os, sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd())); from tests.profile_acceptance_runtime import prepare_process; prepare_process(); os.environ['CORS_ALLOWED_ORIGINS']='https://panel.example.invalid'; os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD']='1'; import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', sys.argv[1], '--junitxml='+sys.argv[2], *sys.argv[3:]]))" "$suite" "$out/$name.xml" "${suite_args[@]}" 2>&1 | tee "$out/$name.log" || result=1
+          done
+          sha256sum "${sources[@]}" > "$out/source-after.txt"
+          cmp "$out/source-before.txt" "$out/source-after.txt"
+          exit "$result"
+      - name: Preserve ticket satisfaction native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ticket-satisfaction-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/ticket-satisfaction/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7

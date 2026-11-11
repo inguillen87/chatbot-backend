@@ -97,6 +97,29 @@ name: Durable sessions and private attachments
       - tests/profile_acceptance_runtime.py
       - tests/crm_template_integrity_http.py
       - tests/run_crm_template_integrity_postgres.py
+      - models_survey_governance.py
+      - models_survey_jurisdiction.py
+      - routes/encuestas_public.py
+      - routes/meta_whatsapp_callback.py
+      - routes/v2/surveys.py
+      - services/encuestas_service.py
+      - services/meta_whatsapp_conversation_sink.py
+      - services/meta_whatsapp_survey.py
+      - services/survey_governance.py
+      - services/survey_jurisdiction.py
+      - services/survey_participation_assurance.py
+      - services/survey_response_effects.py
+      - services/whatsapp_conversation_uow.py
+      - services/whatsapp_inbound_worker.py
+      - services/whatsapp_survey_conversation.py
+      - tests/run_meta_whatsapp_survey_postgres.py
+      - tests/test_meta_whatsapp_crm_acceptance.py
+      - tests/test_meta_whatsapp_inbound_worker.py
+      - tests/test_meta_whatsapp_outbox.py
+      - tests/test_meta_whatsapp_survey_journey.py
+      - tests/test_survey_participation_assurance.py
+      - tests/test_v2_surveys.py
+      - tests/test_whatsapp_survey_conversation.py
       - .github/workflows/auth-private-storage.yml
   workflow_dispatch:
 permissions:
@@ -321,6 +344,68 @@ jobs:
           sha256sum --check .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt > .qa-artifacts/auth-private-storage/backoffice-export/source-recheck.log
           git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-after.txt
           cmp .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-before.txt .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-after.txt
+      - name: Signed WhatsApp survey journey and participation assurance
+        shell: bash
+        env:
+          EXPECTED_CHECKOUT: ${{ github.sha }}
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          output=.qa-artifacts/auth-private-storage/meta-whatsapp-survey
+          mkdir -p "$output"
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > "$output/checkout.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
+          if [[ -n "$EXPECTED_PR_HEAD" ]]; then
+            pr_parent="$(git cat-file -p HEAD | awk 'BEGIN {header=1} header && /^parent / {if (++n==2) print $2} /^$/ {header=0}')"
+            test "$pr_parent" = "$EXPECTED_PR_HEAD"
+          fi
+          sources=(
+            .github/workflows/auth-private-storage.yml models.py models_survey_governance.py
+            models_survey_jurisdiction.py routes/encuestas_public.py routes/meta_whatsapp_callback.py
+            routes/v2/surveys.py services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
+            services/meta_whatsapp_survey.py services/survey_governance.py services/survey_jurisdiction.py
+            services/survey_participation_assurance.py services/survey_response_effects.py
+            services/whatsapp_conversation_uow.py services/whatsapp_inbound_worker.py
+            services/whatsapp_survey_conversation.py tests/profile_acceptance_runtime.py
+            tests/test_meta_whatsapp_crm_acceptance.py tests/test_meta_whatsapp_inbound_worker.py
+            tests/test_meta_whatsapp_outbox.py tests/test_meta_whatsapp_survey_journey.py
+            tests/test_survey_participation_assurance.py tests/test_v2_surveys.py
+            tests/test_whatsapp_survey_conversation.py
+          )
+          for source_file in "${sources[@]}"; do
+            blob_sha="$(git cat-file blob "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
+            printf '%s  %s\n' "$blob_sha" "$source_file"
+          done > "$output/source-sha256.txt"
+          sha256sum --check "$output/source-sha256.txt" > "$output/source-before.log"
+          python -B -X utf8 - "$output/tests.xml" <<'PY' 2>&1 | tee "$output/tests.log"
+          from contextlib import ExitStack
+          import os
+          import socket
+          import sys
+          from unittest.mock import patch
+
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ.update(CORS_ALLOWED_ORIGINS="https://panel.example.invalid", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+
+          def deny(*_args, **_kwargs):
+              raise RuntimeError("fixture_network_attempt_blocked")
+
+          with ExitStack() as guard:
+              for method in ("connect", "connect_ex", "sendto"):
+                  guard.enter_context(patch.object(socket.socket, method, deny))
+              guard.enter_context(patch.object(socket, "getaddrinfo", deny))
+              import pytest
+              raise SystemExit(pytest.main([
+                  "--noconftest", "-p", "no:cacheprovider", "-q",
+                  "tests/test_meta_whatsapp_survey_journey.py",
+                  "tests/test_whatsapp_survey_conversation.py",
+                  "tests/test_survey_participation_assurance.py",
+                  f"--junitxml={sys.argv[1]}",
+              ]))
+          PY
+          sha256sum --check "$output/source-sha256.txt" > "$output/source-after.log"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -335,6 +420,7 @@ jobs:
             .qa-artifacts/auth-private-storage/employee-scope/
             .qa-artifacts/auth-private-storage/employee-category-revocation/
             .qa-artifacts/auth-private-storage/backoffice-export/
+            .qa-artifacts/auth-private-storage/meta-whatsapp-survey/
           include-hidden-files: true
   isolated-postgres:
     runs-on: ubuntu-24.04
@@ -361,6 +447,40 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: Install existing application dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Native WhatsApp survey and territorial review serialize in PostgreSQL
+        shell: bash
+        env:
+          EXPECTED_CHECKOUT: ${{ github.sha }}
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          output=.qa-artifacts/meta-whatsapp-survey-postgres
+          mkdir -p "$output"
+          git show --no-patch --format='commit %H%ntree %T' HEAD > "$output/checkout.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
+          if [[ -n "$EXPECTED_PR_HEAD" ]]; then
+            pr_parent="$(git cat-file -p HEAD | awk 'BEGIN {header=1} header && /^parent / {if (++n==2) print $2} /^$/ {header=0}')"
+            test "$pr_parent" = "$EXPECTED_PR_HEAD"
+            printf 'pull_request_head %s\n' "$pr_parent" >> "$output/checkout.txt"
+          fi
+          sources=(
+            .github/workflows/auth-private-storage.yml models.py models_survey_jurisdiction.py
+            routes/meta_whatsapp_callback.py routes/v2/surveys.py
+            services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
+            services/meta_whatsapp_survey.py services/survey_governance.py
+            services/survey_jurisdiction.py services/survey_participation_assurance.py
+            services/survey_response_effects.py
+            services/whatsapp_conversation_uow.py services/whatsapp_inbound_worker.py
+            services/whatsapp_survey_conversation.py
+            tests/profile_acceptance_runtime.py tests/run_auth_session_lifecycle_postgres.py
+            tests/run_meta_whatsapp_survey_postgres.py tests/test_meta_whatsapp_crm_acceptance.py
+            tests/test_meta_whatsapp_inbound_worker.py tests/test_meta_whatsapp_survey_journey.py
+            tests/test_whatsapp_survey_conversation.py
+          )
+          sha256sum "${sources[@]}" > "$output/source-before.txt"
+          python -B -X utf8 -m tests.run_meta_whatsapp_survey_postgres --github-disposable-service 2>&1 | tee "$output/postgres.log"
+          sha256sum "${sources[@]}" > "$output/source-after.txt"
+          cmp "$output/source-before.txt" "$output/source-after.txt"
       - name: Exercise exact migration, grants, session concurrency and HTTP lease CAS
         shell: bash
         run: |
@@ -388,4 +508,5 @@ jobs:
             .qa-artifacts/auth-session-postgres/enterprise-metrics.xml
             .qa-artifacts/auth-session-postgres/enterprise-metrics-checkout.txt
             .qa-artifacts/auth-session-postgres/enterprise-metrics-source-sha256.txt
+            .qa-artifacts/meta-whatsapp-survey-postgres/
           include-hidden-files: true

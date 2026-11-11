@@ -34,6 +34,7 @@ from models import (
 from services.constants import CONTEXTO_MUNICIPIO
 from services.encuestas_service import (
     EncuestaError,
+    SurveyParticipationAlreadyRecorded,
     get_public_encuesta,
     public_survey_response_count_contract,
     save_respuesta,
@@ -43,6 +44,7 @@ from services.survey_governance import (
     SurveyGovernanceError,
     survey_governance_contract,
 )
+from services.survey_participation_assurance import participation_assurance_contract
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_tenant_scope_id,
@@ -89,6 +91,7 @@ _SUPPORTED_UNIQUENESS_POLICIES = frozenset(
 _PHONE_POLICIES = frozenset({"por_phone", "phone", "por_dni_o_phone", "dni_o_phone"})
 _COOKIE_POLICIES = frozenset({"por_cookie", "cookie"})
 _USER_POLICIES = frozenset({"por_usuario", "usuario", "user_id", "por_user_id"})
+_PARTICIPATION_CONFIGURATION_BLOCKED = "survey_whatsapp_participation_configuration_blocked"
 
 _WEB_FALLBACK_REASON_CODES = frozenset(
     {
@@ -280,6 +283,8 @@ def _load_instrument(
         raise WhatsAppSurveyConversationError(
             str(governance.get("blocked_reason_code") or "survey_not_accepting_responses")
         )
+    if participation_assurance_contract(survey, governance)["configuration_ready"] is not True:
+        raise WhatsAppSurveyConversationError(_PARTICIPATION_CONFIGURATION_BLOCKED)
 
     release = governance.get("active_release")
     if not isinstance(release, Mapping) or release.get("status") != "published":
@@ -623,10 +628,16 @@ def _fallback_payload(
             {"texto": "Menú principal", "action_id": "menu_principal"},
         ]
     else:
-        message = (
-            "No pudimos abrir esa encuesta dentro de esta conversación. "
-            "No se registró ninguna respuesta. Volvé al listado para elegir una encuesta activa."
-        )
+        if reason_code == _PARTICIPATION_CONFIGURATION_BLOCKED:
+            message = (
+                "La configuración de participación de esta encuesta necesita una revisión institucional. "
+                "No se registró ninguna respuesta."
+            )
+        else:
+            message = (
+                "No pudimos abrir esa encuesta dentro de esta conversación. "
+                "No se registró ninguna respuesta. Volvé al listado para elegir una encuesta activa."
+            )
         options = [
             {"texto": "Volver a encuestas", "action_id": "mostrar_menu_encuestas"},
             {"texto": "Menú principal", "action_id": "menu_principal"},
@@ -751,7 +762,7 @@ def _exact_option_match(
         return None, False
     options = tuple(question.opciones)
     matches: list[EncOpcion] = []
-    if candidate.isdigit():
+    if candidate.isdecimal():
         number = int(candidate)
         if 1 <= number <= len(options):
             matches.append(options[number - 1])
@@ -1173,6 +1184,9 @@ def _submit(
     context: Mapping[str, Any],
     instrument: _LoadedInstrument,
     state: Mapping[str, Any],
+    *,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> dict[str, Any]:
     if state.get("consent_accepted") is not True:
         return _re_prompt(instrument, state, consent=True)
@@ -1184,6 +1198,10 @@ def _submit(
         "user_agent": "chatboc-whatsapp-conversation",
     }
     viewer = context.get("viewer_user_obj")
+    writer_arguments = {}
+    if unit_of_work is not None:
+        writer_arguments = {"commit": False, "unit_of_work": unit_of_work,
+                            "conversation_turn_id": conversation_turn_id}
     try:
         response = save_respuesta(
             instrument.public_slug,
@@ -1194,10 +1212,17 @@ def _submit(
             authenticated_user=viewer if getattr(viewer, "id", None) else None,
             submission_id=str(state["submission_id"]),
             emit_realtime_update=True,
+            **writer_arguments,
         )
     except EncuestaError as exc:
-        db.session.rollback()
         reason_code = str((exc.payload or {}).get("reason_code") or "survey_submission_failed")
+        if unit_of_work is not None:
+            if not isinstance(exc, SurveyParticipationAlreadyRecorded):
+                raise
+            unit_of_work.require_writer_scope(session=db.session(), tenant_id=instrument.tenant_id,
+                                              turn_id=conversation_turn_id)
+        if unit_of_work is None:
+            db.session.rollback()
         if reason_code == "survey_response_duplicate":
             clear_whatsapp_survey_flow(context)
             return {
@@ -1233,6 +1258,8 @@ def _submit(
             reveal_web_form=True,
         )
     except Exception:
+        if unit_of_work is not None:
+            raise
         db.session.rollback()
         current_app.logger.exception(
             "[whatsapp-survey] Unexpected submission failure survey_id=%s tenant_id=%s",
@@ -1253,6 +1280,8 @@ def handle_whatsapp_survey_flow_turn(
     *,
     text: Any,
     action_id: Any = None,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Consume one active WhatsApp survey turn, or return ``None`` if inactive."""
 
@@ -1373,7 +1402,8 @@ def handle_whatsapp_survey_flow_turn(
     question_index = int(state.get("question_index") or 0)
     if state.get("step") == "retry":
         if parsed_action and parsed_action.get("kind") == "retry":
-            return _submit(context, instrument, state)
+            return _submit(context, instrument, state, unit_of_work=unit_of_work,
+                           conversation_turn_id=conversation_turn_id)
         return _submission_retry_payload(
             state,
             reason_code=str(
@@ -1413,7 +1443,8 @@ def handle_whatsapp_survey_flow_turn(
         payload = _question_payload(instrument, state)
         municipal["menu_opciones"] = list(payload["options_list"])
         return payload
-    return _submit(context, instrument, state)
+    return _submit(context, instrument, state, unit_of_work=unit_of_work,
+                   conversation_turn_id=conversation_turn_id)
 
 
 __all__ = [
