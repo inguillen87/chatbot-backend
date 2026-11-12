@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import json
 import logging
 import re
 import unicodedata
-from typing import Dict, List, Any, Optional  # Added Optional
+from typing import TYPE_CHECKING, Dict, List, Any, Optional  # Added Optional
 from utils.validators import (
     extract_email,
     extract_phone,
@@ -12,33 +14,45 @@ from utils.validators import (
     normalize_phone,
     validate_name,
 )
-from google.cloud import documentai
-try:
-    from services.google_vision_service import VISION_CLIENT
-except Exception:  # pragma: no cover - optional dependency
-    VISION_CLIENT = None
+from utils.lazy_module import LazyModule
 
-# Intenta importar errores específicos de Cohere.
-# El nombre exacto puede variar según la versión de la librería 'cohere'.
-# Comunes son cohere.CohereError, cohere.APIError, cohere.CohereAPIError
-try:
-    import cohere
-    # Prioriza el error más específico si existe y luego el más general de la librería
-    if hasattr(cohere, "CohereAPIError"):
-        CohereAPIError = cohere.CohereAPIError
-    elif hasattr(getattr(cohere, "errors", None), "CohereAPIError"):
-        CohereAPIError = cohere.errors.CohereAPIError  # type: ignore[attr-defined]
-    elif hasattr(cohere, "APIError"):
-        CohereAPIError = cohere.APIError
-    elif hasattr(cohere, "CohereError"):
-        CohereAPIError = cohere.CohereError
-    else:
-        CohereAPIError = None  # No se pudo encontrar un error específico de Cohere API
-except ImportError:
-    cohere = None
-    CohereAPIError = None
-    # Cohere remains optional. Text generation below uses the OpenAI adapter and
-    # never substitutes a data-producing mock when this package is absent.
+documentai = LazyModule("google.cloud.documentai")
+vision = LazyModule("google.cloud.vision")
+cohere = LazyModule("cohere")
+VISION_CLIENT = None
+CohereAPIError = None
+
+if TYPE_CHECKING:
+    from google.cloud.documentai_v1 import Document as Document
+
+
+def __getattr__(name: str) -> Any:
+    """Preserve the legacy Document export without eager provider imports."""
+
+    if name == "Document":
+        return documentai.Document
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _is_cohere_api_error(exc: Exception) -> bool:
+    """Classify Cohere errors without importing its SDK during app startup."""
+
+    global CohereAPIError
+    if CohereAPIError is None:
+        try:
+            error_types = (
+                getattr(cohere, "CohereAPIError", None),
+                getattr(getattr(cohere, "errors", None), "CohereAPIError", None),
+                getattr(cohere, "APIError", None),
+                getattr(cohere, "CohereError", None),
+            )
+        except (ImportError, ModuleNotFoundError):
+            error_types = ()
+        CohereAPIError = next(
+            (candidate for candidate in error_types if isinstance(candidate, type)),
+            False,
+        )
+    return isinstance(exc, CohereAPIError) if isinstance(CohereAPIError, type) else False
 
 
 from services.openai_text_service import robust_chat
@@ -1039,7 +1053,7 @@ def extract_complaint_details_llm(
             len(text or ""),
         )
     except Exception as exc:  # pragma: no cover - defensive
-        provider = "cohere" if CohereAPIError and isinstance(exc, CohereAPIError) else "llm"
+        provider = "cohere" if _is_cohere_api_error(exc) else "llm"
         logger.error(
             "[LLM_COMPLAINT_EXTRACT] Provider call failed; using fallback "
             "provider=%s error_type=%s input_length=%s",
@@ -1777,27 +1791,6 @@ def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int =
         return descripcion_larga[:max_longitud].strip()
 
     return resumen
-
-
-# Google Cloud AI Service Placeholders
-
-try:
-    from google.cloud import vision
-    from google.cloud.documentai_v1 import Document
-except ImportError:
-    logger.warning("Google Cloud Vision or DocumentAI libraries not found. Related functionalities will not work.")
-    # Define dummy classes or objects if needed for the code to not break entirely
-    # For example, if other parts of the code expect `documentai.Document` to exist.
-    class MockDocumentAI:
-        class Document:
-            def __init__(self, text="", mime_type=""):
-                self.text = text
-                self.mime_type = mime_type
-                self.entities = []
-                self.pages = []
-        # Add any other types that might be needed from documentai
-    Document = MockDocumentAI()
-    vision = None # Or a similar mock if attributes from it are directly used
 
 
 def analyze_image_with_google_vision_ocr(image_content: bytes) -> str:

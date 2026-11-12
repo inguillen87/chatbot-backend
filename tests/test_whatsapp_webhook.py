@@ -248,9 +248,13 @@ class TestConfig(Config):
 class WhatsAppWebhookTestCase(unittest.TestCase):
 
     def setUp(self):
-        os.environ["TWILIO_ACCOUNT_SID"] = TestConfig.TWILIO_ACCOUNT_SID
-        os.environ["TWILIO_AUTH_TOKEN"] = TestConfig.TWILIO_AUTH_TOKEN
-        os.environ.setdefault("OPENAI_API_KEY", "test")
+        environment = patch.dict(os.environ, {
+            "TWILIO_ACCOUNT_SID": TestConfig.TWILIO_ACCOUNT_SID,
+            "TWILIO_AUTH_TOKEN": TestConfig.TWILIO_AUTH_TOKEN,
+            "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "test"),
+        })
+        environment.start()
+        self.addCleanup(environment.stop)
 
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
@@ -905,6 +909,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                     "confirmation_required": True,
                 },
                 "last_options_sent": [{"texto": "Iniciar reclamo", "action_id": "iniciar_reclamo"}],
+                "last_options_scope": "institutional_knowledge",
                 "pending_sensitive_action": {"action_id": "iniciar_reclamo"},
             },
         )
@@ -919,6 +924,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertNotIn("datos_reclamo", municipio_ctx)
         self.assertNotIn("datos_parciales_llm_reclamo", municipio_ctx)
         self.assertNotIn("last_options_sent", session.context_data)
+        self.assertNotIn("last_options_scope", session.context_data)
         self.assertNotIn("pending_sensitive_action", session.context_data)
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
@@ -1267,13 +1273,14 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             empresa_id=mapping.user_id,
         ).first()
         self.assertIsNotNone(contact)
-        self.assertTrue(contact.acepta_marketing)
+        self.assertFalse(contact.acepta_marketing)
         self.assertIn("lead_caliente", contact.tags or [])
 
         crm_contact = Contact.query.filter_by(phone="+5492600000001").first()
         self.assertIsNotNone(crm_contact)
         self.assertIn("lead_caliente", crm_contact.tags or [])
         self.assertTrue((crm_contact.preferences or {}).get("commercial_contact_requested"))
+        self.assertEqual((crm_contact.preferences or {}).get("marketing_consent_status"), "unknown")
         self.assertEqual((crm_contact.preferences or {}).get("lead_temperature"), "hot")
 
         notification = Notification.query.filter_by(
@@ -1907,6 +1914,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         # Arrange
         self._set_owner_tipo_chat("municipio")
         tenant = self._attach_tenant_to_owner(slug="junin", tipo="municipio")
+        sender = ProviderSender(tenant_id=tenant.id, channel="whatsapp",
+            phone_number=self.test_whatsapp_number_str,
+            sender_id=f"whatsapp:{self.test_whatsapp_number_str}", status="active")
+        db.session.add(sender)
+        db.session.commit()
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
 
@@ -1948,6 +1960,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_welcome.assert_not_called()
         contact_state = WhatsAppContactState.query.filter_by(
             tenant_id=tenant.id,
+            provider_sender_id=sender.id,
             recipient=self.test_user_number_str,
         ).first()
         self.assertIsNotNone(contact_state)
@@ -3671,6 +3684,59 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.mock_validator.validate.assert_called_once()
         self.mock_twilio_create.assert_not_called() # Message should not be sent
         self.mock_welcome.assert_not_called()
+
+    def test_institutional_numeric_reply_is_not_rewritten_by_webhook(self):
+        """Exercise the real route/formatter with disposable sessions and a provider stub."""
+        from services.response_formatter import build_interactive_response
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        reply = {"message_body": "Respuesta documentada.", "fuente": "institutional_knowledge",
+                 "message_type": "interactive_buttons", "botones": [
+                     {"texto": "Volver", "action_id": "knowledge:synthetic:start", "reply_code": "9"}]}
+        formatted = build_interactive_response(
+            options=[], body_text=reply["message_body"], channel="whatsapp",
+            message_type=reply["message_type"], original_bot_response=copy.deepcopy(reply),
+        )
+        for raw in ("9", "1"):
+            with self.subTest(raw=raw):
+                ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).one()
+                ctx.context_data = {**ctx.context_data, **formatted["contexto_actualizado"]}
+                db.session.commit()
+                self.mock_twilio_create.reset_mock()
+                with patch('routes.whatsapp_webhook.responder_chatboc', return_value=copy.deepcopy(reply)) as bot:
+                    response = self.client.post("/webhook/whatsapp", data={
+                        "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                        "From": f"whatsapp:{self.test_user_number_str}", "Body": raw,
+                    }, headers={"X-Twilio-Signature": "synthetic-valid"})
+                self.assertEqual(response.status_code, 200)
+                bot.assert_called_once()
+                self.assertEqual(bot.call_args.kwargs["pregunta"], raw)
+                self.assertNotIn("action", bot.call_args.kwargs)
+                self.assertIn("*9*. Volver", self.mock_twilio_create.call_args.kwargs["body"])
+                self.assertNotIn("*1*. Volver", self.mock_twilio_create.call_args.kwargs["body"])
+
+    def test_institutional_stale_response_clears_previous_whatsapp_menu(self):
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).one()
+        ctx.context_data = {**ctx.context_data, "last_options_scope": "institutional_knowledge",
+                            "last_options_sent": [{"texto": "Volver", "action_id": "knowledge:old:start"}]}
+        db.session.commit()
+        stale = {"message_body": "Elegí nuevamente un tema.", "fuente": "institutional_knowledge_stale"}
+        with patch('routes.whatsapp_webhook.responder_chatboc', return_value=stale) as bot:
+            response = self.client.post("/webhook/whatsapp", data={
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}", "Body": "1",
+            }, headers={"X-Twilio-Signature": "synthetic-valid"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(bot.call_args.kwargs["pregunta"], "1")
+        db.session.expire_all()
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).one()
+        self.assertEqual(ctx.context_data["last_options_scope"], "institutional_knowledge")
+        self.assertEqual(ctx.context_data["last_options_sent"], [])
+        self.assertEqual(self.mock_twilio_create.call_args.kwargs["body"], "Elegí nuevamente un tema.")
 
     def test_numeric_input_ignored_when_waiting_info(self):
         """Ensure numeric shortcuts are disabled when awaiting free text."""

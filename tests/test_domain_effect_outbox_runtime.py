@@ -27,6 +27,10 @@ from services.domain_effect_outbox import (
     stage_domain_effect,
     summarize_domain_effect_outbox,
 )
+from services.outbox_execution_budget import (
+    activate_outbox_execution_budget,
+    install_outbox_database_timeout_hook,
+)
 
 
 BASE_TIME = datetime(2026, 7, 29, 15, 0, tzinfo=timezone.utc)
@@ -347,6 +351,57 @@ def test_success_marks_io_before_delivery_and_only_persists_provider_hash(effect
     assert "provider-private-id-456" not in str(row.result_json)
 
 
+@pytest.mark.parametrize(
+    ("provider_outcome", "expected_status", "summary_field"),
+    [
+        ("succeeded", DomainEffectOutbox.STATUS_SUCCEEDED, "succeeded"),
+        ("unknown", DomainEffectOutbox.STATUS_UNKNOWN, "unknown"),
+    ],
+)
+def test_provider_consuming_io_runway_still_persists_terminal_state_in_reserve(
+    effect_app,
+    provider_outcome,
+    expected_status,
+    summary_field,
+):
+    monotonic_now = [100.0]
+
+    def deliver():
+        # The provider started with safe runway, then returned exactly as the
+        # six-second cleanup reserve began.
+        monotonic_now[0] = 139.0
+        if provider_outcome == "unknown":
+            raise TimeoutError("provider outcome ambiguous")
+        return DeliveredDomainEffect(
+            provider_ref="provider-private-id-edge",
+            result={"ack_code": "accepted"},
+        )
+
+    registry = _registry(
+        lambda _claim: PreparedDomainEffect(deliver=deliver)
+    )
+    staged = _stage(registry)
+    db.session.commit()
+    install_outbox_database_timeout_hook(db.engine)
+
+    with activate_outbox_execution_budget(
+        deadline_monotonic=145.0,
+        clock=lambda: monotonic_now[0],
+    ):
+        summary = dispatch_domain_effects(
+            registry=registry,
+            intent_secret=INTENT_SECRET,
+            now=BASE_TIME,
+            limit=1,
+        )
+
+    row = _row(staged.effect_id)
+    assert getattr(summary, summary_field) == 1
+    assert row.status == expected_status
+    assert row.lease_token is None
+    assert row.processed_at is not None
+
+
 def test_explicit_preflight_skip_is_terminal_without_crossing_io_boundary(effect_app):
     registry = _registry(
         lambda _claim: SkippedDomainEffect(
@@ -644,6 +699,60 @@ def test_expired_final_pre_io_lease_is_dead_instead_of_retried(effect_app):
     assert row.last_error_code == "lease_expired_attempts_exhausted"
 
 
+def test_stale_recovery_is_bounded_and_leaves_remaining_leases_for_next_tick(
+    effect_app,
+):
+    registry = _success_registry()
+    for index in range(5):
+        _stage(
+            registry,
+            aggregate_ref=str(5000 + index),
+            effect_key=f"ticket:{5000 + index}:email:requester",
+        )
+    db.session.commit()
+    for _ in range(5):
+        assert runtime._claim_next_domain_effect(
+            tenant_id=None,
+            lease_seconds=30,
+            now=BASE_TIME,
+            session=db.session,
+        ) is not None
+
+    recovered = recover_stale_domain_effects(
+        now=BASE_TIME + timedelta(seconds=31),
+        limit=2,
+    )
+
+    assert sum(recovered.values()) == 2
+    processing = db.session.scalar(
+        select(db.func.count(DomainEffectOutbox.id)).where(
+            DomainEffectOutbox.status == DomainEffectOutbox.STATUS_PROCESSING
+        )
+    )
+    assert processing == 3
+
+
+def test_expired_recovery_obeys_deadline_before_querying_effects(effect_app):
+    registry = _success_registry()
+    staged = _stage(registry)
+    db.session.commit()
+    assert runtime._claim_next_domain_effect(
+        tenant_id=None,
+        lease_seconds=30,
+        now=BASE_TIME,
+        session=db.session,
+    ) is not None
+
+    recovered = recover_stale_domain_effects(
+        now=BASE_TIME + timedelta(seconds=31),
+        limit=1,
+        should_continue=lambda: False,
+    )
+
+    assert recovered == {"unknown": 0, "retry_wait": 0, "dead": 0}
+    assert _row(staged.effect_id).status == DomainEffectOutbox.STATUS_PROCESSING
+
+
 def test_stale_lease_token_cannot_finalize_after_fence_moves(effect_app):
     registry = _success_registry()
     staged = _stage(registry)
@@ -836,7 +945,9 @@ def test_worker_must_not_begin_io_after_its_lease_has_expired(effect_app):
         # Simulate a slow preflight whose lease expires before provider I/O.
         db.session.execute(
             update(DomainEffectOutbox)
-            .where(DomainEffectOutbox.id == claim.effect_id)
+            .where(
+                DomainEffectOutbox.id.in_((claim.effect_id, other.effect_id))
+            )
             .values(leased_until=BASE_TIME - timedelta(seconds=1))
         )
         db.session.commit()
@@ -849,6 +960,18 @@ def test_worker_must_not_begin_io_after_its_lease_has_expired(effect_app):
         return PreparedDomainEffect(deliver=deliver)
 
     registry = _registry(prepare)
+    other = _stage(
+        registry,
+        aggregate_ref="other-expired-lease",
+        effect_key="ticket:other-expired-lease:email:requester",
+    )
+    db.session.commit()
+    assert runtime._claim_next_domain_effect(
+        tenant_id=None,
+        lease_seconds=30,
+        now=BASE_TIME,
+        session=db.session,
+    ) is not None
     staged = _stage(registry)
     db.session.commit()
 
@@ -866,3 +989,6 @@ def test_worker_must_not_begin_io_after_its_lease_has_expired(effect_app):
         DomainEffectOutbox.STATUS_RETRY_WAIT,
         DomainEffectOutbox.STATUS_DEAD,
     }
+    untouched = _row(other.effect_id)
+    assert untouched.status == DomainEffectOutbox.STATUS_PROCESSING
+    assert untouched.lease_token is not None

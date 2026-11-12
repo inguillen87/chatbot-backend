@@ -829,9 +829,9 @@ def portal_settings(tenant_slug):
         data = request.get_json(silent=True) or {}
 
         # Update user preferences (stored in 'accesibilidad' column for now)
-        prefs = user.accesibilidad or {}
-        if not isinstance(prefs, dict):
-            prefs = {}
+        # JSON columns do not track in-place changes. Keep the loaded value
+        # intact so SQLAlchemy can detect and persist the replacement.
+        prefs = dict(user.accesibilidad) if isinstance(user.accesibilidad, dict) else {}
 
         # Allow updating specific keys
         if 'theme_mode' in data: # 'dark', 'light', 'system'
@@ -856,9 +856,8 @@ def portal_settings(tenant_slug):
         })
 
     # GET
-    prefs = user.accesibilidad or {}
-    if not isinstance(prefs, dict):
-        prefs = {}
+    # Response defaults must not mutate the preferences attached to the user.
+    prefs = dict(user.accesibilidad) if isinstance(user.accesibilidad, dict) else {}
 
     # Defaults
     if 'theme_mode' not in prefs:

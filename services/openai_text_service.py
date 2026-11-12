@@ -9,16 +9,27 @@ import os
 import threading
 from typing import Any
 
-import httpx
-from openai import OpenAI
+from utils.lazy_module import LazyModule
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+
+
+httpx = LazyModule("httpx")
 
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_ROBUST_CHAT_MODEL = "gpt-5.6-sol"
 _CLIENT_LOCK = threading.Lock()
-_OPENAI_CLIENT: OpenAI | None = None
+_OPENAI_CLIENT: Any | None = None
 _OPENAI_CLIENT_KEY_DIGEST: str | None = None
+
+
+def OpenAI(*args: Any, **kwargs: Any) -> Any:
+    """Compatibility constructor that defers importing the provider SDK."""
+
+    from openai import OpenAI as OpenAIClient
+
+    return OpenAIClient(*args, **kwargs)
 
 
 def _flag_enabled(value: object) -> bool:
@@ -56,7 +67,7 @@ def _configured_model(explicit_model: object = None) -> str:
     )
 
 
-def _get_openai_client() -> OpenAI:
+def _get_openai_client() -> Any:
     """Create the client lazily, after app/dotenv configuration is loaded."""
 
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
@@ -66,7 +77,6 @@ def _get_openai_client() -> OpenAI:
         logger.info("OpenAI text provider blocked reason=test_network_disabled")
         raise RuntimeError("OpenAI network access is disabled while TESTING is active")
 
-    key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
     try:
         timeout_seconds = max(
             1.0,
@@ -74,6 +84,12 @@ def _get_openai_client() -> OpenAI:
         )
     except (TypeError, ValueError):
         timeout_seconds = 45.0
+    bounded_timeout = outbox_io_timeout_seconds(timeout_seconds)
+    if bounded_timeout is not None:
+        timeout_seconds = bounded_timeout
+    key_digest = hashlib.sha256(
+        f"{api_key}\0{timeout_seconds}".encode("utf-8")
+    ).hexdigest()
     global _OPENAI_CLIENT, _OPENAI_CLIENT_KEY_DIGEST
     with _CLIENT_LOCK:
         if _OPENAI_CLIENT is None or _OPENAI_CLIENT_KEY_DIGEST != key_digest:

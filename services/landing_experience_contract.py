@@ -191,6 +191,52 @@ def _tenant_kind(tenant: Any = None) -> str:
     return "platform"
 
 
+def _walkthrough_presentation_contract() -> dict[str, str]:
+    return {
+        "kind": "illustrative_walkthrough",
+        "label": "Ejemplo de recorrido",
+        "notice": "Ilustración del proceso. No envía mensajes ni crea registros.",
+    }
+
+
+def _platform_contact_contract() -> dict[str, Any]:
+    return {
+        "title": "Coordinemos una demostración",
+        "description": "Contanos qué necesitás resolver, los canales que usás y los requisitos de accesibilidad e integración de tu organización.",
+        "methods": [
+            {
+                "id": "email", "label": "Escribir por email",
+                "description": "Para presentar tu organización y coordinar una demostración.",
+                "href": "mailto:info@chatboc.ar?subject=Demostraci%C3%B3n%20Chatboc",
+            },
+            {
+                "id": "whatsapp", "label": "Conversar por WhatsApp",
+                "description": "Para consultar el alcance y encontrar un horario.",
+                "href": "https://wa.me/5492613168608",
+            },
+        ],
+        "back_label": "Volver al inicio", "back_href": "/",
+        "refresh_label": "Actualizar información",
+    }
+
+
+def _demo_showcase_contract() -> dict[str, str]:
+    return {
+        "eyebrow": "Conocé la plataforma",
+        "title": "Elegí un recorrido para tu organización",
+        "description": "Explorá cómo puede organizarse la atención en distintos sectores. La disponibilidad de cada demostración depende de su configuración.",
+        "loading_title": "Cargando recorridos",
+        "loading_description": "Estamos consultando las demostraciones disponibles.",
+        "error_message": "No pudimos cargar los recorridos. Intentá nuevamente más tarde.",
+        "empty_message": "No hay recorridos disponibles en este momento.",
+        "retry_label": "Volver a intentar",
+        "start_error_message": "No pudimos preparar la demostración. Intentá nuevamente más tarde.",
+        "starting_label": "Preparando demostración…",
+        "card_label": "Recorrido de ejemplo",
+        "open_label": "Ver recorrido",
+    }
+
+
 def _hero_for_kind(kind: str) -> dict[str, Any]:
     hero = {
         "contract_scope": "operational_demo_data",
@@ -200,7 +246,24 @@ def _hero_for_kind(kind: str) -> dict[str, Any]:
         "conversation_subtitle": "Un caso entra, el agente pide datos y deja una accion trazable.",
         "primary_cta": {"label": "Probar una conversacion real", "href": "/demo", "intent": "start_demo"},
         "secondary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
+        "presentation": _walkthrough_presentation_contract(),
+        "capability_overview": {
+            "label": "Atención y gestión conectadas",
+            "title": "De la consulta al seguimiento",
+            "description": "Configurá un recorrido para recibir consultas, orientar a cada persona y organizar el trabajo de tu equipo.",
+            "steps": [
+                {"id": "receive", "label": "Recibir", "detail": "Texto, notas de voz y ubicación, según los canales habilitados."},
+                {"id": "guide", "label": "Orientar", "detail": "Información y opciones de tu organización, con accesibilidad desde el inicio."},
+                {"id": "follow_up", "label": "Dar seguimiento", "detail": "Derivaciones y tareas disponibles según la configuración de cada espacio."},
+            ],
+        },
     }
+    if kind == "platform":
+        hero.update(
+            headline="Convertí conversaciones en operaciones reales",
+            primary_cta={"label": "Solicitar demostración", "href": "/contacto", "intent": "sales_contact"},
+            secondary_cta={"label": "Ver recorrido", "href": "/demo", "intent": "start_demo"},
+        )
     hero["conversation_demo"] = _hero_conversation_demo(kind)
     hero["demo_conversation"] = hero["conversation_demo"]
     hero["workflow_steps"] = ["Mensaje entendido", "Datos accionables", "Caso visible en panel"]
@@ -481,6 +544,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
     return {
         "contract_version": "landing.hero_conversation_demo.v1",
         "contract_scope": "operational_demo_data",
+        "presentation": _walkthrough_presentation_contract(),
         "flows": flows,
         "rules": {
             "traceable_actions_only": True,
@@ -506,6 +570,8 @@ def build_landing_experience_contract(tenant: Any = None, *, page: str | None = 
         "selected_page": selected_page,
         "experience_kind": kind,
         "hero": _hero_for_kind(kind),
+        "demo_showcase": _demo_showcase_contract(),
+        "contact": _platform_contact_contract() if tenant is None else None,
         "conversion": {
             "contract_version": LANDING_OPERATIONAL_CONTRACT_VERSION,
             "lead_capture_endpoint": "/api/public/lead-capture",

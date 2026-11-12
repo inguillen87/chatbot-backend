@@ -5,7 +5,7 @@ import jwt
 import pytest
 
 from app import db
-from models import User
+from models import CatalogoItem, CatalogUpload, TenantProfile, User
 
 
 class TestDocumentIntelligencePreview:
@@ -46,3 +46,57 @@ class TestDocumentIntelligencePreview:
         assert payload["totalRows"] == 2
         assert [col["name"] for col in payload["columns"]] == ["nombre", "precio"]
         assert payload["rows"][0]["nombre"] == "Producto A"
+
+    def test_legacy_commit_is_retired_without_catalog_or_upload_writes(self):
+        tenant = TenantProfile(
+            slug="document-intelligence-retired",
+            nombre="Document Intelligence Retired",
+            tipo="pyme",
+            pyme_id=self.pyme_user.id,
+            plan="full",
+            is_active=True,
+            configuracion={"catalog_vector_version": "catalog-previous-v1"},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        self.pyme_user.tenant_id = tenant.id
+        existing = CatalogoItem(
+            user_id=self.pyme_user.id,
+            tenant_id=tenant.id,
+            nombre="Producto anterior",
+            sku="OLD-1",
+            precio="900",
+            modalidad="venta",
+        )
+        upload = CatalogUpload(
+            tenant_id=tenant.id,
+            filename="catalogo.csv",
+            processor_slug="generic_v2",
+            status="preview_ready",
+            preview_data={"rows": [{"nombre": "Producto nuevo"}]},
+        )
+        db.session.add_all([existing, upload])
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/pymes/{self.pyme_user.id}/document-intelligence/commit",
+            headers=self.auth_headers,
+            json={
+                "catalogUploadId": upload.id,
+                "replaceCatalog": True,
+                "columns": ["nombre", "precio"],
+                "rows": [{"nombre": "Producto nuevo", "precio": "1200"}],
+            },
+        )
+
+        assert response.status_code == 410
+        body = response.get_json()
+        assert body["codigo"] == "document_intelligence_catalog_commit_retired"
+        assert body["writes_performed"] is False
+        assert body["replacement"]["create"] == "/api/admin/catalog/import"
+        assert CatalogoItem.query.filter_by(tenant_id=tenant.id).count() == 1
+        assert CatalogoItem.query.filter_by(tenant_id=tenant.id).one().sku == "OLD-1"
+        db.session.refresh(upload)
+        db.session.refresh(tenant)
+        assert upload.status == "preview_ready"
+        assert tenant.configuracion["catalog_vector_version"] == "catalog-previous-v1"

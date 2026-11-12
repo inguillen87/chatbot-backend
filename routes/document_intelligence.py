@@ -1,24 +1,23 @@
+from __future__ import annotations
+
 import io
 import logging
-import re
 import uuid
 from typing import Any, List, Optional
 
-import pandas as pd
-import pdfplumber
 from flask import Blueprint, jsonify, request
 
-from models import CatalogoItem, CatalogUpload, db
+from models import CatalogUpload, db
 from routes.auth import token_requerido
-from services.embedding_service import embed_textos_llm
-from services.catalog_quality import evaluate_catalog_quality
-from services.llm_utils import llamar_llm_para_json_estructurado
-from services.qdrant_service import index_catalog_item
 from services.vision_fallback_service import (
     analyze_image_structured,
     analyze_image_text,
     analyze_text_structured,
 )
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
+pdfplumber = LazyModule("pdfplumber")
 
 logger = logging.getLogger(__name__)
 
@@ -187,97 +186,6 @@ def _catalog_llm_prompt(rubro: Optional[str] = None) -> str:
         "No inventes datos, deja vacío si no se ve. "
         "Mantén los valores numéricos tal como aparecen (puntos para miles, comas decimales)."
     )
-
-
-def _catalog_items_prompt(rubro: Optional[str] = None) -> str:
-    rubro_hint = f"Rubro sugerido: {rubro}. " if rubro else ""
-    return (
-        "Eres un asistente experto en normalizar catálogos. "
-        "Convertí una tabla con columnas variables en una lista JSON de items. "
-        f"{rubro_hint}"
-        "Cada item debe incluir, cuando esté disponible: "
-        "nombre, sku, marca, categoria, precio, moneda, stock, unidad, presentacion, descripcion. "
-        "Además, incluí campos dinámicos en 'extra_metadata' cuando existan (por ejemplo: "
-        "varietal, anada, pallet, caja, unidades_por_caja, precio_por_caja, "
-        "litros, ml, kg, gramos, bolsa, medida, alto, ancho, largo, peso). "
-        "No inventes datos; si falta un campo, dejalo vacío o null. "
-        "Mantén los precios tal como aparecen (puntos miles, comas decimales)."
-    )
-
-
-def _normalize_catalog_items_with_llm(columns: List[str], rows: List[dict], rubro: Optional[str]) -> List[dict]:
-    system_prompt = _catalog_items_prompt(rubro)
-    user_prompt = (
-        "Columnas detectadas:\n"
-        f"{columns}\n\n"
-        "Filas detectadas (objetos con columnas):\n"
-        f"{rows[:200]}"
-    )
-    response = llamar_llm_para_json_estructurado(system_prompt=system_prompt, user_prompt=user_prompt)
-    if isinstance(response, dict):
-        items = response.get("items") or response.get("productos") or response.get("catalogo") or []
-        return items if isinstance(items, list) else []
-    if isinstance(response, list):
-        return response
-    return []
-
-
-def _sanitize_sku(raw: Optional[str], fallback: str) -> str:
-    value = (raw or "").strip() or fallback
-    value = value.lower()
-    value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
-    return value or fallback
-
-
-def _build_extra_metadata(item: dict) -> dict:
-    base_keys = {
-        "nombre",
-        "title",
-        "sku",
-        "marca",
-        "brand",
-        "categoria",
-        "category",
-        "precio",
-        "price",
-        "moneda",
-        "currency",
-        "stock",
-        "unidad",
-        "unit",
-        "presentacion",
-        "pack",
-        "descripcion",
-        "description",
-        "extra_metadata",
-    }
-    extra = {}
-    for key, value in item.items():
-        if key in base_keys or value in (None, "", []):
-            continue
-        extra[key] = value
-    explicit = {
-        "varietal": item.get("varietal"),
-        "anada": item.get("anada") or item.get("añada"),
-        "pallet": item.get("pallet"),
-        "caja": item.get("caja") or item.get("box"),
-        "unidades_por_caja": item.get("unidades_por_caja") or item.get("unidad_por_caja"),
-        "precio_por_caja": item.get("precio_por_caja"),
-        "litros": item.get("litros"),
-        "ml": item.get("ml"),
-        "kg": item.get("kg"),
-        "gramos": item.get("gramos"),
-        "bolsa": item.get("bolsa"),
-        "medida": item.get("medida"),
-        "alto": item.get("alto"),
-        "ancho": item.get("ancho"),
-        "largo": item.get("largo"),
-        "peso": item.get("peso"),
-    }
-    for key, value in explicit.items():
-        if value not in (None, "", []):
-            extra.setdefault(key, value)
-    return extra
 
 
 def _document_intelligence_preview(current_user, pyme_id: int):
@@ -519,134 +427,25 @@ def document_intelligence_commit(current_user, pyme_id: int):
             403,
         )
 
-    payload = request.get_json(silent=True) or {}
-    if isinstance(payload, str):
-        import json
-        try:
-            payload = json.loads(payload)
-        except:
-            payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    columns = payload.get("columns") or []
-    rows = payload.get("rows") or []
-    if not columns or not rows:
-        return jsonify({"error": "Columns y rows son requeridos."}), 400
-
-    rubro_hint = payload.get("rubro") or payload.get("rubroSlug")
-    replace_catalog = payload.get("replaceCatalog", True)
-    upload_id = payload.get("catalogUploadId")
-
-    items = _normalize_catalog_items_with_llm(columns, rows, rubro_hint)
-    if not items:
-        return jsonify({"error": "No se pudieron normalizar items."}), 400
-
-    tenant_id = getattr(current_user, "tenant_id", None)
-    if replace_catalog:
-        query = CatalogoItem.query.filter_by(user_id=current_user.id)
-        if tenant_id:
-            query = query.filter_by(tenant_id=tenant_id)
-        query.delete()
-
-    texts_to_embed = []
-    normalized_items = []
-    for idx, item in enumerate(items, start=1):
-        nombre = (item.get("nombre") or item.get("title") or "").strip()
-        if not nombre:
-            continue
-        sku = _sanitize_sku(item.get("sku"), f"item-{idx}-{nombre}")
-        precio = item.get("precio") or item.get("price")
-        normalized_items.append({
-            "nombre": nombre,
-            "sku": sku,
-            "marca": item.get("marca") or item.get("brand"),
-            "categoria": item.get("categoria") or item.get("category"),
-            "precio": precio,
-            "moneda": item.get("moneda") or item.get("currency"),
-            "stock": item.get("stock"),
-            "unidad": item.get("unidad") or item.get("unit"),
-            "presentacion": item.get("presentacion") or item.get("pack"),
-            "descripcion": item.get("descripcion") or item.get("description"),
-            "extra_metadata": _build_extra_metadata(item),
-        })
-        texts_to_embed.append(f"{nombre} {item.get('categoria') or ''} {precio or ''}")
-
-    normalized_items = evaluate_catalog_quality(normalized_items)
-
-    embeddings = embed_textos_llm(texts_to_embed) if texts_to_embed else []
-    count = 0
-    for idx, item in enumerate(normalized_items):
-        item_metadata = dict(item.get("extra_metadata") or {})
-        item_metadata["confidence_score"] = item.get("confidence_score")
-        item_metadata["quality_issues"] = item.get("quality_issues") or []
-        item_metadata["review_required"] = bool(item.get("review_required"))
-
-        catalog_item = CatalogoItem(
-            user_id=current_user.id,
-            tenant_id=tenant_id,
-            nombre=item["nombre"],
-            sku=item["sku"],
-            marca=item.get("marca"),
-            categoria=item.get("categoria"),
-            precio=str(item.get("precio") or ""),
-            moneda=item.get("moneda"),
-            cantidad=str(item.get("stock") or "") if item.get("stock") is not None else None,
-            unidad=item.get("unidad"),
-            descripcion_corta=item.get("presentacion"),
-            descripcion=item.get("descripcion"),
-            extra_metadata=item_metadata,
-            modalidad="venta",
-            disponible=True,
-        )
-        db.session.add(catalog_item)
-        db.session.flush()
-
-        embedding = embeddings[idx] if idx < len(embeddings) else None
-        if embedding:
-            try:
-                index_catalog_item(
-                    tenant_id or current_user.id,
-                    {
-                        "id": catalog_item.id,
-                        "nombre": catalog_item.nombre,
-                        "descripcion": catalog_item.descripcion,
-                        "precio": catalog_item.precio,
-                        "rubro": rubro_hint or "general",
-                        "stock": item.get("stock") or 0,
-                        "user_id": current_user.id,
-                        "tenant_id": tenant_id,
-                        "confidence_score": item.get("confidence_score"),
-                        "review_required": bool(item.get("review_required")),
-                        "quality_issues": item.get("quality_issues") or [],
-                        "extra_metadata": item_metadata,
-                    },
-                    embedding,
-                )
-            except Exception:
-                logger.exception(
-                    "No se pudo indexar el item %s en Qdrant. Se continuará con el commit.",
-                    catalog_item.id,
-                )
-        count += 1
-
-    quality_summary = {
-        "items": count,
-        "review_required": sum(1 for item in normalized_items if item.get("review_required")),
-        "avg_confidence": round(
-            sum(float(item.get("confidence_score") or 0.0) for item in normalized_items) / len(normalized_items),
-            3,
-        ) if normalized_items else 0.0,
-    }
-
-    if upload_id:
-        upload_rec = _catalog_upload_from_request(upload_id)
-        if upload_rec:
-            upload_rec.preview_data = {"columns": columns, "rows": rows}
-            upload_rec.stats = quality_summary
-            upload_rec.status = "committed"
-    db.session.commit()
-
-    return jsonify({"success": True, "items": count, "quality": quality_summary})
+    # This legacy commit path could replace SQL rows before durable storage and
+    # vector readback, and it had no exact tenant authorization contract.  Keep
+    # preview available, but route all publication through the active,
+    # tenant-scoped import workflow.
+    return (
+        jsonify(
+            {
+                "contract_version": "document_intelligence.commit_retired.v1",
+                "codigo": "document_intelligence_catalog_commit_retired",
+                "mensaje": "Confirmá el catálogo desde la importación administrada.",
+                "writes_performed": False,
+                "replacement": {
+                    "create": "/api/admin/catalog/import",
+                    "commit": "/api/admin/catalog/import/{upload_id}/commit",
+                },
+            }
+        ),
+        410,
+    )
 
 
 @document_intelligence_public_bp.route("/preview", methods=["OPTIONS"])

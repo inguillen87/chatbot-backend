@@ -7,7 +7,7 @@ import uuid
 from models import db, Rubro, QA, Sugerencia, User
 from werkzeug.security import generate_password_hash
 
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 from faq_questions import faq_data
 from services.user_service import assign_whatsapp_numbers
 

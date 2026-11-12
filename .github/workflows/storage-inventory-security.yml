@@ -9,7 +9,9 @@ name: Storage inventory security contract
       - requirements.txt
       - requirements_fixed.txt
       - scripts/inventory_persistent_data.py
+      - scripts/migrate_render_uploads_to_r2.py
       - tests/test_inventory_persistent_data.py
+      - tests/test_migrate_render_uploads_to_r2.py
   workflow_dispatch:
 
 permissions:
@@ -80,9 +82,16 @@ jobs:
           PY
 
       - name: Compile focal implementation and tests
-        run: >-
-          python -m py_compile scripts/inventory_persistent_data.py
-          tests/test_inventory_persistent_data.py
+        run: |
+          python -m py_compile \
+            scripts/inventory_persistent_data.py \
+            scripts/migrate_render_uploads_to_r2.py \
+            tests/test_inventory_persistent_data.py \
+            tests/test_migrate_render_uploads_to_r2.py
 
-      - name: Run storage inventory security tests
-        run: python -m unittest tests.test_inventory_persistent_data -v
+      - name: Run storage migration security tests
+        run: >-
+          python -m unittest
+          tests.test_inventory_persistent_data
+          tests.test_migrate_render_uploads_to_r2
+          -v

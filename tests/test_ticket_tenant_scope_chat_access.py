@@ -1,20 +1,20 @@
-import jwt
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app import db
+from services.auth_session_lifecycle import issue_token
 from models import MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
 from routes.ticket import _ticket_matches_tenant_scope
 
 
 def _auth_headers(app, user: User, tenant_slug: str) -> dict[str, str]:
-    token = jwt.encode(
+    token = issue_token(
         {
             "user_id": user.id,
             "rol": user.rol,
             "tipo_chat": user.tipo_chat,
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
     )
     return {
         "Authorization": f"Bearer {token}",

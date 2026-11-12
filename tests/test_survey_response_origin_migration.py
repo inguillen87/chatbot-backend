@@ -17,6 +17,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from models import EncRespuesta, PublicSurveyResponse
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -340,9 +341,7 @@ def test_response_origin_migration_is_forward_only_and_repository_has_one_head()
         migration.downgrade()
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260820_survey_content_jurisdiction_v1"
-    ]
+    assert ScriptDirectory.from_config(config).get_heads() == [REVIEWED_MIGRATION_HEAD]
 
 
 def test_postgresql_online_migration_contains_low_lock_two_phase_contract():

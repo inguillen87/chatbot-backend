@@ -49,16 +49,20 @@ def test_public_lead_capture_persists_profile_ticket_and_event(client):
         "schedule_call",
     }
 
-    user = User.query.filter_by(email="maria@example.com").first()
-    assert user is not None
-    assert user.tenant_slug == "lead-tenant"
+    # Public contact fields cannot create or claim an authenticated account.
+    assert User.query.filter_by(email="maria@example.com").first() is None
+    assert User.query.count() == 1
 
     ctx = ChatSessionContext.query.get("lead-session-1")
     assert ctx is not None
+    assert ctx.user_id is None
+    assert ctx.anon_id == "anon-lead-1"
+    assert ctx.tenant_id == tenant.id
     assert (ctx.context_data or {}).get("lead_profile", {}).get("nombre") == "Maria Cliente"
 
     ticket = TenantTicket.query.get(payload["ticket_id"])
     assert ticket is not None
+    assert ticket.user_id is None
     assert ticket.fingerprint == "lead-key-1"
     assert ticket.categoria == "lead_capture"
     assert (ticket.datos_extra or {}).get("lead_stage") == "nuevo"

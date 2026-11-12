@@ -1,16 +1,20 @@
 import json
+import hashlib
 import os
+import tempfile
 import unittest
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import patch
 
-import jwt
 from sqlalchemy import event
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
+from services.auth_session_lifecycle import issue_token
 from config import Config
 import config.feature_flags as feature_flags
 from models import (
@@ -30,6 +34,14 @@ from models import (
     TenantTicket,
     TicketRealtimeState,
     User,
+)
+from services.territorial_evidence import (
+    _boundary_contains_position,
+    _validated_boundary_geometry,
+    coordinate_jurisdiction_status,
+    normalize_address_corridor_key,
+    normalize_address_key,
+    resolve_tenant_jurisdiction,
 )
 
 
@@ -83,8 +95,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             descripcion="Bache con foto enviado por WhatsApp",
             estado="nuevo",
             origen="whatsapp",
-            latitud=-34.6037,
-            longitud=-58.3816,
+            latitud=-33.136,
+            longitud=-68.49,
             datos_extra={
                 "title": "Bache en centro",
                 "priority": "high",
@@ -108,8 +120,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 estado="nuevo",
                 canal_ingreso="whatsapp",
                 distrito="Centro",
-                latitud=-34.6034,
-                longitud=-58.3812,
+                latitud=-33.1364,
+                longitud=-68.4896,
                 detalles='{"genero": "no_binario", "edad": 45}',
                 fecha=now,
             )
@@ -124,8 +136,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 estado="cerrado",
                 canal_ingreso="web",
                 distrito="La Colonia",
-                latitud=-34.61,
-                longitud=-58.39,
+                latitud=-33.145,
+                longitud=-68.50,
                 detalles='{"genero": "femenino", "edad": 39}',
                 fecha=now - timedelta(days=800),
             )
@@ -148,8 +160,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 encuesta_id=encuesta.id,
                 tenant_id=self.tenant.id,
                 huella_unica="resp-1",
-                lat=-34.604,
-                lng=-58.382,
+                lat=-33.137,
+                lng=-68.491,
                 canal="widget",
                 barrio="Centro",
                 genero="masculino",
@@ -166,8 +178,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 event_name="message_in",
                 session_id="session-ops",
                 metadata_payload={"categoria": "consulta", "gender": "femenino", "age": 22},
-                lat=-34.6038,
-                lng=-58.3817,
+                lat=-33.1358,
+                lng=-68.4897,
                 ts=now,
             )
         )
@@ -244,10 +256,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     "sv": 1,
                 }
             )
-        token = jwt.encode(
+        token = issue_token(
             payload,
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         headers = {"Authorization": f"Bearer {token}"}
         if tenant_slug is not None:
@@ -280,11 +290,11 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         monitor = (live_control.get("monitors") or [])[0]
         self.assertEqual(monitor.get("slug"), "voto-plaza")
         self.assertEqual(monitor.get("public_token"), "voto-plaza-publica")
-        self.assertEqual(monitor.get("public_url"), "/e/voto-plaza-publica")
+        self.assertEqual(monitor.get("public_url"), "/e/voto-plaza-publica?tenant_slug=junin")
         self.assertEqual(monitor.get("admin_url"), "/admin/encuestas/1/analytics?focus=live")
-        self.assertEqual(monitor.get("live_results_endpoint"), "/api/v2/public/surveys/voto-plaza-publica/live-results")
+        self.assertEqual(monitor.get("live_results_endpoint"), "/api/v2/public/surveys/voto-plaza-publica/live-results?tenant_slug=junin")
         self.assertEqual(monitor.get("whatsapp_template_id"), "gov_survey_invite")
-        live_response = self.client.get(f"{monitor.get('live_results_endpoint')}?include_heatmap=0")
+        live_response = self.client.get(f"{monitor.get('live_results_endpoint')}&include_heatmap=0")
 
         self.assertEqual(live_response.status_code, 200)
         self.assertEqual(live_response.get_json().get("contract_version"), "surveys.live_results.v2")
@@ -531,7 +541,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 4)
         self.assertEqual((payload.get("summary") or {}).get("overdue_tickets"), 2)
         unavailable_trends = {item.get("key") for item in (payload.get("trends") or {}).get("unavailable") or []}
-        self.assertEqual(unavailable_trends, {"open_tickets", "overdue_tickets"})
+        self.assertEqual(unavailable_trends, {"open_tickets", "overdue_tickets", "live_votes"})
         self.assertNotIn("foreign queue truth secret", json.dumps(payload).lower())
 
     def test_queue_truth_applies_as_of_membership_and_quarantines_future_dates(self):
@@ -624,8 +634,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             nombre_cliente="Cliente privado legacy",
             email_cliente="legacy-private@example.com",
             direccion="Direccion legacy secreta 123",
-            latitud=-34.605,
-            longitud=-58.383,
+            latitud=-33.1365,
+            longitud=-68.492,
         )
         canonical = Order(
             tenant_id=self.tenant.id,
@@ -637,7 +647,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             total=2500,
             delivery_address={
                 "address": "Direccion canonical secreta 456",
-                "coordinates": {"lat": -34.606, "lng": -58.384},
+                "coordinates": {"lat": -33.137, "lng": -68.493},
             },
         )
         mirror = MarketOrder(
@@ -725,8 +735,27 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             f"/api/admin/tenants/{self.tenant.slug}/orders/order:{canonical.id}",
             headers=self._auth(),
         )
-        self.assertEqual(detail_response.status_code, 200)
-        self.assertEqual(detail_response.get_json().get("source_model"), "Order")
+        # This fixture deliberately makes the actor owner of two profiles.
+        # Control-plane reads must reject that ambiguous ownership even when
+        # the legacy analytics selector can isolate exact persisted rows.
+        self.assertEqual(detail_response.status_code, 403)
+
+    def test_canonical_order_detail_remains_available_with_consistent_ownership(self):
+        canonical = Order(
+            tenant_id=self.tenant.id,
+            buyer_name="Local contract customer",
+            status="created",
+            channel="web_widget",
+            total=2500,
+        )
+        db.session.add(canonical)
+        db.session.commit()
+        response = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/orders/order:{canonical.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json().get("source_model"), "Order")
 
     def test_operations_excludes_explicit_foreign_municipio_ticket_with_shared_owner(self):
         foreign_tenant = TenantProfile(
@@ -823,6 +852,1092 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
 
         self.assertEqual({_commerce_request_kind(value) for value in supported}, supported)
 
+    def test_ticket_zones_require_explicit_territorial_fields(self):
+        from services.operational_intelligence import (
+            _municipio_ticket_record,
+            _pyme_ticket_record,
+            _tenant_ticket_record,
+        )
+
+        tenant_address_only = TenantTicket(
+            tenant_id=self.tenant.id,
+            descripcion="Direccion sin zona declarada",
+            datos_extra={"address": "Av. San Martin 123, Junin"},
+        )
+        tenant_with_barrio = TenantTicket(
+            tenant_id=self.tenant.id,
+            descripcion="Barrio declarado",
+            datos_extra={"address": "Av. San Martin 456, Junin", "barrio": "Centro"},
+        )
+        municipio_address_only = MunicipioTicket(
+            pregunta="Direccion municipal sin distrito",
+            direccion="Don Bosco 55, Junin",
+            datos_extra={"direccion": "Don Bosco 55, Junin"},
+        )
+        municipio_with_zona = MunicipioTicket(
+            pregunta="Zona municipal declarada",
+            direccion="Belgrano 200, Junin",
+            datos_extra={"zona": "Norte"},
+        )
+        pyme_address_only = PymeTicket(
+            pregunta="Direccion comercial sin zona",
+            nro_ticket=91001,
+            direccion="Mitre 800, Junin",
+            datos_extra={"address": "Mitre 800, Junin"},
+        )
+        pyme_with_distrito = PymeTicket(
+            pregunta="Distrito comercial declarado",
+            nro_ticket=91002,
+            direccion="Rivadavia 100, Junin",
+            datos_extra={"distrito": "Sur"},
+        )
+
+        self.assertEqual(_tenant_ticket_record(tenant_address_only).get("zone"), "sin_zona")
+        self.assertEqual(_tenant_ticket_record(tenant_with_barrio).get("zone"), "centro")
+        self.assertEqual(_municipio_ticket_record(municipio_address_only).get("zone"), "sin_zona")
+        self.assertEqual(_municipio_ticket_record(municipio_with_zona).get("zone"), "norte")
+        self.assertEqual(_pyme_ticket_record(pyme_address_only).get("zone"), "sin_zona")
+        self.assertEqual(_pyme_ticket_record(pyme_with_distrito).get("zone"), "sur")
+
+        for record in (
+            _tenant_ticket_record(tenant_address_only),
+            _municipio_ticket_record(municipio_address_only),
+            _pyme_ticket_record(pyme_address_only),
+        ):
+            self.assertTrue(record.get("address"))
+            self.assertNotEqual(record.get("zone"), record.get("address").lower())
+
+    def test_operations_heatmap_publishes_only_the_verified_official_boundary(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        geo_layers = response.get_json().get("geo_layers") or {}
+        boundaries = geo_layers.get("boundaries") or {}
+        self.assertTrue((boundaries.get("metadata") or {}).get("official"))
+        self.assertFalse((boundaries.get("metadata") or {}).get("synthetic"))
+        self.assertEqual(len(boundaries.get("features") or []), 1)
+        feature = (boundaries.get("features") or [])[0]
+        self.assertEqual(feature.get("id"), "09")
+        self.assertEqual((feature.get("properties") or {}).get("globalid"), "{FEA13AA1-46F3-4570-BAEE-188FF11AFF94}")
+        self.assertEqual((feature.get("geometry") or {}).get("type"), "Polygon")
+
+    def test_operations_heatmap_uses_one_filtered_ticket_population_for_all_territorial_outputs(self):
+        now = datetime.now(timezone.utc)
+        matching = [
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Punto territorial valido",
+                estado="nuevo",
+                origen="whatsapp",
+                latitud=-33.136,
+                longitud=-68.49,
+                datos_extra={"zone": "Norte", "address": "Av. San Martín 100, Junín"},
+                created_at=now,
+            ),
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Direccion pendiente",
+                estado="nuevo",
+                origen="whatsapp",
+                datos_extra={"zone": "Norte", "address": "Avenida San Martin 200, Junin"},
+                created_at=now,
+            ),
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Coordenada fuera de jurisdiccion",
+                estado="nuevo",
+                origen="whatsapp",
+                latitud=-34.5889,
+                longitud=-60.9462,
+                datos_extra={"zone": "Norte", "address": "Av San Martin 300, Junin"},
+                created_at=now,
+            ),
+        ]
+        distractors = [
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Otro corredor",
+                estado="nuevo",
+                origen="web",
+                latitud=-33.137,
+                longitud=-68.491,
+                datos_extra={"zone": "Norte", "address": "Calle Mitre 10, Junin"},
+                created_at=now,
+            ),
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="otra_categoria_territorial",
+                descripcion="Mismo corredor pero otra categoria",
+                estado="nuevo",
+                origen="web",
+                latitud=-33.138,
+                longitud=-68.492,
+                datos_extra={"zone": "Norte", "address": "Avenida San Martin 400, Junin"},
+                created_at=now,
+            ),
+        ]
+        db.session.add_all([*matching, *distractors])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=tickets&categoria=contrato_territorial"
+            "&zona=norte&corredor=Av.%20San%20Mart%C3%ADn",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        quality = payload.get("location_quality") or {}
+        self.assertEqual(quality.get("total_ticket_records"), 3)
+        self.assertEqual(quality.get("ticket_records_with_coordinates"), 1)
+        self.assertEqual(quality.get("ticket_records_pending_geocode"), 1)
+        self.assertEqual(quality.get("ticket_records_outside_jurisdiction"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("pending_geocode"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("outside_jurisdiction"), 1)
+        self.assertEqual((payload.get("geocoding") or {}).get("candidate_count"), 1)
+        self.assertEqual((payload.get("jurisdiction_review") or {}).get("candidate_count"), 1)
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("ticket_records"), 3)
+        self.assertEqual((facets.get("summary") or {}).get("mapped_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("pending_geocode_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 1)
+
+    def test_address_facets_and_filters_normalize_equivalent_spellings(self):
+        self.assertEqual(
+            normalize_address_key("Av. San Martín Nro. 123, Junín"),
+            normalize_address_key("Avenida San Martin 123 Junin"),
+        )
+        self.assertEqual(
+            normalize_address_key("C. Mitre 80"),
+            normalize_address_key("Calle Mitre 80"),
+        )
+        self.assertEqual(
+            normalize_address_corridor_key("Av. San Martín 123, Junín"),
+            normalize_address_corridor_key("Avenida San Martin 999; Junin"),
+        )
+        now = datetime.now(timezone.utc)
+        db.session.add_all(
+            [
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="direccion_equivalente",
+                    descripcion="Formato abreviado",
+                    estado="nuevo",
+                    origen="web",
+                    datos_extra={"address": "Av. San Martín Nro. 123, Junín"},
+                    created_at=now,
+                ),
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="direccion_equivalente",
+                    descripcion="Formato expandido",
+                    estado="nuevo",
+                    origen="web",
+                    datos_extra={"address": "Avenida San Martin 123 Junin"},
+                    created_at=now,
+                ),
+            ]
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            query_string={
+                "include_ai": "0",
+                "source": "tickets",
+                "categoria": "direccion_equivalente",
+                "direccion": "Avenida San Martin 123 Junin",
+            },
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("location_quality") or {}).get("total_ticket_records"), 2)
+        self.assertEqual((payload.get("geocoding") or {}).get("candidate_count"), 2)
+        addresses = (payload.get("territorial_facets") or {}).get("addresses") or []
+        self.assertEqual(len(addresses), 1)
+        self.assertEqual(addresses[0].get("count"), 2)
+        self.assertEqual(addresses[0].get("key"), "avenida san martin 123 junin")
+        self.assertEqual(
+            (payload.get("applied_filters") or {}).get("address"),
+            ["avenida san martin 123 junin"],
+        )
+        supported_filters = set(
+            (payload.get("render_contract") or {}).get("segment_filters") or []
+        )
+        self.assertIn("direccion", supported_filters)
+        self.assertIn("corredor", supported_filters)
+
+    def test_employee_corridor_filter_stays_k_safe_and_does_not_echo_address(self):
+        now = datetime.now(timezone.utc)
+        for index in range(5):
+            db.session.add(
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="reclamos",
+                    descripcion=f"Reclamo corredor privado {index}",
+                    estado="nuevo",
+                    origen="whatsapp",
+                    latitud=-33.11,
+                    longitud=-68.49,
+                    datos_extra={
+                        "zone": "centro",
+                        "address": f"Av. Libertad {100 + index}, Junin",
+                    },
+                    created_at=now,
+                )
+            )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            query_string={"include_ai": "0", "corredor": "Avenida Libertad"},
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        self.assertEqual((payload.get("summary") or {}).get("aggregated_observations"), 5)
+        self.assertEqual(
+            (payload.get("applied_filters") or {}).get("corridor"),
+            ["private_filter_applied"],
+        )
+        serialized = json.dumps(payload, ensure_ascii=False).lower()
+        self.assertNotIn("libertad", serialized)
+        self.assertNotIn('"address"', serialized)
+        self.assertNotIn("territorial_facets", payload)
+        self.assertNotIn("geocoding", payload)
+
+    def test_heatmap_ticket_source_denominator_includes_pyme_ticket(self):
+        db.session.add(
+            PymeTicket(
+                tenant_id=self.tenant.id,
+                pregunta="Incidencia empresarial geolocalizada",
+                asunto="Incidencia pyme",
+                categoria="denominador_pyme",
+                estado="nuevo",
+                nro_ticket=991001,
+                direccion="Calle Mitre 500, Junin",
+                latitud=-33.136,
+                longitud=-68.49,
+                fecha=datetime.now(timezone.utc),
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=tickets&categoria=denominador_pyme",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        ticket_source = ((payload.get("source_quality") or {}).get("sources") or {}).get("ticket") or {}
+        self.assertEqual((payload.get("location_quality") or {}).get("total_ticket_records"), 1)
+        self.assertEqual(ticket_source.get("records"), 1)
+        self.assertEqual(ticket_source.get("points"), 1)
+        self.assertEqual(ticket_source.get("coordinate_coverage_pct"), 100.0)
+
+    def test_operations_heatmap_extracts_nested_ticket_location_with_provenance_and_facets(self):
+        ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="luminarias_metadata",
+            descripcion="Luminaria informada con ubicacion estructurada",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=None,
+            longitud=None,
+            datos_extra={
+                "location": {
+                    "latitude": -33.136,
+                    "longitude": -68.49,
+                    "address": "San Martin 120, Ciudad de Junin",
+                    "barrio": "Centro",
+                }
+            },
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=luminarias_metadata&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "privileged_exact")
+        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
+        point = (payload.get("points") or [])[0]
+        self.assertEqual(point.get("category"), "luminarias_metadata")
+        self.assertEqual(point.get("lat"), -33.136)
+        self.assertEqual(point.get("lng"), -68.49)
+        self.assertEqual(point.get("address"), "San Martin 120, Ciudad de Junin")
+        self.assertEqual(point.get("zone"), "centro")
+        provenance = point.get("location_provenance") or {}
+        self.assertEqual((provenance.get("coordinate") or {}).get("source"), "ticket_metadata")
+        self.assertEqual((provenance.get("address") or {}).get("source"), "ticket_metadata")
+        self.assertEqual((provenance.get("zone") or {}).get("source"), "ticket_metadata")
+        self.assertEqual(provenance.get("external_geocoding_calls"), 0)
+        self.assertFalse(provenance.get("writes_performed"))
+
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual(facets.get("contract_version"), "operations.heatmap.territorial_facets.v1")
+        self.assertEqual((facets.get("summary") or {}).get("ticket_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("mapped_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("records_with_address"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("records_with_explicit_zone"), 1)
+        self.assertEqual((facets.get("categories") or [])[0].get("key"), "luminarias_metadata")
+        self.assertEqual((facets.get("addresses") or [])[0].get("label"), "San Martin 120, Ciudad de Junin")
+        self.assertEqual((facets.get("explicit_zones") or [])[0].get("key"), "centro")
+        self.assertEqual((facets.get("provenance") or {}).get("external_geocoding_calls"), 0)
+        self.assertFalse((facets.get("provenance") or {}).get("writes_performed"))
+
+    def test_operations_heatmap_excludes_coordinates_outside_configured_tenant_jurisdiction(self):
+        inside = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Reclamo dentro del municipio",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-33.136,
+            longitud=-68.49,
+            datos_extra={"address": "San Martin 120, Junin, Mendoza"},
+        )
+        outside = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Coordenada de otra ciudad homonima",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-34.5889,
+            longitud=-60.9462,
+            datos_extra={"address": "Junin, Buenos Aires"},
+        )
+        san_martin = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Coordenada del vecino San Martin dentro del envelope legado",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-33.0808,
+            longitud=-68.4895,
+            datos_extra={"address": "San Martin, Mendoza"},
+        )
+        palmira = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Coordenada de Palmira dentro del envelope legado",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-33.0567,
+            longitud=-68.4954,
+            datos_extra={"address": "Palmira, Mendoza"},
+        )
+        db.session.add_all([inside, outside, san_martin, palmira])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=jurisdiction_probe&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
+        self.assertEqual(len(payload.get("points") or []), 1)
+        self.assertEqual((payload.get("points") or [])[0].get("id"), f"tenant_ticket:{inside.id}")
+        self.assertTrue((payload.get("jurisdiction") or {}).get("containment_verified"))
+        self.assertEqual((payload.get("jurisdiction") or {}).get("containment_method"), "point_in_polygon")
+        self.assertEqual((payload.get("jurisdiction") or {}).get("truth_boundary"), "official_department_boundary_generalized")
+        visible_ids = {point.get("id") for point in payload.get("points") or []}
+        self.assertNotIn(f"tenant_ticket:{san_martin.id}", visible_ids)
+        self.assertNotIn(f"tenant_ticket:{palmira.id}", visible_ids)
+        self.assertTrue(all(-68.6 <= point.get("lng") <= -68.3 for point in payload.get("points") or []))
+
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertTrue(jurisdiction.get("enforced"))
+        self.assertEqual(jurisdiction.get("city"), "Junín")
+        self.assertEqual(jurisdiction.get("state_name"), "Mendoza")
+        self.assertEqual((jurisdiction.get("source") or {}).get("ref"), "municipios/junin/geo.json")
+        authority = jurisdiction.get("boundary_authority") or {}
+        self.assertEqual(authority.get("kind"), "official")
+        self.assertEqual(authority.get("department_code"), "09")
+        self.assertEqual(authority.get("global_id"), "{FEA13AA1-46F3-4570-BAEE-188FF11AFF94}")
+        self.assertEqual(
+            authority.get("snapshot_sha256"),
+            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
+        )
+        self.assertIn("ide.mendoza.gov.ar", authority.get("source_ref") or "")
+        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 3)
+        self.assertEqual(jurisdiction.get("review_candidate_count"), 3)
+
+        quality = payload.get("location_quality") or {}
+        self.assertEqual(quality.get("ticket_records_outside_jurisdiction"), 3)
+        self.assertEqual(quality.get("ticket_records_with_persisted_coordinates"), 4)
+        review = payload.get("jurisdiction_review") or {}
+        self.assertEqual(review.get("candidate_count"), 3)
+        self.assertEqual(
+            {candidate.get("record_id") for candidate in review.get("candidates") or []},
+            {outside.id, san_martin.id, palmira.id},
+        )
+        self.assertTrue(
+            all(
+                candidate.get("reason_code") == "coordinates_outside_verified_jurisdiction"
+                for candidate in review.get("candidates") or []
+            )
+        )
+
+        facets = payload.get("territorial_facets") or {}
+        category = next(
+            item for item in facets.get("categories") or []
+            if item.get("key") == "jurisdiction_probe"
+        )
+        self.assertEqual(category.get("count"), 4)
+        self.assertEqual(category.get("mapped_count"), 1)
+        self.assertEqual(category.get("outside_jurisdiction_count"), 3)
+        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 3)
+
+        resolved = resolve_tenant_jurisdiction(self.tenant)
+        self.assertEqual(coordinate_jurisdiction_status(-33.136, -68.49, resolved), "within")
+        self.assertEqual(coordinate_jurisdiction_status(-33.0808, -68.4895, resolved), "outside")
+        self.assertEqual(coordinate_jurisdiction_status(-33.0567, -68.4954, resolved), "outside")
+        self.assertEqual(coordinate_jurisdiction_status(-34.9, -60.0, resolved), "outside")
+
+    def test_government_survey_heatmap_keeps_only_contained_real_coordinates(self):
+        survey = EncEncuesta(
+            tenant_id=self.tenant.id,
+            slug="survey-jurisdiction-heatmap",
+            titulo="Consulta territorial",
+            descripcion="Prueba de evidencia territorial",
+            tipo="opinion",
+            estado="publicada",
+        )
+        db.session.add(survey)
+        db.session.flush()
+        inside = EncRespuesta(
+            encuesta_id=survey.id,
+            tenant_id=self.tenant.id,
+            huella_unica="survey-inside-junin",
+            canal="survey_gate_test",
+            response_origin="real",
+            lat=-33.136,
+            lng=-68.49,
+            metadata_payload={"categoria": "alumbrado"},
+            submitted_at=datetime.now(timezone.utc),
+        )
+        outside = EncRespuesta(
+            encuesta_id=survey.id,
+            tenant_id=self.tenant.id,
+            huella_unica="survey-outside-junin",
+            canal="survey_gate_test",
+            response_origin="real",
+            lat=-34.5889,
+            lng=-60.9462,
+            metadata_payload={"categoria": "alumbrado"},
+            submitted_at=datetime.now(timezone.utc),
+        )
+        db.session.add_all([inside, outside])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=survey&channel=survey_gate_test",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        points = payload.get("points") or []
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0].get("id"), f"survey_response:{inside.id}")
+        self.assertEqual(points[0].get("lat"), inside.lat)
+        self.assertEqual(points[0].get("lng"), inside.lng)
+        self.assertEqual(points[0].get("coordinate_jurisdiction_status"), "within")
+        self.assertTrue(points[0].get("containment_verified"))
+        self.assertIn("ide.mendoza.gov.ar", points[0].get("source_ref") or "")
+        self.assertEqual(
+            points[0].get("snapshot_sha256"),
+            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
+        )
+        self.assertEqual(
+            points[0].get("jurisdiction_evidence"),
+            {
+                "contract_version": "operations.point_jurisdiction_evidence.v1",
+                "containment_verified": True,
+                "coordinate_jurisdiction_status": "within",
+                "containment_method": "point_in_polygon",
+                "authority_kind": "official",
+                "source_ref": points[0].get("source_ref"),
+                "snapshot_sha256": points[0].get("snapshot_sha256"),
+            },
+        )
+        self.assertEqual((payload.get("summary") or {}).get("survey_points"), 1)
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertTrue(jurisdiction.get("containment_verified"))
+        authority = jurisdiction.get("boundary_authority") or {}
+        self.assertEqual(authority.get("kind"), "official")
+        self.assertTrue(authority.get("source_ref"))
+        self.assertTrue(authority.get("snapshot_sha256"))
+        self.assertEqual(jurisdiction.get("excluded_by_source"), [
+            {"key": "surveys", "label": "surveys", "count": 1}
+        ])
+        visible_ids = {point.get("id") for point in points}
+        self.assertNotIn(f"survey_response:{outside.id}", visible_ids)
+        geo_feature = (payload.get("geo_layers") or {}).get("points", {}).get(
+            "features", []
+        )[0]
+        self.assertTrue(
+            (geo_feature.get("properties") or {}).get("containment_verified")
+        )
+        self.assertEqual(
+            (geo_feature.get("properties") or {}).get("snapshot_sha256"),
+            points[0].get("snapshot_sha256"),
+        )
+
+    def test_municipal_heatmap_fails_closed_when_official_boundary_hash_is_invalid(self):
+        broken_admin = User(
+            name="Boundary admin",
+            email="boundary-admin@test.com",
+            rol="admin",
+            tenant_slug="broken-municipio",
+        )
+        broken_admin.set_password("secret123")
+        db.session.add(broken_admin)
+        db.session.flush()
+        broken_tenant = TenantProfile(
+            slug="broken-municipio",
+            nombre="Municipio con limite dañado",
+            tipo="municipio",
+            municipio_id=broken_admin.id,
+            plan="full",
+        )
+        db.session.add(broken_tenant)
+        db.session.flush()
+        broken_admin.tenant_id = broken_tenant.id
+        blocked_ticket = TenantTicket(
+            tenant_id=broken_tenant.id,
+            user_id=broken_admin.id,
+            categoria="broken_boundary_probe",
+            descripcion="Coordenada que el envelope legado aceptaria",
+            estado="nuevo",
+            origen="web",
+            latitud=-33.136,
+            longitud=-68.49,
+        )
+        blocked_outside_envelope = TenantTicket(
+            tenant_id=broken_tenant.id,
+            user_id=broken_admin.id,
+            categoria="broken_boundary_probe",
+            descripcion="Coordenada fuera del envelope que tampoco prueba jurisdiccion oficial",
+            estado="nuevo",
+            origen="web",
+            latitud=-34.5889,
+            longitud=-60.9462,
+        )
+        db.session.add_all([blocked_ticket, blocked_outside_envelope])
+        broken_survey = EncEncuesta(
+            tenant_id=broken_tenant.id,
+            slug="broken-boundary-survey",
+            titulo="Encuesta sin autoridad territorial válida",
+            descripcion="No debe alimentar el mapa",
+            tipo="opinion",
+            estado="publicada",
+        )
+        db.session.add(broken_survey)
+        db.session.flush()
+        db.session.add(
+            EncRespuesta(
+                encuesta_id=broken_survey.id,
+                tenant_id=broken_tenant.id,
+                huella_unica="broken-boundary-survey-response",
+                canal="web",
+                response_origin="real",
+                lat=-33.136,
+                lng=-68.49,
+                metadata_payload={"categoria": "broken_boundary_probe"},
+                submitted_at=datetime.now(timezone.utc),
+            )
+        )
+        db.session.commit()
+
+        token = issue_token(
+            {
+                "user_id": broken_admin.id,
+                "rol": broken_admin.rol,
+                "tenant_slug": broken_admin.tenant_slug,
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "municipios" / broken_tenant.slug
+            config_dir.mkdir(parents=True)
+            boundary_payload = {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "departamen": "BROKEN MUNICIPIO",
+                            "codigo_dep": "XX",
+                            "globalid": "{BROKEN-BOUNDARY-FIXTURE}",
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [-68.6, -33.2],
+                                [-68.3, -33.2],
+                                [-68.3, -33.0],
+                                [-68.6, -33.0],
+                                [-68.6, -33.2],
+                            ]],
+                        },
+                    }
+                ],
+            }
+            (config_dir / "boundary.geojson").write_text(
+                json.dumps(boundary_payload),
+                encoding="utf-8",
+            )
+            (config_dir / "geo.json").write_text(
+                json.dumps(
+                    {
+                        "city": "Broken Municipio",
+                        "state": "Mendoza",
+                        "country": "AR",
+                        "bounds": [-68.6, -33.2, -68.3, -33.0],
+                        "boundary": {
+                            "file": "boundary.geojson",
+                            "snapshot_sha256": "0" * 64,
+                            "authority": {
+                                "kind": "official",
+                                "publisher": "Fixture controlada",
+                                "source_url": "https://example.invalid/official-boundary",
+                                "department_code": "XX",
+                                "global_id": "{BROKEN-BOUNDARY-FIXTURE}",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"DATA_DIR": temp_dir}, clear=False):
+                response = self.client.get(
+                    "/api/v2/analytics/operations/heatmap"
+                    "?include_ai=0&categoria=broken_boundary_probe",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Tenant-Slug": broken_tenant.slug,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("points"), [])
+        self.assertEqual(payload.get("cells"), [])
+        self.assertEqual(payload.get("hotspots"), [])
+        self.assertEqual(payload.get("operational_hotspots"), [])
+        geo_layers = payload.get("geo_layers") or {}
+        self.assertEqual(((geo_layers.get("points") or {}).get("features")), [])
+        self.assertEqual(((geo_layers.get("cells") or {}).get("features")), [])
+        self.assertEqual(((geo_layers.get("hotspots") or {}).get("features")), [])
+        self.assertNotIn("boundaries", geo_layers)
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertFalse(jurisdiction.get("containment_verified"))
+        self.assertEqual(jurisdiction.get("containment_method"), "operational_envelope")
+        self.assertEqual(jurisdiction.get("map_eligibility_state"), "blocked")
+        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 3)
+        self.assertEqual(jurisdiction.get("excluded_by_source"), [])
+        self.assertEqual(jurisdiction.get("unverified_coordinate_records"), 3)
+        self.assertEqual(
+            jurisdiction.get("unverified_by_source"),
+            [
+                {"key": "tickets", "label": "tickets", "count": 2},
+                {"key": "surveys", "label": "surveys", "count": 1},
+            ],
+        )
+        self.assertEqual(jurisdiction.get("review_candidate_count"), 2)
+        self.assertEqual((payload.get("summary") or {}).get("points"), 0)
+        self.assertEqual((payload.get("quality") or {}).get("reason_code"), "official_jurisdiction_boundary_unavailable")
+        self.assertEqual(
+            (payload.get("render_contract") or {}).get("empty_reason"),
+            "official_jurisdiction_boundary_unavailable",
+        )
+        self.assertFalse((payload.get("render_contract") or {}).get("can_render_heatmap"))
+        self.assertEqual(
+            (payload.get("location_quality") or {}).get("ticket_records_unverified_jurisdiction"),
+            2,
+        )
+        self.assertEqual(
+            (payload.get("location_quality") or {}).get("ticket_records_outside_jurisdiction"),
+            0,
+        )
+        self.assertEqual(
+            ((payload.get("territorial_facets") or {}).get("summary") or {}).get("records_unverified_jurisdiction"),
+            2,
+        )
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 0)
+        category = next(
+            item
+            for item in facets.get("categories") or []
+            if item.get("key") == "broken_boundary_probe"
+        )
+        self.assertEqual(category.get("outside_jurisdiction_count"), 0)
+        self.assertEqual(category.get("unverified_jurisdiction_count"), 2)
+        review = payload.get("jurisdiction_review") or {}
+        self.assertEqual(review.get("reason_code"), "official_jurisdiction_boundary_unavailable")
+        self.assertEqual(review.get("candidate_count"), 2)
+        self.assertTrue(
+            all(
+                candidate.get("reason_code") == "official_jurisdiction_boundary_unavailable"
+                for candidate in review.get("candidates") or []
+            )
+        )
+
+    def test_tenant_jurisdiction_never_uses_junin_config_for_an_unconfigured_tenant(self):
+        from services.territorial_evidence import resolve_tenant_jurisdiction
+
+        foreign = TenantProfile(
+            slug="foreign-unconfigured-jurisdiction",
+            nombre="Tenant sin jurisdiccion",
+            tipo="pyme",
+            pyme_id=self.admin.id,
+            plan="full",
+        )
+
+        contract = resolve_tenant_jurisdiction(foreign)
+
+        self.assertFalse(contract.get("enforced"))
+        self.assertEqual(contract.get("state"), "unconfigured")
+        self.assertIsNone(contract.get("bounds"))
+        self.assertEqual(contract.get("truth_boundary"), "no_tenant_specific_envelope")
+
+    def test_unenforced_non_government_tenant_with_valid_point_is_map_eligible(self):
+        owner = User(
+            name="Pyme territorial",
+            email="pyme-territorial@test.com",
+            rol="admin",
+            tenant_slug="pyme-territorial",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="pyme-territorial",
+            nombre="Pyme territorial",
+            tipo="pyme",
+            pyme_id=owner.id,
+            plan="full",
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        ticket = TenantTicket(
+            tenant_id=tenant.id,
+            user_id=owner.id,
+            categoria="entrega_comercial",
+            descripcion="Punto valido de cobertura comercial",
+            estado="nuevo",
+            origen="web",
+            latitud=-33.136,
+            longitud=-68.49,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        token = issue_token(
+            {
+                "user_id": owner.id,
+                "rol": owner.rol,
+                "tenant_slug": owner.tenant_slug,
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+        )
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=tickets&categoria=entrega_comercial",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Tenant-Slug": tenant.slug,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(len(payload.get("points") or []), 1)
+        self.assertEqual((payload.get("points") or [])[0].get("ticket_id"), ticket.id)
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertFalse(jurisdiction.get("enforced"))
+        self.assertEqual(jurisdiction.get("map_eligibility_state"), "eligible")
+        self.assertEqual(
+            jurisdiction.get("map_eligibility_reason_code"),
+            "verified_jurisdiction_not_required",
+        )
+        self.assertEqual((payload.get("render_contract") or {}).get("state"), "ready")
+        self.assertTrue((payload.get("render_contract") or {}).get("can_render_heatmap"))
+
+    def test_geojson_array_root_fails_closed_without_breaking_heatmap_endpoint(self):
+        owner = User(
+            name="Municipio GeoJSON invalido",
+            email="geojson-array@test.com",
+            rol="admin",
+            tenant_slug="geojson-array",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="geojson-array",
+            nombre="GeoJSON Array",
+            tipo="municipio",
+            municipio_id=owner.id,
+            plan="full",
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        db.session.add(
+            TenantTicket(
+                tenant_id=tenant.id,
+                user_id=owner.id,
+                categoria="geojson_array_probe",
+                descripcion="No debe publicarse sin limite oficial valido",
+                estado="nuevo",
+                origen="web",
+                latitud=-33.136,
+                longitud=-68.49,
+            )
+        )
+        db.session.commit()
+
+        token = issue_token(
+            {
+                "user_id": owner.id,
+                "rol": owner.rol,
+                "tenant_slug": owner.tenant_slug,
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+        )
+        malformed_boundary = json.dumps([{"type": "FeatureCollection", "features": []}]).encode("utf-8")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "municipios" / tenant.slug
+            config_dir.mkdir(parents=True)
+            (config_dir / "boundary.geojson").write_bytes(malformed_boundary)
+            (config_dir / "geo.json").write_text(
+                json.dumps(
+                    {
+                        "city": "GeoJSON Array",
+                        "state": "Mendoza",
+                        "country": "AR",
+                        "bounds": [-68.6, -33.2, -68.3, -33.0],
+                        "boundary": {
+                            "file": "boundary.geojson",
+                            "snapshot_sha256": hashlib.sha256(malformed_boundary).hexdigest(),
+                            "authority": {
+                                "kind": "official",
+                                "publisher": "Fixture controlada",
+                                "source_url": "https://example.invalid/official-boundary",
+                                "department_code": "XX",
+                                "global_id": "{ARRAY-ROOT}",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"DATA_DIR": temp_dir}, clear=False):
+                response = self.client.get(
+                    "/api/v2/analytics/operations/heatmap"
+                    "?include_ai=0&source=tickets&categoria=geojson_array_probe",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Tenant-Slug": tenant.slug,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("points"), [])
+        self.assertEqual((payload.get("jurisdiction") or {}).get("map_eligibility_state"), "blocked")
+        self.assertEqual(
+            (payload.get("jurisdiction") or {}).get("map_eligibility_reason_code"),
+            "official_jurisdiction_boundary_unavailable",
+        )
+        self.assertEqual(
+            (payload.get("jurisdiction_review") or {}).get("reason_code"),
+            "official_jurisdiction_boundary_unavailable",
+        )
+
+    def test_multipolygon_containment_respects_holes_and_disjoint_polygons(self):
+        geometry = _validated_boundary_geometry(
+            {
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [
+                        [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+                        [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]],
+                    ],
+                    [[[20, 20], [22, 20], [22, 22], [20, 22], [20, 20]]],
+                ],
+            }
+        )
+
+        self.assertIsNotNone(geometry)
+        self.assertTrue(_boundary_contains_position(geometry or {}, 2, 2))
+        self.assertFalse(_boundary_contains_position(geometry or {}, 5, 5))
+        self.assertTrue(_boundary_contains_position(geometry or {}, 21, 21))
+        self.assertFalse(_boundary_contains_position(geometry or {}, 15, 15))
+
+    def test_nested_location_without_scalar_address_is_not_stringified(self):
+        from services.operational_intelligence import _tenant_ticket_record
+
+        record = _tenant_ticket_record(
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                descripcion="GPS sin direccion textual",
+                categoria="baches",
+                datos_extra={"location": {"latitude": -33.08, "longitude": -68.47}},
+            )
+        )
+
+        self.assertIsNone(record.get("address"))
+        self.assertEqual(record.get("lat"), -33.08)
+        self.assertEqual(record.get("lng"), -68.47)
+        self.assertEqual(
+            ((record.get("location_provenance") or {}).get("coordinate") or {}).get("source"),
+            "ticket_metadata",
+        )
+
+    def test_territorial_category_uses_exact_lighting_aliases_and_preserves_raw_value(self):
+        from services.operational_intelligence import _tenant_ticket_record
+
+        expected = {
+            "luminaria": "luminarias",
+            "Luminarias": "luminarias",
+            "alumbrado": "luminarias",
+            "Alumbrado Publico": "luminarias",
+            "Alumbrado Público": "luminarias",
+            "alumbrado roto": "alumbrado roto",
+        }
+
+        for raw, canonical in expected.items():
+            with self.subTest(raw=raw):
+                record = _tenant_ticket_record(
+                    TenantTicket(
+                        tenant_id=self.tenant.id,
+                        descripcion="Prueba de taxonomia territorial",
+                        categoria=raw,
+                    )
+                )
+                self.assertEqual(record.get("category"), canonical)
+                self.assertEqual(record.get("raw_category"), raw)
+                provenance = record.get("category_provenance") or {}
+                self.assertFalse(provenance.get("fuzzy_matching"))
+                self.assertFalse(provenance.get("writes_performed"))
+                self.assertEqual(
+                    provenance.get("method"),
+                    "exact_alias" if canonical != raw.strip().lower() else "identity",
+                )
+
+    def test_metadata_ubicacion_requires_review_and_is_not_automatically_geocoded(self):
+        ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="alumbrado publico",
+            descripcion="Referencia vecinal sin direccion validada",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"ubicacion": "al lado de la plaza principal"},
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=alumbrado%20publico&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("geocoding") or {}).get("candidate_count"), 0)
+        review = payload.get("location_review") or {}
+        self.assertEqual(review.get("candidate_count"), 1)
+        self.assertFalse(review.get("automatic_geocoding"))
+        candidate = (review.get("candidates") or [])[0]
+        self.assertEqual(candidate.get("record_id"), ticket.id)
+        self.assertEqual(candidate.get("category"), "luminarias")
+        self.assertEqual(candidate.get("raw_category"), "alumbrado publico")
+        self.assertEqual(
+            candidate.get("reported_location_text"),
+            "al lado de la plaza principal",
+        )
+        location = candidate.get("location_provenance") or {}
+        reported = location.get("reported_location_text") or {}
+        self.assertTrue(reported.get("requires_review"))
+        self.assertEqual(reported.get("quality"), "reported_location_text")
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("records_with_address"), 0)
+        category = (facets.get("categories") or [])[0]
+        self.assertEqual(category.get("key"), "luminarias")
+        self.assertEqual(
+            (category.get("raw_categories") or [])[0].get("label"),
+            "alumbrado publico",
+        )
+
+    def test_employee_heatmap_omits_exact_reported_location_review_queue(self):
+        db.session.add(
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="Luminarias",
+                descripcion="Referencia privada",
+                estado="nuevo",
+                origen="whatsapp",
+                datos_extra={"ubicacion": "frente a la vivienda azul"},
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&source=tickets",
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        self.assertNotIn("location_review", payload)
+        serialized = json.dumps(payload, ensure_ascii=False).lower()
+        self.assertNotIn("vivienda azul", serialized)
+
     def test_operations_heatmap_returns_points_cells_and_layers(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())
 
@@ -916,13 +2031,23 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertTrue(ticket_point.get("overdue"))
         self.assertEqual(ticket_point.get("zone"), "centro")
         self.assertEqual(ticket_point.get("assignee_id"), self.employee.id)
+        self.assertEqual(ticket_point.get("source_model"), "TenantTicket")
+        self.assertEqual(ticket_point.get("ticket_id"), self.ticket.id)
         ticket_actions = {item.get("id"): item for item in ticket_point.get("actions") or []}
         self.assertEqual(ticket_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
         self.assertEqual(ticket_actions.get("open_record", {}).get("frontend_path"), ticket_actions.get("open_record", {}).get("href"))
-        self.assertIn("/perfil?tab=tickets", ticket_actions.get("open_record", {}).get("href") or "")
-        self.assertIn(f"ticket_id={self.ticket.id}", ticket_actions.get("open_record", {}).get("href") or "")
+        self.assertIn(
+            f"/perfil?tab=tickets&source_model=TenantTicket&ticket_id={self.ticket.id}",
+            ticket_actions.get("open_record", {}).get("href") or "",
+        )
+        self.assertEqual(ticket_actions.get("open_record", {}).get("source_model"), "TenantTicket")
+        self.assertEqual(ticket_actions.get("open_record", {}).get("ticket_id"), self.ticket.id)
         self.assertEqual(ticket_actions.get("update_location", {}).get("method"), "PATCH")
         self.assertEqual(ticket_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
+        self.assertIn(
+            f"/perfil?tab=tickets&source_model=TenantTicket&ticket_id={self.ticket.id}",
+            ticket_actions.get("update_location", {}).get("href") or "",
+        )
         self.assertIn("focus=open_geocoding_queue", ticket_actions.get("update_location", {}).get("href") or "")
 
         categories = {item.get("key") for item in (payload.get("segments") or {}).get("category") or []}
@@ -946,14 +2071,56 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("45_59", age_ranges)
         self.assertIn("60_plus", age_ranges)
 
+    def test_ticket_map_actions_preserve_opaque_identity_and_fail_closed(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        from services.operational_intelligence import _ticket_action_contract
+
+        opaque_ticket_id = "0007:A/B?#"
+        record = {
+            "source": "tenant_ticket",
+            "source_model": "TenantTicket",
+            "id": opaque_ticket_id,
+            "category": "luminarias",
+            "channel": "whatsapp",
+            "status": "nuevo",
+        }
+
+        actions = {item.get("id"): item for item in _ticket_action_contract(record)}
+        open_action = actions.get("open_record") or {}
+        parsed_href = urlsplit(open_action.get("href") or "")
+        parsed_query = parse_qs(parsed_href.query, keep_blank_values=True)
+
+        self.assertEqual(parsed_href.path, "/perfil")
+        self.assertEqual(parsed_query.get("tab"), ["tickets"])
+        self.assertEqual(parsed_query.get("source_model"), ["TenantTicket"])
+        self.assertEqual(parsed_query.get("ticket_id"), [opaque_ticket_id])
+        self.assertEqual(open_action.get("ticket_id"), opaque_ticket_id)
+        self.assertEqual(open_action.get("source_model"), "TenantTicket")
+        self.assertEqual(open_action.get("endpoint"), "/api/v2/tickets/0007%3AA%2FB%3F%23")
+
+        invalid_records = [
+            {**record, "source_model": None},
+            {**record, "source_model": "MunicipioTicket"},
+            {**record, "id": None},
+            {**record, "id": ""},
+            {**record, "id": " 0007 "},
+            {**record, "id": True},
+            {**record, "id": 7.0},
+            {key: value for key, value in record.items() if key != "source"},
+        ]
+        for invalid_record in invalid_records:
+            with self.subTest(invalid_record=invalid_record):
+                self.assertEqual(_ticket_action_contract(invalid_record), [])
+
     def test_operations_heatmap_employee_is_category_scoped_and_k_aggregated(self):
-        allowed_lat = -34.612345
-        allowed_lng = -58.398765
+        allowed_lat = -33.112345
+        allowed_lng = -68.498765
         restricted_centroids = {
-            (-34.622, -58.412),
-            (-34.632, -58.422),
-            (-34.642, -58.432),
-            (-34.652, -58.442),
+            (-33.122, -68.512),
+            (-33.132, -68.522),
+            (-33.142, -68.532),
+            (-33.152, -68.542),
         }
 
         for index in range(5):
@@ -981,8 +2148,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     descripcion=f"tenant restricted secret {index}",
                     estado="nuevo",
                     origen="web",
-                    latitud=-34.622345,
-                    longitud=-58.411765,
+                    latitud=-33.122345,
+                    longitud=-68.511765,
                     datos_extra={"address": f"Tenant restringido {index}"},
                 )
             )
@@ -995,8 +2162,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     categoria="secreto_municipio",
                     estado="nuevo",
                     direccion=f"Municipio restringido {index}",
-                    latitud=-34.632345,
-                    longitud=-58.421765,
+                    latitud=-33.132345,
+                    longitud=-68.521765,
                     fecha=datetime.now(timezone.utc),
                 )
             )
@@ -1009,8 +2176,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     estado="nuevo",
                     nro_ticket=910000 + index,
                     direccion=f"Pyme restringido {index}",
-                    latitud=-34.642345,
-                    longitud=-58.431765,
+                    latitud=-33.142345,
+                    longitud=-68.531765,
                     fecha=datetime.now(timezone.utc),
                 )
             )
@@ -1021,8 +2188,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     channel="web",
                     event_name=f"non_ticket_restricted_{index}",
                     metadata_payload={"categoria": "fuente_sin_scope"},
-                    lat=-34.652345,
-                    lng=-58.441765,
+                    lat=-33.152345,
+                    lng=-68.541765,
                     ts=datetime.now(timezone.utc),
                 )
             )
@@ -1048,6 +2215,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertNotIn("points", payload)
         self.assertNotIn("category_layers", payload)
         self.assertNotIn("geocoding", payload)
+        self.assertNotIn("territorial_facets", payload)
         self.assertNotIn("actions", json.dumps(payload))
 
         def assert_no_sensitive_keys(value):
@@ -1066,7 +2234,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         cells = payload.get("cells") or []
         self.assertEqual(len(cells), 1)
         cell = cells[0]
-        self.assertEqual((cell.get("lat"), cell.get("lng")), (-34.612, -58.399))
+        self.assertEqual((cell.get("lat"), cell.get("lng")), (-33.112, -68.499))
         self.assertEqual(cell.get("count"), 5)
         self.assertGreaterEqual(cell.get("count"), privacy.get("k_min"))
         self.assertNotIn((cell.get("lat"), cell.get("lng")), restricted_centroids)
@@ -1075,7 +2243,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
 
         features = (((payload.get("geo_layers") or {}).get("cells") or {}).get("features") or [])
         self.assertEqual(len(features), 1)
-        self.assertEqual((features[0].get("geometry") or {}).get("coordinates"), [-58.399, -34.612])
+        self.assertEqual((features[0].get("geometry") or {}).get("coordinates"), [-68.499, -33.112])
         self.assertEqual((features[0].get("properties") or {}).get("count"), 5)
         self.assertNotIn("id", features[0].get("properties") or {})
 
@@ -1103,8 +2271,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.session.add(category)
         db.session.flush()
         self.employee.categorias_ticket.append(category)
-        allowed_lat = -34.712345
-        allowed_lng = -58.498765
+        allowed_lat = -33.132345
+        allowed_lng = -68.518765
         for index in range(5):
             db.session.add(
                 MunicipioTicket(
@@ -1133,9 +2301,57 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         cell = next(
             item
             for item in payload.get("cells") or []
-            if (item.get("lat"), item.get("lng")) == (-34.712, -58.499)
+            if (item.get("lat"), item.get("lng")) == (-33.132, -68.519)
         )
         self.assertEqual(cell.get("count"), 5)
+
+    def test_operations_heatmap_employee_scope_survives_exact_category_alias(self):
+        alias_employee = User(
+            name="Operador Alumbrado",
+            email="operador-alumbrado@test.com",
+            password_hash="hash",
+            rol="empleado",
+            tenant_id=self.tenant.id,
+            tenant_slug=self.tenant.slug,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {"categorias": ["alumbrado publico"]}
+            },
+        )
+        db.session.add(alias_employee)
+        allowed_lat = -33.102345
+        allowed_lng = -68.488765
+        for index in range(5):
+            db.session.add(
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="Alumbrado Publico",
+                    descripcion=f"Alumbrado permitido {index}",
+                    estado="nuevo",
+                    origen="whatsapp",
+                    latitud=allowed_lat,
+                    longitud=allowed_lng,
+                )
+            )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=luminarias",
+            headers=self._auth_for(alias_employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        cell = next(
+            item
+            for item in payload.get("cells") or []
+            if (item.get("lat"), item.get("lng")) == (-33.102, -68.489)
+        )
+        self.assertEqual(cell.get("count"), 5)
+        self.assertNotIn("raw_category", json.dumps(payload))
+        self.assertNotIn("Alumbrado Publico", json.dumps(payload))
 
     def test_operations_heatmap_employee_empty_scope_fails_closed_before_aggregation(self):
         empty_scope_employee = User(
@@ -1221,7 +2437,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
 
         bbox_response = self.client.get(
-            "/api/v2/analytics/operations/heatmap?include_ai=0&bbox=-58.38165,-34.60375,-58.38155,-34.60365",
+            "/api/v2/analytics/operations/heatmap?include_ai=0&bbox=-68.49005,-33.13605,-68.48995,-33.13595",
             headers=self._auth(),
         )
         self.assertEqual(bbox_response.status_code, 200)
@@ -1293,6 +2509,240 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((operational_payload.get("applied_filters") or {}).get("sla_state"), ["breached"])
         self.assertEqual((operational_payload.get("applied_filters") or {}).get("assignee_id"), [str(self.employee.id)])
 
+    def test_municipal_catalog_category_is_batched_and_shared_by_heatmap_and_dashboard(self):
+        from services.operational_intelligence import _collect_ticket_records
+
+        category = CategoriaTicket(tenant_id=self.tenant.id, nombre="Obras Públicas")
+        db.session.add(category)
+        db.session.flush()
+        now = datetime.now(timezone.utc)
+        tickets = [
+            MunicipioTicket(
+                tenant_id=self.tenant.id,
+                municipio_id=self.admin.id,
+                pregunta=f"Caso catálogo {index}",
+                categoria="Etiqueta anterior",
+                categoria_id=category.id,
+                estado="nuevo",
+                latitud=-33.136,
+                longitud=-68.49,
+                fecha=now,
+            )
+            for index in range(2)
+        ]
+        db.session.add_all(tickets)
+        db.session.commit()
+        category_queries = []
+
+        def capture_category_query(_connection, _cursor, statement, _parameters, _context, _executemany):
+            if "FROM categorias_ticket" in statement:
+                category_queries.append(statement)
+
+        event.listen(db.engine, "before_cursor_execute", capture_category_query)
+        try:
+            records = _collect_ticket_records(self.tenant, now - timedelta(days=1), now + timedelta(days=1))
+        finally:
+            event.remove(db.engine, "before_cursor_execute", capture_category_query)
+        catalog_records = [record for record in records if record.get("id") in {ticket.id for ticket in tickets} and record.get("source_model") == "MunicipioTicket"]
+        self.assertEqual(len(category_queries), 1)
+        self.assertEqual(len(catalog_records), 2)
+        self.assertTrue(all(record["category"] == "obras públicas" for record in catalog_records))
+        self.assertTrue(all(record["raw_category"] == "Etiqueta anterior" for record in catalog_records))
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            query_string={"include_ai": "0", "source": "tickets", "categoria": "Obras Públicas"},
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(len(payload["points"]), 2)
+        self.assertEqual(payload["points"][0]["category"], "obras públicas")
+        self.assertEqual(payload["points"][0]["raw_category"], "Etiqueta anterior")
+        authority = payload["points"][0]["category_authority"]
+        self.assertTrue(authority["verified"])
+        self.assertTrue(authority["conflict"])
+        self.assertEqual(authority["source"], "tenant_category_catalog")
+        from routes.ticket import serialize_ticket_to_json
+        crm_ticket = serialize_ticket_to_json(tickets[0], "municipio", compact=True)
+        self.assertEqual(crm_ticket["categoria"], "Obras Públicas")
+        self.assertEqual(crm_ticket["category_authority"], authority)
+
+        dashboard = self.client.get("/api/v2/analytics/operations/dashboard", headers=self._auth()).get_json()
+        categories = {item["key"]: item["count"] for item in dashboard["tickets"]["by_category"]}
+        self.assertEqual(categories.get("obras públicas"), 2)
+        self.assertNotIn("etiqueta anterior", categories)
+        self.assertTrue(all(db.session.get(MunicipioTicket, ticket.id).categoria == "Etiqueta anterior" for ticket in tickets))
+
+    def test_municipal_heatmap_does_not_resolve_a_foreign_tenant_category_id(self):
+        foreign_owner = User(name="Otro titular", email="foreign-catalog@test.com", rol="admin", password_hash="hash")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(slug="foreign-catalog", nombre="Otro catálogo", tipo="pyme", pyme_id=foreign_owner.id)
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_category = CategoriaTicket(tenant_id=foreign_tenant.id, nombre="Categoria extranjera reservada")
+        db.session.add(foreign_category)
+        db.session.flush()
+        ticket = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.admin.id,
+            pregunta="Referencia de categoría no válida",
+            categoria="Persistida local",
+            categoria_id=foreign_category.id,
+            estado="nuevo",
+            latitud=-33.136,
+            longitud=-68.49,
+            fecha=datetime.now(timezone.utc),
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            query_string={"include_ai": "0", "source": "tickets", "categoria": "Persistida local"},
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(len(payload["points"]), 1)
+        self.assertEqual(payload["points"][0]["category"], "persistida local")
+        self.assertFalse(payload["points"][0]["category_authority"]["verified"])
+        self.assertEqual(payload["points"][0]["category_authority"]["reason_code"], "category_not_found_in_tenant_catalog")
+        self.assertNotIn("Categoria extranjera reservada", json.dumps(payload, ensure_ascii=False))
+
+    def test_employee_catalog_filter_keeps_persisted_category_authorization_and_k_privacy(self):
+        category = CategoriaTicket(tenant_id=self.tenant.id, nombre="Obras renovadas")
+        db.session.add(category)
+        db.session.flush()
+        # Name-only authorization must remain tied to the persisted category.
+        self.employee.accesibilidad = {"employee_scope": {"categorias": ["Obras anteriores"]}}
+        tickets = [
+            MunicipioTicket(
+                tenant_id=self.tenant.id,
+                municipio_id=self.admin.id,
+                pregunta=f"Caso autorizado {index}",
+                categoria="Obras anteriores",
+                categoria_id=category.id,
+                estado="nuevo",
+                latitud=-33.136,
+                longitud=-68.49,
+                fecha=datetime.now(timezone.utc),
+            )
+            for index in range(5)
+        ]
+        db.session.add_all(tickets)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            query_string={"include_ai": "0", "categoria": "Obras renovadas"},
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["privacy"]["mode"], "employee_aggregated")
+        self.assertEqual(payload["summary"]["aggregated_observations"], 5)
+        self.assertEqual(payload["cells"][0]["count"], 5)
+        for private_key in ("category_authority", "raw_category", "category_provenance", "ticket_id"):
+            self.assertNotIn(private_key, json.dumps(payload))
+
+    def test_heatmap_distinguishes_outside_coordinates_from_missing_coordinates(self):
+        for lat, lng in ((-34.9, -60.0), (None, None)):
+            db.session.add(TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="diagnostico_ubicacion",
+                descripcion="Caso de diagnóstico territorial",
+                estado="nuevo",
+                origen="web",
+                latitud=lat,
+                longitud=lng,
+            ))
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&source=tickets&categoria=diagnostico_ubicacion",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["points"], [])
+        self.assertEqual(payload["quality"]["reason_code"], "coordinates_outside_jurisdiction")
+        self.assertEqual(payload["render_contract"]["empty_reason"], "coordinates_outside_jurisdiction")
+        self.assertEqual(payload["quality"]["ticket_records_with_persisted_coordinates"], 1)
+        self.assertEqual(payload["quality"]["ticket_records_without_coordinates"], 1)
+        self.assertEqual(payload["quality"]["ticket_records_without_validated_coordinates"], 2)
+        self.assertEqual(payload["quality"]["ticket_records_outside_jurisdiction"], 1)
+        self.assertIn("fuera de la jurisdicción", payload["map_narrative"]["headline"])
+
+        db.session.add(TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="diagnostico_ubicacion",
+            descripcion="Dirección pendiente",
+            estado="nuevo",
+            origen="web",
+            datos_extra={"address": "Av. San Martin 123, Junin"},
+        ))
+        db.session.commit()
+        mixed_response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&source=tickets&categoria=diagnostico_ubicacion",
+            headers=self._auth(),
+        )
+        self.assertEqual(mixed_response.status_code, 200, mixed_response.get_json())
+        mixed = mixed_response.get_json()
+        self.assertEqual(mixed["points"], [])
+        self.assertEqual(mixed["quality"]["reason_code"], "addresses_need_geocoding")
+        self.assertEqual(mixed["render_contract"]["empty_reason"], "addresses_need_geocoding")
+        self.assertEqual(mixed["quality"]["ticket_records_outside_jurisdiction"], 1)
+        self.assertEqual(mixed["quality"]["ticket_records_without_coordinates"], 2)
+        self.assertEqual(mixed["quality"]["pending_geocode"], 1)
+        self.assertIn("fuera de la jurisdicción", mixed["map_narrative"]["body"])
+
+    def test_dashboard_heatmap_publishes_period_population_and_aggregate_diagnosis(self):
+        response = self.client.get("/api/v2/analytics/operations/dashboard", headers=self._auth())
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        heatmap = payload["maps"]["heatmap"]
+        self.assertEqual(heatmap["period"], payload["period"])
+        self.assertEqual(heatmap["population"]["ticket_membership"], "created_in_period")
+        self.assertFalse(heatmap["population"]["current_open_queue"])
+        self.assertEqual(heatmap["quality"]["total_ticket_records"], payload["tickets"]["summary"]["total"])
+        self.assertEqual(heatmap["quality"]["coverage_numerator"], "tickets_with_validated_coordinates")
+        self.assertEqual(heatmap["quality"]["coverage_denominator"], "tickets_created_in_period_after_filters")
+        self.assertTrue(heatmap["jurisdiction"]["containment_verified"])
+        self.assertNotIn("candidates", heatmap["geocoding"])
+
+        employee_response = self.client.get(
+            "/api/v2/analytics/operations/dashboard",
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+        self.assertEqual(employee_response.status_code, 200, employee_response.get_json())
+        employee_heatmap = employee_response.get_json()["maps"]["heatmap"]
+        self.assertEqual(employee_heatmap["population"]["privacy_mode"], "employee_aggregated")
+        self.assertIsNone(employee_heatmap["quality"])
+        self.assertIsNone(employee_heatmap["jurisdiction"])
+
+    def test_survey_only_map_has_unavailable_ticket_coverage_instead_of_zero_percent(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&source=surveys",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertGreater(payload["summary"]["survey_points"], 0)
+        self.assertEqual(payload["quality"]["total_ticket_records"], 0)
+        self.assertIsNone(payload["quality"]["coverage_rate"])
+        self.assertIsNone(payload["quality"]["coverage_percent"])
+        self.assertIsNone(payload["location_quality"]["coordinate_coverage_pct"])
+        self.assertIsNone(payload["source_quality"]["sources"]["ticket"]["coordinate_coverage_pct"])
+        survey_source = payload["source_quality"]["sources"]["survey"]
+        self.assertIsNone(survey_source["coordinate_coverage_pct"])
+        self.assertEqual(survey_source["records_scope"], "visible_geo_points_only")
+        self.assertEqual(survey_source["coverage_reason_code"], "full_source_population_not_measured")
+        self.assertNotIn("None%", payload["map_narrative"]["body"])
+
     def test_operations_heatmap_includes_legacy_municipio_owner_tickets(self):
         response = self.client.get(
             "/api/v2/analytics/operations/heatmap?categoria=arbolado&source=tickets",
@@ -1350,15 +2800,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         db.session.commit()
 
-        token = jwt.encode(
+        token = issue_token(
             {
                 "user_id": empty_admin.id,
                 "rol": empty_admin.rol,
                 "tenant_slug": empty_admin.tenant_slug,
                 "exp": datetime.utcnow() + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         response = self.client.get(
             "/api/v2/analytics/operations/heatmap",
@@ -1383,6 +2831,17 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("viewport_presets") or {}).get("default_preset_id"), "tenant_region_empty")
         self.assertEqual((payload.get("ai_status") or {}).get("contract_version"), "operations.heatmap_ai_status.v1")
 
+    def test_operations_heatmap_queue_navigation_stays_disabled_when_there_are_no_pending_addresses(self):
+        response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        action = next(item for item in payload["geocoding"]["guidance"]["recommended_actions"]
+            if item["id"] == "open_geocoding_queue")
+        self.assertFalse(action["enabled"])
+        self.assertFalse(action["writes_enabled"])
+        self.assertEqual(action["tenant_slug"], self.tenant.slug)
+        self.assertNotIn("open_geocoding_queue", {item["id"] for item in payload["hotspot_actions"]["actions"]})
+
     def test_operations_heatmap_surfaces_addresses_pending_geocode(self):
         db.session.add(
             TenantTicket(
@@ -1397,6 +2856,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 datos_extra={
                     "title": "Residuo en vereda",
                     "address": "Av. San Martin 123, Junin",
+                    "zone": "centro",
                     "channel": "web",
                     "genero": "femenino",
                     "edad": 31,
@@ -1406,7 +2866,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.session.commit()
 
         response = self.client.get(
-            "/api/v2/analytics/operations/heatmap?categoria=limpieza&source=tickets",
+            "/api/v2/analytics/operations/heatmap?categoria=limpieza&zona=centro&source=tickets",
             headers=self._auth(),
         )
 
@@ -1418,10 +2878,34 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         candidate = ((payload.get("geocoding") or {}).get("candidates") or [])[0]
         self.assertEqual(candidate.get("address"), "Av. San Martin 123, Junin")
         self.assertEqual(candidate.get("reason_code"), "address_without_coordinates")
+        queue_identity = candidate.get("queue_identity") or {}
+        self.assertEqual(queue_identity.get("contract_version"), "operations.territorial_geocoding.v1")
+        self.assertEqual(queue_identity.get("tenant_id"), self.tenant.id)
+        self.assertEqual(queue_identity.get("record_source"), "tenant_ticket")
+        self.assertNotIn("address", queue_identity)
+        self.assertEqual(len(queue_identity.get("address_digest") or ""), 64)
+        processing = candidate.get("processing_contract") or {}
+        self.assertEqual(processing.get("default_mode"), "dry_run")
+        self.assertFalse(processing.get("provider_execution_enabled"))
+        self.assertFalse(processing.get("writes_enabled"))
+        execution = (payload.get("geocoding") or {}).get("execution") or {}
+        self.assertEqual(execution.get("service_contract"), "operations.territorial_geocoding.v1")
+        self.assertEqual(execution.get("audit_storage"), "territorial_geocoding_job+attempt")
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("pending_geocode_records"), 1)
+        self.assertEqual((facets.get("categories") or [])[0].get("key"), "limpieza")
+        self.assertEqual((facets.get("addresses") or [])[0].get("label"), "Av. San Martin 123, Junin")
+        self.assertEqual((facets.get("explicit_zones") or [])[0]["key"], "centro")
+        self.assertEqual((facets.get("truth_boundary") or {}).get("zones"), "explicit_persisted_fields_only")
+        self.assertEqual(candidate.get("source_model"), "TenantTicket")
+        self.assertEqual(candidate.get("ticket_id"), candidate.get("record_id"))
         candidate_actions = {item.get("id"): item for item in candidate.get("actions") or []}
         self.assertEqual(candidate_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
         self.assertEqual(candidate_actions.get("open_record", {}).get("frontend_path"), candidate_actions.get("open_record", {}).get("href"))
-        self.assertIn("/perfil?tab=tickets", candidate_actions.get("open_record", {}).get("href") or "")
+        self.assertIn(
+            f"/perfil?tab=tickets&source_model=TenantTicket&ticket_id={candidate.get('record_id')}",
+            candidate_actions.get("open_record", {}).get("href") or "",
+        )
         self.assertEqual(candidate_actions.get("update_location", {}).get("method"), "PATCH")
         self.assertEqual(candidate_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
         self.assertIn("focus=open_geocoding_queue", candidate_actions.get("update_location", {}).get("href") or "")
@@ -1441,6 +2925,24 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         }.get("open_geocoding_queue") or {}
         self.assertIn("/perfil?tab=tickets", guidance_action.get("href") or "")
         self.assertEqual(guidance_action.get("frontend_path"), guidance_action.get("href"))
+        self.assertTrue(guidance_action.get("enabled"))
+        self.assertFalse(guidance_action.get("writes_enabled"))
+        self.assertEqual(guidance_action.get("action_type"), "open_queue")
+        self.assertEqual(guidance_action.get("tenant_slug"), self.tenant.slug)
+        query = parse_qs(urlsplit(guidance_action["href"]).query)
+        self.assertEqual(query, {
+            "tab": ["tickets"], "tenant_slug": [self.tenant.slug],
+            "focus": ["open_geocoding_queue"], "categoria": ["limpieza"], "zona": ["centro"],
+        })
+        self.assertEqual(urlsplit(guidance_action["href"]).path, "/perfil")
+        self.assertIsNone(db.session.get(TenantTicket, candidate["ticket_id"]).latitud)
+        self.assertIsNone(db.session.get(TenantTicket, candidate["ticket_id"]).longitud)
+        labels = payload["ui"]["labels"]
+        self.assertEqual(labels["pending_geocode"], "Ubicaciones pendientes de revisión")
+        self.assertEqual(labels["realtime"], "Actualización por consulta")
+        self.assertIn("20 segundos", labels["realtime_poll_description"])
+        self.assertIn("No indica una conexión en vivo", labels["realtime_poll_description"])
+        self.assertEqual(labels["reason_address_without_coordinates"], "Dirección sin coordenadas guardadas.")
         viewport_ids = {item.get("id") for item in (payload.get("viewport_presets") or {}).get("presets") or []}
         self.assertIn("geocoding_queue", viewport_ids)
         self.assertEqual(((payload.get("map_narrative") or {}).get("empty_state") or {}).get("recommended_view"), "geocoding_queue")
@@ -1451,6 +2953,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         }.get("open_geocoding_queue") or {}
         self.assertIn("/perfil?tab=tickets", open_queue_action.get("href") or "")
         self.assertEqual(open_queue_action.get("frontend_path"), open_queue_action.get("href"))
+        self.assertEqual(open_queue_action.get("href"), guidance_action.get("href"))
         geocode_playbook = {
             item.get("id"): item
             for item in (payload.get("hotspot_actions") or {}).get("playbook") or []

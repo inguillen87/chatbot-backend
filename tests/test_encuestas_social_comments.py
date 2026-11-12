@@ -3,9 +3,10 @@ from unittest.mock import MagicMock, patch
 
 from app import create_app
 from config import TestConfig
-from models import db, EncEncuesta, TenantProfile, User
+from models import db, EncComentario, EncEncuesta, TenantProfile, User
 from services.encuestas_service import (
     create_comentario,
+    EncuestaError,
     issue_social_comment_token,
     list_comentarios,
     verify_social_comment_token,
@@ -16,9 +17,8 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
     def setUp(self):
         self.app = create_app(TestConfig)
         self.app.config["SURVEY_COMMENT_SOCIAL_PROVIDERS"] = [
-            {"id": "facebook", "label": "Facebook"},
-            {"id": "google", "label": "Google"},
-            {"id": "instagram", "label": "Instagram"},
+            {"id": provider, "label": provider.title(), "oauthUrl": f"https://auth.example.com/{provider}", "messageOrigin": "https://auth.example.com"}
+            for provider in ("facebook", "google", "instagram")
         ]
         self.ctx = self.app.app_context()
         self.ctx.push()
@@ -74,6 +74,7 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
             "auth_email": "marcelo@example.com",
         }
 
+        payload["social_token"] = issue_social_comment_token({"provider": payload["auth_provider"], **payload})
         comentario = create_comentario(self.encuesta.id, payload, user=None)
 
         self.assertEqual(comentario.nombre_autor, "Marcelo Perez")
@@ -105,7 +106,7 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
 
         create_comentario(
             self.encuesta.id,
-            {"texto": "Comentario con perfil"},
+            {"texto": "Comentario con perfil", "mode": "social", "social_token": issue_social_comment_token({"provider": "google", "auth_user_id": "avatar-verified", "auth_first_name": "Marcelo", "auth_last_name": "Avatar"})},
             user=user,
         )
 
@@ -157,7 +158,7 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
         cfg = payload.get("commentConfig") or {}
         self.assertIn("acceptedModes", cfg)
         self.assertEqual(cfg.get("acceptedModes"), ["anon", "social"])
-        self.assertFalse(cfg.get("requiresSocialToken"))
+        self.assertTrue(cfg.get("requiresSocialToken"))
 
     @patch("services.encuestas_service.analytics_ingestor", new_callable=MagicMock)
     def test_create_social_comment_emits_analytics_events(self, mock_ingestor):
@@ -168,6 +169,7 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
             "auth_provider": "google",
             "auth_user_id": "g_7788",
         }
+        payload["social_token"] = issue_social_comment_token({"provider": "google", "auth_user_id": "g_7788"})
         create_comentario(self.encuesta.id, payload, user=None)
 
         event_names = [call.kwargs.get("event_name") for call in mock_ingestor.track.call_args_list]
@@ -223,6 +225,7 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
                 "auth_provider": "google",
                 "auth_user_id": sentinel,
                 "auth_first_name": "Ana",
+                "social_token": issue_social_comment_token({"provider": "google", "auth_user_id": sentinel, "auth_first_name": "Ana"}),
             },
             user=None,
         )
@@ -283,3 +286,74 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         payload = response.get_json() or {}
         self.assertEqual(payload.get("reason_code"), "social_token_required")
+
+    def test_anonymous_comment_discards_bearer_identity_and_declared_profile(self):
+        with patch("routes.encuestas_public.user_from_token", return_value=self.owner):
+            response = self.client.post(
+                f"/api/public/encuestas/{self.encuesta.slug}/comentarios",
+                headers={"Authorization": "Bearer opaque-session-fixture"},
+                json={"texto": "Opinión anónima", "modo": "anonimo", "nombre": "Filtrar nombre", "anon_id": "private-correlation", "auth_user_id": "claimed-id"},
+            )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        stored = db.session.get(EncComentario, response.get_json()["comentario"]["id"])
+        self.assertIsNone(stored.user_id)
+        self.assertIsNone(stored.anon_id)
+        self.assertIsNone(stored.nombre_autor)
+        body = response.get_json()["comentario"]
+        self.assertEqual(body["nombre_autor"], "Anónimo")
+        self.assertIsNone(body["avatar_url"])
+        self.assertNotIn(self.owner.name, str(body))
+
+    def test_social_aliases_require_signed_token_even_when_legacy_flag_is_false(self):
+        self.app.config["SURVEY_SOCIAL_COMMENT_REQUIRE_TOKEN"] = False
+        for key, mode in (("mode", "social"), ("modo", "google"), ("comment_mode", "facebook")):
+            with self.subTest(key=key, mode=mode):
+                response = self.client.post(f"/api/public/encuestas/{self.encuesta.slug}/comentarios", json={"texto": "Identidad declarada", key: mode, "auth_provider": "google", "auth_user_id": "forged"})
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json()["reason_code"], "social_token_required")
+        self.assertEqual(EncComentario.query.count(), 0)
+
+    def test_service_rejects_unsigned_social_identity(self):
+        with self.assertRaises(EncuestaError) as failure:
+            create_comentario(self.encuesta.id, {"texto": "Directa", "mode": "social", "auth_provider": "google", "auth_user_id": "forged"}, None)
+        self.assertEqual(failure.exception.payload["reason_code"], "social_token_required")
+
+    def test_social_mode_alias_uses_signed_profile_and_rejects_tampered_token(self):
+        token = issue_social_comment_token({"provider": "google", "auth_user_id": "g-confirmed", "auth_first_name": "Ana"})
+        response = self.client.post(f"/api/public/encuestas/{self.encuesta.slug}/comentarios", json={"texto": "Firmada", "modo": "google", "nombre": "Nombre inventado", "social_token": token})
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.get_json()["comentario"]["nombre_autor"], "Ana")
+        response = self.client.post(f"/api/public/encuestas/{self.encuesta.slug}/comentarios", json={"texto": "No firmada", "mode": "social", "social_token": token + "tampered"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["reason_code"], "invalid_social_token")
+
+    def test_comment_limit_and_pagination_are_bounded(self):
+        endpoint = f"/api/public/encuestas/{self.encuesta.slug}/comentarios"
+        response = self.client.post(endpoint, json={"texto": "x" * 501, "mode": "anon"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["reason_code"], "comment_too_long")
+        comment = create_comentario(self.encuesta.id, {"texto": "Límite válido", "mode": "anon"}, None)
+        self.assertEqual(list_comentarios(self.encuesta.id, limit=-1, offset=-3)[0]["id"], comment.id)
+        with patch("routes.encuestas_public.list_comentarios", wraps=list_comentarios):
+            self.assertEqual(self.client.get(endpoint + "?limit=999999&offset=-7").status_code, 200)
+
+    def test_report_cannot_target_comment_from_another_tenant(self):
+        foreign_tenant = TenantProfile(slug="foreign-comments", nombre="Foreign", tipo="pyme", pyme_id=self.owner.id)
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign = EncEncuesta(tenant_id=foreign_tenant.id, slug="foreign-survey", titulo="Foreign", tipo="opinion", estado="publicada", permitir_comentarios=True)
+        db.session.add(foreign)
+        db.session.flush()
+        comment = EncComentario(encuesta_id=foreign.id, texto="Comentario ajeno", estado="publicado", report_count=0)
+        db.session.add(comment)
+        db.session.commit()
+        response = self.client.post(f"/api/public/encuestas/{self.encuesta.slug}/comentarios/{comment.id}/reportar")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(db.session.get(EncComentario, comment.id).report_count, 0)
+
+    def test_no_social_provider_is_advertised_without_a_usable_authenticated_flow(self):
+        self.app.config["SURVEY_COMMENT_SOCIAL_PROVIDERS"] = [{"id": "google", "label": "Google"}]
+        payload = self.client.get(f"/api/public/encuestas/{self.encuesta.slug}").get_json()
+        self.assertEqual(payload["socialProviders"], [])
+        self.assertEqual(payload["commentConfig"]["socialProviders"], [])
+        self.assertEqual(payload["commentConfig"]["acceptedModes"], ["anon"])

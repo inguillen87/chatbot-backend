@@ -22,6 +22,7 @@ class CloudinaryUploadTests(unittest.TestCase):
                 import services.gcs_service as gcs_service
 
                 importlib.reload(gcs_service)
+                gcs_service.refresh_cloudinary_configuration()
                 file_storage = FileStorage(
                     stream=BytesIO(b"img"),
                     filename="foto.png",
@@ -60,6 +61,7 @@ class CloudinaryUploadTests(unittest.TestCase):
                 import services.gcs_service as gcs_service
 
                 importlib.reload(gcs_service)
+                gcs_service.refresh_cloudinary_configuration()
                 file_storage = FileStorage(
                     stream=BytesIO(b"img"),
                     filename="foto.png",
@@ -105,6 +107,7 @@ class CloudinaryUploadTests(unittest.TestCase):
                 import services.gcs_service as gcs_service
 
                 importlib.reload(gcs_service)
+                gcs_service.refresh_cloudinary_configuration()
 
                 file_storage = FileStorage(
                     stream=BytesIO(b"img"),
@@ -164,6 +167,8 @@ class CloudinaryUploadTests(unittest.TestCase):
                 import services.gcs_service as gcs_service
 
                 importlib.reload(gcs_service)
+                self.assertFalse(config_calls)
+                gcs_service.refresh_cloudinary_configuration()
 
         self.assertTrue(config_calls)
         config_used = config_calls[-1]
@@ -194,6 +199,8 @@ class CloudinaryUploadTests(unittest.TestCase):
                 import services.gcs_service as gcs_service
 
                 importlib.reload(gcs_service)
+                self.assertEqual(captured_config, {})
+                gcs_service.refresh_cloudinary_configuration()
 
         self.assertEqual(captured_config["cloud_name"], "demo")
         self.assertEqual(captured_config["api_key"], "key")

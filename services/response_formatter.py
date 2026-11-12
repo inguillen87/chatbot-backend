@@ -118,6 +118,12 @@ def _whatsapp_options_fallback_text(options: list[dict], *, include_urls: bool =
     return "\n\nOpciones:\n" + "\n".join(lines)
 
 
+def whatsapp_menu_context_scope(bot_response: dict) -> str:
+    """Menu ownership from a trusted backend response, never incoming hints."""
+    source = str(bot_response.get("fuente") or "")
+    return "institutional_knowledge" if source.startswith("institutional_knowledge") else "legacy"
+
+
 def render_audio_text(
     message: str,
     options: list | None = None,
@@ -278,6 +284,39 @@ def build_interactive_response(options: list,
         context_update = (context_update or {}).copy()
 
     if channel == "whatsapp":
+        menu_scope = whatsapp_menu_context_scope(original_bot_response)
+        if menu_scope == "institutional_knowledge":
+            # Institutional codes belong to the displayed node and revision.
+            # Positional numbering or generic navigation would create a second
+            # menu that the knowledge service never authorized.
+            lines = []
+            for option in options:
+                label = _clean_text(option.get("texto") or option.get("label") or option.get("title"))
+                if not label:
+                    continue
+                code = option.get("reply_code")
+                if isinstance(code, str) and code.isascii() and code.isdecimal() and len(code) <= 3:
+                    lines.append(f"*{code}*. {label}")
+                else:
+                    lines.append(f"- {label}")
+            final_body = _repair_text(body_text).strip()
+            if lines:
+                final_body += "\n\n" + "\n".join(lines)
+            # Also clear old menu options on stale/unknown answers with no
+            # choices, while retaining the scope for fail-closed numeric input.
+            context_update["last_options_sent"] = options
+            context_update["last_options_scope"] = menu_scope
+            payload = {"type": "text", "text": {"body": final_body},
+                       "contexto_actualizado": context_update}
+            if image_url:
+                payload["image_url"] = image_url
+            if audio_url:
+                payload["audio"] = {"link": audio_url}
+            return payload
+
+        # Every operational/legacy response restores its own menu ownership,
+        # including interactive output and responses with no options.
+        context_update["last_options_scope"] = menu_scope
         original_type = message_type
         num_options = len(options)
 

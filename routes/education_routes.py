@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import func
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import AuditEvent, MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, User
 from models_education import (
@@ -60,6 +61,10 @@ from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
     plan_allows_integration_feature,
+)
+from services.ticket_assignment_policy import (
+    TicketAssignmentPolicyError,
+    assignment_transition,
 )
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.roles import ROLE_CLIENTE, ROLE_LEAD, ROLE_SUPERADMIN, canonical_role
@@ -496,8 +501,16 @@ def _guardian_payload(guardian: Guardian) -> dict:
     }
 
 
-def _get_case_alias_for_tenant(case_id: int, tenant_id: int) -> SchoolCaseAlias | None:
-    alias = SchoolCaseAlias.query.filter_by(id=case_id, tenant_id=tenant_id).first()
+def _get_case_alias_for_tenant(
+    case_id: int,
+    tenant_id: int,
+    *,
+    for_update: bool = False,
+) -> SchoolCaseAlias | None:
+    query = SchoolCaseAlias.query.filter_by(id=case_id, tenant_id=tenant_id)
+    if for_update:
+        query = query.with_for_update()
+    alias = query.first()
     if alias is None or _ticket_for_case(alias) is None:
         return None
     return alias
@@ -698,6 +711,7 @@ def get_education_whatsapp_playbook(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/operations/summary", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_education_operations_summary(current_user, actor_principal=None):
     tenant, access_response = _education_admin_context(
@@ -714,6 +728,7 @@ def get_education_operations_summary(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/operations/heatmap", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_education_operations_heatmap(current_user, actor_principal=None):
     tenant, access_response = _education_admin_context(
@@ -1444,6 +1459,7 @@ def link_guardian_student(current_user, actor_principal=None):
 
 @education_bp.route("/api/v1/education/me/family-context", methods=["GET"])
 @education_bp.route("/api/v1/education/family/context", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_family_context(current_user, actor_principal=None):
     actor = actor_principal or current_user
@@ -1709,6 +1725,7 @@ def create_school_case(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/cases", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def list_school_cases(current_user, actor_principal=None):
     tenant, access_response = _education_admin_context(
@@ -1791,6 +1808,7 @@ def list_school_cases(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/cases/<int:case_id>", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_school_case_detail(current_user, case_id: int, actor_principal=None):
     tenant, access_response = _education_admin_context(
@@ -1880,7 +1898,7 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
     )
     if access_response:
         return access_response
-    alias = _get_case_alias_for_tenant(case_id, tenant_id)
+    alias = _get_case_alias_for_tenant(case_id, tenant_id, for_update=True)
     if not alias:
         audit_response = _commit_case_alias_integrity_audits()
         if audit_response:
@@ -1890,11 +1908,33 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
     if not ticket:
         return jsonify({"error": {"code": 404, "message": "Ticket not found for school case"}}), 404
 
+    # Lock the concrete ticket row as well as the alias, then revalidate the
+    # alias contract against the locked object before applying the CAS.
+    ticket = (
+        db.session.query(type(ticket))
+        .filter(type(ticket).id == ticket.id)
+        .with_for_update()
+        .one_or_none()
+    )
+    if ticket is None or _ticket_for_case(alias) is None:
+        return jsonify({"error": {"code": 404, "message": "Ticket not found for school case"}}), 404
+
     data = request.json or {}
     try:
-        assignee_id = _parse_optional_int(data.get("assignee_id") or data.get("asignado_a_id"), "assignee_id")
+        assignee_aliases = [
+            _parse_optional_int(data.get(key), "assignee_id")
+            for key in ("assignee_id", "asignado_a_id")
+            if data.get(key) not in (None, "")
+        ]
     except ValueError as exc:
         return jsonify({"error": {"code": 400, "message": str(exc)}}), 400
+    if len(set(assignee_aliases)) > 1:
+        return _education_access_error(
+            "assignee_id and asignado_a_id must identify the same staff member",
+            409,
+            "education_assignee_identity_conflict",
+        )
+    assignee_id = assignee_aliases[0] if assignee_aliases else None
     if not assignee_id:
         return jsonify({"error": {"code": 400, "message": "assignee_id required"}}), 400
 
@@ -1909,6 +1949,33 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
             400,
             "education_assignee_invalid",
         )
+
+    try:
+        transition = assignment_transition(
+            actor=actor,
+            payload=data,
+            current_assignee_id=getattr(ticket, "asignado_a_id", None),
+            target_assignee_id=assignee.id,
+            enforce_authorization=False,
+        )
+    except TicketAssignmentPolicyError as exc:
+        return (
+            jsonify(
+                {
+                    "contract_version": "education.case_assignment.v1",
+                    "reason_code": exc.reason_code,
+                    "action_hint": exc.action_hint,
+                    "error": {"code": exc.status_code, "message": exc.message},
+                }
+            ),
+            exc.status_code,
+        )
+
+    if transition.replayed:
+        payload = _case_payload(alias, include_comments=True)
+        if payload is not None:
+            payload["assignment"] = {"replayed": True, "assignee_id": assignee.id}
+        return jsonify(payload)
 
     ticket.asignado_a_id = assignee.id
     ticket.asignado_en = _utc_now()

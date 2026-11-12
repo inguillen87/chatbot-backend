@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, current_app, request
 from models import Rubro
 from services.demo_pillar_catalog import catalog_resources_for_rubro, curated_demo_rubros
+from utils.database_availability import DATABASE_AVAILABILITY_ERRORS
 
 # Define blueprint without prefix here so it can be mounted flexibly in app.py
 # (e.g. at /rubros AND /api/rubros)
@@ -282,6 +283,10 @@ def get_all_rubros():
         # we ensure virtual items have temporary IDs or keys.
 
         return jsonify(lista_rubros)
+    except DATABASE_AVAILABILITY_ERRORS:
+        # Preserve the shared 503 contract; a missing dependency is not an empty
+        # catalog or a reason to substitute demo data.
+        raise
     except Exception as e:  # pragma: no cover - log unexpected errors
         current_app.logger.exception(f"Error al obtener la lista de rubros: {e}")
         return jsonify({"error": "Error interno al obtener los rubros."}), 500

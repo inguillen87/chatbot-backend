@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, request, g
+from cutover_writer_fence import cutover_writer_view
 
 from services.kits import listar_kits, sugerir_kits_para_carrito
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
@@ -7,6 +8,7 @@ kits_bp = Blueprint("kits_bp", __name__, url_prefix="/api/pwa/kits")
 
 
 @kits_bp.route("", methods=["GET"])
+@cutover_writer_view
 def listar():
     try:
         tenant, _, _ = resolve_tenant_and_user(

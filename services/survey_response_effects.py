@@ -21,11 +21,16 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
+from flask import current_app, has_app_context
 from sqlalchemy import and_, case, func, or_, update
 from sqlalchemy.exc import IntegrityError
 
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
 from database import db
 from models import (
     EncEncuesta,
@@ -35,6 +40,10 @@ from models import (
     User,
 )
 from services.survey_response_provenance import SURVEY_RESPONSE_ORIGIN_REAL
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
+from services.outbox_execution_budget import outbox_persistence_operation
 
 
 EFFECT_ANALYTICS = "analytics.v1"
@@ -80,6 +89,29 @@ class _PermanentEffectError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def survey_response_effect_dispatch_guard_report(
+    config: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """Fail closed at the common manual/CLI/worker mutation boundary.
+
+    Callers may preflight this guard to avoid even read-only application
+    queries when another runtime owns writes.  The dispatcher also invokes it
+    itself so a direct/manual call cannot bypass the shared authority gate.
+    """
+
+    resolved_config = config
+    if resolved_config is None and has_app_context():
+        resolved_config = current_app.config
+    if cutover_writer_fence_enabled(resolved_config):
+        return background_writer_fence_report(
+            "survey_response_effect_dispatch"
+        )
+    return background_global_writer_authority_report(
+        "survey_response_effect_dispatch",
+        resolved_config,
+    )
 
 
 def _utc_now() -> datetime:
@@ -273,7 +305,16 @@ def _stage_one(
     payload: Mapping[str, Any],
     now: datetime,
     max_attempts: int,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> SurveyResponseEffect:
+    if unit_of_work is not None:
+        from services.whatsapp_conversation_uow import ConversationUnitOfWork, ConversationUnitOfWorkError
+
+        if not isinstance(unit_of_work, ConversationUnitOfWork):
+            raise ConversationUnitOfWorkError("survey_effect_owner_invalid")
+        unit_of_work.require_writer_scope(session=db.session(), tenant_id=tenant_id,
+                                          turn_id=conversation_turn_id)
     effect_key = _effect_key(response_id, effect_type)
     existing = _find_existing_effect(
         tenant_id=tenant_id,
@@ -300,6 +341,14 @@ def _stage_one(
         available_at=now,
         contract_version=OUTBOX_CONTRACT_VERSION,
     )
+
+    if unit_of_work is not None:
+        # The survey writer already holds the instrument's response lock. Its
+        # owner owns vote, receipt, effects and reply. A collision aborts that
+        # transaction without an internal SAVEPOINT or rollback.
+        db.session.add(effect)
+        unit_of_work.flush()
+        return effect
 
     # A SAVEPOINT confines a concurrent unique-scope collision to this one
     # insert.  Never call session.rollback() here: the outer response and its
@@ -336,6 +385,8 @@ def stage_survey_response_effects(
     stage_analytics: bool = True,
     now: Optional[datetime] = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> list[SurveyResponseEffect]:
     """Stage every applicable effect without owning the outer transaction.
 
@@ -379,6 +430,8 @@ def stage_survey_response_effects(
                 },
                 now=staged_at,
                 max_attempts=max_attempts,
+                unit_of_work=unit_of_work,
+                conversation_turn_id=conversation_turn_id,
             )
         )
 
@@ -408,6 +461,8 @@ def stage_survey_response_effects(
                 },
                 now=staged_at,
                 max_attempts=max_attempts,
+                unit_of_work=unit_of_work,
+                conversation_turn_id=conversation_turn_id,
             )
         )
 
@@ -433,6 +488,8 @@ def stage_survey_response_effects(
                 },
                 now=staged_at,
                 max_attempts=max_attempts,
+                unit_of_work=unit_of_work,
+                conversation_turn_id=conversation_turn_id,
             )
         )
 
@@ -610,7 +667,11 @@ def _reward_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
     )
 
 
-def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
+def _realtime_outcome(
+    effect: SurveyResponseEffect,
+    *,
+    require_shared_realtime: bool = False,
+) -> _EffectOutcome:
     encuesta, _respuesta = _load_scoped_source(effect)
     payload = effect.payload_json if isinstance(effect.payload_json, dict) else {}
     if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
@@ -639,7 +700,10 @@ def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
     # retry_wait/dead instead of recording a false ``emitted`` success.
     from socket_service import ensure_survey_realtime_transport_ready
 
-    transport = ensure_survey_realtime_transport_ready()
+    transport_kwargs: dict[str, Any] = {}
+    if require_shared_realtime:
+        transport_kwargs["require_shared"] = True
+    transport = ensure_survey_realtime_transport_ready(**transport_kwargs)
     from services.encuestas_service import emit_survey_response_update
 
     emitted = emit_survey_response_update(
@@ -659,13 +723,20 @@ def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
     )
 
 
-def _execute_effect(effect: SurveyResponseEffect) -> _EffectOutcome:
+def _execute_effect(
+    effect: SurveyResponseEffect,
+    *,
+    require_shared_realtime: bool = False,
+) -> _EffectOutcome:
     if effect.effect_type == EFFECT_ANALYTICS:
         return _analytics_outcome(effect)
     if effect.effect_type == EFFECT_REWARD:
         return _reward_outcome(effect)
     if effect.effect_type == EFFECT_REALTIME:
-        return _realtime_outcome(effect)
+        realtime_kwargs: dict[str, Any] = {}
+        if require_shared_realtime:
+            realtime_kwargs["require_shared_realtime"] = True
+        return _realtime_outcome(effect, **realtime_kwargs)
     raise _PermanentEffectError("unsupported_effect_type")
 
 
@@ -724,6 +795,7 @@ def _claim_effect(
     return token
 
 
+@outbox_persistence_operation
 def _finalize_effect(
     effect_id: int,
     lease_token: str,
@@ -775,6 +847,7 @@ def _retry_delay(attempt_count: int) -> int:
     return min(BASE_BACKOFF_SECONDS * (2**exponent), MAX_BACKOFF_SECONDS)
 
 
+@outbox_persistence_operation
 def _record_failure(
     effect_id: int,
     lease_token: str,
@@ -822,12 +895,27 @@ def dispatch_survey_response_effects(
     limit: int = 50,
     now: Optional[datetime] = None,
     lease_seconds: int = LEASE_SECONDS,
+    should_continue: Optional[Callable[[], bool]] = None,
+    require_shared_realtime: bool = False,
 ) -> dict[str, Any]:
     """Claim and process due effects with lease fencing and bounded retries.
 
     This is a worker boundary and therefore commits its own claim and terminal
     transitions.  Do not invoke it from inside an uncommitted response write.
     """
+
+    guard_report = survey_response_effect_dispatch_guard_report()
+    if guard_report is not None:
+        return {
+            **guard_report,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+        }
 
     operation_now = _coerce_utc(now)
     bounded_limit = _bounded_limit(limit)
@@ -876,6 +964,8 @@ def dispatch_survey_response_effects(
     for effect_id in candidate_ids:
         if stats["claimed"] >= bounded_limit:
             break
+        if should_continue is not None and should_continue() is not True:
+            break
         lease_token = _claim_effect(
             effect_id,
             now=operation_now,
@@ -902,7 +992,10 @@ def dispatch_survey_response_effects(
         attempt_count = int(effect.attempt_count or 0)
         max_attempts = int(effect.max_attempts or DEFAULT_MAX_ATTEMPTS)
         try:
-            outcome = _execute_effect(effect)
+            execute_kwargs: dict[str, Any] = {}
+            if require_shared_realtime:
+                execute_kwargs["require_shared_realtime"] = True
+            outcome = _execute_effect(effect, **execute_kwargs)
             if not _finalize_effect(
                 effect_id,
                 lease_token,

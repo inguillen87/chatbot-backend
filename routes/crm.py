@@ -588,18 +588,26 @@ def enviar_campana(current_user: User):
     current_app.logger.info(f"[CRM_CAMPAIGN] Iniciando envío de campaña '{asunto}' para {len(clientes_destinatarios)} clientes de la empresa ID {current_user.id}.")
 
     # --- Implementación con Celery ---
-    from services.tasks import tarea_enviar_campana_email # Importar la tarea Celery
+    from services.tasks import enqueue_campaign_email
 
     ids_clientes_finales = [cli.id for cli in clientes_destinatarios]
 
     # Encolar la tarea Celery
-    tarea_enviar_campana_email.delay(
+    queued = enqueue_campaign_email(
         empresa_id_solicitante=current_user.id, # Para logging y contexto en la tarea
         lista_ids_clientes_destinatarios=ids_clientes_finales,
         asunto=asunto,
         cuerpo_html=mensaje_html,
         cuerpo_texto=mensaje_texto
     )
+
+    if queued is False:
+        return jsonify({
+            "contract_version": "cutover.writer_fence.v1",
+            "status": "maintenance",
+            "reason_code": "cutover_writer_fence_enabled",
+            "retryable": True,
+        }), 503
 
     current_app.logger.info(f"[CRM_CAMPAIGN] Tarea Celery para enviar campaña '{asunto}' a {len(ids_clientes_finales)} clientes ha sido encolada.")
 

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import jwt
+from flask import request
 
 from app import create_app, db
 from config import TestConfig
@@ -41,9 +42,11 @@ from socket_service import (
     on_location,
     on_new_chat,
     on_subscribe_ticket_updates,
+    send_welcome_message,
     socketio,
 )
 from utils.auth_helpers import bump_auth_session_version
+from services.auth_session_lifecycle import issue_token
 
 
 class LiveChatRoomAccessTest(unittest.TestCase):
@@ -80,6 +83,26 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
+    def _panel_token(self, claims):
+        """Use a real durable lineage before testing room and resource policy."""
+        now = datetime.now(timezone.utc)
+        return issue_token({"iat": now, "exp": now + timedelta(hours=1), **claims})
+
+    def _dispatch_socket_message(self, data, *, cookie_token=None):
+        """Direct policy tests still dispatch with a native registered socket SID."""
+        client = socketio.test_client(self.app)
+        try:
+            sid = socketio.server.manager.sid_from_eio_sid(client.eio_sid, "/")
+            headers = {}
+            if cookie_token:
+                headers["Cookie"] = f'{self.app.config["AUTH_TOKEN_COOKIE_NAME"]}={cookie_token}'
+            with self.app.test_request_context("/api/socket.io", headers=headers):
+                request.sid = sid
+                request.namespace = "/"
+                return handle_send_chat_message(data)
+        finally:
+            client.disconnect()
+
     def _revoked_clerk_token(self):
         self.admin.accesibilidad = {
             "auth": {
@@ -90,7 +113,7 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         }
         db.session.commit()
         now = datetime.now(timezone.utc)
-        token = jwt.encode(
+        token = self._panel_token(
             {
                 "user_id": self.admin.id,
                 "rol": self.admin.rol,
@@ -103,8 +126,6 @@ class LiveChatRoomAccessTest(unittest.TestCase):
                 "iat": now,
                 "exp": now + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         bump_auth_session_version(self.admin)
         db.session.commit()
@@ -120,6 +141,51 @@ class LiveChatRoomAccessTest(unittest.TestCase):
 
         self.assertFalse(result)
         join_room.assert_not_called()
+
+    def test_anonymous_web_connect_passes_concrete_app_to_background_task(self):
+        rubro = Rubro(clave="socket-connect-welcome", nombre="Socket welcome", es_publico=True)
+        self.admin.rubro = rubro
+        tenant = TenantProfile(slug="socket-connect-welcome", nombre="Socket welcome",
+                               tipo="municipio", municipio_id=self.admin.id, is_active=True)
+        db.session.add_all([rubro, tenant])
+        db.session.commit()
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="anonymous-web-connect")
+        ), patch("socket_service.socketio.start_background_task") as start_task:
+            result = on_connect({"channel": "web", "tenant_slug": tenant.slug})
+
+        self.assertIsNone(result)
+        start_task.assert_called_once_with(
+            send_welcome_message,
+            self.app,
+            "anonymous-web-connect",
+            {"channel": "web", "tenant_slug": "socket-connect-welcome"},
+        )
+
+    def test_background_welcome_uses_app_context_and_server_emitter(self):
+        rubro = Rubro(clave="socket-welcome", nombre="Socket welcome", es_publico=True)
+        db.session.add(rubro)
+        db.session.flush()
+        self.admin.rubro_id = rubro.id
+        tenant = TenantProfile(slug="socket-welcome", nombre="Socket welcome",
+                               tipo="municipio", municipio_id=self.admin.id, is_active=True)
+        db.session.add(tenant)
+        db.session.commit()
+
+        self.app_context.pop()
+        try:
+            with patch(
+                "services.municipio_responder.responder_municipio",
+                return_value={"message_body": "Bienvenido", "options_list": []},
+            ), patch("socket_service.socketio.emit") as socket_emit:
+                send_welcome_message(self.app, "anonymous-background",
+                                     {"channel": "web", "tenant_slug": "socket-welcome"})
+        finally:
+            self.app_context.push()
+
+        socket_emit.assert_called_once()
+        self.assertEqual(socket_emit.call_args.args[0], "message")
+        self.assertEqual(socket_emit.call_args.kwargs["room"], "anonymous-background")
 
     def test_revoked_clerk_session_cannot_subscribe_socket(self):
         token = self._revoked_clerk_token()
@@ -163,7 +229,7 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         }
         db.session.commit()
         now = datetime.now(timezone.utc)
-        token = jwt.encode(
+        token = self._panel_token(
             {
                 "user_id": self.admin.id,
                 "rol": self.admin.rol,
@@ -177,8 +243,6 @@ class LiveChatRoomAccessTest(unittest.TestCase):
                 "iat": now,
                 "exp": now + timedelta(hours=1),
             },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch(
@@ -249,19 +313,15 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         db.session.add_all([restricted_ticket, allowed_ticket])
         db.session.commit()
 
-        employee_token = jwt.encode(
+        employee_token = self._panel_token(
             {"user_id": employee.id, "tenant_id": tenant.id, "tenant_slug": tenant.slug},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         employee_headers = {
             "Authorization": f"Bearer {employee_token}",
             "X-Tenant-Slug": tenant.slug,
         }
-        admin_token = jwt.encode(
+        admin_token = self._panel_token(
             {"user_id": self.admin.id, "tenant_id": tenant.id, "tenant_slug": tenant.slug},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         admin_headers = {
             "Authorization": f"Bearer {admin_token}",
@@ -317,10 +377,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         self.assertNotIn("ticketId", tenant_event)
 
     def test_http_only_cookie_authenticates_socket_connect_and_subscription(self):
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         own_tenant = TenantProfile(
             slug="cookie-municipality",
@@ -351,26 +409,20 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         self.assertIn(f"tenant_{own_tenant.id}", subscription.args[1]["rooms"])
 
     def test_http_only_cookie_authenticates_operator_socket_message(self):
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
-        cookie_request = SimpleNamespace(
-            sid="cookie-operator-message",
-            cookies={self.app.config["AUTH_TOKEN_COOKIE_NAME"]: token},
-        )
-
-        with patch("socket_service.request", cookie_request), patch(
+        with patch(
             "socket_service.servicio_tickets.crear_comentario", return_value=None
         ) as create_comment:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "room": build_ticket_room("municipio", self.ticket.id),
                     "ticket_id": self.ticket.id,
                     "ticket_type": "municipio",
                     "message": "Respuesta autenticada por cookie",
-                }
+                },
+                cookie_token=token,
             )
 
         create_comment.assert_called_once()
@@ -383,8 +435,9 @@ class LiveChatRoomAccessTest(unittest.TestCase):
 
         with patch.object(
             socketio.server.manager,
-            "get_participants",
+            "_auth_original_get_participants",
             side_effect=lambda namespace, room: participants.get(room, []),
+            create=True,
         ), patch.object(socketio.server, "disconnect") as disconnect:
             count = disconnect_clerk_session_sockets(
                 clerk_session_id="sess_disconnect",
@@ -521,7 +574,72 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             on_join({"room": "encuesta:junin:consulta-barrial"})
 
         join_room.assert_called_once_with("encuesta:junin:consulta-barrial")
-        emit.assert_not_called()
+        emit.assert_called_once_with(
+            "join_ack",
+            {
+                "room": "encuesta:junin:consulta-barrial",
+                "access_mode": "public_survey_room",
+            },
+        )
+
+    def test_enabled_durable_demo_room_joins_only_registry_derived_tenant_and_acks(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        room = f"encuesta:junin:{slug}"
+
+        with patch(
+            "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+            return_value=True,
+        ), patch("socket_service.join_room") as join_room, patch(
+            "socket_service.emit"
+        ) as emit:
+            on_join({"room": room, "tenant_slug": "ushuaia"})
+
+        join_room.assert_called_once_with(room)
+        emit.assert_called_once_with(
+            "join_ack",
+            {"room": room, "access_mode": "public_survey_room"},
+        )
+
+    def test_durable_demo_room_rejects_cross_tenant_and_legacy_alias(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        rejected_rooms = [
+            f"encuesta:ushuaia:{slug}",
+            f"encuesta_{slug}",
+            "encuesta:ju/nin:demo-gobierno-ju/nin-prioridades-barriales",
+        ]
+
+        for room in rejected_rooms:
+            with self.subTest(room=room), patch(
+                "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+                return_value=True,
+            ), patch("socket_service.join_room") as join_room, patch(
+                "socket_service.emit"
+            ) as emit:
+                on_join({"room": room, "tenant_slug": "junin"})
+
+            join_room.assert_not_called()
+            emit.assert_called_once_with(
+                "join_error",
+                {"error": "room_not_joinable", "room": room},
+            )
+
+    def test_default_off_demo_room_remains_polling_only(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        room = f"encuesta:junin:{slug}"
+
+        with patch(
+            "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+            return_value=False,
+        ), patch("socket_service.join_room") as join_room, patch(
+            "socket_service.emit"
+        ) as emit:
+            on_join({"room": room})
+
+        join_room.assert_not_called()
+        emit.assert_called_once_with(
+            "join_error",
+            {"error": "room_not_joinable", "room": room},
+        )
 
     def test_legacy_unscoped_survey_room_is_rejected(self):
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
@@ -580,14 +698,12 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         )
 
     def test_operator_socket_message_is_scoped_to_its_ticket(self):
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch("socket_service.servicio_tickets.crear_comentario", return_value=None) as create_comment:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": "municipio_910",
@@ -600,10 +716,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         create_comment.assert_called_once()
 
     def test_operator_socket_accepts_exact_utf8_reply_limit(self):
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         message = "á" * (OMNICHANNEL_REPLY_MAX_BODY_BYTES // 2)
         self.assertEqual(len(message.encode("utf-8")), OMNICHANNEL_REPLY_MAX_BODY_BYTES)
@@ -612,7 +726,7 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             "socket_service.servicio_tickets.crear_comentario",
             return_value=None,
         ) as create_comment, patch("socket_service.emit") as emit:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": build_ticket_room("municipio", self.ticket.id),
@@ -630,10 +744,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         emit.assert_not_called()
 
     def test_operator_socket_rejects_multibyte_reply_over_limit_without_side_effects(self):
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         message = "á" * ((OMNICHANNEL_REPLY_MAX_BODY_BYTES // 2) + 1)
         before = TicketComentario.query.filter_by(municipio_ticket_id=self.ticket.id).count()
@@ -643,7 +755,7 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         ) as create_comment, patch("socket_service.socketio.emit") as socket_emit, patch(
             "socket_service.emit"
         ) as emit:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": build_ticket_room("municipio", self.ticket.id),
@@ -686,10 +798,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         employee.set_password("pass")
         db.session.add(employee)
         db.session.commit()
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": employee.id, "tenant_id": tenant.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         before = TicketComentario.query.filter_by(municipio_ticket_id=self.ticket.id).count()
 
@@ -698,7 +808,7 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         ) as create_comment, patch("socket_service.socketio.emit") as socket_emit, patch(
             "socket_service.emit"
         ) as emit:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": build_ticket_room("municipio", self.ticket.id),
@@ -717,10 +827,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         )
 
     def test_operator_socket_message_exposes_only_sanitized_public_payload(self):
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
         stored_comment = SimpleNamespace(
             to_dict=lambda: {
@@ -749,7 +857,7 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         ) as direct_sms, patch(
             "services.email_service.enviar_whatsapp_ticket_novedad"
         ) as direct_whatsapp:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": build_ticket_room("municipio", self.ticket.id),
@@ -823,10 +931,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS=8,
             ENABLE_PYME_WHATSAPP_CHAT=True,
         )
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": pyme_admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch(
@@ -841,7 +947,7 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         ) as enqueue_dispatch, patch(
             "socket_service.socketio.emit"
         ):
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": build_ticket_room("pyme", ticket.id),
@@ -1013,16 +1119,14 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         foreign_admin.set_password("pass")
         db.session.add(foreign_admin)
         db.session.commit()
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": foreign_admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch("socket_service.servicio_tickets.crear_comentario") as create_comment, patch(
             "socket_service.emit"
         ) as emit:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": build_ticket_room("municipio", self.ticket.id),
@@ -1051,10 +1155,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         )
         db.session.add(foreign_tenant)
         db.session.commit()
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
@@ -1074,10 +1176,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         )
         db.session.add(own_tenant)
         db.session.commit()
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": self.admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
@@ -1110,10 +1210,8 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         customer.set_password("pass")
         db.session.add(customer)
         db.session.commit()
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": customer.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
@@ -1170,16 +1268,14 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         )
         db.session.add(foreign_ticket)
         db.session.commit()
-        token = jwt.encode(
+        token = self._panel_token(
             {"user_id": first_admin.id},
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
         )
 
         with patch("socket_service.servicio_tickets.crear_comentario") as create_comment, patch(
             "socket_service.emit"
         ) as emit:
-            handle_send_chat_message(
+            self._dispatch_socket_message(
                 {
                     "token": token,
                     "room": build_ticket_room("pyme", foreign_ticket.id),

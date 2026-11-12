@@ -112,7 +112,16 @@ def get_current_tenant() -> Optional[str]:
             siguiente = path_parts[idx + 1] if idx + 1 < len(path_parts) else None
             slug_hint = siguiente or "municipio"
             return _store_and_return(slug_hint)
-        if parte in {"whatsapp", "pwa"}:
+        if parte == "pwa":
+            siguiente = path_parts[idx + 1] if idx + 1 < len(path_parts) else None
+            if siguiente == "public":
+                slug_publico = path_parts[idx + 2] if idx + 2 < len(path_parts) else None
+                if slug_publico:
+                    return _store_and_return(slug_publico)
+            elif siguiente and siguiente not in {"anon-id", "tenant-info", "manifest", "manifest.json"}:
+                return _store_and_return(siguiente)
+            continue
+        if parte == "whatsapp":
             return _store_and_return(parte)
         # Admin routes: /api/admin/tenants/<slug>/...
         if parte == "tenants" and idx > 0 and path_parts[idx - 1] == "admin":
@@ -122,7 +131,15 @@ def get_current_tenant() -> Optional[str]:
 
     default_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
     if default_slug:
-        return _store_and_return(default_slug)
+        host_hint = request.headers.get("X-Forwarded-Host") or request.host
+        try:
+            from services.tenant_resolver import is_shared_platform_host
+
+            host_allows_discovery = is_shared_platform_host(host_hint)
+        except Exception:
+            host_allows_discovery = False
+        if host_allows_discovery:
+            return _store_and_return(default_slug)
 
     # 5) Si realmente no se puede resolver
     current_app.logger.warning(
@@ -167,7 +184,10 @@ def get_current_tenant_profile(
             pass
 
         tenant = (
-            TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower())
+            TenantProfile.query.filter(
+                func.lower(TenantProfile.slug) == slug.lower(),
+                TenantProfile.is_active.is_(True),
+            )
             .order_by(TenantProfile.id.asc())
             .first()
         )
@@ -200,20 +220,6 @@ def get_current_tenant_profile(
         )
     except TenantResolutionError:
         tenant = None
-
-    if not tenant and allow_fallback:
-        fallback_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
-        if fallback_slug:
-            tenant = (
-                TenantProfile.query.filter(
-                    func.lower(TenantProfile.slug) == fallback_slug.lower()
-                )
-                .order_by(TenantProfile.id.asc())
-                .first()
-            )
-
-    if not tenant and allow_fallback:
-        tenant = TenantProfile.query.order_by(TenantProfile.id.asc()).first()
 
     if tenant:
         _store_tenant_in_context(tenant)

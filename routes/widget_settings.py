@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, current_app, jsonify, request
 from flask_cors import cross_origin
 
+from cutover_writer_fence import cutover_writer_view
 from models import TenantProfile, WidgetSettings, db
 from routes.public_resolver import _build_widget_embed_payload
 from services.plan_access import (
@@ -123,6 +124,7 @@ def _resolve_tenant_from_request() -> TenantProfile:
 
 
 @widget_settings_bp.route("", methods=["GET", "PUT", "OPTIONS"])
+@cutover_writer_view
 @cross_origin()
 @token_requerido
 @solo_admin_requerido
@@ -189,6 +191,7 @@ def manage_settings(current_user):
 @integracion_widget_bp.route(
     "/widget-settings", methods=["GET", "OPTIONS"], strict_slashes=False
 )
+@cutover_writer_view
 @cross_origin(origins=_WIDGET_CORS_ORIGINS, supports_credentials=True)
 def public_widget_settings():
     if request.method == "OPTIONS":

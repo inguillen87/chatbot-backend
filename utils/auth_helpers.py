@@ -998,6 +998,7 @@ def generar_token(
     *,
     expires_in: Optional[timedelta] = None,
     extra_claims: Optional[Dict[str, Any]] = None,
+    bind_cookie: bool = False,
 ):
     """Genera un token de autenticación para un usuario."""
     now = datetime.now(timezone.utc)
@@ -1016,7 +1017,8 @@ def generar_token(
         payload['rol'] = rol
         payload['exp'] = now + (expires_in or timedelta(days=1))
         payload['iat'] = now
-    return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    from services.auth_session_lifecycle import issue_token
+    return issue_token(payload, bind_cookie=bind_cookie)
 
 
 def is_user_auth_disabled(user: Optional[User]) -> bool:
@@ -1031,6 +1033,7 @@ def user_from_token(token: str) -> Optional[User]:
     """
     Busca un usuario a partir de un token de autenticación JWT.
     """
+    from services.auth_session_lifecycle import SessionLifecycleError
     if not token or not _is_jwt_token(token):
         current_app.logger.debug("[user_from_token] Token no JWT recibido, se ignora.")
         return None
@@ -1047,6 +1050,10 @@ def user_from_token(token: str) -> Optional[User]:
             return None
         if not user:
             return None
+
+        if payload.get('session_kind') not in {'widget', 'demo'} and not payload.get('demo_mode'):
+            from services.auth_session_lifecycle import lineage_for_claims
+            lineage_for_claims(payload)
 
         tenant_id = payload.get("tenant_id") or getattr(user, "tenant_id", None)
         tenant_slug = payload.get("tenant_slug") or getattr(user, "tenant_slug", None)
@@ -1117,6 +1124,9 @@ def user_from_token(token: str) -> Optional[User]:
                 return None
         current_app.logger.debug("[user_from_token] Found user: %s", user.email if user else "None")
         return user
+    except SessionLifecycleError as error:
+        current_app.logger.debug('[user_from_token] Durable session rejected reason_code=%s', error.code)
+        return None
     except jwt.ExpiredSignatureError as e:
         current_app.logger.warning(f"[user_from_token] Expired JWT token: {e}")
         return None
@@ -1524,7 +1534,18 @@ def get_or_create_anon_id() -> str:
 
     g.anon_id = anon_id
     return anon_id
+def auth_sin_escrituras_implicitas(f):
+    """Mark a sensitive view whose authentication phase must stay read-only."""
+
+    setattr(f, "_chatboc_skip_implicit_entity_token_write", True)
+    return f
+
+
 def token_requerido(f):
+    skip_implicit_entity_token_write = bool(
+        getattr(f, "_chatboc_skip_implicit_entity_token_write", False)
+    )
+
     @wraps(f)
     def decorated(*args, **kwargs):
         anon_id = get_or_create_anon_id()
@@ -1610,6 +1631,9 @@ def token_requerido(f):
         session_is_authenticated = bool(
             hasattr(current_user, "is_authenticated") and current_user.is_authenticated
         )
+        if session_is_authenticated and not has_explicit_bearer:
+            from services.auth_session_lifecycle import cookie_lineage_for_user
+            session_is_authenticated = cookie_lineage_for_user(current_user.id) is not None
         explicit_identity_conflict = bool(
             session_is_authenticated
             and explicit_token_user is not None
@@ -1658,9 +1682,11 @@ def token_requerido(f):
                         "clerk_required",
                     )
             g.auth_token = raw_token
+            g.auth_credential_source = 'flask_cookie'
             g.current_user = current_user
             g.owner_user = _resolve_owner_user(current_user)
-            _ensure_entity_token(g.owner_user)
+            if not skip_implicit_entity_token_write:
+                _ensure_entity_token(g.owner_user)
             if raw_token:
                 g.token_payload = _decode_token_payload(raw_token) or {}
             return f(current_user, *args, **kwargs)
@@ -1715,6 +1741,7 @@ def token_requerido(f):
 
         g.token_payload = dict(token_payload) if token_payload else {}
         g.auth_token = token
+        g.auth_credential_source = 'token'
         g.current_user = user
         g.owner_user = _resolve_owner_user(user)
 

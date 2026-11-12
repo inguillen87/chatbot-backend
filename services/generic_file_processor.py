@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 import os
 import logging
 from typing import Optional, Dict, Any
-import pandas as pd
 from docx import Document
 from services.llm_bridge import llamar_llm_para_generacion_texto
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 logger = logging.getLogger(__name__)
 

@@ -50,7 +50,11 @@ def _build_text_fallback_body(cuerpo: str, botones=None, lista=None) -> str:
                 if boton.get("url") and label:
                     rendered_buttons.append(f"{label}: {boton.get('url')}")
                 elif label:
-                    rendered_buttons.append(label)
+                    code = boton.get('reply_code')
+                    if isinstance(code, str) and code.isascii() and code.isdecimal() and len(code) <= 3:
+                        rendered_buttons.append(f"{code}. {label}")
+                    else:
+                        rendered_buttons.append(label)
                 else:
                     rendered_buttons.append(str(boton))
             else:

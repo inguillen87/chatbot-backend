@@ -1,0 +1,835 @@
+{
+  "contract_version": "accessible.support.guide.v1",
+  "version": "1.0.0",
+  "evaluation_only": true,
+  "source": {
+    "sha256": "1f6de63d4f70ede4e967077cc9eae768c64574b022d66c5ebb8868aac3d4a6ee",
+    "page_count": 14,
+    "label": "Plan de implementación: IA accesible y Mesa Única",
+    "approval_status": "institutional_validation_required"
+  },
+  "start": "start",
+  "nodes": {
+    "start": {
+      "id": "start",
+      "title": "¿Para quién es la consulta?",
+      "text": "Bienvenida a la evaluación del agente conversacional accesible. Usá sólo ejemplos: no ingreses DNI, documentación médica ni datos personales. El recorrido no consulta registros oficiales ni envía mensajes.",
+      "source_pages": [
+        1,
+        8,
+        9
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Para mí",
+          "target": "main"
+        },
+        {
+          "code": "2",
+          "label": "Para un familiar o persona que acompaño",
+          "target": "main"
+        }
+      ],
+      "kind": "menu"
+    },
+    "main": {
+      "id": "main",
+      "title": "¿Sobre qué querés consultar?",
+      "text": "Elegí un área. Podés volver al menú o probar la derivación humana en cualquier momento.",
+      "source_pages": [
+        7,
+        8,
+        9
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Documentación: CUD y CMO",
+          "target": "documentation"
+        },
+        {
+          "code": "2",
+          "label": "Salud, terapias y medicación",
+          "target": "health"
+        },
+        {
+          "code": "3",
+          "label": "Pensión y licencias",
+          "target": "benefits"
+        },
+        {
+          "code": "4",
+          "label": "Escuela, recreación y apoyos",
+          "target": "support"
+        },
+        {
+          "code": "5",
+          "label": "Trabajo y cursos",
+          "target": "employment"
+        },
+        {
+          "code": "0",
+          "label": "Hablar con una persona",
+          "target": "human"
+        }
+      ],
+      "kind": "menu"
+    },
+    "documentation": {
+      "id": "documentation",
+      "title": "Documentación: CUD y CMO",
+      "text": "Elegí la orientación que necesitás. Los requisitos y las fuentes deberán ser aprobados por el organismo antes de operar.",
+      "source_pages": [
+        9,
+        10
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Preparar una consulta sobre CUD",
+          "target": "cud-checklist"
+        },
+        {
+          "code": "2",
+          "label": "Vigencia y prórrogas",
+          "target": "cud-validity"
+        },
+        {
+          "code": "3",
+          "label": "Orientación sobre CMO",
+          "target": "cmo"
+        },
+        {
+          "code": "9",
+          "label": "Volver",
+          "target": "main"
+        }
+      ],
+      "kind": "menu"
+    },
+    "cud-checklist": {
+      "id": "cud-checklist",
+      "title": "Preparación de documentación",
+      "text": "La propuesta contempla una lista de cotejo de identificación, informes profesionales, estudios y formularios. En esta evaluación no validamos documentos ni confirmamos requisitos o turnos: el equipo institucional debe revisar la lista y sus fuentes.",
+      "source_pages": [
+        9,
+        10
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "cud-validity": {
+      "id": "cud-validity",
+      "title": "Vigencia y avisos",
+      "text": "El plan propone avisos 90 días antes del vencimiento. Aquí no consultamos tu CUD ni determinamos si tiene prórroga. El aviso real requiere una fecha autorizada, reglas vigentes y el canal aprobado.",
+      "source_pages": [
+        1,
+        3,
+        10
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "cmo": {
+      "id": "cmo",
+      "title": "Orientación sobre CMO",
+      "text": "El recorrido previsto orienta hacia los centros y equipos habilitados de cada localidad. El directorio y los enlaces oficiales aún necesitan validación; no mostramos centros o disponibilidad inventados.",
+      "source_pages": [
+        7,
+        10
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "health": {
+      "id": "health",
+      "title": "Salud, terapias y medicación",
+      "text": "Seleccioná un tema. Esta evaluación no brinda diagnósticos ni indicaciones médicas.",
+      "source_pages": [
+        10,
+        11
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Turnos para terapias",
+          "target": "therapy"
+        },
+        {
+          "code": "2",
+          "label": "Controles médicos",
+          "target": "appointments"
+        },
+        {
+          "code": "3",
+          "label": "Medicación y recetas",
+          "target": "medication"
+        },
+        {
+          "code": "4",
+          "label": "Derivaciones",
+          "target": "referrals"
+        },
+        {
+          "code": "5",
+          "label": "Banco de ortopedia",
+          "target": "orthopedics"
+        },
+        {
+          "code": "9",
+          "label": "Volver",
+          "target": "main"
+        }
+      ],
+      "kind": "menu"
+    },
+    "therapy": {
+      "id": "therapy",
+      "title": "Turnos para terapias",
+      "text": "El plan contempla orientación y solicitud de turnos según localidad. La agenda y los equipos deben conectarse y validarse; esta prueba no reserva un turno.",
+      "source_pages": [
+        10
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "appointments": {
+      "id": "appointments",
+      "title": "Controles médicos",
+      "text": "Podés probar cómo se organiza una consulta sobre un control. Todavía no hay consulta de disponibilidad ni reserva confirmada en esta evaluación.",
+      "source_pages": [
+        10
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "medication": {
+      "id": "medication",
+      "title": "Medicación y recetas",
+      "text": "La propuesta incluye orientar consultas de cobertura, recetas y novedades de farmacia. No se consulta una receta ni se garantiza cobertura o entrega. Para probar un caso complejo, elegí ayuda humana.",
+      "source_pages": [
+        10,
+        11
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "referrals": {
+      "id": "referrals",
+      "title": "Derivaciones",
+      "text": "El circuito previsto registra la consulta y la deriva con contexto al equipo responsable. Aquí no se consulta ningún expediente ni se asigna un traslado; sólo se prueba el recorrido.",
+      "source_pages": [
+        10,
+        11
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "orthopedics": {
+      "id": "orthopedics",
+      "title": "Banco de ortopedia",
+      "text": "El plan contempla orientar sobre solicitudes de insumos ortopédicos. El catálogo, disponibilidad y requisitos se validarán con el área responsable; no se confirma un préstamo en esta prueba.",
+      "source_pages": [
+        11
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "benefits": {
+      "id": "benefits",
+      "title": "Pensión y licencias",
+      "text": "Elegí el trámite para revisar el recorrido propuesto, sin ingresar información personal.",
+      "source_pages": [
+        11
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Orientación sobre RUPE",
+          "target": "rupe"
+        },
+        {
+          "code": "2",
+          "label": "Fe de vida",
+          "target": "life-proof"
+        },
+        {
+          "code": "3",
+          "label": "Licencias de cuidado",
+          "target": "care-leave"
+        },
+        {
+          "code": "9",
+          "label": "Volver",
+          "target": "main"
+        }
+      ],
+      "kind": "menu"
+    },
+    "rupe": {
+      "id": "rupe",
+      "title": "Orientación sobre RUPE",
+      "text": "La propuesta organiza una lista de cotejo y la derivación al asesor correspondiente. La evaluación no determina elegibilidad ni consulta el estado de una pensión; faltan fuentes e integración oficial.",
+      "source_pages": [
+        1,
+        7,
+        11
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "life-proof": {
+      "id": "life-proof",
+      "title": "Fe de vida",
+      "text": "Este recorrido muestra dónde se ofrecería un instructivo y la verificación requerida. Un DNI escrito o este acceso de prueba no acreditan identidad: aquí no se realiza ni se registra una fe de vida.",
+      "source_pages": [
+        11
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "care-leave": {
+      "id": "care-leave",
+      "title": "Licencias de cuidado",
+      "text": "El plan propone orientación y acceso a constancias y normativa. Los modelos y reglas deben ser revisados por el organismo; esta prueba no emite una constancia ni otorga una licencia.",
+      "source_pages": [
+        11
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "support": {
+      "id": "support",
+      "title": "Escuela, recreación y apoyos",
+      "text": "Podés revisar cómo se organizarían los apoyos por área y localidad.",
+      "source_pages": [
+        11,
+        12
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Vacantes e inscripción escolar",
+          "target": "school"
+        },
+        {
+          "code": "2",
+          "label": "Apoyo educativo",
+          "target": "education"
+        },
+        {
+          "code": "3",
+          "label": "Actividades recreativas",
+          "target": "recreation"
+        },
+        {
+          "code": "4",
+          "label": "Apoyos para la vida diaria",
+          "target": "daily-support"
+        },
+        {
+          "code": "9",
+          "label": "Volver",
+          "target": "main"
+        }
+      ],
+      "kind": "menu"
+    },
+    "school": {
+      "id": "school",
+      "title": "Vacantes e inscripción",
+      "text": "El plan prevé informar calendarios y orientar la solicitud. En la evaluación no se afirma que haya cupos ni se realiza una inscripción; las fuentes deben ser confirmadas por Educación.",
+      "source_pages": [
+        12
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "education": {
+      "id": "education",
+      "title": "Apoyo educativo",
+      "text": "La propuesta conserva el motivo de consulta para una articulación con el equipo educativo. No se asigna un profesional real en este recorrido de prueba.",
+      "source_pages": [
+        12
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "recreation": {
+      "id": "recreation",
+      "title": "Actividades recreativas",
+      "text": "Se prevé un catálogo accesible por localidad. El equipo deberá validar actividades, horarios y disponibilidad antes de publicarlos; no se inventa oferta en esta evaluación.",
+      "source_pages": [
+        12
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "daily-support": {
+      "id": "daily-support",
+      "title": "Apoyos para la vida diaria",
+      "text": "El circuito propone organizar la necesidad y solicitar acompañamiento humano cuando corresponda. Elegí esa opción para probar la derivación sin ingresar datos reales.",
+      "source_pages": [
+        8,
+        11,
+        12
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "employment": {
+      "id": "employment",
+      "title": "Trabajo y cursos",
+      "text": "Elegí la orientación. Esta prueba no envía postulaciones ni realiza inscripciones.",
+      "source_pages": [
+        12
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Registro de inclusión laboral",
+          "target": "work-register"
+        },
+        {
+          "code": "2",
+          "label": "Cursos y capacitaciones",
+          "target": "courses"
+        },
+        {
+          "code": "9",
+          "label": "Volver",
+          "target": "main"
+        }
+      ],
+      "kind": "menu"
+    },
+    "work-register": {
+      "id": "work-register",
+      "title": "Registro de inclusión laboral",
+      "text": "El plan incluye orientación sobre registro laboral y apoyo para preparar un CV. Requisitos, formularios y destinos oficiales siguen sujetos a aprobación. No adjuntes tu CV ni documentación en esta evaluación.",
+      "source_pages": [
+        12
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "courses": {
+      "id": "courses",
+      "title": "Cursos y capacitaciones",
+      "text": "El circuito previsto muestra oferta formativa accesible. Aún no se publican cursos, cupos o fechas no confirmados; podés probar la opción de orientación humana.",
+      "source_pages": [
+        12
+      ],
+      "actions": [
+        {
+          "code": "0",
+          "label": "Pedir ayuda de una persona",
+          "target": "human"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "fin",
+          "label": "Evaluar este recorrido",
+          "target": "feedback-resolution"
+        }
+      ],
+      "kind": "information"
+    },
+    "human": {
+      "id": "human",
+      "title": "Derivación humana de prueba",
+      "text": "En el servicio operativo se pedirían nombre, ciudad, contacto y motivo para generar un registro. Aquí no se solicita ni envía esa información. Podés revisar el ejemplo de cómo recibiría el contexto el equipo; no hay una solicitud real en espera.",
+      "source_pages": [
+        12,
+        13
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Ver resumen de ejemplo",
+          "target": "handoff-example"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        }
+      ],
+      "kind": "handoff"
+    },
+    "handoff-example": {
+      "id": "handoff-example",
+      "title": "Resumen de ejemplo · no enviado",
+      "text": "Caso de prueba: orientación documental. Localidad de ejemplo: Tolhuin. Destinatario: equipo interdisciplinario por asignar. Estado: simulación, sin ticket creado ni notificación enviada. En producción, el número de registro debe provenir del sistema al guardar el caso.",
+      "source_pages": [
+        12,
+        13
+      ],
+      "actions": [
+        {
+          "code": "fin",
+          "label": "Probar encuesta de cierre",
+          "target": "feedback-resolution"
+        },
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        }
+      ],
+      "kind": "handoff"
+    },
+    "feedback-resolution": {
+      "id": "feedback-resolution",
+      "title": "¿Pudiste resolver la consulta de prueba?",
+      "text": "Primera pregunta del cierre propuesto. La selección sirve para recorrer la demo: no se incorpora a métricas de servicio.",
+      "source_pages": [
+        13
+      ],
+      "actions": [
+        {
+          "code": "1",
+          "label": "Sí, completamente",
+          "target": "feedback-ease"
+        },
+        {
+          "code": "2",
+          "label": "En parte / sigo con dudas",
+          "target": "feedback-ease"
+        },
+        {
+          "code": "3",
+          "label": "No pude resolverla",
+          "target": "feedback-ease"
+        }
+      ],
+      "kind": "feedback"
+    },
+    "feedback-ease": {
+      "id": "feedback-ease",
+      "title": "¿Qué tan fácil fue usar el canal?",
+      "text": "Segunda pregunta: facilidad de uso. Las respuestas de esta evaluación no se almacenan.",
+      "source_pages": [
+        13
+      ],
+      "actions": [
+        {
+          "code": "5",
+          "label": "Excelente y muy fácil",
+          "target": "thanks"
+        },
+        {
+          "code": "4",
+          "label": "Bueno",
+          "target": "thanks"
+        },
+        {
+          "code": "3",
+          "label": "Regular",
+          "target": "thanks"
+        },
+        {
+          "code": "2",
+          "label": "Difícil",
+          "target": "thanks"
+        },
+        {
+          "code": "1",
+          "label": "Muy difícil",
+          "target": "thanks"
+        }
+      ],
+      "kind": "feedback"
+    },
+    "thanks": {
+      "id": "thanks",
+      "title": "Recorrido terminado",
+      "text": "Probaste el cierre de satisfacción. No se guardó una respuesta real. Podés volver a comenzar o salir de la evaluación.",
+      "source_pages": [
+        13,
+        14
+      ],
+      "actions": [
+        {
+          "code": "9",
+          "label": "Volver al menú",
+          "target": "main"
+        },
+        {
+          "code": "inicio",
+          "label": "Cambiar quién consulta",
+          "target": "start"
+        }
+      ],
+      "kind": "feedback"
+    }
+  },
+  "policy": {
+    "accepts_personal_data": false,
+    "creates_real_cases": false,
+    "queries_official_records": false,
+    "sends_notifications": false,
+    "stores_feedback": false
+  }
+}

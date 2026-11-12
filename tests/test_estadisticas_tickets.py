@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import types
@@ -36,12 +37,39 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         import routes.estadisticas as estats
         importlib.reload(estats)
 
+        # These payload tests already replace authentication. Give them an
+        # explicit municipal profile consistent with each synthetic actor;
+        # retain the real scope-access helper instead of TESTING/None admission.
+        def resolved_payload_scope(actor, args, tipo):
+            assert tipo == 'municipio'
+            assert actor.municipio_id is not None
+            actor.tenant_id = 101
+            actor.tenant_slug = 'payload-municipal'
+            actor.id = getattr(actor, 'id', None) or 1001
+            actor.rol = getattr(actor, 'rol', None) or 'admin'
+            actor.tipo_chat = 'municipio'
+            return SimpleNamespace(id=101, slug=actor.tenant_slug,
+                                   municipio_id=actor.municipio_id, pyme_id=None,
+                                   tipo='municipio', is_active=True), False
+
+        self.scope_patcher = patch('routes.estadisticas._resolve_ticket_stats_tenant',
+                                   side_effect=resolved_payload_scope)
+        self.scope_patcher.start()
+
+        self.identity_patcher = patch(
+            'routes.estadisticas.resolve_consistent_user_tenant',
+            side_effect=lambda actor: resolved_payload_scope(actor, None, 'municipio')[0],
+        )
+        self.identity_patcher.start()
+
         self.app = Flask(__name__)
         self.app.config.from_object(TestConfig)
         self.app_context = self.app.app_context()
         self.app_context.push()
 
     def tearDown(self):
+        self.identity_patcher.stop()
+        self.scope_patcher.stop()
         self.session_patcher.stop()
         if self.original_auth_helpers is not None:
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
@@ -69,7 +97,12 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             },
             "estados": [],
         }
-        current_user = SimpleNamespace(municipio_id=1, rubro_id=None)
+        current_user = SimpleNamespace(
+            municipio_id=1,
+            rubro_id=None,
+            rol='admin',
+            es_empleado=False,
+        )
         import routes.estadisticas as estats
         with self.app.test_request_context('/estadisticas/tickets?tipo=municipio'):
             response = estats.estadisticas_tickets(current_user)
@@ -117,7 +150,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=1,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=101,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
@@ -125,6 +158,77 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             estado=None,
             satisfactorio=None,
         )
+        mock_stats.assert_called_once()
+        self.assertEqual(mock_stats.call_args.kwargs['tenant_id'], 101)
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_estadisticas_tickets_employee_suppresses_singletons_before_augmentation(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.60011, "lng": -68.30011},
+                "weight": 4,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.60024, "lng": -68.30024},
+                "weight": 1,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.61011, "lng": -68.31011},
+                "weight": 1,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.62011, "lng": -68.32011},
+                "weight": 20,
+                "categoria": "Baches",
+            },
+        ]
+        employee = SimpleNamespace(
+            id=42,
+            rol='empleado',
+            es_empleado=True,
+            ticket_categorias='Luminarias',
+            categorias_ticket=[],
+            accesibilidad={},
+            municipio_id=1,
+            rubro_id=None,
+            tenant_id=None,
+            empresa_id=None,
+            tipo_chat='municipio',
+        )
+
+        import routes.estadisticas as estats
+        with self.app.test_request_context('/estadisticas/tickets?tipo=municipio'):
+            response = estats.estadisticas_tickets(employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get('privacy') or {}).get('mode'), 'employee_aggregated')
+        self.assertEqual((payload.get('privacy') or {}).get('k_min'), 5)
+        self.assertEqual(len(payload.get('heatmap') or []), 1)
+        point = payload['heatmap'][0]
+        self.assertEqual(point['location'], {'lat': -34.6, 'lng': -68.3})
+        self.assertEqual(point['weight'], 5.0)
+        self.assertEqual(point['categoria'], 'Luminarias')
+        self.assertEqual(
+            (payload.get('render_contract') or {}).get('privacy_mode'),
+            'employee_aggregated',
+        )
+        serialized = json.dumps(payload).lower()
+        self.assertNotIn('baches', serialized)
+        self.assertNotIn('-34.60011', serialized)
+        self.assertNotIn('-68.30011', serialized)
+        self.assertNotIn('-34.61011', serialized)
+        self.assertNotIn('-68.31011', serialized)
+        _mock_stats.assert_called_once()
+        self.assertEqual(_mock_stats.call_args.kwargs['tenant_id'], 101)
 
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.servicio_tickets')
@@ -143,7 +247,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=1,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=101,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,
@@ -153,6 +257,8 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         )
         filters = mock_stats.call_args.kwargs.get('filters')
         self.assertIsInstance(filters, (StatsFilters, type(None)))
+        mock_stats.assert_called_once()
+        self.assertEqual(mock_stats.call_args.kwargs['tenant_id'], 101)
 
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.servicio_tickets')
@@ -197,6 +303,8 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
                 "agentes": [7, 8],
             },
         )
+        mock_stats.assert_called_once()
+        self.assertEqual(mock_stats.call_args.kwargs['tenant_id'], 101)
 
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.servicio_tickets')
@@ -216,7 +324,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=42,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=101,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=['Arbol', 'Luminaria'],
@@ -224,6 +332,8 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             estado=None,
             satisfactorio=None,
         )
+        mock_stats.assert_called_once()
+        self.assertEqual(mock_stats.call_args.kwargs['tenant_id'], 101)
 
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.servicio_tickets')
@@ -247,6 +357,8 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         self.assertEqual(payload["render_contract"]["state"], "empty")
         self.assertFalse(payload["render_contract"]["can_render_heatmap"])
         self.assertEqual(payload["metadata"]["map"]["heatmap"]["empty_reason"], "no_real_geo_points")
+        mock_stats.assert_called_once()
+        self.assertEqual(mock_stats.call_args.kwargs['tenant_id'], 101)
 
 
 if __name__ == '__main__':

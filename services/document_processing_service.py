@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import json
 import logging
@@ -5,13 +7,15 @@ import os
 import re
 from typing import Any, Dict, List, Tuple
 
-import pandas as pd
 import pdfplumber
 import requests
 from docx import Document
 
 from models import ArchivoAdjunto, db
 from services.llm_utils import llamar_llm_para_json_estructurado
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +109,7 @@ class DocumentProcessingService:
         try:
             file_bytes = self._download_file_bytes(archivo)
         except Exception as exc:  # pragma: no cover - network/path errors are hard to simulate consistently
-            logger.error("Unable to download file %s: %s", archivo.url, exc, exc_info=True)
+            logger.error("Unable to download attachment error_type=%s", type(exc).__name__)
             return {"success": False, "error": "No se pudo descargar el archivo para analizarlo."}
 
         return self.process_document(file_bytes, archivo.mime or "", archivo.nombre_original or archivo.filename)
@@ -204,23 +208,9 @@ class DocumentProcessingService:
     # Utilities
     # ------------------------------------------------------------------
     def _download_file_bytes(self, archivo: ArchivoAdjunto) -> bytes:
-        """Download file bytes from local storage or remote URL."""
-
-        url = archivo.url or ""
-        if not url:
-            raise FileNotFoundError("Archivo sin URL asociada")
-
-        if url.startswith("http://") or url.startswith("https://"):
-            response = requests.get(url, timeout=20)
-            response.raise_for_status()
-            return response.content
-
-        local_path = url
-        if os.path.isabs(local_path) and os.path.exists(local_path):
-            with open(local_path, "rb") as file_handle:
-                return file_handle.read()
-
-        raise FileNotFoundError(f"No se pudo ubicar el archivo en {url}")
+        """Read verified private bytes or a bounded configured public asset."""
+        from services.attachment_delivery import read_authorized_attachment_bytes
+        return read_authorized_attachment_bytes(archivo.url, archivo.mime or 'application/octet-stream', attachment=archivo)
 
     def _table_to_records(self, table: List[List[Any]]) -> List[Dict[str, Any]]:
         if not table or len(table) < 2:

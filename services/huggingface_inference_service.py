@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import time
 from typing import Any, Iterable, Optional
 
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+
 logger = logging.getLogger(__name__)
 
 _LAST_FAILURE: dict[str, Any] = {}
@@ -162,7 +164,16 @@ def _get_client(model: str | None = None):
         from huggingface_hub import InferenceClient
     except Exception as exc:  # pragma: no cover - depends on deploy env
         raise ConnectionError("huggingface_hub is not installed.") from exc
-    return InferenceClient(model=model, provider=_provider(), token=token, timeout=_timeout())
+    configured_timeout = _timeout()
+    bounded_timeout = outbox_io_timeout_seconds(configured_timeout)
+    return InferenceClient(
+        model=model,
+        provider=_provider(),
+        token=token,
+        timeout=(
+            bounded_timeout if bounded_timeout is not None else configured_timeout
+        ),
+    )
 
 
 def _to_plain_list(value: Any) -> list:

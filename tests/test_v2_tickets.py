@@ -39,6 +39,7 @@ class V2TicketsApiTest(unittest.TestCase):
         db.session.add(self.admin)
 
         self.employee = self._create_user("empleado@t1.test", "empleado", tenant_slug="tenant-1", tenant_id=self.tenant_1.id)
+        self.employee.es_empleado = True
         self.employee.ticket_categorias = "general"
         self.end_user = self._create_user("usuario@t1.test", "usuario", tenant_slug="tenant-1", tenant_id=self.tenant_1.id)
 
@@ -119,14 +120,19 @@ class V2TicketsApiTest(unittest.TestCase):
 
         resp = self.client.post(
             "/api/v2/tickets",
-            json={"title": "Asignacion", "description": "No debe cruzar tenant", "assignee_id": other_employee.id},
+            json={
+                "title": "Asignacion",
+                "description": "No debe cruzar tenant",
+                "assignee_id": other_employee.id,
+                "expected_assignee_id": None,
+            },
             headers=headers,
         )
 
-        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.status_code, 403)
         payload = resp.get_json() or {}
         self.assertEqual(payload.get("contract_version"), "shared.error.v1")
-        self.assertEqual(payload.get("reason_code"), "validation_failed")
+        self.assertEqual(payload.get("reason_code"), "ticket_assignment_forbidden")
         self.assertEqual(payload.get("request_id"), "ticket-assignee-1")
 
     def test_list_does_not_mix_tenants(self):
@@ -135,7 +141,12 @@ class V2TicketsApiTest(unittest.TestCase):
 
         self.client.post(
             "/api/v2/tickets",
-            json={"title": "A", "description": "A", "assignee_id": self.employee.id},
+            json={
+                "title": "A",
+                "description": "A",
+                "assignee_id": self.employee.id,
+                "expected_assignee_id": None,
+            },
             headers=headers_t1,
         )
         self.client.post("/api/v2/tickets", json={"title": "B", "description": "B"}, headers=headers_t2)
@@ -362,16 +373,134 @@ class V2TicketsApiTest(unittest.TestCase):
         created = self.client.post("/api/v2/tickets", json={"title": "A", "description": "A"}, headers=headers).get_json()
         ticket_id = created["id"]
 
-        patch = self.client.patch(f"/api/v2/tickets/{ticket_id}", json={"assignee_id": self.employee.id}, headers=headers)
+        patch = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": self.employee.id, "expected_assignee_id": None},
+            headers=headers,
+        )
         self.assertEqual(patch.status_code, 200)
         patched_payload = patch.get_json() or {}
         self.assertEqual((patched_payload.get("ticket") or {}).get("assignee_id"), self.employee.id)
 
         other_employee = self._create_user("empleado-patch@t2.test", "empleado", tenant_slug="tenant-2", tenant_id=self.tenant_2.id)
         db.session.commit()
-        blocked = self.client.patch(f"/api/v2/tickets/{ticket_id}", json={"assignee_id": other_employee.id}, headers=headers)
-        self.assertEqual(blocked.status_code, 404)
-        self.assertEqual((blocked.get_json() or {}).get("reason_code"), "assignee_not_found")
+        blocked = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": other_employee.id, "expected_assignee_id": self.employee.id},
+            headers=headers,
+        )
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual((blocked.get_json() or {}).get("reason_code"), "ticket_assignment_forbidden")
+
+    def test_assignment_writers_enforce_supervision_and_compare_and_set(self):
+        employee_headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        end_user_headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}
+        supervisor = self._create_user(
+            "supervisor@t1.test",
+            "supervisor",
+            tenant_slug="tenant-1",
+            tenant_id=self.tenant_1.id,
+        )
+        supervisor.es_empleado = True
+        supervisor.ticket_categorias = "general"
+        manager = self._create_user(
+            "manager@t1.test",
+            "manager",
+            tenant_slug="tenant-1",
+            tenant_id=self.tenant_1.id,
+        )
+        manager.es_empleado = True
+        manager.ticket_categorias = "general"
+        supervisor_headers = {**self._auth_header(supervisor), "X-Tenant-Slug": "tenant-1"}
+        manager_headers = {**self._auth_header(manager), "X-Tenant-Slug": "tenant-1"}
+        target = self._create_user(
+            "target@t1.test",
+            "empleado",
+            tenant_slug="tenant-1",
+            tenant_id=self.tenant_1.id,
+        )
+        replacement = self._create_user(
+            "replacement@t1.test",
+            "empleado",
+            tenant_slug="tenant-1",
+            tenant_id=self.tenant_1.id,
+        )
+        target.es_empleado = True
+        target.ticket_categorias = "general"
+        replacement.es_empleado = True
+        replacement.ticket_categorias = "general"
+        db.session.commit()
+
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "CAS", "description": "Assignment CAS"},
+            headers=employee_headers,
+        ).get_json()
+        ticket_id = created["id"]
+
+        forbidden_patch = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": target.id, "expected_assignee_id": None},
+            headers=employee_headers,
+        )
+        self.assertEqual(forbidden_patch.status_code, 403, forbidden_patch.get_json())
+        self.assertEqual(forbidden_patch.get_json()["reason_code"], "ticket_assignment_forbidden")
+
+        manager_forbidden = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": target.id, "expected_assignee_id": None},
+            headers=manager_headers,
+        )
+        self.assertEqual(manager_forbidden.status_code, 403, manager_forbidden.get_json())
+        self.assertEqual(manager_forbidden.get_json()["reason_code"], "ticket_assignment_forbidden")
+
+        forbidden_create = self.client.post(
+            "/api/v2/tickets",
+            json={
+                "title": "No authority",
+                "description": "End user cannot dispatch",
+                "assignee_id": target.id,
+                "expected_assignee_id": None,
+            },
+            headers=end_user_headers,
+        )
+        self.assertEqual(forbidden_create.status_code, 403, forbidden_create.get_json())
+        self.assertEqual(forbidden_create.get_json()["reason_code"], "ticket_assignment_forbidden")
+
+        non_operational_target = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": self.admin.id, "expected_assignee_id": None},
+            headers=supervisor_headers,
+        )
+        self.assertEqual(non_operational_target.status_code, 404, non_operational_target.get_json())
+        self.assertEqual(non_operational_target.get_json()["reason_code"], "assignee_not_found")
+
+        assigned = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": target.id, "expected_assignee_id": None},
+            headers=supervisor_headers,
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.get_json())
+
+        replay = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": target.id, "expected_assignee_id": None},
+            headers=supervisor_headers,
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+
+        conflict = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"assignee_id": replacement.id, "expected_assignee_id": None},
+            headers=supervisor_headers,
+        )
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["reason_code"], "assignment_state_conflict")
+        db.session.expire_all()
+        self.assertEqual(
+            (db.session.get(TenantTicket, ticket_id).datos_extra or {}).get("assignee_id"),
+            target.id,
+        )
 
     def test_patch_location_updates_heatmap_ready_coordinates_and_audit_event(self):
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}

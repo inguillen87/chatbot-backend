@@ -1,0 +1,161 @@
+{
+  "contract_version": "chatboc.qa_preview_institutional_surveys.v1",
+  "target_user_email": "mauricio@junin.com",
+  "allowed_runtime_environments": ["qa", "preview"],
+  "initial_response_policy": {
+    "count": 0,
+    "synthetic_seed_enabled": false,
+    "municipal_truth": false,
+    "label": "Instrumentos DEMO NO OFICIAL. Comienzan sin respuestas y no representan estadísticas oficiales."
+  },
+  "demo_mirror_policy": {
+    "tenant_slug": "junin",
+    "sector": "gobierno",
+    "response_mode": "synthetic",
+    "response_count": 100,
+    "municipal_truth": false,
+    "official": false,
+    "label": "Escenario sintético DEMO NO OFICIAL; no apto para decisiones de gobierno."
+  },
+  "privacy": {
+    "mode": "source_anonymous",
+    "policy_version": "chatboc-demo-privacy-v1",
+    "policy_url": "https://www.chatboc.ar/privacidad",
+    "consent_required": true,
+    "retention_days": 90
+  },
+  "surveys": [
+    {
+      "key": "junin-participa-prioridades-barriales",
+      "document_ref": "qa-demo:junin-participa-prioridades-barriales:v1",
+      "content_origin_ref": "qa-preview-institutional-surveys.v1:junin-participa-prioridades-barriales",
+      "slug": "demo-gobierno-junin-participa-prioridades-barriales",
+      "titulo": "Junín Participa — prioridades barriales (DEMO NO OFICIAL)",
+      "tipo": "votacion",
+      "es_votacion_envivo": true,
+      "mostrar_resultados_envivo": true,
+      "descripcion": "DEMO NO OFICIAL — Votación no vinculante creada exclusivamente para validar Chatboc en QA/Preview. Parte con cero respuestas persistidas y no representa una iniciativa, medición ni posición oficial de la Municipalidad de Junín.",
+      "tags": ["demo_no_oficial", "qa_preview", "junin", "prioridades_barriales"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "question_ref": "question:junin:neighborhood_priority",
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tema barrial te resultaría más útil priorizar en una agenda municipal?",
+          "obligatoria": true,
+          "opciones": [
+            {"orden": 1, "option_ref": "option:junin:lighting", "texto": "Alumbrado público", "valor": "alumbrado"},
+            {"orden": 2, "option_ref": "option:junin:streets", "texto": "Calles, bacheo y veredas", "valor": "calles_veredas"},
+            {"orden": 3, "option_ref": "option:junin:cleanliness", "texto": "Limpieza e higiene urbana", "valor": "limpieza"},
+            {"orden": 4, "option_ref": "option:junin:green_spaces", "texto": "Plazas y espacios verdes", "valor": "espacios_verdes"},
+            {"orden": 5, "option_ref": "option:junin:mobility", "texto": "Movilidad y seguridad vial", "valor": "movilidad"},
+            {"orden": 6, "option_ref": "option:junin:no_preference", "texto": "No tengo una preferencia", "valor": "sin_preferencia"}
+          ]
+        },
+        {
+          "orden": 2,
+          "question_ref": "question:junin:priority_criterion",
+          "tipo": "opcion_unica",
+          "texto": "¿Qué criterio debería pesar más al ordenar las prioridades barriales?",
+          "obligatoria": true,
+          "opciones": [
+            {"orden": 1, "option_ref": "option:junin:urgency", "texto": "Urgencia del problema", "valor": "urgencia"},
+            {"orden": 2, "option_ref": "option:junin:coverage", "texto": "Cantidad de personas alcanzadas", "valor": "cobertura"},
+            {"orden": 3, "option_ref": "option:junin:equity", "texto": "Equidad entre barrios y distritos", "valor": "equidad"},
+            {"orden": 4, "option_ref": "option:junin:feasibility", "texto": "Factibilidad y plazo de ejecución", "valor": "factibilidad"},
+            {"orden": 5, "option_ref": "option:junin:cost", "texto": "Sostenibilidad del costo", "valor": "sostenibilidad"},
+            {"orden": 6, "option_ref": "option:junin:criterion_no_preference", "texto": "No tengo una preferencia", "valor": "sin_preferencia"}
+          ]
+        }
+      ]
+    },
+    {
+      "key": "junin-90-dias-obras-servicios",
+      "document_ref": "qa-demo:junin-90-dias-obras-servicios:v1",
+      "content_origin_ref": "qa-preview-institutional-surveys.v1:junin-90-dias-obras-servicios",
+      "slug": "demo-gobierno-junin-90-dias-obras-servicios",
+      "titulo": "Junín en 90 días — obras y servicios (DEMO NO OFICIAL)",
+      "tipo": "encuesta",
+      "es_votacion_envivo": false,
+      "mostrar_resultados_envivo": false,
+      "descripcion": "DEMO NO OFICIAL — Encuesta no vinculante creada exclusivamente para validar Chatboc en QA/Preview. Parte con cero respuestas persistidas y no representa un plan, compromiso, medición ni posición oficial de la Municipalidad de Junín.",
+      "tags": ["demo_no_oficial", "qa_preview", "junin", "obras_servicios"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "question_ref": "question:junin:90_day_focus",
+          "tipo": "opcion_unica",
+          "texto": "¿Qué tipo de mejora te resultaría más útil incluir en un escenario de trabajo a 90 días?",
+          "obligatoria": true,
+          "opciones": [
+            {"orden": 1, "option_ref": "option:junin:storm_drains", "texto": "Desagües y mantenimiento preventivo", "valor": "desagues"},
+            {"orden": 2, "option_ref": "option:junin:road_repairs", "texto": "Reparaciones viales puntuales", "valor": "reparaciones_viales"},
+            {"orden": 3, "option_ref": "option:junin:signage", "texto": "Señalización y seguridad vial", "valor": "senalizacion"},
+            {"orden": 4, "option_ref": "option:junin:public_spaces", "texto": "Mantenimiento de espacios públicos", "valor": "espacios_publicos"},
+            {"orden": 5, "option_ref": "option:junin:service_response", "texto": "Respuesta a reclamos de servicios", "valor": "respuesta_reclamos"},
+            {"orden": 6, "option_ref": "option:junin:90_day_no_preference", "texto": "No tengo una preferencia", "valor": "sin_preferencia"}
+          ]
+        },
+        {
+          "orden": 2,
+          "question_ref": "question:junin:progress_information",
+          "tipo": "opcion_unica",
+          "texto": "¿Cómo te resultaría más claro conocer el avance de esas mejoras?",
+          "obligatoria": true,
+          "opciones": [
+            {"orden": 1, "option_ref": "option:junin:status_map", "texto": "Mapa público por zona y estado", "valor": "mapa_estado"},
+            {"orden": 2, "option_ref": "option:junin:weekly_summary", "texto": "Resumen semanal", "valor": "resumen_semanal"},
+            {"orden": 3, "option_ref": "option:junin:ticket_tracking", "texto": "Seguimiento por número de reclamo", "valor": "seguimiento_reclamo"},
+            {"orden": 4, "option_ref": "option:junin:whatsapp_updates", "texto": "Actualizaciones por WhatsApp", "valor": "whatsapp"},
+            {"orden": 5, "option_ref": "option:junin:open_data", "texto": "Tablero de datos abiertos", "valor": "datos_abiertos"},
+            {"orden": 6, "option_ref": "option:junin:progress_no_preference", "texto": "No tengo una preferencia", "valor": "sin_preferencia"}
+          ]
+        }
+      ]
+    },
+    {
+      "key": "junin-digital-tramites-atencion",
+      "document_ref": "qa-demo:junin-digital-tramites-atencion:v1",
+      "content_origin_ref": "qa-preview-institutional-surveys.v1:junin-digital-tramites-atencion",
+      "slug": "demo-gobierno-junin-digital-tramites-atencion",
+      "titulo": "Junín Digital — trámites y atención ciudadana (DEMO NO OFICIAL)",
+      "tipo": "encuesta",
+      "es_votacion_envivo": false,
+      "mostrar_resultados_envivo": false,
+      "descripcion": "DEMO NO OFICIAL — Encuesta no vinculante creada exclusivamente para validar Chatboc en QA/Preview. Parte con cero respuestas persistidas y no representa una iniciativa, medición ni posición oficial de la Municipalidad de Junín.",
+      "tags": ["demo_no_oficial", "qa_preview", "junin", "tramites", "atencion_ciudadana"],
+      "preguntas": [
+        {
+          "orden": 1,
+          "question_ref": "question:junin:digital_service",
+          "tipo": "opcion_unica",
+          "texto": "¿Qué experiencia digital te resultaría más útil mejorar primero?",
+          "obligatoria": true,
+          "opciones": [
+            {"orden": 1, "option_ref": "option:junin:online_procedures", "texto": "Iniciar y seguir trámites en línea", "valor": "tramites_en_linea"},
+            {"orden": 2, "option_ref": "option:junin:appointments", "texto": "Solicitar turnos", "valor": "turnos"},
+            {"orden": 3, "option_ref": "option:junin:claims", "texto": "Crear y seguir reclamos", "valor": "reclamos"},
+            {"orden": 4, "option_ref": "option:junin:payments", "texto": "Consultar y pagar tasas", "valor": "tasas"},
+            {"orden": 5, "option_ref": "option:junin:information", "texto": "Encontrar requisitos e información", "valor": "informacion"},
+            {"orden": 6, "option_ref": "option:junin:digital_no_preference", "texto": "No tengo una preferencia", "valor": "sin_preferencia"}
+          ]
+        },
+        {
+          "orden": 2,
+          "question_ref": "question:junin:assistance_channel",
+          "tipo": "opcion_unica",
+          "texto": "¿Qué canal de asistencia te resultaría más accesible si necesitás ayuda?",
+          "obligatoria": true,
+          "opciones": [
+            {"orden": 1, "option_ref": "option:junin:whatsapp", "texto": "WhatsApp", "valor": "whatsapp"},
+            {"orden": 2, "option_ref": "option:junin:web_chat", "texto": "Chat en la web", "valor": "chat_web"},
+            {"orden": 3, "option_ref": "option:junin:telephone", "texto": "Teléfono", "valor": "telefono"},
+            {"orden": 4, "option_ref": "option:junin:in_person", "texto": "Atención presencial", "valor": "presencial"},
+            {"orden": 5, "option_ref": "option:junin:self_service", "texto": "Guías de autogestión", "valor": "autogestion"},
+            {"orden": 6, "option_ref": "option:junin:channel_no_preference", "texto": "No tengo una preferencia", "valor": "sin_preferencia"}
+          ]
+        }
+      ]
+    }
+  ]
+}

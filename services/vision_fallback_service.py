@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import hashlib
 import hmac
@@ -9,18 +11,29 @@ import threading
 from ast import literal_eval
 from typing import Any, Dict, Optional
 
-import httpx
 from flask import current_app, has_app_context
-from openai import OpenAI
 
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_VISION_MODEL = "gpt-5.6-sol"
 _CLIENT_LOCK = threading.Lock()
-_OPENAI_CLIENT: Optional[OpenAI] = None
+_OPENAI_CLIENT: Optional[Any] = None
 _OPENAI_CLIENT_KEY_DIGEST: Optional[str] = None
+
+
+def OpenAI(*args: Any, **kwargs: Any) -> Any:
+    """Compatibility constructor that defers importing the provider SDK."""
+
+    from openai import OpenAI as OpenAIClient
+
+    return OpenAIClient(*args, **kwargs)
 
 
 class OpenAIAmbiguousVisionFailure(RuntimeError):
@@ -94,7 +107,7 @@ def _openai_model(default_model: str = DEFAULT_OPENAI_VISION_MODEL) -> str:
     )
 
 
-def _get_openai_client() -> OpenAI:
+def _get_openai_client() -> Any:
     """Build the SDK client lazily after Flask/dotenv configuration is loaded."""
 
     if not llm_provider_network_allowed("openai"):
@@ -104,16 +117,21 @@ def _get_openai_client() -> OpenAI:
     if not api_key:
         raise OpenAIConfigurationError("OPENAI_API_KEY is not configured")
 
-    key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
     global _OPENAI_CLIENT, _OPENAI_CLIENT_KEY_DIGEST
+    timeout_raw = _configured_value("OPENAI_VISION_TIMEOUT_SECONDS") or "30"
+    try:
+        timeout_seconds = max(1.0, min(float(timeout_raw), 120.0))
+    except (TypeError, ValueError):
+        timeout_seconds = 30.0
+    bounded_timeout = outbox_io_timeout_seconds(timeout_seconds)
+    if bounded_timeout is not None:
+        timeout_seconds = bounded_timeout
+    key_digest = hashlib.sha256(
+        f"{api_key}\0{timeout_seconds}".encode("utf-8")
+    ).hexdigest()
     with _CLIENT_LOCK:
         if _OPENAI_CLIENT is None or _OPENAI_CLIENT_KEY_DIGEST != key_digest:
             http_client = httpx.Client(proxy=None, trust_env=False)
-            timeout_raw = _configured_value("OPENAI_VISION_TIMEOUT_SECONDS") or "30"
-            try:
-                timeout_seconds = max(1.0, min(float(timeout_raw), 120.0))
-            except (TypeError, ValueError):
-                timeout_seconds = 30.0
             _OPENAI_CLIENT = OpenAI(
                 api_key=api_key,
                 http_client=http_client,
@@ -480,7 +498,11 @@ def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
         import cohere
 
         b64 = base64.b64encode(image_bytes).decode("utf-8")
-        co = cohere.Client(api_key)
+        bounded_timeout = outbox_io_timeout_seconds(30.0)
+        client_kwargs: dict[str, Any] = {}
+        if bounded_timeout is not None:
+            client_kwargs["timeout"] = bounded_timeout
+        co = cohere.Client(api_key, **client_kwargs)
         prompt = custom_prompt or (
             "Describe the image for a municipal complaint system. "
             "Return JSON with keys: labels, objects, text."
@@ -494,6 +516,11 @@ def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
             text = resp.text
         except TypeError:
             # Older SDKs may not support the ``images`` parameter; fall back to generate()
+            # only outside cron.  Once cron has attempted a provider request,
+            # a second SDK method must not spend the cleanup reserve or create
+            # an ambiguous duplicate request.
+            if bounded_timeout is not None:
+                raise
             resp = co.generate(
                 model="command-r-plus",
                 prompt=prompt,

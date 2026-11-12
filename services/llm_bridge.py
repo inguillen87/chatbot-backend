@@ -199,7 +199,8 @@ def llamar_llm_para_generacion_texto(
     from services.openai_bridge import (
         LLMProviderPreRequestError,
         LLMProviderRequestUncertainError,
-        _get_openai_client,
+        _get_openai_responses_client,
+        _model_for_openai_transport,
         _reasoning_for_model,
         _response_output_text,
         _validate_completed_response,
@@ -211,13 +212,14 @@ def llamar_llm_para_generacion_texto(
         or DEFAULT_CHAT_MODEL
     )
     try:
-        openai_client = _get_openai_client(None)
+        openai_client = _get_openai_responses_client(None)
         responses_api = getattr(openai_client, "responses", None)
         if responses_api is None or not hasattr(responses_api, "create"):
             raise LLMProviderPreRequestError("openai_sdk_responses_unavailable")
 
+        provider_model = _model_for_openai_transport(resolved_model)
         request: dict[str, Any] = {
-            "model": resolved_model,
+            "model": provider_model,
             "input": [
                 {
                     "role": "system",
@@ -233,7 +235,7 @@ def llamar_llm_para_generacion_texto(
         if json_output:
             request["text"] = {"format": {"type": "json_object"}}
             request["input"][0]["content"] += " Devuelve un unico objeto JSON valido."
-        reasoning = _reasoning_for_model(resolved_model)
+        reasoning = _reasoning_for_model(provider_model)
         if reasoning:
             request["reasoning"] = reasoning
         elif temperature is not None:

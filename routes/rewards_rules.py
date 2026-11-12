@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, request, g
 from flask_cors import cross_origin
+from cutover_writer_fence import cutover_writer_view
 
 from config import ALLOWED_ORIGINS
 from database import db
@@ -66,6 +67,7 @@ def _resolve_tenant_user():
 
 
 @rewards_rules_bp.route("/rules", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
 def get_rules():
     if request.method == "OPTIONS":

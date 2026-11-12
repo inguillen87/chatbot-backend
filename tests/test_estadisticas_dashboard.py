@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import types
@@ -22,6 +23,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         stub.token_requerido = lambda f: f
         stub.admin_o_empleado_requerido = lambda f: f
         stub.anon_o_token_requerido = lambda f: f
+        stub._explicit_admin_request_tenant = lambda: (None, False)
         sys.modules['utils.auth_helpers'] = stub
 
         os.environ.setdefault('OPENAI_API_KEY', 'test')
@@ -36,6 +38,33 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         importlib.reload(estats)
 
         self.estadisticas_module = estats
+        # Payload-only fixtures already replace authentication. Supply their
+        # resolved municipal scope explicitly instead of relying on TESTING
+        # to authorize an unresolved tenant. Actual role/scope HTTP contracts
+        # are exercised in test_enterprise_metrics_contract.py.
+        self.tenant_patcher = patch(
+            'routes.estadisticas._resolve_tenant_profile_or_error',
+            return_value=SimpleNamespace(id=3, municipio_id=3, pyme_id=None,
+                                         tipo='municipio', is_active=True),
+        )
+        self.tenant_patcher.start()
+
+        # Authentication is already replaced above. Model its resolved profile
+        # and effective actor membership coherently; keep the real scope guard.
+        def resolved_payload_identity(actor):
+            actor.tenant_id = 3
+            actor.tenant_slug = 'payload-municipal'
+            actor.id = getattr(actor, 'id', None) or 3001
+            actor.rol = getattr(actor, 'rol', None) or 'admin'
+            actor.tipo_chat = 'municipio'
+            return SimpleNamespace(id=3, slug=actor.tenant_slug,
+                                   municipio_id=actor.municipio_id, pyme_id=None,
+                                   tipo='municipio', is_active=True)
+        self.identity_patcher = patch(
+            'routes.estadisticas.resolve_consistent_user_tenant',
+            side_effect=resolved_payload_identity,
+        )
+        self.identity_patcher.start()
 
         self.app = Flask(__name__)
         self.app.config.from_object(TestConfig)
@@ -43,6 +72,8 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         self.app_context.push()
 
     def tearDown(self):
+        self.identity_patcher.stop()
+        self.tenant_patcher.stop()
         self.session_patcher.stop()
         if self.original_auth_helpers is not None:
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
@@ -69,7 +100,12 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             ],
         }
 
-        current_user = SimpleNamespace(municipio_id=3, rubro_id=None)
+        current_user = SimpleNamespace(
+            municipio_id=3,
+            rubro_id=None,
+            rol='admin',
+            es_empleado=False,
+        )
 
         with self.app.test_request_context(
             '/estadisticas/dashboard?tipo=municipio'
@@ -163,7 +199,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             actor=current_user,
             municipio_id=3,
             rubro_id=None,
-            tenant_id=None,
+            tenant_id=3,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=['Limpieza'],
@@ -171,6 +207,122 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             estado='nuevo',
             satisfactorio=True,
         )
+        mock_build_stats.assert_called_once()
+        self.assertEqual(mock_build_stats.call_args.kwargs['tenant_id'], 3)
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_dashboard_employee_applies_category_scope_and_k_anonymity(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.60011, "lng": -68.30011},
+                "weight": 2,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.60024, "lng": -68.30024},
+                "weight": 3,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.61011, "lng": -68.31011},
+                "weight": 1,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.62011, "lng": -68.32011},
+                "weight": 20,
+                "categoria": "Baches",
+            },
+        ]
+        employee = SimpleNamespace(
+            id=41,
+            rol='empleado',
+            es_empleado=True,
+            ticket_categorias='Luminarias',
+            categorias_ticket=[],
+            accesibilidad={},
+            municipio_id=3,
+            rubro_id=None,
+            tenant_id=None,
+            empresa_id=None,
+            tipo_chat='municipio',
+        )
+
+        with self.app.test_request_context('/estadisticas/dashboard?tipo=municipio'):
+            response = self.estadisticas_module.estadisticas_dashboard(employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get('privacy') or {}).get('mode'), 'employee_aggregated')
+        self.assertEqual((payload.get('privacy') or {}).get('k_min'), 5)
+        self.assertEqual(len(payload.get('heatmap') or []), 1)
+        point = payload['heatmap'][0]
+        self.assertEqual(point['location'], {'lat': -34.6, 'lng': -68.3})
+        self.assertEqual(point['weight'], 5.0)
+        self.assertEqual(point['categoria'], 'Luminarias')
+        self.assertEqual(
+            (payload.get('render_contract') or {}).get('privacy_mode'),
+            'employee_aggregated',
+        )
+        serialized = json.dumps(payload).lower()
+        self.assertNotIn('baches', serialized)
+        self.assertNotIn('-34.60011', serialized)
+        self.assertNotIn('-68.30011', serialized)
+        self.assertNotIn('-34.61011', serialized)
+        self.assertNotIn('-68.31011', serialized)
+        _mock_stats.assert_called_once()
+        self.assertEqual(_mock_stats.call_args.kwargs['tenant_id'], 3)
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_dashboard_employee_accepts_persisted_category_id_scope(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.60011, "lng": -68.30011},
+                "weight": 2,
+                "categoria": "Nombre legacy anterior",
+                "categoria_id": 17,
+            },
+            {
+                "location": {"lat": -34.60024, "lng": -68.30024},
+                "weight": 3,
+                "categoria": "Nombre actualizado",
+                "categoria_id": 17,
+            }
+        ]
+        employee = SimpleNamespace(
+            id=43,
+            rol='empleado',
+            es_empleado=True,
+            ticket_categorias='',
+            categorias_ticket=[SimpleNamespace(id=17, nombre='')],
+            accesibilidad={},
+            municipio_id=3,
+            rubro_id=None,
+            tenant_id=None,
+            empresa_id=None,
+            tipo_chat='municipio',
+        )
+
+        with self.app.test_request_context('/estadisticas/dashboard?tipo=municipio'):
+            response = self.estadisticas_module.estadisticas_dashboard(employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload.get('heatmap') or []), 1)
+        self.assertEqual(payload['heatmap'][0].get('categoria_id'), 17)
+        self.assertEqual(payload['heatmap'][0].get('weight'), 5.0)
+        _mock_stats.assert_called_once()
+        self.assertEqual(_mock_stats.call_args.kwargs['tenant_id'], 3)
 
     @patch('routes.estadisticas.build_stats_for_municipio')
     @patch('routes.estadisticas.MetricasService')
@@ -183,7 +335,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         metricas_instance.get_total_ingresos.return_value = 1250
         metricas_instance.get_total_pedidos.return_value = 18
         metricas_instance.get_new_customers.return_value = 11
-        metricas_instance.get_conversion_rate.return_value = 1.64
+        metricas_instance.get_conversion_rate.return_value = None
         metricas_instance.get_kpis.return_value = {"growth": 0.2}
         metricas_instance.get_sales_over_time.return_value = [
             {"date": "2024-01-01", "sales": 100}
@@ -194,11 +346,19 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         metricas_instance.get_sales_by_region.return_value = [
             {"region": "Centro", "sales": 500}
         ]
+        metricas_instance.get_summary.return_value = {"currency": "ARS", "availability": {}}
+        metricas_instance.get_module_availability.return_value = {"kpis": {"state": "partial"}}
         mock_metricas_cls.return_value = metricas_instance
 
         current_user = SimpleNamespace(id=77, municipio_id=None, rubro_id=9, pyme_id=None)
 
-        with self.app.test_request_context('/estadisticas/dashboard?tipo=pyme'):
+        # Payload-only unit fixture supplies a resolved scope explicitly;
+        # real route authorization is covered by the HTTP contract tests.
+        tenant = SimpleNamespace(id=8, slug="synthetic-pyme", pyme_id=77,
+                                 municipio_id=None, rubro_id=9, tipo="pyme")
+        with self.app.test_request_context('/estadisticas/dashboard?tipo=pyme'), \
+             patch('routes.estadisticas._resolve_tenant_profile_or_error', return_value=tenant), \
+             patch('routes.estadisticas.business_metrics_actor_can_read', return_value=True):
             response = self.estadisticas_module.estadisticas_dashboard(current_user)
 
         self.assertEqual(response.status_code, 200)
@@ -223,16 +383,16 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
                 'total_ventas': 1250,
                 'total_pedidos': 18,
                 'clientes_unicos': 11,
-                'tasa_conversion': 1.64,
+                'tasa_conversion': None,
+                'currency': 'ARS',
             }
         )
         self.assertEqual(
             payload['cards'],
             [
-                {"label": "Ingresos Totales", "value": 1250},
+                {"label": "Importe de pedidos", "value": 1250},
                 {"label": "Pedidos", "value": 18},
                 {"label": "Clientes Únicos", "value": 11},
-                {"label": "Tasa de Conversión", "value": 1.64},
             ],
         )
         self.assertEqual(
@@ -242,19 +402,20 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
                 'ventas_over_time': [{"date": "2024-01-01", "sales": 100}],
                 'top_productos': [{"product": "Plan Premium", "sales": 10}],
                 'ventas_por_region': [{"region": "Centro", "sales": 500}],
+                'availability': {'kpis': {'state': 'partial'}},
             }
         )
         self.assertEqual(payload['metadata']['rubro_id'], 9)
         self.assertEqual(payload['metadata']['pyme_id'], 77)
 
-        mock_metricas_cls.assert_called_once_with(77)
+        mock_metricas_cls.assert_called_once_with(77, tenant_id=8)
         mock_build_stats.assert_not_called()
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='pyme',
             actor=current_user,
             municipio_id=None,
             rubro_id=9,
-            tenant_id=None,
+            tenant_id=8,
             fecha_inicio=None,
             fecha_fin=None,
             categoria=None,

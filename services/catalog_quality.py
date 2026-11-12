@@ -244,6 +244,27 @@ def _latest_imports(tenant_id: int, limit: int = 5) -> list[dict[str, Any]]:
     return items
 
 
+def _has_verified_catalog_retrieval(imports: list[dict[str, Any]]) -> bool:
+    for catalog_import in imports:
+        if catalog_import.get("status") != "committed":
+            continue
+        stats = catalog_import.get("stats") if isinstance(catalog_import.get("stats"), dict) else {}
+        assurance = stats.get("ingestion_assurance") if isinstance(stats, dict) else None
+        stages = assurance.get("stages") if isinstance(assurance, dict) else None
+        indexed = stages.get("indexed") if isinstance(stages, dict) else None
+        retrieval = stages.get("retrieval_verified") if isinstance(stages, dict) else None
+        if (
+            isinstance(indexed, dict)
+            and indexed.get("status") == "verified"
+            and indexed.get("acknowledged") is True
+            and isinstance(retrieval, dict)
+            and retrieval.get("status") == "verified"
+            and retrieval.get("acknowledged") is True
+        ):
+            return True
+    return False
+
+
 def build_catalog_quality_fallback_payload(
     tenant: TenantProfile,
     *,
@@ -334,7 +355,7 @@ def build_catalog_quality_fallback_payload(
             "bulk_import_images": True,
             "bulk_import_stock": True,
             "pdf_catalog_generation": True,
-            "qdrant_vector_sync": True,
+            "qdrant_vector_sync": False,
         },
         "endpoints": {
             "items": f"/api/admin/tenants/{tenant.slug}/catalog/items",
@@ -471,6 +492,9 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
         if action
     ]
 
+    latest_imports = _latest_imports(tenant.id, limit=5)
+    qdrant_vector_sync = _has_verified_catalog_retrieval(latest_imports)
+
     return {
         "contract_version": "catalog.quality.v1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -535,7 +559,7 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
             },
         },
         "imports": {
-            "latest": _latest_imports(tenant.id, limit=5),
+            "latest": latest_imports,
             "accepted_file_types": ["csv", "xlsx", "xls", "txt", "pdf", "png", "jpg", "jpeg", "webp"],
             "image_columns": ["imagen_url", "image_url", "foto", "foto_url", "gallery_urls", "imagenes", "images"],
             "inventory_columns": inventory_columns_contract()["stock_columns"],
@@ -549,7 +573,7 @@ def build_catalog_quality_payload(tenant: TenantProfile, *, limit: int = 20) -> 
             "bulk_import_images": True,
             "bulk_import_stock": True,
             "pdf_catalog_generation": True,
-            "qdrant_vector_sync": True,
+            "qdrant_vector_sync": qdrant_vector_sync,
         },
         "endpoints": {
             "items": f"/api/admin/tenants/{tenant.slug}/catalog/items",

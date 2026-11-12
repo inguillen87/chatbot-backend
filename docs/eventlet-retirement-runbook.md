@@ -19,7 +19,11 @@ those require provider-backed gates below.
   startup. Scale horizontally with one worker per instance and load-balancer
   sticky sessions. A shared Redis manager coordinates broadcasts but does not
   replace client affinity.
-- `GUNICORN_THREADS` defaults to `100` and can be reduced after a measured soak.
+- On Vercel, `GUNICORN_THREADS` defaults to `32`. Explicit integer overrides are
+  preserved within the bounded `16..64` range; lower or higher values are
+  clamped to the nearest limit. Other runtimes retain the established default
+  of `100` and their explicit overrides. This is bounded per-instance
+  concurrency, not unlimited scale.
 - `simple-websocket==1.1.0` is an explicit runtime dependency.
 - Eventlet must not appear in the resolved deployment dependency set.
 

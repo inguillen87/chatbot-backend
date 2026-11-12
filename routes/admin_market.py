@@ -2,8 +2,13 @@ from flask import Blueprint, request, jsonify, g, abort
 from models import db, MarketOrder, MarketOrderItem, CatalogoItem, TenantProfile
 from utils.auth_helpers import token_requerido
 from utils.tenant import require_tenant
-from sqlalchemy.orm.attributes import flag_modified
 from utils.auth_decorators import _is_authorized_for_tenant
+from services.notification_settings_contract import (
+    NotificationSettingsError,
+    merge_notification_update,
+    notification_hooks_snapshot,
+    parse_notification_update,
+)
 
 admin_market_bp = Blueprint('admin_market', __name__)
 
@@ -146,27 +151,27 @@ def notification_settings(user, slug):
         abort(403, description="Acceso denegado.")
 
     if request.method == 'GET':
-        config = tenant.configuracion or {}
+        try:
+            hooks = notification_hooks_snapshot(tenant.configuracion)
+        except NotificationSettingsError as exc:
+            return jsonify({"error": str(exc), "reason_code": "notification_settings_stored_invalid"}), 409
         return jsonify({
-            "owner_phone": config.get("owner_notification_phone"),
-            "telegram_chat_id": config.get("owner_telegram_chat_id"),
-            "notification_settings": config.get("notification_settings", {})
+            "owner_phone": hooks["delivery"]["owner_phone"],
+            "telegram_chat_id": hooks["delivery"]["telegram_chat_id"],
+            "notification_settings": hooks["preferences"],
         })
 
     if request.method == 'PUT':
-        data = request.get_json()
-        config = tenant.configuracion or {}
-
-        # Update fields
-        if 'owner_phone' in data:
-            config['owner_notification_phone'] = data['owner_phone']
-        if 'telegram_chat_id' in data:
-            config['owner_telegram_chat_id'] = data['telegram_chat_id']
-        if 'notification_settings' in data:
-            config['notification_settings'] = data['notification_settings']
-
-        tenant.configuracion = config
-        flag_modified(tenant, "configuracion")
-        db.session.commit()
-
-        return jsonify({"status": "ok"})
+        try:
+            update = parse_notification_update(request.get_json(silent=True), legacy=True)
+        except NotificationSettingsError as exc:
+            return jsonify({"error": str(exc), "reason_code": "notification_settings_invalid"}), 400
+        try:
+            config, _hooks = merge_notification_update(tenant.configuracion, update)
+        except NotificationSettingsError as exc:
+            return jsonify({"error": str(exc), "reason_code": "notification_settings_stored_invalid"}), 409
+        response = jsonify({"status": "ok"})
+        if update:
+            tenant.configuracion = config
+            db.session.commit()
+        return response

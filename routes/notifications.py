@@ -3,6 +3,7 @@ from __future__ import annotations
 from flask import Blueprint, abort, g, jsonify, make_response, request
 from sqlalchemy import func
 
+from cutover_writer_fence import cutover_writer_view
 from models import AdminAuditLog, Notification, NotificationAttempt, NotificationTemplate, User, db
 from routes.auth import _add_cors, token_requerido
 from services.notification_orchestrator import (
@@ -121,6 +122,7 @@ def create_notification_template(current_user: User):
 
 
 @notifications_bp.route('/api/admin/notifications/templates', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def list_notification_templates(current_user: User):
@@ -272,9 +274,16 @@ def dispatch_notifications_async(current_user: User):
     if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
         abort(403, description="Acceso denegado")
 
-    from services.tasks import dispatch_notifications_task
+    from services.tasks import enqueue_notification_dispatch
 
-    task = dispatch_notifications_task.delay(tenant.id)
+    task = enqueue_notification_dispatch(tenant.id)
+    if task is False:
+        return jsonify({
+            "contract_version": "cutover.writer_fence.v1",
+            "status": "maintenance",
+            "reason_code": "cutover_writer_fence_enabled",
+            "retryable": True,
+        }), 503
     db.session.add(
         AdminAuditLog(
             admin_user_id=current_user.id,
@@ -385,6 +394,7 @@ def list_notification_attempts(current_user: User, notif_id: str):
 
 
 @notifications_bp.route('/api/admin/notifications/<string:notif_id>', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def get_notification_detail(current_user: User, notif_id: str):
@@ -439,6 +449,7 @@ def get_notification_detail(current_user: User, notif_id: str):
 
 
 @notifications_bp.route('/api/admin/notifications/metrics', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def notification_metrics(current_user: User):
@@ -538,6 +549,7 @@ def notification_metrics(current_user: User):
 
 
 @notifications_bp.route('/api/admin/notifications/alerts', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def notification_alerts(current_user: User):

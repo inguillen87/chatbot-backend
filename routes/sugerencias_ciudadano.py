@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, current_app
 from models import User, SugerenciaCiudadano, db
 from routes.auth import token_requerido, admin_o_empleado_requerido # Ensures user is admin or employee
-from services.logic import es_rubro_publico # To check if user is of 'municipio' type
+from services.rubro_classification import es_rubro_publico # To check if user is of 'municipio' type
 from datetime import datetime, timedelta
 
 sugerencias_ciudadano_bp = Blueprint('sugerencias_ciudadano_bp', __name__, url_prefix='/sugerencias-ciudadano')

@@ -1,4 +1,5 @@
 from flask import Blueprint, current_app, jsonify, request
+from cutover_writer_fence import cutover_writer_view
 from models import Categoria, db
 from routes.auth import token_requerido
 from utils.permissions import require_role
@@ -71,6 +72,7 @@ def crear_categoria(current_user):
     return jsonify({"mensaje": "Categoría creada con éxito.", "id": nueva_categoria.id}), 201
 
 @categorias_bp.route('', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_role('admin', 'empleado')
 def obtener_categorias(current_user):

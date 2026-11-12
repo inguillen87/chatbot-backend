@@ -1,0 +1,85 @@
+import {chromium,expect} from '@playwright/test';
+import {createServer} from 'vite';
+import {mkdir,writeFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const backend=new URL(process.env.METHOD_API);assert.equal(backend.hostname,'127.0.0.1');
+const cases=JSON.parse(process.env.METHOD_CASES);
+process.env.VITE_PROXY_TARGET=backend.origin;process.env.VITE_BACKEND_URL='/api';process.env.VITE_API_URL='/api';
+process.env.VITE_USE_LOCAL_API_PROXY='true';process.env.VITE_BACKEND_BOOTSTRAP_GATE_ENABLED='true';
+const server=await createServer({cacheDir:'.vercel/methodology-full-cache',server:{host:'127.0.0.1',port:0},logLevel:'error'});
+const directory='test-evidence/methodology-full';let browser;const results=[];
+try {
+ await server.listen();await mkdir(directory,{recursive:true});
+ const origin=`http://127.0.0.1:${server.httpServer.address().port}`;
+ browser=await chromium.launch(process.platform==='win32'?{channel:'chrome',headless:true}:{headless:true});
+ for(const [index,width] of [1440,820,390,320].entries()) {
+  const item=cases[index];const endpoint=`/api/admin/encuestas/${item.id}/methodology?tenant_slug=acceptance-a`;
+  const context=await browser.newContext({viewport:{width,height:1000},reducedMotion:'reduce'});
+  await context.route('**/*',route=>new URL(route.request().url()).hostname==='127.0.0.1'?route.continue():route.abort('blockedbyclient'));
+  const page=await context.newPage();page.setDefaultTimeout(30000);const errors=[];const writes=[];
+  page.on('request',request=>{if(request.method()==='PUT'&&new URL(request.url()).pathname.endsWith('/methodology'))writes.push(request.url());});
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.goto(origin+'/login?next=%2Fperfil%3Fsection%3Dgeneral');
+  await page.getByPlaceholder('Correo electr\u00f3nico',{exact:true}).fill(process.env.METHOD_ACCOUNT);
+  await page.getByPlaceholder('Contrase\u00f1a',{exact:true}).fill(process.env.METHOD_PASSWORD);
+  await page.getByRole('button',{name:'Iniciar Sesi\u00f3n',exact:true}).click();
+  await page.waitForURL(/\/perfil/);await page.getByRole('textbox',{name:'Nombre legal o institucional'}).waitFor();
+  await page.goto(`${origin}/admin/encuestas/${item.id}/analytics?tenant_slug=acceptance-a`);
+  const panel=page.getByTestId('survey-methodology');await panel.waitFor({timeout:45000});
+  if(width===390)await page.evaluate(()=>document.documentElement.classList.add('dark'));
+  const response=await context.request.get(origin+endpoint);assert.equal(response.status(),200);
+  const initial=await response.json(),ui=initial.ui;
+  const purpose=initial.schema[0].fields[0].label;
+  await panel.getByRole('button',{name:ui.edit,exact:true}).focus();await page.keyboard.press('Enter');
+  await panel.getByLabel(purpose,{exact:true}).fill('Objetivo de estudio registrado en navegador QA');
+  await panel.getByLabel(ui.change_reason,{exact:true}).fill('Alta inicial documentada en la prueba de interfaz.');
+  const saved=page.waitForResponse(r=>r.request().method()==='PUT'&&new URL(r.url()).pathname===new URL(origin+endpoint).pathname);
+  await panel.getByRole('button',{name:ui.save,exact:true}).focus();await page.keyboard.press('Enter');assert.equal((await saved).status(),200);
+  await expect(panel.getByText(ui.saved,{exact:true})).toBeVisible();
+  const stored=await (await context.request.get(origin+endpoint)).json();assert.equal(stored.profile.revision,1);
+  assert.equal(stored.profile.fields.purpose,'Objetivo de estudio registrado en navegador QA');
+  await panel.getByRole('heading',{name:ui.title,exact:true}).evaluate(el=>{el.setAttribute('tabindex','-1');el.focus({preventScroll:true});});
+  await panel.evaluate(el=>window.scrollTo({top:el.getBoundingClientRect().top+scrollY-120,behavior:'instant'}));
+  await page.screenshot({path:`${directory}/saved-viewport-${width}.png`,fullPage:false});
+  await panel.screenshot({path:`${directory}/saved-${width}.png`});
+  await page.reload();await panel.waitFor({timeout:45000});
+  if(width===390)await page.evaluate(()=>document.documentElement.classList.add('dark'));
+  await expect(panel.getByText(stored.profile.fields.purpose,{exact:true})).toBeVisible();
+  await panel.getByRole('button',{name:ui.edit,exact:true}).focus();await page.keyboard.press('Enter');
+  const localDraft='Edicion local que debe conservarse ante un conflicto';
+  await panel.getByLabel(purpose,{exact:true}).fill(localDraft);
+  await panel.getByLabel(ui.change_reason,{exact:true}).fill('Intento local concurrente durante la prueba.');
+  const competing={contract_version:'surveys.methodology.write.v1',expected_revision:1,expected_instrument_revision:stored.current_instrument_revision,
+    fields:{...stored.profile.fields,purpose:'Version posterior escrita por la prueba concurrente'},change_reason:'Otra edicion confirmada antes de la segunda solicitud.'};
+  const competingResponse=await context.request.put(origin+endpoint,{data:competing});assert.equal(competingResponse.status(),200);
+  const conflict=page.waitForResponse(r=>r.request().method()==='PUT'&&new URL(r.url()).pathname===new URL(origin+endpoint).pathname);
+  await panel.getByRole('button',{name:ui.save,exact:true}).focus();await page.keyboard.press('Enter');assert.equal((await conflict).status(),409);
+  await expect(panel.getByLabel(purpose,{exact:true})).toHaveValue(localDraft);
+  await expect(panel.getByRole('button',{name:ui.save,exact:true})).toBeDisabled();
+  await panel.screenshot({path:`${directory}/conflict-${width}.png`});
+  await panel.getByRole('button',{name:ui.discard,exact:true}).focus();await page.keyboard.press('Enter');
+  const dialog=page.getByRole('alertdialog');await expect(dialog).toBeVisible();
+  const bounds=await dialog.boundingBox();assert.ok(bounds&&bounds.x>=0&&bounds.x+bounds.width<=width+1);
+  assert.equal(await dialog.evaluate(el=>getComputedStyle(el).animationName),'none');
+  await dialog.getByRole('button',{name:ui.cancel,exact:true}).focus();await page.keyboard.press('Enter');
+  await expect(dialog).not.toBeVisible();await expect(panel.getByLabel(purpose,{exact:true})).toHaveValue(localDraft);
+  await panel.getByRole('button',{name:ui.discard,exact:true}).focus();await page.keyboard.press('Enter');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button',{name:ui.confirm_discard,exact:true}).focus();await page.keyboard.press('Enter');
+  await expect(panel.getByText(competing.fields.purpose,{exact:true})).toBeVisible();
+  assert.equal(await panel.evaluate(el=>el.scrollWidth>el.clientWidth),false);
+  assert.equal((await context.request.get(origin+'/api/me?tenant_slug=acceptance-a')).status(),200);
+  const final=await (await context.request.get(origin+endpoint)).json();assert.equal(final.latest_revision,2);assert.equal(final.history.length,2);
+  assert.equal(writes.length,2); // One confirmed write and one rejected stale write; no retries.
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  assert.equal(await panel.locator('button:visible').evaluateAll(buttons=>buttons.every(button=>button.getBoundingClientRect().height>=44)),true);
+  assert.deepEqual(errors,[]);
+  results.push({width,originalLogin:true,realApi:true,keyboardAndDialogBounds:true,version1Saved:true,reloadPreserved:true,conflict409:true,draftPreserved:true,cancelPreserved:true,explicitReload:true,pagePutAttempts:writes.length,panelOverflow:false,viewportOverflow:false,touchTargets44:true});
+  await context.close();
+ }
+ const report={fullSpa:true,fullFlask:true,apiResponsesMocked:false,syntheticAccountsAndDatabase:true,results};
+ await writeFile(`${directory}/results.json`,JSON.stringify(report,null,2));console.log(JSON.stringify(report));
+} catch(error) {
+ for(const context of browser?.contexts()||[])for(const page of context.pages())await page.screenshot({path:`${directory}/failure.png`,fullPage:true}).catch(()=>{});
+ throw error;
+} finally {await browser?.close();await server.close();}

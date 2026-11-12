@@ -1,13 +1,17 @@
 # services/common_utils.py
+from __future__ import annotations
+
 import re
 import os
 import unicodedata
-import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.response_formatter import render_audio_text
 from services.openai_model_defaults import DEFAULT_OPENAI_TTS_MODEL
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 # --- PLACEHOLDER DEFINITIONS ---
 # The original definitions for these functions were not found in the codebase.

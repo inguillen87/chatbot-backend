@@ -1,0 +1,16 @@
+# Deny by default: only the ingress package and its deployment manifest enter
+# the remote build context.  In particular, no repository secrets, tests,
+# application backend, provider sender, AI dependency, or generated artifact
+# can be uploaded accidentally from this project directory.
+*
+!__init__.py
+!app.py
+!core.py
+!migration.py
+!schema.py
+!twilio_signature.py
+!wsgi.py
+!requirements.txt
+!Dockerfile.vercel
+!vercel.json
+!.dockerignore

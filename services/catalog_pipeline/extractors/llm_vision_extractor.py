@@ -79,9 +79,13 @@ class LLMVisionExtractor(BaseExtractor):
                 return {
                     "columns": cols_meta,
                     "rows": normalized_rows,
-                    "confidence": 0.85, # Synthetic confidence for LLM
-                    "warnings": [],
-                    "metadata": {"total_rows": len(normalized_rows)}
+                    # The provider schema does not return calibrated confidence.
+                    "confidence": 0.0,
+                    "warnings": ["Confianza no informada por el proveedor; requiere revision humana."],
+                    "metadata": {
+                        "total_rows": len(normalized_rows),
+                        "confidence_source": "not_provided",
+                    }
                 }
 
             return {
@@ -92,12 +96,12 @@ class LLMVisionExtractor(BaseExtractor):
                 "metadata": {}
             }
 
-        except Exception as e:
+        except Exception:
             return {
                 "columns": [],
                 "rows": [],
                 "confidence": 0.0,
-                "warnings": [f"Error in Vision Extractor: {str(e)}"],
+                "warnings": ["El proveedor de vision no pudo confirmar la extraccion."],
                 "metadata": {},
-                "error": str(e)
+                "error_code": "vision_extraction_failed",
             }

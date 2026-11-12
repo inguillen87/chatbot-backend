@@ -1,8 +1,6 @@
-from flask import Blueprint, request, jsonify, g, current_app
-from services.integrations.mercadolibre_service import MercadoLibreService
-from services.integrations.tiendanube_service import TiendaNubeService
+from flask import Blueprint, current_app, jsonify, g
 from utils.auth_helpers import token_requerido
-from models import IntegrationAccount, db, TenantProfile
+from models import IntegrationAccount, TenantProfile
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
@@ -10,6 +8,55 @@ from services.plan_access import (
 )
 
 integrations_bp = Blueprint('integrations', __name__)
+
+_LEGACY_TRANSPORT_CONTRACT_VERSION = "tenant.integration.legacy_transport_disabled.v1"
+
+
+def legacy_integration_transport_disabled_response(
+    *,
+    surface: str,
+    replacement_endpoint: str | None = None,
+):
+    """Return a side-effect-free denial for the retired integration transport.
+
+    ``LEGACY_INTEGRATIONS_TRANSPORT_ENABLED`` is deliberately only an
+    operational migration marker.  Setting it cannot revive the old handlers:
+    a future implementation must first provide signed, expiring, one-time OAuth
+    state and tenant-bound provider credentials.  This prevents an accidental
+    Vercel/Render environment change from re-enabling raw ``tenant_id`` or
+    ``state`` trust.
+    """
+
+    migration_flag_requested = bool(
+        current_app.config.get("LEGACY_INTEGRATIONS_TRANSPORT_ENABLED", False)
+    )
+    reason_codes = {
+        "oauth_connect": "legacy_oauth_connect_disabled",
+        "oauth_callback": "legacy_oauth_callback_disabled",
+        "unsigned_webhook": "legacy_unsigned_webhook_disabled",
+    }
+    payload = {
+        "contract_version": _LEGACY_TRANSPORT_CONTRACT_VERSION,
+        "status": "disabled",
+        "reason_code": reason_codes[surface],
+        "retryable": False,
+        "next_action": "configure_tenant_bound_signed_provider_adapter",
+    }
+    if replacement_endpoint:
+        payload["replacement_endpoint"] = replacement_endpoint
+
+    # A mistakenly enabled migration flag must still fail closed until a
+    # secure transport replaces these handlers.  Use 503 to make that operator
+    # misconfiguration visible; the default response is an intentionally quiet
+    # 404 so the retired public surface is not advertised.
+    status_code = 503 if migration_flag_requested else 404
+    if migration_flag_requested:
+        payload["reason_code"] = "legacy_integration_secure_transport_unavailable"
+
+    response = jsonify(payload)
+    response.status_code = status_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _plan_allows_integrations(tenant: TenantProfile) -> bool:
@@ -41,29 +88,20 @@ def _integration_plan_required_response(
 
 
 @integrations_bp.route('/<provider>/connect', methods=['POST'])
-@token_requerido
-def connect(user, provider):
-    """Generates OAuth URL."""
-    tenant = g.tenant_profile
-    if not tenant:
-        return jsonify({"error": "Tenant required"}), 400
-    if not _plan_allows_integrations(tenant):
-        return _integration_plan_required_response(tenant, _provider_feature_id(provider))
+def connect(provider):
+    """Reject the legacy OAuth flow before auth, database or provider calls.
 
-    redirect_uri = f"{request.host_url}api/integrations/{provider}/callback"
+    The retired implementation placed a plain tenant id in OAuth ``state``.
+    That is not an authorization boundary and provided neither expiry nor
+    one-time replay protection, so it cannot be safely retained as a fallback.
+    """
 
-    if provider == "mercadolibre":
-        url = MercadoLibreService.get_auth_url(tenant.id, redirect_uri)
-        return jsonify({"url": url})
-    elif provider == "tiendanube":
-        url = TiendaNubeService.get_auth_url(tenant.id, redirect_uri)
-        return jsonify({"url": url})
-
-    return jsonify({"error": "Provider not supported"}), 400
+    return legacy_integration_transport_disabled_response(surface="oauth_connect")
 
 @integrations_bp.route('/<provider>/callback', methods=['GET'])
 def callback(provider):
-    """Handles OAuth callback."""
+    """Reject raw or replayable OAuth state without resolving a tenant."""
+
     if provider == "whatsapp":
         return (
             jsonify(
@@ -84,54 +122,16 @@ def callback(provider):
             410,
         )
 
-    code = request.args.get('code')
-    state = request.args.get('state') # Used as tenant_id
-
-    if not code or not state:
-        return jsonify({"error": "Missing code or state"}), 400
-
-    redirect_uri = f"{request.host_url}api/integrations/{provider}/callback"
-
-    try:
-        tenant = TenantProfile.query.get(state)
-        if not tenant:
-            return jsonify({"error": "Tenant not found"}), 404
-        if not _plan_allows_integrations(tenant):
-            response, status = _integration_plan_required_response(
-                tenant,
-                _provider_feature_id(provider),
-            )
-            return response, status
-
-        if provider == "mercadolibre":
-            MercadoLibreService.handle_callback(state, code, redirect_uri)
-        elif provider == "tiendanube":
-            TiendaNubeService.handle_callback(state, code, redirect_uri)
-
-        return "Conexión exitosa. Puede cerrar esta ventana."
-    except Exception as e:
-        current_app.logger.error(f"OAuth Error: {e}")
-        return f"Error en conexión: {str(e)}", 500
+    return legacy_integration_transport_disabled_response(surface="oauth_callback")
 
 @integrations_bp.route('/webhooks/<provider>', methods=['POST'])
 def webhook(provider):
-    """Receives external events."""
-    # Note: Real implementation needs to securely identify tenant from the webhook payload or a unique URL.
-    # For ML, we receive a global notification. Identifying the tenant is tricky without keeping a map of UserID -> TenantID.
-    # For this MVP, we assume the query param ?tenant_id=X is set in the webhook URL registered in ML.
+    """Reject unsigned legacy events without parsing or mutating their body."""
 
-    tenant_id = request.args.get('tenant_id')
-    payload = request.get_json(silent=True) or request.form.to_dict()
-
-    try:
-        if provider == "mercadolibre":
-            # Pass tenant_id if available to help identify the account
-            MercadoLibreService.process_webhook(payload, tenant_id)
-
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        current_app.logger.error(f"Webhook Error: {e}")
-        return jsonify({"error": str(e)}), 500
+    return legacy_integration_transport_disabled_response(
+        surface="unsigned_webhook",
+        replacement_endpoint="/api/omnichannel/adapters/{connection_id}/inbound",
+    )
 
 
 @integrations_bp.route('/<provider>/preview', methods=['GET'])

@@ -1,3 +1,4 @@
+from services.contact_service import read_contact_projection, current_contact_phone
 # services/actions/municipio_actions.py
 import logging
 import hashlib
@@ -11,6 +12,11 @@ from flask import current_app, has_app_context
 from sqlalchemy import func, text
 
 from .base_action_handler import BaseActionHandler
+from services.municipal_conversation_uow import (
+    MunicipalUnitAction, municipal_unit_action, private_municipal_arguments,
+    require_municipal_context, persist_municipal_changes, municipal_ticket_socket,
+    municipal_live_request_socket, unported_municipal_call,
+)
 from typing import Dict, Any, Optional
 import random
 from services.ticket_service import (
@@ -141,9 +147,20 @@ def _log_action_execution(
 def _durable_ticket_effect_kwargs(
     context: Dict[str, Any],
     effect: str,
+    *,
+    unit_of_work=None,
+    conversation_turn_id=None,
 ) -> Dict[str, Any]:
     """Return a validated source-scoped identity for one ticket effect."""
 
+    if unit_of_work is not None:
+        require_municipal_context(context, unit_of_work, conversation_turn_id)
+        key = build_whatsapp_ticket_effect_key(unit_of_work.claim.tenant_id,
+            conversation_turn_id, effect)
+        unit_of_work.require_writer_scope(session=db.session(),
+            tenant_id=unit_of_work.claim.tenant_id, turn_id=conversation_turn_id, effect_key=key)
+        return {"idempotency_key": key, "idempotency_tenant_id": unit_of_work.claim.tenant_id,
+            **private_municipal_arguments(unit_of_work, conversation_turn_id)}
     channel = str(context.get("channel") or "").strip().lower()
     if channel == "voice":
         # VoiceStreamService supplies one provider/call-scoped digest for the
@@ -170,6 +187,32 @@ def _durable_ticket_effect_kwargs(
         return {
             "idempotency_key": voice_key,
             "idempotency_tenant_id": voice_tenant_id,
+        }
+
+    if channel == "web":
+        web_key = str(context.get("idempotency_key") or "").strip().lower()
+        if not web_key:
+            return {}
+        if not re.fullmatch(r"chat:[0-9a-f]{64}", web_key):
+            raise TicketIdempotencyValidationError(
+                "Invalid municipal web-chat ticket idempotency key."
+            )
+        try:
+            web_tenant_id = int(context.get("tenant_id"))
+        except (TypeError, ValueError) as exc:
+            raise TicketIdempotencyValidationError(
+                "Municipal web-chat ticket idempotency requires a tenant_id."
+            ) from exc
+        if web_tenant_id <= 0 or not re.fullmatch(
+            r"[A-Za-z0-9_.:-]{1,80}",
+            str(effect or ""),
+        ):
+            raise TicketIdempotencyValidationError(
+                "Invalid municipal web-chat ticket idempotency scope."
+            )
+        return {
+            "idempotency_key": f"{web_key}:{effect}",
+            "idempotency_tenant_id": web_tenant_id,
         }
 
     durable_turn_id = context.get("durable_turn_id")
@@ -348,6 +391,7 @@ def _acquire_municipal_claim_confirmation_lock(
     confirmation_id: str,
     tenant_id: Any = None,
     municipio_id: Any = None,
+    unit_of_work=None,
 ) -> bool:
     """Serialize one logical claim confirmation on PostgreSQL.
 
@@ -381,6 +425,8 @@ def _acquire_municipal_claim_confirmation_lock(
         )
         return True
     except Exception as exc:
+        if unit_of_work is not None:
+            unit_of_work.fail("municipal_uow_confirmation_lock_failed", cause=exc)
         logger.error(
             "No se pudo adquirir el bloqueo idempotente del reclamo municipal "
             "error_type=%s.",
@@ -445,12 +491,25 @@ def _persist_municipio_ticket_ai_enrichment(
     ticket_obj: MunicipioTicket,
     *,
     tenant: TenantProfile | None = None,
+    unit_of_work=None,
+    conversation_turn_id=None,
 ) -> dict[str, Any] | None:
     """Persist advisory-only AI hints for CRM without mutating operational state."""
 
+    if unit_of_work is not None:
+        with db.session.no_autoflush:
+            unit_of_work.require_writer_scope(session=db.session(),
+                tenant_id=getattr(tenant, "id", None), turn_id=conversation_turn_id)
+            if (not isinstance(ticket_obj, MunicipioTicket)
+                    or ticket_obj.tenant_id != unit_of_work.claim.tenant_id):
+                unit_of_work.fail("municipal_uow_enrichment_scope_mismatch")
     if not ticket_obj or not hasattr(ticket_obj, "datos_extra"):
         return None
 
+    # The advisory builder can call Hugging Face when remote flags permit it.
+    # No provider operation is part of this SQL Unit; do not silently skip it.
+    if unit_of_work is not None:
+        unit_of_work.fail("municipal_uow_hf_enrichment_not_ported")
     try:
         from sqlalchemy.orm.attributes import flag_modified
         from services.ticket_ai_enrichment import build_ticket_ai_enrichment
@@ -485,9 +544,11 @@ def _persist_municipio_ticket_ai_enrichment(
         ticket_obj.datos_extra = extra
         flag_modified(ticket_obj, "datos_extra")
         db.session.add(ticket_obj)
-        db.session.commit()
+        persist_municipal_changes(unit_of_work)
         return enrichment
     except Exception as exc:
+        if unit_of_work is not None:
+            unit_of_work.fail("municipal_uow_local_enrichment_failed", cause=exc)
         db.session.rollback()
         logger.warning(
             "No se pudo persistir enrichment IA advisory para reclamo municipal %s "
@@ -910,7 +971,8 @@ class BuscarEstacionamientoActionHandler(BaseActionHandler):
             "data": resultado
         }
 
-class CrearReclamoActionHandler(BaseActionHandler):
+class CrearReclamoActionHandler(MunicipalUnitAction):
+    @municipal_unit_action
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         action_log_metadata = _safe_action_log_metadata(action_data)
         logger.info(
@@ -935,7 +997,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
         viewer_user = self.context.get("viewer_user_obj")
         datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         contacto_ctx = contexto_reclamo.get("contacto_usuario", {})
-        resolved_contact = self.context.get("resolved_contact") or {}
+        resolved_contact = read_contact_projection(self.context.get("resolved_contact"),
+            tenant_id=self.context.get("tenant_id"),
+            phone=current_contact_phone(self.context.get("anon_id"),
+                getattr(viewer_user, "telefono", None)))
 
         if resolved_contact:
             contacto_ctx.setdefault("nombre", resolved_contact.get("nombre"))
@@ -989,6 +1054,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             or bool(os.getenv("PYTEST_CURRENT_TEST"))
             or "pytest" in sys.modules
         )
+        if self.unit_of_work is not None and lat_coord is not None and lon_coord is not None:
+            self.unit_of_work.fail("municipal_uow_reverse_geocoding_not_ported")
         if lat_coord is not None and lon_coord is not None and not enrichment_disabled:
             geocoded_from_coords = obtener_direccion_de_coordenadas(lat_coord, lon_coord)
             if geocoded_from_coords and geocoded_from_coords.get("formatted_address"):
@@ -1061,6 +1128,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "Attempting municipal district parsing location_chars=%s",
                     len(str(ubicacion_llm)),
                 )
+                if self.unit_of_work is not None:
+                    self.unit_of_work.fail("municipal_uow_address_llm_not_ported")
                 parsed_addr = parse_direccion(
                     ubicacion_llm,
                     municipio_config,
@@ -1070,6 +1139,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 else:
                     distrito_llm = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
             except Exception as e:
+                if self.unit_of_work is not None:
+                    self.unit_of_work.fail("municipal_uow_action_failed", cause=e)
                 logger.warning(
                     "Municipal district parsing failed error_type=%s",
                     type(e).__name__,
@@ -1507,10 +1578,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             return replay_payload
 
         if confirmation_id and not _acquire_municipal_claim_confirmation_lock(
-            db.session,
+            self.unit_of_work.session if self.unit_of_work is not None else db.session,
             confirmation_id=confirmation_id,
             tenant_id=tenant_id,
             municipio_id=municipio_id,
+            unit_of_work=self.unit_of_work,
         ):
             logger.error(
                 "Se rechaza una confirmacion sin alcance o sin bloqueo idempotente."
@@ -1599,7 +1671,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 **_durable_ticket_effect_kwargs(
                     self.context,
                     "municipio_claim_create",
-                ),
+                 unit_of_work=self.unit_of_work, conversation_turn_id=self.conversation_turn_id),
             )
             if not ticket_creado:
                 # A concurrent confirmation can lose the create race.  The
@@ -1615,6 +1687,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ticket_nro = ticket_creado.get('nro_ticket')
             if not ticket_nro:
                 raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
+            # A durable replay returns the original credential.  The candidate
+            # generated before creation must never replace that persisted PIN.
+            persisted_pin = str(ticket_creado.get("consulta_pin") or "").strip()
+            if len(persisted_pin) != 6 or not persisted_pin.isdigit():
+                raise ValueError("El ticket no devolvió un PIN de seguimiento válido.")
+            pin_final = persisted_pin
             nro_ticket_str = _format_ticket_code("M", ticket_nro)
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
@@ -1686,7 +1764,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                                     **_durable_ticket_effect_kwargs(
                                         self.context,
                                         f"municipio_claim_evidence_comment:{adjunto.id}",
-                                    ),
+                                     unit_of_work=self.unit_of_work, conversation_turn_id=self.conversation_turn_id),
                                 )
                                 if comentario_adjunto is None:
                                     raise RuntimeError(
@@ -1701,15 +1779,22 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     _persist_municipio_ticket_ai_enrichment(
                         ticket_obj,
                         tenant=_resolve_tenant_for_ai(tenant_id),
+                        **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id),
                     )
                     ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
-                    emit_new_ticket(ticket_json)
+                    if self.unit_of_work is None:
+                        emit_new_ticket(ticket_json)
+                    else:
+                        municipal_ticket_socket(self.context, ticket_json,
+                            **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id))
                 else:
                     logger.warning(
                         "No se pudo recuperar el ticket recién creado para emitir socket: id=%s",
                         ticket_creado.get("id"),
                     )
             except Exception as e_notify:
+                if self.unit_of_work is not None:
+                    self.unit_of_work.fail("municipal_uow_action_failed", cause=e_notify)
                 logger.error(
                     "Municipal claim realtime notification failed ticket_id=%s "
                     "error_type=%s",
@@ -2089,6 +2174,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
             final_response.setdefault("message_to_user", final_response.get("message_body"))
             return final_response
         except Exception as e:
+            if self.unit_of_work is not None:
+                self.unit_of_work.fail("municipal_uow_action_failed", cause=e)
             logger.error(
                 "Municipal claim creation failed error_type=%s",
                 type(e).__name__,
@@ -2221,7 +2308,8 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
                 "data": {"tramite_nombre": tramite_nombre, "info_recuperada": "json"}
             }
 
-class HacerSugerenciaActionHandler(BaseActionHandler):
+class HacerSugerenciaActionHandler(MunicipalUnitAction):
+    @municipal_unit_action
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         _log_action_execution("HacerSugerenciaActionHandler", action_data)
         descripcion_sugerencia = action_data.get("descripcion")
@@ -2343,7 +2431,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 **_durable_ticket_effect_kwargs(
                     self.context,
                     "municipio_suggestion_create",
-                ),
+                 unit_of_work=self.unit_of_work, conversation_turn_id=self.conversation_turn_id),
             )
             if not ticket_creado:
                 raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
@@ -2361,16 +2449,22 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 if ticket_obj:
                     if not ticket_obj.consulta_pin:
                         ticket_obj.consulta_pin = pin_value
-                        db.session.commit()
+                        persist_municipal_changes(self.unit_of_work)
                     pin_value = ticket_obj.consulta_pin or pin_value
                     ticket_json = serialize_ticket_to_json(ticket_obj, "municipio")
-                    emit_new_ticket(ticket_json)
+                    if self.unit_of_work is None:
+                        emit_new_ticket(ticket_json)
+                    else:
+                        municipal_ticket_socket(self.context, ticket_json,
+                            **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id))
                 else:
                     logger.warning(
                         "No se pudo recuperar la sugerencia recién creada para emitir socket: id=%s",
                         ticket_creado.get("id"),
                     )
             except Exception as e_notify:
+                if self.unit_of_work is not None:
+                    self.unit_of_work.fail("municipal_uow_action_failed", cause=e_notify)
                 logger.error(
                     "Error enviando notificación en tiempo real para sugerencia %s "
                     "error_type=%s",
@@ -2483,6 +2577,8 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 caption_values=caption_values,
             )
         except Exception as e:
+            if self.unit_of_work is not None:
+                self.unit_of_work.fail("municipal_uow_action_failed", cause=e)
             logger.error(
                 "Error en HacerSugerenciaActionHandler error_type=%s",
                 type(e).__name__,
@@ -2544,7 +2640,8 @@ class ActivarPanicoActionHandler(BaseActionHandler):
 from socket_service import socketio, emit_new_ticket
 from routes.ticket import serialize_ticket_to_json
 
-class DerivarHumanoActionHandler(BaseActionHandler):
+class DerivarHumanoActionHandler(MunicipalUnitAction):
+    @municipal_unit_action
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Crea un ticket real de chat en vivo y devuelve su identificador."""
         _log_action_execution("DerivarHumanoActionHandler", action_data)
@@ -2581,7 +2678,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 **_durable_ticket_effect_kwargs(
                     self.context,
                     "municipio_live_chat_create",
-                ),
+                 unit_of_work=self.unit_of_work, conversation_turn_id=self.conversation_turn_id),
             )
             if not sala_dict:
                 raise Exception("crear_nuevo_ticket devolvió None")
@@ -2594,8 +2691,14 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             try:
                 ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
-                emit_new_ticket(ticket_json)
+                if self.unit_of_work is None:
+                    emit_new_ticket(ticket_json)
+                else:
+                    municipal_ticket_socket(self.context, ticket_json,
+                        **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id))
             except Exception as e_notify:
+                if self.unit_of_work is not None:
+                    self.unit_of_work.fail("municipal_uow_action_failed", cause=e_notify)
                 logger.error(
                     "Error enviando notificación en tiempo real para ticket #%s "
                     "error_type=%s",
@@ -2615,16 +2718,22 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 **_durable_ticket_effect_kwargs(
                     self.context,
                     "municipio_live_chat_initial_comment",
-                ),
+                 unit_of_work=self.unit_of_work, conversation_turn_id=self.conversation_turn_id),
             )
 
             # Emitir evento de socket para notificar al panel de administración
             admin_socket_room = f"municipio_{sala_obj.municipio_id}"
             try:
                 ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
-                socketio.emit('live_chat_request', ticket_json, room=admin_socket_room)
+                if self.unit_of_work is None:
+                    socketio.emit('live_chat_request', ticket_json, room=admin_socket_room)
+                else:
+                    municipal_live_request_socket(self.context, ticket_json, admin_socket_room,
+                        **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id))
                 logger.info(f"Socket event 'live_chat_request' emitted to room '{admin_socket_room}' for ticket {sala_obj.id}")
             except Exception as e_socket:
+                if self.unit_of_work is not None:
+                    self.unit_of_work.fail("municipal_uow_action_failed", cause=e_socket)
                 logger.error(
                     "Failed to emit socket event for new live chat ticket %s error_type=%s",
                     sala_obj.id,
@@ -2689,6 +2798,8 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 },
             }
         except Exception as e:
+            if self.unit_of_work is not None:
+                self.unit_of_work.fail("municipal_uow_action_failed", cause=e)
             logger.error(
                 "Error en DerivarHumanoActionHandler error_type=%s",
                 type(e).__name__,

@@ -3,7 +3,7 @@ import sys
 from flask import Flask
 from app import create_app, db
 from models import User, Rubro
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 
 def fix_tipo_chat():
     """

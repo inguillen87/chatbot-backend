@@ -1,0 +1,54 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "claude/integration-20261112": false,
+      "codex/chatboc-unified-portal-20261112": false,
+      "fix/territorial-geocoding-imports-20261112": false,
+      "fix/canonical-contact-export-20261103": false,
+      "fix/enterprise-operator-workflows-20261103": false,
+      "fix/employee-category-revocation-20261103": false,
+      "release/enterprise-access-knowledge-20261029": false,
+      "release/enterprise-municipal-metrics-20261028": false,
+      "release/enterprise-metrics-tenant-closure-20261028": false,
+      "release/enterprise-metrics-contract-20261028": false,
+      "fix/context-first-drafts-20261022": false,
+      "fix/crm-commercial-signal-20261022": false,
+      "fix/tdf-voice-trial-admission-20261010": false,
+      "fix/tdf-whatsapp-progressive-menu-20261010": false,
+      "fix/tdf-meta-owner-bsuid-20261010": false,
+      "release/enterprise-channel-closure-20261010": false,
+      "release/vercel-neon-complete-20261001": false,
+      "release/tdf-accessible-meta-20261010": false,
+      "feature/realtime-accessible-owner-20261010": false,
+      "feat/whitelabel-domain-lifecycle-20261010": false,
+      "release/enterprise-tdf-consolidated-20261010": false,
+      "fix/tdf-voice-corpus-budget-20261010": false,
+      "fix/tdf-meta-query-compat-20261010": false,
+      "fix/tenant-channel-readiness-20261010": false
+    }
+  },
+  "framework": "container",
+  "fluid": true,
+  "regions": [
+    "gru1"
+  ],
+  "crons": [
+    {
+      "path": "/api/internal/cron/outbox-reconciliation",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/internal/cron/whatsapp-payload-retention",
+      "schedule": "43 3 * * *"
+    },
+    {
+      "path": "/api/internal/cron/survey-privacy-retention",
+      "schedule": "17 3 * * *"
+    },
+    {
+      "path": "/api/internal/cron/weekly-analytics-report",
+      "schedule": "0 0 * * 0"
+    }
+  ]
+}

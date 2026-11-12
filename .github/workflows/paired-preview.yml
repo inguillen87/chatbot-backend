@@ -1,0 +1,25 @@
+name: Paired Preview verification
+"on":
+  pull_request:
+    paths:
+      - scripts/verify_paired_preview.py
+      - scripts/verify_migration_runtime.py
+      - tests/test_paired_preview.py
+      - .github/workflows/paired-preview.yml
+permissions:
+  contents: read
+concurrency:
+  group: paired-preview-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  read-only-release-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+      - run: python -m unittest tests.test_paired_preview -v

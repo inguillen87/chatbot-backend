@@ -1,11 +1,28 @@
 import os
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from services.openai_tts_bridge import generar_audio_openai, clear_tts_cache
 
 
 class TestOpenAITTSBridge(unittest.TestCase):
+    def setUp(self):
+        self.temp_directory = tempfile.TemporaryDirectory()
+        self.previous_cwd = os.getcwd()
+        os.chdir(self.temp_directory.name)
+
+    def tearDown(self):
+        os.chdir(self.previous_cwd)
+        self.temp_directory.cleanup()
+        clear_tts_cache()
+
+    def write_audio(self, path):
+        output = Path(path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b'synthetic-audio-fixture')
+
     @patch('services.openai_tts_bridge.uuid.uuid4', return_value='abc123')
     @patch('services.openai_tts_bridge.os.makedirs')
     @patch('services.openai_tts_bridge.openai.OpenAI')
@@ -15,7 +32,7 @@ class TestOpenAITTSBridge(unittest.TestCase):
         mock_openai.return_value = mock_client
         response = MagicMock()
         mock_client.audio.speech.create.return_value = response
-        response.stream_to_file.return_value = None
+        response.stream_to_file.side_effect = self.write_audio
         mock_httpx_client.return_value = MagicMock()
 
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'test'}):
@@ -43,7 +60,7 @@ class TestOpenAITTSBridge(unittest.TestCase):
         mock_openai.return_value = mock_client
         response = MagicMock()
         mock_client.audio.speech.create.return_value = response
-        response.stream_to_file.return_value = None
+        response.stream_to_file.side_effect = self.write_audio
         mock_httpx_client.return_value = MagicMock()
 
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'test'}):
@@ -67,6 +84,7 @@ class TestOpenAITTSBridge(unittest.TestCase):
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         mock_client.audio.speech.create.return_value = MagicMock()
+        mock_client.audio.speech.create.return_value.stream_to_file.side_effect = self.write_audio
         mock_httpx_client.return_value = MagicMock()
 
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'test'}, clear=True):
@@ -93,7 +111,7 @@ class TestOpenAITTSBridge(unittest.TestCase):
         mock_openai.return_value = mock_client
         response = MagicMock()
         mock_client.audio.speech.create.return_value = response
-        response.stream_to_file.return_value = None
+        response.stream_to_file.side_effect = self.write_audio
         mock_httpx_client.return_value = MagicMock()
 
         with patch.dict(
@@ -124,8 +142,9 @@ class TestOpenAITTSBridge(unittest.TestCase):
         mock_client = MagicMock()
         mock_openai.return_value = mock_client
         mock_client.audio.speech.create.return_value = MagicMock()
+        mock_client.audio.speech.create.return_value.stream_to_file.side_effect = self.write_audio
         mock_httpx_client.return_value = MagicMock()
-        sensitive = 'DNI 32877851 token=secret C:/private/audio.mp3'
+        sensitive = 'PERSONA_FICTICIA_000 token=synthetic-secret C:/synthetic-private/audio.mp3'
 
         with (
             patch.dict(os.environ, {'OPENAI_API_KEY': 'test'}, clear=True),
@@ -136,9 +155,9 @@ class TestOpenAITTSBridge(unittest.TestCase):
 
         rendered = '\n'.join(logs.output)
         self.assertIn('input_chars=', rendered)
-        self.assertNotIn('32877851', rendered)
-        self.assertNotIn('token=secret', rendered)
-        self.assertNotIn('C:/private', rendered)
+        self.assertNotIn('PERSONA_FICTICIA_000', rendered)
+        self.assertNotIn('token=synthetic-secret', rendered)
+        self.assertNotIn('C:/synthetic-private', rendered)
 
 
 if __name__ == '__main__':

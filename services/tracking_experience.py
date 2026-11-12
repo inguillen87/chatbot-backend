@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import secrets
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -11,6 +12,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from flask import current_app, has_app_context
+from sqlalchemy import func, or_
 
 from models import ArchivoAdjunto, MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TenantTicket, TicketComentario
 from services.attachment_delivery import serialize_attachment_for_delivery
@@ -174,9 +176,63 @@ def _stage_payload(raw_status: Any, *, kind: str) -> dict[str, Any]:
     }
 
 
-def _tracking_map(location: dict[str, Any]) -> dict[str, Any]:
-    has_coordinates = location.get("lat") is not None and location.get("lng") is not None
-    address = location.get("address")
+def _tracking_geocoding(location, tenant, *, kind, code, has_coordinates):
+    capability = {
+        "contract_version": "tracking.address_geocoding.v1", "provider": "nominatim",
+        "enabled": False, "scope": None, "jurisdiction": None, "persists_coordinates": False,
+        "labels": {
+            "loading": "Buscando la dirección dentro de su zona…",
+            "unavailable": "No pudimos ubicar un único punto. Conservamos la dirección informada.",
+            "approximate": "Ubicación orientativa de la dirección",
+        },
+    }
+    if (has_coordinates or not location.get("address") or tenant is None
+            or type(getattr(tenant, "id", None)) is not int or tenant.id <= 0
+            or not isinstance(getattr(tenant, "slug", None), str) or not tenant.slug.strip()
+            or kind not in {"claim", "order"} or not isinstance(code, str) or not code.strip()):
+        return capability
+    from services.territorial_evidence import resolve_tenant_jurisdiction
+    jurisdiction = resolve_tenant_jurisdiction(tenant)
+    source = jurisdiction.get("source") if isinstance(jurisdiction, dict) else None
+    if (not isinstance(jurisdiction, dict) or jurisdiction.get("state") != "configured"
+            or jurisdiction.get("enforced") is not True or not isinstance(source, dict)
+            or source.get("kind") != "tenant_geo_config"):
+        return capability
+    fields = {key: jurisdiction.get(key) for key in ("city", "state_name", "country")}
+    if not all(isinstance(value, str) and value.strip() for value in fields.values()):
+        return capability
+    country = fields["country"].strip().upper()
+    if len(country) != 2 or not country.isascii() or not country.isalpha():
+        return capability
+    bounds = jurisdiction.get("bounds")
+    if not isinstance(bounds, dict):
+        return capability
+    try:
+        if any(isinstance(bounds[key], bool) for key in ("west", "south", "east", "north")):
+            return capability
+        bounds = {key: float(bounds[key]) for key in ("west", "south", "east", "north")}
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return capability
+    if (not all(math.isfinite(value) for value in bounds.values())
+            or not -180 <= bounds["west"] < bounds["east"] <= 180
+            or not -90 <= bounds["south"] < bounds["north"] <= 90):
+        return capability
+    capability.update({
+        "enabled": True,
+        "scope": {"kind": kind, "code": code, "tenant_id": tenant.id, "tenant_slug": tenant.slug},
+        "jurisdiction": {"city": fields["city"].strip(), "province": fields["state_name"].strip(),
+                         "country": country, "bounds": bounds},
+    })
+    return capability
+
+
+def _tracking_map(location: dict[str, Any], tenant=None, *, kind=None, code=None) -> dict[str, Any]:
+    lat, lng = _as_float(location.get("lat")), _as_float(location.get("lng"))
+    has_coordinates = (not isinstance(location.get("lat"), bool) and not isinstance(location.get("lng"), bool)
+        and lat is not None and lng is not None and math.isfinite(lat) and math.isfinite(lng)
+        and -90 <= lat <= 90 and -180 <= lng <= 180)
+    address = location.get("address") if isinstance(location.get("address"), str) else None
+    address = address.strip() if address else None
     maps_search_url = None
     if has_coordinates:
         maps_search_url = f"https://maps.google.com/?q={location.get('lat')},{location.get('lng')}"
@@ -209,7 +265,20 @@ def _tracking_map(location: dict[str, Any]) -> dict[str, Any]:
         "layers": ["origin", "current_status", "destination_or_claim_location", "timeline_events"],
         "animations": ["pulse_current_step", "route_progress", "status_transition"],
         "fallback_when_no_coordinates": "geocode_address" if (address and not has_coordinates) else "timeline_only",
+        "ui": {
+            "address_label": "Dirección informada",
+            "search_address_label": "Buscar dirección en el mapa",
+            "address_pending_message": "Todavía no hay un punto confirmado. Podés buscar la dirección informada en el mapa.",
+            "location_pending_label": "Ubicación pendiente",
+        },
+        "geocoding": _tracking_geocoding(location, tenant, kind=kind, code=code, has_coordinates=has_coordinates),
     }
+
+
+def _is_internal_ticket_comment(comment: TicketComentario | None) -> bool:
+    """Fail closed for whitespace/case variants of private operator notes."""
+
+    return str(getattr(comment, "origen", None) or "").strip().casefold() == "internal"
 
 
 def _comment_timeline(
@@ -220,7 +289,15 @@ def _comment_timeline(
     if not hasattr(comments_rel, "order_by"):
         return []
     try:
-        comments = comments_rel.order_by(
+        query = comments_rel
+        if hasattr(query, "filter"):
+            query = query.filter(
+                or_(
+                    TicketComentario.origen.is_(None),
+                    func.lower(func.trim(TicketComentario.origen)) != "internal",
+                )
+            )
+        comments = query.order_by(
             TicketComentario.fecha.asc(),
             TicketComentario.id.asc(),
         ).limit(20).all()
@@ -232,6 +309,8 @@ def _comment_timeline(
 
     items = []
     for comment in comments:
+        if _is_internal_ticket_comment(comment):
+            continue
         attachments: list[dict[str, Any]] = []
         attachment = getattr(comment, "archivo_adjunto", None)
         if attachment is not None:
@@ -343,13 +422,15 @@ def _claim_attachments(
         .order_by(ArchivoAdjunto.fecha.asc(), ArchivoAdjunto.id.asc())
         .all()
     )
-    attachments.extend(
-        _claim_attachment_payload(
-            attachment,
-            evidence=evidence_index.get(attachment.id),
+    for attachment in rows:
+        if _is_internal_ticket_comment(getattr(attachment, "comentario_asociado", None)):
+            continue
+        attachments.append(
+            _claim_attachment_payload(
+                attachment,
+                evidence=evidence_index.get(attachment.id),
+            )
         )
-        for attachment in rows
-    )
     return attachments
 
 
@@ -1021,7 +1102,7 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
         },
         "status": _stage_payload(getattr(ticket, "estado", None), kind="claim"),
         "location": location,
-        "map": _tracking_map(location),
+        "map": _tracking_map(location, tenant, kind="claim", code=display_code),
         "attachments": attachments,
         "timeline": [item for item in timeline if item.get("created_at") or item.get("message") or item.get("status")],
         "support": support,
@@ -1103,7 +1184,7 @@ def build_tenant_claim_tracking_experience(
         },
         "status": _stage_payload(ticket.estado, kind="claim"),
         "location": location,
-        "map": _tracking_map(location),
+        "map": _tracking_map(location, tenant, kind="claim", code=code),
         "attachments": [],
         "timeline": timeline,
         "support": {
@@ -1213,7 +1294,7 @@ def build_order_tracking_experience(
         "totals": totals,
         "items": items,
         "location": location,
-        "map": _tracking_map(location),
+        "map": _tracking_map(location, tenant, kind="order", code=code),
         "timeline": [item for item in timeline if item.get("created_at") or item.get("status") or item.get("label")],
         "actions": [
             {

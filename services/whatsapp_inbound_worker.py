@@ -1,4 +1,4 @@
-"""DB-backed WhatsApp inbound replay and ordered Twilio outbox dispatch.
+"""DB-backed WhatsApp inbound processing and ordered provider outbox dispatch.
 
 The public webhook validates the provider request and persists an allowlisted
 turn.  This module claims that durable row, re-resolves its tenant/provider
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -21,8 +22,9 @@ import os
 import re
 import signal
 import threading
+import time
 from types import SimpleNamespace
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import current_app, g, has_app_context
@@ -31,9 +33,21 @@ from twilio.rest import Client
 from werkzeug.exceptions import HTTPException
 
 from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+    log_background_writer_fence,
+)
 from extensions import db
 from models import ProviderSender, TenantProfile, WhatsAppOutboundAttempt
 from services.llm_provider_network_policy import require_provider_network
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
+from services.outbox_execution_budget import (
+    outbox_persistence_budget,
+    outbox_twilio_http_client,
+)
 from services.provider_platform import is_sender_ready_status
 from services.twilio_tech_provider import (
     TwilioRuntimeCredentials,
@@ -50,11 +64,13 @@ from services.whatsapp_inbound_turns import (
     InboundTurnClaim,
     OutboundAttemptClaim,
     accept_whatsapp_outbound_attempt,
+    arm_meta_whatsapp_inbound_execution,
     claim_next_whatsapp_inbound_turn,
     claim_next_whatsapp_outbound_attempt,
     complete_whatsapp_inbound_turn,
     dead_whatsapp_outbound_attempt,
     dead_whatsapp_inbound_turn,
+    fail_meta_whatsapp_inbound_execution,
     normalize_whatsapp_outbound_payload,
     renew_whatsapp_inbound_turn_lease,
     retry_whatsapp_outbound_attempt,
@@ -269,8 +285,9 @@ class _InboundLeaseHeartbeat:
         self.interval = max(5.0, min(self.lease_seconds / 3.0, 60.0))
         self._stop = threading.Event()
         self._lost = threading.Event()
+        execution_context = copy_context()
         self._thread = threading.Thread(
-            target=self._run,
+            target=lambda: execution_context.run(self._run),
             name=f"whatsapp-lease-{claim.turn_id[:8]}",
             daemon=True,
         )
@@ -443,11 +460,132 @@ def _response_status_code(response: Any) -> int:
     return 200
 
 
+def _inbound_worker_providers(tenant_id: int) -> tuple[str, ...]:
+    if current_app.config.get("META_WHATSAPP_INBOUND_WORKER_ENABLED") is not True:
+        return ("twilio",)
+    from services.domain_effect_gate import (
+        DomainEffectOutboxConfigurationError, resolve_domain_effect_outbox_policy,
+    )
+
+    try:
+        policy = resolve_domain_effect_outbox_policy(current_app.config, tenant_id=tenant_id)
+    except DomainEffectOutboxConfigurationError:
+        return ("twilio",)
+    return ("twilio", "meta") if policy.enabled else ("twilio",)
+
+
+def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProcessingResult:
+    """Run the supported municipal text slice and stage its native reply."""
+    from models import ChatSessionContext, User
+    from services.meta_whatsapp_conversation_sink import MetaConversationSink
+    from services.meta_whatsapp_outbox import _canonical, _runtime
+    from services.meta_whatsapp_runtime import MetaRuntimeError
+    from services.municipio_responder import try_execute_municipal_meta_claim_draft
+    from services.meta_whatsapp_survey import try_execute_meta_survey
+    from services.whatsapp_conversation_contract import ConversationMode, ConversationTurn
+    from services.whatsapp_conversation_turn import execute_municipal_meta_text_followup
+    from services.whatsapp_conversation_uow import (
+        ConversationCommitUncertain,
+        ConversationUnitOfWork,
+        ConversationUnitOfWorkError,
+    )
+
+    def result(status, error_code=None, outbound_count=0):
+        return InboundProcessingResult(status, claim.turn_id, claim.tenant_id,
+                                       outbound_count=outbound_count, error_code=error_code)
+
+    _worker_tenant_ids(claim.tenant_id)
+    try:
+        if not arm_meta_whatsapp_inbound_execution(claim.turn_id, claim.lease_token):
+            return result("lost_lease", "meta_execution_fence_not_owned")
+    except Exception:
+        # The arming transaction may have committed without an acknowledgement.
+        return result("commit_uncertain", "meta_execution_fence_uncertain")
+
+    # A new app context owns a clean Flask-SQLAlchemy Session. The parent
+    # worker context may already hold its own read transaction.
+    app = current_app._get_current_object()
+    with app.app_context():
+        session = db.session()
+        rollback_confirmed = False
+        permanent = False
+        try:
+            runtime = _runtime()
+            transaction = session.begin()
+            connection = session.connection()
+            if (connection.dialect.name == "sqlite"
+                    and not connection.connection.driver_connection.in_transaction):
+                connection.exec_driver_sql("BEGIN")
+            with ConversationUnitOfWork(session=session, transaction=transaction,
+                                        claim=claim, clock=runtime.now) as unit:
+                if _canonical(claim.payload) != claim.payload_digest:
+                    unit.fail("meta_inbound_payload_digest_mismatch")
+                source = claim.payload["reference"]["source"]
+                kind = claim.message_kind
+                if kind not in {"text", "location"} or source["content_type"] != kind:
+                    unit.fail("meta_inbound_worker_kind_unsupported")
+                tenant = session.get(TenantProfile, claim.tenant_id)
+                context = session.get(ChatSessionContext, claim.chat_session_id)
+                owner = session.get(User, context.user_id)
+                if owner is None:
+                    unit.fail("meta_inbound_owner_missing")
+                incoming = claim.payload["input"]
+                location = None
+                if kind == "location":
+                    lat, lon = incoming["location"]
+                    location = {"latitude": lat, "longitude": lon}
+                turn = ConversationTurn(
+                    owner_user=owner, tenant_profile=tenant, tenant_id=claim.tenant_id,
+                    end_user=None, session_context=context, chat_session_id=claim.chat_session_id,
+                    contact_identity=unit.contact_identity, message_body=incoming["text"] or "",
+                    location=location, action_id=None,
+                    source_event_id=claim.provider_message_sid, durable_claim=claim,
+                    mode=ConversationMode(False, False), unit_of_work=unit,
+                )
+                sink = MetaConversationSink(unit)
+                if not try_execute_meta_survey(turn, sink) and not try_execute_municipal_meta_claim_draft(turn, sink):
+                    if kind != "text":
+                        unit.fail("meta_inbound_worker_kind_unsupported")
+                    execute_municipal_meta_text_followup(turn, sink)
+                committed = unit.commit_reply(sink.bundle(), runtime=runtime)
+            return result("completed", outbound_count=len(committed.receipt.outbound_attempt_ids))
+        except ConversationCommitUncertain:
+            error_code = "meta_commit_uncertain"
+        except Exception as exc:
+            error_code = type(exc).__name__
+            permanent = isinstance(exc, ConversationUnitOfWorkError)
+            if permanent:
+                error_code = str(exc)
+            elif isinstance(exc, MetaRuntimeError):
+                permanent, error_code = not exc.transient, exc.code
+            try:
+                session.rollback()
+                rollback_confirmed = not session.in_transaction()
+            except Exception:
+                error_code = "meta_rollback_uncertain"
+
+    try:
+        state = fail_meta_whatsapp_inbound_execution(
+            claim.turn_id, claim.lease_token, error_code,
+            rollback_confirmed=rollback_confirmed, permanent=permanent,
+        )
+    except Exception:
+        return result("commit_uncertain", "meta_execution_disposition_uncertain")
+    if not rollback_confirmed:
+        return result("commit_uncertain", error_code)
+    return result(state or "lost_lease", error_code)
+
+
 def process_whatsapp_inbound_claim(
     claim: InboundTurnClaim,
 ) -> InboundProcessingResult:
     """Replay one claimed turn locally and stage all outbound messages."""
 
+    if claim.provider not in _inbound_worker_providers(claim.tenant_id):
+        return InboundProcessingResult(
+            status="fenced", turn_id=claim.turn_id, tenant_id=claim.tenant_id,
+            error_code="inbound_provider_not_enabled",
+        )
     lease_seconds = int(
         current_app.config.get("WHATSAPP_INBOUND_LEASE_SECONDS", 180) or 180
     )
@@ -463,6 +601,9 @@ def process_whatsapp_inbound_claim(
             tenant_id=claim.tenant_id,
             error_code="inbound_lease_not_owned",
         )
+
+    if claim.provider == "meta":
+        return _process_meta_whatsapp_inbound_claim(claim)
 
     collector = WhatsAppOutboundCollector(turn_id=claim.turn_id)
     app = current_app._get_current_object()
@@ -499,55 +640,56 @@ def process_whatsapp_inbound_claim(
             response = webhook_module.whatsapp_webhook()
 
         heartbeat.stop()
-        if not heartbeat.renew_now():
+        with outbox_persistence_budget():
+            if not heartbeat.renew_now():
+                return InboundProcessingResult(
+                    status="lost_lease",
+                    turn_id=claim.turn_id,
+                    tenant_id=claim.tenant_id,
+                    outbound_count=len(collector.outbound),
+                    error_code="inbound_lease_heartbeat_lost",
+                )
+
+            status_code = _response_status_code(response)
+            if status_code >= 500:
+                raise RuntimeError(f"webhook_replay_http_{status_code}")
+            if status_code >= 400:
+                raise WhatsAppWorkerScopeError(
+                    f"webhook_replay_rejected_{status_code}"
+                )
+
+            worker_result: dict[str, Any] = {
+                "contract_version": "whatsapp.worker_result.v1",
+                "response_status": status_code,
+                "outbound_count": len(collector.outbound),
+            }
+            if interview_consent_receipt is not None:
+                worker_result["interview_consent_receipt"] = (
+                    interview_consent_receipt
+                )
+
+            completion = complete_whatsapp_inbound_turn(
+                claim.turn_id,
+                claim.lease_token,
+                result=worker_result,
+                outbound=collector.outbound,
+            )
+            if not completion.completed:
+                return InboundProcessingResult(
+                    status="lost_lease",
+                    turn_id=claim.turn_id,
+                    tenant_id=claim.tenant_id,
+                    outbound_count=len(collector.outbound),
+                    response_status=status_code,
+                    error_code="completion_fence_rejected",
+                )
             return InboundProcessingResult(
-                status="lost_lease",
+                status="completed",
                 turn_id=claim.turn_id,
                 tenant_id=claim.tenant_id,
-                outbound_count=len(collector.outbound),
-                error_code="inbound_lease_heartbeat_lost",
-            )
-
-        status_code = _response_status_code(response)
-        if status_code >= 500:
-            raise RuntimeError(f"webhook_replay_http_{status_code}")
-        if status_code >= 400:
-            raise WhatsAppWorkerScopeError(
-                f"webhook_replay_rejected_{status_code}"
-            )
-
-        worker_result: dict[str, Any] = {
-            "contract_version": "whatsapp.worker_result.v1",
-            "response_status": status_code,
-            "outbound_count": len(collector.outbound),
-        }
-        if interview_consent_receipt is not None:
-            worker_result["interview_consent_receipt"] = (
-                interview_consent_receipt
-            )
-
-        completion = complete_whatsapp_inbound_turn(
-            claim.turn_id,
-            claim.lease_token,
-            result=worker_result,
-            outbound=collector.outbound,
-        )
-        if not completion.completed:
-            return InboundProcessingResult(
-                status="lost_lease",
-                turn_id=claim.turn_id,
-                tenant_id=claim.tenant_id,
-                outbound_count=len(collector.outbound),
+                outbound_count=len(completion.outbound_attempt_ids),
                 response_status=status_code,
-                error_code="completion_fence_rejected",
             )
-        return InboundProcessingResult(
-            status="completed",
-            turn_id=claim.turn_id,
-            tenant_id=claim.tenant_id,
-            outbound_count=len(completion.outbound_attempt_ids),
-            response_status=status_code,
-        )
     except WhatsAppWorkerScopeError as exc:
         heartbeat.stop()
         error_code = str(exc)
@@ -618,8 +760,33 @@ def process_whatsapp_inbound_stream(
     tenant_id: Optional[int] = None,
     stream_key: Optional[str] = None,
     limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Drain FIFO turns only for tenants in the explicit queue allowlist."""
+
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": "whatsapp.inbound_worker.v1",
+            "status": "fenced",
+            "processed": 0,
+            "completed": 0,
+            "results": [],
+        }
+    if has_app_context():
+        authority_report = background_global_writer_authority_report(
+            "whatsapp_inbound_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {
+                **authority_report,
+                "processed": 0,
+                "completed": 0,
+                "results": [],
+            }
 
     tenant_ids = _worker_tenant_ids(tenant_id)
     if stream_key is not None and tenant_id is None:
@@ -638,15 +805,20 @@ def process_whatsapp_inbound_stream(
     for tenant_index, current_tenant_id in enumerate(tenant_ids):
         if remaining <= 0:
             break
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         tenants_remaining = len(tenant_ids) - tenant_index
         tenant_limit = max(
             1,
             (remaining + tenants_remaining - 1) // tenants_remaining,
         )
         for _ in range(tenant_limit):
+            if deadline_monotonic is not None and clock() >= deadline_monotonic:
+                break
             claim = claim_next_whatsapp_inbound_turn(
                 tenant_id=current_tenant_id,
                 stream_key=stream_key,
+                providers=_inbound_worker_providers(current_tenant_id),
                 lease_seconds=lease_seconds,
             )
             if claim is None:
@@ -772,6 +944,26 @@ def dispatch_next_whatsapp_outbound_attempt(
         provider_call_started = True
 
     try:
+        # The claim's provider is read from the persisted outbox, not a user DTO.
+        # Meta must never enter Twilio credential resolution or its send path.
+        provider = getattr(claim, "provider", None)
+        if provider == "meta":
+            from services.meta_whatsapp_outbox import dispatch_meta_outbound_claim
+
+            meta_result = dispatch_meta_outbound_claim(
+                claim, on_post_started=mark_provider_call_started,
+            )
+            return OutboundDispatchResult(
+                status=meta_result.status,
+                attempt_id=meta_result.attempt_id,
+                tenant_id=meta_result.tenant_id,
+                provider_message_sid=meta_result.provider_message_sid,
+                error_code=meta_result.error_code,
+            )
+        if provider != "twilio":
+            unsupported = WhatsAppWorkerScopeError("outbound_provider_unsupported")
+            unsupported.whatsapp_outbound_permanent = True
+            raise unsupported
         _, sender, credentials = _load_claim_scope(claim)
         _validate_outbound_sender(claim, sender)
         params = dict(claim.payload)
@@ -788,7 +980,17 @@ def dispatch_next_whatsapp_outbound_attempt(
             from routes.whatsapp_webhook import _send_twilio_message
 
             require_provider_network("twilio", app)
-            client = Client(credentials.account_sid, credentials.auth_token)
+            bounded_http_client = outbox_twilio_http_client()
+            client_kwargs = (
+                {"http_client": bounded_http_client}
+                if bounded_http_client is not None
+                else {}
+            )
+            client = Client(
+                credentials.account_sid,
+                credentials.auth_token,
+                **client_kwargs,
+            )
             provider_message = _send_twilio_message(client, **params)
         provider_sid = str(getattr(provider_message, "sid", None) or "").strip()
         if not provider_sid:
@@ -855,9 +1057,35 @@ def dispatch_whatsapp_outbound_attempts(
     *,
     tenant_id: Optional[int] = None,
     limit: int = 20,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": "whatsapp.outbound_worker.v1",
+            "status": "fenced",
+            "processed": 0,
+            "accepted": 0,
+            "results": [],
+        }
+    if has_app_context():
+        authority_report = background_global_writer_authority_report(
+            "whatsapp_outbound_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {
+                **authority_report,
+                "processed": 0,
+                "accepted": 0,
+                "results": [],
+            }
     results: list[dict[str, Any]] = []
     for _ in range(max(1, min(int(limit or 1), 100))):
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         result = dispatch_next_whatsapp_outbound_attempt(tenant_id=tenant_id)
         if result.status == "idle":
             break
@@ -876,6 +1104,8 @@ def enqueue_whatsapp_inbound_stream(*, tenant_id: int, stream_key: str) -> bool:
     """Best-effort broker wakeup; the committed DB queue remains authoritative."""
 
     if not has_app_context():
+        return False
+    if cutover_writer_fence_enabled(current_app.config):
         return False
     policy = resolve_whatsapp_inbound_durability_policy(
         current_app.config,
@@ -949,6 +1179,22 @@ def _blocked_payload_scrub_report(status: str) -> dict[str, Any]:
 
 def run_whatsapp_inbound_payload_scrub(*, limit: Optional[int] = None) -> dict[str, Any]:
     """Run one bounded, tenant-scoped retention batch after every safety gate."""
+
+    if cutover_writer_fence_enabled(current_app.config):
+        return {
+            **_blocked_payload_scrub_report("fenced"),
+            "executed": False,
+            "reason_code": "cutover_writer_fence_enabled",
+        }
+    authority_report = background_global_writer_authority_report(
+        "whatsapp_payload_retention",
+        current_app.config,
+    )
+    if authority_report is not None:
+        return {
+            **_blocked_payload_scrub_report("fenced"),
+            **authority_report,
+        }
 
     scrub_enabled = current_app.config.get(
         "WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED",
@@ -1050,16 +1296,43 @@ def run_whatsapp_durable_worker(
     once: bool = False,
     stop_event: Optional[threading.Event] = None,
     standby_when_legacy: bool = False,
+    inbound_limit: Optional[int] = None,
+    outbound_limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Run the authoritative DB poller for inbound turns and outbound sends."""
 
     shutdown = stop_event or threading.Event()
     totals = {
         "cycles": 0,
+        "processed": 0,
+        "inbound_processed": 0,
         "inbound_completed": 0,
+        "outbound_processed": 0,
         "outbound_accepted": 0,
+        "retry_wait": 0,
+        "unknown": 0,
+        "dead": 0,
+        "cycle_failures": 0,
     }
+    if cutover_writer_fence_enabled(app.config):
+        report = {
+            **background_writer_fence_report("whatsapp_durable_worker"),
+            "mode": "fenced",
+            **totals,
+        }
+        log_background_writer_fence(logger, report)
+        if not once and not shutdown.is_set():
+            shutdown.wait()
+        return report
     with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "whatsapp_durable_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {**authority_report, "mode": "fenced", **totals}
         mode = str(
             current_app.config.get("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy")
             or "legacy"
@@ -1103,20 +1376,60 @@ def run_whatsapp_durable_worker(
         )
 
         while not shutdown.is_set():
+            authority_report = background_global_writer_authority_report(
+                "whatsapp_durable_worker",
+                current_app.config,
+            )
+            if authority_report is not None:
+                return {**authority_report, "mode": "fenced", **totals}
             totals["cycles"] += 1
             try:
-                inbound = process_whatsapp_inbound_stream()
-                outbound = dispatch_whatsapp_outbound_attempts()
+                inbound_kwargs: dict[str, Any] = {}
+                outbound_kwargs: dict[str, Any] = {}
+                if inbound_limit is not None:
+                    inbound_kwargs["limit"] = inbound_limit
+                if outbound_limit is not None:
+                    outbound_kwargs["limit"] = outbound_limit
+                if deadline_monotonic is not None:
+                    deadline_kwargs = {
+                        "deadline_monotonic": deadline_monotonic,
+                        "clock": clock,
+                    }
+                    inbound_kwargs.update(deadline_kwargs)
+                    outbound_kwargs.update(deadline_kwargs)
+                inbound = process_whatsapp_inbound_stream(**inbound_kwargs)
+                outbound = dispatch_whatsapp_outbound_attempts(**outbound_kwargs)
+                inbound_processed = int(inbound.get("processed") or 0)
+                outbound_processed = int(outbound.get("processed") or 0)
+                totals["processed"] += inbound_processed + outbound_processed
+                totals["inbound_processed"] += inbound_processed
                 totals["inbound_completed"] += int(inbound.get("completed") or 0)
+                totals["outbound_processed"] += outbound_processed
                 totals["outbound_accepted"] += int(outbound.get("accepted") or 0)
+                statuses = [
+                    str(item.get("status") or "")
+                    for item in (
+                        list(inbound.get("results") or [])
+                        + list(outbound.get("results") or [])
+                    )
+                    if isinstance(item, dict)
+                ]
+                totals["retry_wait"] += sum(
+                    status == "retry_wait" for status in statuses
+                )
+                totals["dead"] += sum(status == "dead" for status in statuses)
+                totals["unknown"] += sum(
+                    status in {"send_uncertain", "lost_lease"}
+                    for status in statuses
+                )
                 did_work = bool(
-                    int(inbound.get("processed") or 0)
-                    or int(outbound.get("processed") or 0)
+                    inbound_processed or outbound_processed
                 )
                 db.session.remove()
             except Exception as exc:
                 db.session.rollback()
                 db.session.remove()
+                totals["cycle_failures"] += 1
                 logger.error(
                     "[WHATSAPP_WORKER] Durable poll cycle failed error_type=%s",
                     type(exc).__name__,
@@ -1196,6 +1509,40 @@ def main() -> int:
     shutdown = threading.Event()
     _install_shutdown_handlers(shutdown)
 
+    if cutover_writer_fence_enabled():
+        report = {
+            **background_writer_fence_report(
+                "whatsapp_payload_retention"
+                if args.scrub_expired_payloads
+                else "whatsapp_durable_worker"
+            ),
+            "mode": "fenced",
+            "cycles": 0,
+            "processed": 0,
+            "inbound_processed": 0,
+            "inbound_completed": 0,
+            "outbound_processed": 0,
+            "outbound_accepted": 0,
+            "retry_wait": 0,
+            "unknown": 0,
+            "dead": 0,
+            "cycle_failures": 0,
+        }
+        if args.scrub_expired_payloads:
+            report.update(
+                tenant_count=0,
+                selected=0,
+                scrubbed=0,
+                completed_scrubbed=0,
+                dead_scrubbed=0,
+            )
+        log_background_writer_fence(logger, report)
+        if args.once or args.health or args.scrub_expired_payloads:
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        elif not shutdown.is_set():
+            shutdown.wait()
+        return 0
+
     durability_mode = str(
         os.getenv("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy") or "legacy"
     ).strip().lower()
@@ -1252,6 +1599,26 @@ def main() -> int:
         return 0
     if args.scrub_expired_payloads:
         with app.app_context():
+            authority_report = background_global_writer_authority_report(
+                "whatsapp_payload_retention",
+                current_app.config,
+            )
+            if authority_report is not None:
+                print(
+                    json.dumps(
+                        {
+                            **authority_report,
+                            "tenant_count": 0,
+                            "selected": 0,
+                            "scrubbed": 0,
+                            "completed_scrubbed": 0,
+                            "dead_scrubbed": 0,
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
+                return 0
             print(
                 json.dumps(
                     run_whatsapp_inbound_payload_scrub(),

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from types import SimpleNamespace
 import os
@@ -8,10 +10,12 @@ from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from .embedding_service import embed_textos_llm as embed_textos
 
 # from collections import Counter # Ya está importado arriba
-from qdrant_client.http import models as qdrant_models
-from models import CatalogoItem, db
+from models import CatalogoItem, TenantProfile, db
 from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto
+from utils.lazy_module import LazyModule
+
+qdrant_models = LazyModule("qdrant_client.http.models")
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))
@@ -35,12 +39,29 @@ CATALOGO_MUNICIPIO = "catalogo_municipio"
 
 def coleccion_catalogo_para_rubro(rubro) -> str:
     """Devuelve el nombre de colección Qdrant según el rubro."""
-    from services.logic import es_rubro_publico
+    from services.rubro_classification import es_rubro_publico
 
     return CATALOGO_MUNICIPIO if es_rubro_publico(rubro) else CATALOGO_PYME
 
 
 logger = logging.getLogger(__name__)
+
+
+def _active_catalog_vector_version(tenant_id: Optional[int]) -> str | None:
+    """Return the server-owned active vector version for one exact tenant."""
+
+    try:
+        normalized_tenant_id = int(tenant_id or 0)
+    except (TypeError, ValueError):
+        return None
+    if normalized_tenant_id <= 0:
+        return None
+    tenant = db.session.get(TenantProfile, normalized_tenant_id)
+    if tenant is None or not tenant.is_active:
+        return None
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    version = str(config.get("catalog_vector_version") or "").strip()
+    return version or None
 
 
 def buscar_catalogo_qdrant(
@@ -54,11 +75,25 @@ def buscar_catalogo_qdrant(
     con_stock: Optional[bool] = None,
     precio_min: Optional[float] = None,
     precio_max: Optional[float] = None,
+    tenant_id: Optional[int] = None,
 ) -> List[qdrant_models.ScoredPoint]:
     """
     Busca productos en el catálogo vectorial Qdrant de una PyME, maximizando relevancia comercial y minimizando falsos negativos.
     Implementa filtros avanzados por categoría, promoción, stock y rango de precios.
     """
+    try:
+        normalized_tenant_id = int(tenant_id or 0)
+    except (TypeError, ValueError):
+        normalized_tenant_id = 0
+    active_version = str(
+        _active_catalog_vector_version(normalized_tenant_id) or ""
+    ).strip()
+    if normalized_tenant_id <= 0 or not active_version:
+        logger.warning(
+            "[QDRANT SEARCH] Tenant exacto o version activa ausente; busqueda cerrada."
+        )
+        return []
+
     qdrant_cli = get_qdrant_client()
     if not qdrant_cli:
         logger.error("[QDRANT SEARCH] No se pudo obtener cliente Qdrant.")
@@ -90,21 +125,29 @@ def buscar_catalogo_qdrant(
             [pregunta_limpia], input_type="search_query"
         )
         if not vector_pregunta_lista or not isinstance(vector_pregunta_lista[0], list):
-            logger.error(
-                f"[QDRANT SEARCH] No se pudo generar vector para pregunta: '{pregunta_limpia}'"
-            )
+            logger.error("[QDRANT SEARCH] El proveedor no devolvio un vector valido.")
             return []
         vector_q = vector_pregunta_lista[0]
     except Exception as e_embed:
         logger.error(
-            f"[QDRANT SEARCH] Error generando embedding para pregunta '{pregunta_limpia}': {e_embed}",
+            "[QDRANT SEARCH] Error de embedding error_type=%s",
+            type(e_embed).__name__,
             exc_info=True,
         )
         return []
 
     try:
-        must_conditions = []
-        id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
+        must_conditions = [
+            qdrant_models.FieldCondition(
+                key="tenant_id",
+                match=qdrant_models.MatchValue(value=normalized_tenant_id),
+            ),
+            qdrant_models.FieldCondition(
+                key="catalog_version",
+                match=qdrant_models.MatchValue(value=active_version),
+            ),
+        ]
+        id_log = f"tenant_id {normalized_tenant_id}"
 
         # Filtro de usuario obligatorio si se provee
         if user_id is not None:
@@ -199,7 +242,9 @@ def buscar_catalogo_qdrant(
             search_filter = qdrant_models.Filter(must=must_conditions)
 
         logger.info(
-            f"[QDRANT SEARCH] Buscando en ({coleccion}) para {id_log}, pregunta='{pregunta_limpia}', filtros={{cat:{categoria}, promo:{en_promocion}, stock:{con_stock}, p_min:{precio_min}, p_max:{precio_max}}}"
+            "[QDRANT SEARCH] Busqueda tenant-scoped en coleccion=%s para %s.",
+            coleccion,
+            id_log,
         )
 
         resultados = qdrant_cli.search(
@@ -239,25 +284,32 @@ def buscar_catalogo_qdrant(
         return filtrados
 
     except Exception as e_qdrant:
-        id_log = f"user_id {user_id}" if user_id is not None else "ANONIMO"
+        id_log = f"tenant_id {normalized_tenant_id}"
         logger.error(
-            f"[QDRANT SEARCH] Error buscando en Qdrant para {id_log}, pregunta '{pregunta_limpia}': {e_qdrant}",
+            "[QDRANT SEARCH] Error de proveedor para %s error_type=%s",
+            id_log,
+            type(e_qdrant).__name__,
             exc_info=True,
         )
         return []
 
 def buscar_catalogo_db_fallback(
-    user_id: int,
+    user_id: Optional[int],
     pregunta: str,
     limite: int = DEFAULT_SEARCH_LIMIT,
-    precio_max: Optional[float] = None
+    precio_max: Optional[float] = None,
+    tenant_id: Optional[int] = None,
 ) -> List[Any]:
     """
     Realiza una búsqueda básica en la base de datos (ILIKE) como fallback
     cuando Qdrant no está disponible o no devuelve resultados.
     Retorna objetos con interfaz similar a ScoredPoint para compatibilidad.
     """
-    if not user_id or not pregunta:
+    try:
+        normalized_tenant_id = int(tenant_id or 0)
+    except (TypeError, ValueError):
+        normalized_tenant_id = 0
+    if normalized_tenant_id <= 0 or not pregunta:
         return []
 
     try:
@@ -265,7 +317,11 @@ def buscar_catalogo_db_fallback(
         if not terminos:
             return []
 
-        query = CatalogoItem.query.filter(CatalogoItem.user_id == user_id)
+        query = CatalogoItem.query.filter(
+            CatalogoItem.tenant_id == normalized_tenant_id
+        )
+        if user_id is not None:
+            query = query.filter(CatalogoItem.user_id == user_id)
 
         # Filtro básico por palabras clave (AND)
         # Se busca que el nombre o descripción contenga CADA término
@@ -289,7 +345,7 @@ def buscar_catalogo_db_fallback(
 
         items = query.limit(limite).all()
 
-        resultados_mock = []
+        resultados = []
         for item in items:
             # Construir un payload compatible con lo que espera el frontend/bot
             payload = {
@@ -302,23 +358,33 @@ def buscar_catalogo_db_fallback(
                 "sku": item.sku,
                 "cantidad": item.cantidad,
                 "marca": item.marca,
-                "categoria_qdrant": item.categoria
+                "categoria_qdrant": item.categoria,
+                "tenant_id": normalized_tenant_id,
+                "retrieval_source": "tenant_database_fallback",
             }
-            # Simular ScoredPoint
+            # Compatibility shape only.  A deterministic fallback has no
+            # semantic similarity score, so it must never invent one.
             scored_point = SimpleNamespace(
                 id=item.id,
                 version=0,
-                score=0.5, # Score fijo arbitrario para fallback
+                score=0.0,
                 payload=payload,
                 vector=None
             )
-            resultados_mock.append(scored_point)
+            resultados.append(scored_point)
 
-        logger.info(f"[DB FALLBACK SEARCH] Encontrados {len(resultados_mock)} items para '{pregunta}'")
-        return resultados_mock
+        logger.info(
+            "[DB FALLBACK SEARCH] Encontrados %s items tenant-scoped.",
+            len(resultados),
+        )
+        return resultados
 
     except Exception as e:
-        logger.error(f"[DB FALLBACK SEARCH] Error: {e}", exc_info=True)
+        logger.error(
+            "[DB FALLBACK SEARCH] Error error_type=%s",
+            type(e).__name__,
+            exc_info=True,
+        )
         return []
 
 
@@ -562,6 +628,7 @@ def buscar_catalogo_avanzado(
     con_stock: bool = False, # Added param
     precio_min: float = None, # Added param
     precio_max: float = None, # Added param
+    tenant_id: Optional[int] = None,
 ) -> tuple[list[qdrant_models.ScoredPoint], str | None]:
     """Búsqueda en Qdrant con inferencia de intención si hay pocos resultados."""
 
@@ -575,6 +642,7 @@ def buscar_catalogo_avanzado(
         con_stock=con_stock, # Pass through
         precio_min=precio_min, # Pass through
         precio_max=precio_max, # Pass through
+        tenant_id=tenant_id,
     )
 
     hay_score_suficiente = any(

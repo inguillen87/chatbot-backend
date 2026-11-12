@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import re
+import secrets
 from typing import Any, Optional
 from urllib.parse import quote_plus
 
@@ -16,6 +18,7 @@ from utils.roles import normalize_tenant_slug, is_generic_tenant_slug
 
 v2_tenants_bp = Blueprint("v2_tenants", __name__, url_prefix="/api/v2/tenants")
 TENANT_PROFILE_V2_CONTRACT_VERSION = "public.tenant_profile.v1"
+_DEMO_SESSION_JTI_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class V2TenantResolutionError(Exception):
@@ -80,6 +83,11 @@ def create_demo_session_token(*, tenant_slug: str, sector: str, rubro: str | Non
         "tenant_slug": (tenant_slug or "").strip().lower(),
         "sector": (sector or "").strip().lower(),
         "rubro": (rubro or "").strip().lower() or None,
+        # PyJWT serializes datetime NumericDate claims at second precision. A
+        # cryptographically random token id prevents otherwise identical demo
+        # sessions created in the same second from sharing a JWT (and the
+        # chat_session_id deterministically derived from it).
+        "jti": secrets.token_hex(32),
         "iat": now,
         "exp": now + timedelta(hours=8),
     }
@@ -97,6 +105,14 @@ def decode_demo_session_token(raw: Optional[str]) -> Optional[dict[str, Any]]:
         return None
 
     if payload.get("kind") != "demo_session":
+        return None
+
+    # Tokens issued before the jti isolation contract remain valid until their
+    # existing expiry. New tokens fail closed if a present jti is malformed.
+    jti = payload.get("jti")
+    if jti is not None and (
+        not isinstance(jti, str) or not _DEMO_SESSION_JTI_PATTERN.fullmatch(jti)
+    ):
         return None
 
     return payload if isinstance(payload, dict) else None

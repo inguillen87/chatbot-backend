@@ -1,0 +1,513 @@
+name: Durable sessions and private attachments
+"on":
+  pull_request:
+    paths:
+      - app.py
+      - bootstrap_wsgi.py
+      - gunicorn.conf.py
+      - Dockerfile.vercel
+      - config/**
+      - middleware/cutover_writer_fence.py
+      - models.py
+      - model_primitives.py
+      - middleware/tenant_context.py
+      - routes/auth.py
+      - routes/admin_tenant.py
+      - routes/v2/auth.py
+      - routes/v2/saas.py
+      - routes/backoffice.py
+      - services/backoffice_export_pdf.py
+      - services/contact_intake.py
+      - tests/test_backoffice_export_integrity.py
+      - tests/test_canonical_contact_backoffice.py
+      - tests/test_backoffice_contracts.py
+      - tests/test_backoffice_export_pdf_layout.py
+      - routes/super_admin.py
+      - routes/webauthn.py
+      - routes/archivos.py
+      - routes/internal_cron.py
+      - routes/rubros.py
+      - routes/public_resolver.py
+      - routes/voice_routes.py
+      - routes/ticket.py
+      - routes/crm/**
+      - services/auth_session_lifecycle.py
+      - routes/metricas.py
+      - routes/estadisticas.py
+      - services/metricas_service.py
+      - services/analytics/repository.py
+      - services/analytics/rbac.py
+      - services/tenant_ticket_scope.py
+      - tests/test_enterprise_metrics_contract.py
+      - tests/integration/test_enterprise_metrics_postgres.py
+      - tests/run_enterprise_metrics_postgres.py
+      - services/tenant_factory.py
+      - services/clerk_auth_service.py
+      - services/runtime_readiness.py
+      - services/landing_experience_contract.py
+      - services/*attachment*.py
+      - services/*institutional_assistant*.py
+      - services/r2_service.py
+      - services/gcs_service.py
+      - services/media_cache_policy.py
+      - services/audio_transcription_service.py
+      - services/document_processing_service.py
+      - services/interpretacion_service.py
+      - services/email_service.py
+      - services/render_env_sync.py
+      - services/global_writer_authority.py
+      - socket_service.py
+      - utils/auth_helpers.py
+      - utils/database_availability.py
+      - utils/internal_cron_request.py
+      - utils/tenant_admin_access.py
+      - utils/migration_managed_session.py
+      - migrations/versions/20261001_add_auth_session_lifecycle_v1.py
+      - scripts/*neon_cutover*.py
+      - tests/*auth*.py
+      - tests/*clerk*.py
+      - tests/*webauthn*.py
+      - tests/*attachment*.py
+      - tests/*institutional_assistant*.py
+      - tests/test_r2_service.py
+      - tests/test_runtime_readiness.py
+      - tests/test_admin_tenant_verification.py
+      - tests/test_employee_scope_revocation.py
+      - tests/test_employee_routing_category_revocation.py
+      - tests/test_employee_scope_and_assignment.py
+      - services/employee_routing.py
+      - services/ticket_assignment_policy.py
+      - tests/test_tenant_factory_owner_lock.py
+      - tests/test_tenant_dependency_availability.py
+      - tests/test_request_lifecycle_database_availability.py
+      - tests/test_rubros_database_availability.py
+      - tests/test_internal_cron_request_gates.py
+      - tests/test_widget_bootstrap.py
+      - tests/test_production_login_bootstrap.py
+      - tests/test_production_whatsapp_webhook_bootstrap.py
+      - tests/test_bootstrap_wsgi.py
+      - tests/test_bootstrap_receipt.py
+      - tests/test_gunicorn_capacity.py
+      - tests/test_global_landing_admission.py
+      - tests/test_landing_experience_contract.py
+      - tests/test_render_authority_retired.py
+      - tests/*voice*writer*.py
+      - tests/*socket*writer*.py
+      - tests/test_migration_managed_session.py
+      - tests/test_live_chat_room_access.py
+      - tests/profile_acceptance_runtime.py
+      - tests/crm_template_integrity_http.py
+      - tests/run_crm_template_integrity_postgres.py
+      - models_survey_governance.py
+      - models_survey_jurisdiction.py
+      - routes/encuestas_public.py
+      - routes/meta_whatsapp_callback.py
+      - routes/v2/surveys.py
+      - services/encuestas_service.py
+      - services/meta_whatsapp_conversation_sink.py
+      - services/meta_whatsapp_survey.py
+      - services/survey_governance.py
+      - services/survey_jurisdiction.py
+      - services/survey_participation_assurance.py
+      - services/survey_response_effects.py
+      - services/whatsapp_conversation_uow.py
+      - services/whatsapp_inbound_worker.py
+      - services/whatsapp_survey_conversation.py
+      - tests/run_meta_whatsapp_survey_postgres.py
+      - tests/test_meta_whatsapp_crm_acceptance.py
+      - tests/test_meta_whatsapp_inbound_worker.py
+      - tests/test_meta_whatsapp_outbox.py
+      - tests/test_meta_whatsapp_survey_journey.py
+      - tests/test_survey_participation_assurance.py
+      - tests/test_v2_surveys.py
+      - tests/test_whatsapp_survey_conversation.py
+      - .github/workflows/auth-private-storage.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: durable-sessions-private-attachments-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  isolated-http:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install existing application dependencies
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Session lineage, retirement and scoped source HTTP regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage
+          python -m tests.auth_session_lifecycle_http 2>&1 | tee .qa-artifacts/auth-private-storage/session-http.log
+          python -m tests.institutional_assistant_source_http 2>&1 | tee .qa-artifacts/auth-private-storage/source-http.log
+          python -m tests.test_private_attachment_storage_http 2>&1 | tee .qa-artifacts/auth-private-storage/attachment-http.log
+          python -m tests.crm_template_integrity_http 2>&1 | tee .qa-artifacts/auth-private-storage/crm-template-http.log
+      - name: Private storage, direct upload and retired Render authority regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_r2_service.py", "tests/test_direct_chat_attachment_upload.py", "tests/test_render_authority_retired.py", "tests/test_auth_session_postgres_runner.py", "-q"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/storage-regression.log
+      - name: HTTP writer admission and WSGI response leases
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_http_writer_authority_lease.py", "tests/test_global_writer_authority.py", "tests/test_cutover_writer_fence.py", "tests/test_cutover_background_writer_fence.py", "tests/test_vercel_voice_stream_writer_guard.py", "tests/test_socket_writer_authority_lease.py", "tests/test_migration_managed_session.py", "tests/test_voice_stream_security.py", "tests/test_live_chat_room_access.py", "-q"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/http-writer-lease.log
+      - name: Database availability, cron admission and login denial regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/tenant-availability
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/tenant-availability/checkout.txt
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_tenant_dependency_availability.py", "tests/test_internal_cron_request_gates.py", "tests/test_request_lifecycle_database_availability.py", "tests/test_rubros_database_availability.py", "tests/test_widget_bootstrap.py", "tests/test_production_login_bootstrap.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-availability/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-availability/tests.log
+      - name: Canonical landing admission and custom-host contact regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/landing-admission
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/landing-admission/checkout.txt
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_global_landing_admission.py", "tests/test_landing_experience_contract.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/landing-admission/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/landing-admission/tests.log
+      - name: Organization creation owner lock and uncertain response regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/tenant-factory-owner-lock
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/checkout.txt
+          sha256sum services/tenant_factory.py routes/admin_tenant.py tests/test_tenant_factory_owner_lock.py tests/test_admin_tenant_verification.py > .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/source-sha256.txt
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(["tests/test_tenant_factory_owner_lock.py", "tests/test_admin_tenant_verification.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-factory-owner-lock/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/tests.log
+      - name: Exact inbound WhatsApp cold-start admission and unchanged bootstrap contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/checkout.txt
+          sha256sum bootstrap_wsgi.py gunicorn.conf.py Dockerfile.vercel tests/test_production_whatsapp_webhook_bootstrap.py tests/test_bootstrap_wsgi.py tests/test_bootstrap_receipt.py tests/test_production_login_bootstrap.py tests/test_gunicorn_capacity.py > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/source-sha256.txt
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(["tests/test_production_whatsapp_webhook_bootstrap.py", "tests/test_bootstrap_wsgi.py", "tests/test_bootstrap_receipt.py", "tests/test_production_login_bootstrap.py", "tests/test_gunicorn_capacity.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.log
+      - name: Employee scope revocation and legacy compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/employee-scope
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/employee-scope/checkout.txt
+          sha256sum .github/workflows/auth-private-storage.yml vercel.json app.py config/__init__.py models.py model_primitives.py routes/admin_tenant.py middleware/tenant_context.py services/employee_routing.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_scope_revocation.py tests/test_employee_scope_and_assignment.py > .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt
+          python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/employee-scope/tests.log
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          import os
+          os.environ["CORS_ALLOWED_ORIGINS"] = "https://panel.example.invalid"
+          os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+          import json
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          import pytest
+          code = pytest.main([
+              "--noconftest", "-p", "tests.conftest", "-q",
+              "-p", "no:cacheprovider", "--tb=short",
+              "tests/test_employee_scope_revocation.py",
+              "tests/test_employee_scope_and_assignment.py",
+              "--junitxml=.qa-artifacts/auth-private-storage/employee-scope/tests.xml",
+          ])
+          tree = ET.parse(".qa-artifacts/auth-private-storage/employee-scope/tests.xml").getroot()
+          cases = list(tree.iter("testcase"))
+          summary = {
+              "tests": len(cases),
+              "failures": len(list(tree.iter("failure"))),
+              "errors": len(list(tree.iter("error"))),
+              "skipped": len(list(tree.iter("skipped"))),
+              "pytest_exit_code": int(code),
+              "expected_tests": 46,
+              "scope_permanent": sum(c.attrib.get("classname") == "tests.test_employee_scope_revocation" for c in cases),
+              "existing_regression": sum(c.attrib.get("classname") == "tests.test_employee_scope_and_assignment" for c in cases),
+              "database": "isolated SQLite memory",
+          }
+          Path(".qa-artifacts/auth-private-storage/employee-scope/summary.json").write_text(
+              json.dumps(summary, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+          )
+          print(json.dumps(summary, sort_keys=True))
+          if int(code) != 0 or summary["tests"] != 46 or summary["scope_permanent"] != 40 or summary["existing_regression"] != 6:
+              raise SystemExit(1)
+          if any(summary[key] for key in ("failures", "errors", "skipped")):
+              raise SystemExit(1)
+          PY
+          sha256sum --check .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt > .qa-artifacts/auth-private-storage/employee-scope/source-recheck.log
+      - name: Employee routing category revocation and scoped detail access
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/employee-category-revocation
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-before.txt
+          test "$(cat .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-before.txt)" = "$GITHUB_SHA"
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/employee-category-revocation/checkout.txt
+          for source_file in routes/v2/saas.py tests/test_employee_routing_category_revocation.py; do
+            blob_sha="$(git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
+            printf '%s  %s\n' "$blob_sha" "$source_file"
+          done | tee .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-blob-sha256.txt | sha256sum --check - > .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-source-check.log
+          sha256sum .github/workflows/auth-private-storage.yml app.py config/__init__.py models.py model_primitives.py routes/v2/saas.py routes/v2/tickets.py services/employee_routing.py services/employee_ticket_access.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_routing_category_revocation.py > .qa-artifacts/auth-private-storage/employee-category-revocation/source-sha256.txt
+          python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/employee-category-revocation/tests.log
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          import os
+          os.environ["CORS_ALLOWED_ORIGINS"] = "https://panel.example.invalid"
+          os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+          import json
+          import xml.etree.ElementTree as ET
+          import pytest
+          code = pytest.main([
+              "--noconftest", "-p", "tests.conftest", "-q",
+              "-p", "no:cacheprovider", "--tb=short",
+              "tests/test_employee_routing_category_revocation.py",
+              "--junitxml=.qa-artifacts/auth-private-storage/employee-category-revocation/tests.xml",
+          ])
+          tree = ET.parse(".qa-artifacts/auth-private-storage/employee-category-revocation/tests.xml").getroot()
+          summary = {
+              "tests": len(list(tree.iter("testcase"))),
+              "failures": len(list(tree.iter("failure"))),
+              "errors": len(list(tree.iter("error"))),
+              "skipped": len(list(tree.iter("skipped"))),
+              "pytest_exit_code": int(code),
+          }
+          print(json.dumps(summary, sort_keys=True))
+          if int(code) != 0 or summary["tests"] != 9:
+              raise SystemExit(1)
+          if any(summary[key] for key in ("failures", "errors", "skipped")):
+              raise SystemExit(1)
+          PY
+          sha256sum --check .qa-artifacts/auth-private-storage/employee-category-revocation/source-sha256.txt > .qa-artifacts/auth-private-storage/employee-category-revocation/source-recheck.log
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-after.txt
+          cmp .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-before.txt .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-after.txt
+      - name: Private complete backoffice exports, canonical contacts and PDF layout contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/backoffice-export
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-before.txt
+          test "$(cat .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-before.txt)" = "$GITHUB_SHA"
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/backoffice-export/checkout.txt
+          for source_file in app.py routes/backoffice.py services/backoffice_export_pdf.py services/contact_intake.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py tests/test_canonical_contact_backoffice.py; do
+            blob_sha="$(git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
+            printf '%s  %s\n' "$blob_sha" "$source_file"
+          done | tee .qa-artifacts/auth-private-storage/backoffice-export/checkout-blob-sha256.txt | sha256sum --check - > .qa-artifacts/auth-private-storage/backoffice-export/checkout-source-check.log
+          sha256sum .github/workflows/auth-private-storage.yml requirements.txt app.py models.py model_primitives.py routes/backoffice.py services/backoffice_export_pdf.py services/contact_intake.py middleware/tenant_context.py services/auth_session_lifecycle.py utils/auth_helpers.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py tests/test_canonical_contact_backoffice.py > .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt
+          python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/backoffice-export/tests.log
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          import os
+          os.environ["CORS_ALLOWED_ORIGINS"] = "https://panel.example.invalid"
+          os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+          import json
+          import xml.etree.ElementTree as ET
+          import pytest
+          code = pytest.main([
+              "--noconftest", "-p", "tests.conftest", "-q",
+              "-p", "no:cacheprovider", "--tb=short",
+              "tests/test_backoffice_export_integrity.py",
+              "tests/test_backoffice_contracts.py::test_backoffice_v2_export_and_executive_summary_are_traceable",
+              "tests/test_backoffice_contracts.py::test_backoffice_v2_rejects_end_user_before_pii_or_export_side_effects",
+              "tests/test_backoffice_contracts.py::test_backoffice_v2_employee_sees_and_exports_only_allowed_ticket_categories",
+              "tests/test_backoffice_contracts.py::test_backoffice_mutation_selector_denial_precedes_export_or_summary_effects",
+              "tests/test_backoffice_export_pdf_layout.py",
+              "tests/test_canonical_contact_backoffice.py",
+              "tests/test_backoffice_contracts.py::test_backoffice_v2_contacts_summary_publishes_segments_without_frontend_rules",
+              "tests/test_backoffice_contracts.py::test_backoffice_team_counts_only_consistent_enabled_staff_and_preserves_customer_contacts",
+              "tests/test_backoffice_contracts.py::test_backoffice_ambiguous_legacy_staff_and_contacts_remain_quarantined",
+              "--junitxml=.qa-artifacts/auth-private-storage/backoffice-export/tests.xml",
+          ])
+          tree = ET.parse(".qa-artifacts/auth-private-storage/backoffice-export/tests.xml").getroot()
+          cases = list(tree.iter("testcase"))
+          summary = {
+              "tests": len(cases),
+              "failures": len(list(tree.iter("failure"))),
+              "errors": len(list(tree.iter("error"))),
+              "skipped": len(list(tree.iter("skipped"))),
+              "pytest_exit_code": int(code),
+              "export_integrity": sum(c.attrib.get("classname") == "tests.test_backoffice_export_integrity" for c in cases),
+              "existing_compatibility": sum(c.attrib.get("classname") == "tests.test_backoffice_contracts" for c in cases),
+              "pdf_layout": sum(c.attrib.get("classname") == "tests.test_backoffice_export_pdf_layout" for c in cases),
+              "canonical_contacts": sum(c.attrib.get("classname") == "tests.test_canonical_contact_backoffice" for c in cases),
+          }
+          print(json.dumps(summary, sort_keys=True))
+          if int(code) != 0 or summary["tests"] != 61:
+              raise SystemExit(1)
+          if (summary["export_integrity"], summary["existing_compatibility"], summary["pdf_layout"], summary["canonical_contacts"]) != (20, 13, 6, 22):
+              raise SystemExit(1)
+          if any(summary[key] for key in ("failures", "errors", "skipped")):
+              raise SystemExit(1)
+          PY
+          sha256sum --check .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt > .qa-artifacts/auth-private-storage/backoffice-export/source-recheck.log
+          git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-after.txt
+          cmp .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-before.txt .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-after.txt
+      - name: Signed WhatsApp survey journey and participation assurance
+        shell: bash
+        env:
+          EXPECTED_CHECKOUT: ${{ github.sha }}
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          output=.qa-artifacts/auth-private-storage/meta-whatsapp-survey
+          mkdir -p "$output"
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > "$output/checkout.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
+          if [[ -n "$EXPECTED_PR_HEAD" ]]; then
+            pr_parent="$(git cat-file -p HEAD | awk 'BEGIN {header=1} header && /^parent / {if (++n==2) print $2} /^$/ {header=0}')"
+            test "$pr_parent" = "$EXPECTED_PR_HEAD"
+          fi
+          sources=(
+            .github/workflows/auth-private-storage.yml models.py model_primitives.py models_survey_governance.py
+            models_survey_jurisdiction.py routes/encuestas_public.py routes/meta_whatsapp_callback.py
+            routes/v2/surveys.py services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
+            services/meta_whatsapp_survey.py services/survey_governance.py services/survey_jurisdiction.py
+            services/survey_participation_assurance.py services/survey_response_effects.py
+            services/whatsapp_conversation_uow.py services/whatsapp_inbound_worker.py
+            services/whatsapp_survey_conversation.py tests/profile_acceptance_runtime.py
+            tests/test_meta_whatsapp_crm_acceptance.py tests/test_meta_whatsapp_inbound_worker.py
+            tests/test_meta_whatsapp_outbox.py tests/test_meta_whatsapp_survey_journey.py
+            tests/test_survey_participation_assurance.py tests/test_v2_surveys.py
+            tests/test_whatsapp_survey_conversation.py
+          )
+          for source_file in "${sources[@]}"; do
+            blob_sha="$(git cat-file blob "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
+            printf '%s  %s\n' "$blob_sha" "$source_file"
+          done > "$output/source-sha256.txt"
+          sha256sum --check "$output/source-sha256.txt" > "$output/source-before.log"
+          python -B -X utf8 - "$output/tests.xml" <<'PY' 2>&1 | tee "$output/tests.log"
+          from contextlib import ExitStack
+          import os
+          import socket
+          import sys
+          from unittest.mock import patch
+
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ.update(CORS_ALLOWED_ORIGINS="https://panel.example.invalid", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+
+          def deny(*_args, **_kwargs):
+              raise RuntimeError("fixture_network_attempt_blocked")
+
+          with ExitStack() as guard:
+              for method in ("connect", "connect_ex", "sendto"):
+                  guard.enter_context(patch.object(socket.socket, method, deny))
+              guard.enter_context(patch.object(socket, "getaddrinfo", deny))
+              import pytest
+              raise SystemExit(pytest.main([
+                  "--noconftest", "-p", "no:cacheprovider", "-q",
+                  "tests/test_meta_whatsapp_survey_journey.py",
+                  "tests/test_whatsapp_survey_conversation.py",
+                  "tests/test_survey_participation_assurance.py",
+                  f"--junitxml={sys.argv[1]}",
+              ]))
+          PY
+          sha256sum --check "$output/source-sha256.txt" > "$output/source-after.log"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
+      - name: Preserve disposable HTTP evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: disposable-auth-private-storage-http
+          path: |
+            .qa-artifacts/auth-private-storage/*.log
+            .qa-artifacts/auth-private-storage/tenant-availability/
+            .qa-artifacts/auth-private-storage/landing-admission/
+            .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/
+            .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/
+            .qa-artifacts/auth-private-storage/employee-scope/
+            .qa-artifacts/auth-private-storage/employee-category-revocation/
+            .qa-artifacts/auth-private-storage/backoffice-export/
+            .qa-artifacts/auth-private-storage/meta-whatsapp-survey/
+          include-hidden-files: true
+  isolated-postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+        env:
+          POSTGRES_DB: chatboc_auth_lifecycle_ci
+          POSTGRES_PASSWORD: local_only_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d chatboc_auth_lifecycle_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install existing application dependencies
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Native WhatsApp survey and territorial review serialize in PostgreSQL
+        shell: bash
+        env:
+          EXPECTED_CHECKOUT: ${{ github.sha }}
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          output=.qa-artifacts/meta-whatsapp-survey-postgres
+          mkdir -p "$output"
+          git show --no-patch --format='commit %H%ntree %T' HEAD > "$output/checkout.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
+          if [[ -n "$EXPECTED_PR_HEAD" ]]; then
+            pr_parent="$(git cat-file -p HEAD | awk 'BEGIN {header=1} header && /^parent / {if (++n==2) print $2} /^$/ {header=0}')"
+            test "$pr_parent" = "$EXPECTED_PR_HEAD"
+            printf 'pull_request_head %s\n' "$pr_parent" >> "$output/checkout.txt"
+          fi
+          sources=(
+            .github/workflows/auth-private-storage.yml models.py model_primitives.py models_survey_jurisdiction.py
+            routes/meta_whatsapp_callback.py routes/v2/surveys.py
+            services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
+            services/meta_whatsapp_survey.py services/survey_governance.py
+            services/survey_jurisdiction.py services/survey_participation_assurance.py
+            services/survey_response_effects.py
+            services/whatsapp_conversation_uow.py services/whatsapp_inbound_worker.py
+            services/whatsapp_survey_conversation.py
+            tests/profile_acceptance_runtime.py tests/run_auth_session_lifecycle_postgres.py
+            tests/run_meta_whatsapp_survey_postgres.py tests/test_meta_whatsapp_crm_acceptance.py
+            tests/test_meta_whatsapp_inbound_worker.py tests/test_meta_whatsapp_survey_journey.py
+            tests/test_whatsapp_survey_conversation.py
+          )
+          sha256sum "${sources[@]}" > "$output/source-before.txt"
+          python -B -X utf8 -m tests.run_meta_whatsapp_survey_postgres --github-disposable-service 2>&1 | tee "$output/postgres.log"
+          sha256sum "${sources[@]}" > "$output/source-after.txt"
+          cmp "$output/source-before.txt" "$output/source-after.txt"
+      - name: Exercise exact migration, grants, session concurrency and HTTP lease CAS
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-session-postgres
+          python -m tests.run_auth_session_lifecycle_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/postgres.log
+          python -m tests.run_crm_template_integrity_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/crm-template-jsonb.log
+      - name: Enterprise metrics on the owned disposable PostgreSQL 18
+        shell: bash
+        env:
+          CHATBOC_ENTERPRISE_METRICS_TEST_POSTGRES: '1'
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-session-postgres
+          git rev-parse HEAD > .qa-artifacts/auth-session-postgres/enterprise-metrics-checkout.txt
+          sha256sum app.py routes/metricas.py routes/estadisticas.py services/metricas_service.py services/analytics/repository.py services/analytics/rbac.py services/tenant_ticket_scope.py tests/test_enterprise_metrics_contract.py tests/test_metricas.py tests/test_estadisticas_dashboard.py tests/integration/test_enterprise_metrics_postgres.py tests/run_enterprise_metrics_postgres.py tests/run_auth_session_lifecycle_postgres.py tests/profile_acceptance_runtime.py .github/workflows/auth-private-storage.yml > .qa-artifacts/auth-session-postgres/enterprise-metrics-source-sha256.txt
+          python -X utf8 -m tests.run_enterprise_metrics_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/enterprise-metrics.log
+      - name: Preserve disposable PostgreSQL evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: disposable-auth-session-postgres
+          path: |
+            .qa-artifacts/auth-session-postgres/*.log
+            .qa-artifacts/auth-session-postgres/enterprise-metrics.xml
+            .qa-artifacts/auth-session-postgres/enterprise-metrics-checkout.txt
+            .qa-artifacts/auth-session-postgres/enterprise-metrics-source-sha256.txt
+            .qa-artifacts/meta-whatsapp-survey-postgres/
+          include-hidden-files: true

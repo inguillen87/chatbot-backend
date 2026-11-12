@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from models import ChatSessionContext, MunicipioTicket, TenantProfile, User, db
+from models import CategoriaTicket, ChatSessionContext, MunicipioTicket, TenantProfile, User, db
 from routes.whatsapp_webhook import _apply_completed_reclamo_context
 from services.actions.municipio_actions import (
     CrearReclamoActionHandler,
@@ -9,6 +9,33 @@ from services.actions.municipio_actions import (
 )
 from services.constants import CONTEXTO_MUNICIPIO
 from services.municipio_responder import ReclamoFlowHandler, ReclamoState
+
+
+def _bind_confirmation_scope(context, stored=None):
+    """Supply real disposable draft authority; never patch the authority guard."""
+    owner = User(name="Synthetic confirmation owner", email="confirmation@example.invalid",
+                 rol="admin", tipo_chat="municipio", password_hash="synthetic-not-a-login")
+    db.session.add(owner)
+    db.session.flush()
+    owner.municipio_id = owner.id
+    tenant = TenantProfile(slug="synthetic-confirmation", nombre="Synthetic confirmation",
+                           tipo="municipio", municipio_id=owner.id, is_active=True)
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    category = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]["datos_reclamo"]["categoria"]
+    db.session.add(CategoriaTicket(tenant_id=tenant.id, nombre=category, tipo="ticket"))
+    if stored is None:
+        stored = ChatSessionContext(chat_session_id=context["chat_session_uuid"],
+                                    context_data=context["chat_db_context_data"])
+    stored.user_id, stored.tenant_id = owner.id, tenant.id
+    stored.anon_id = context.get("anon_id") or stored.anon_id or "synthetic-confirmation-contact"
+    db.session.add(stored)
+    db.session.commit()
+    context.update(user_obj=owner, tenant_profile=tenant, tenant_id=tenant.id,
+                   viewer_user_obj=None, anon_id=stored.anon_id,
+                   chat_db_context_data=stored.context_data)
+    return context, stored
 
 
 def _claim_data() -> dict:
@@ -52,6 +79,7 @@ def test_claim_completion_reloads_expired_session_context_before_cleanup(client)
         "es_foto": False,
         "archivo_id_para_asociar": None,
     }
+    context, stored = _bind_confirmation_scope(context, stored)
     handler = ReclamoFlowHandler(context, stored)
 
     def _commit_then_succeed(action_data):
@@ -273,8 +301,13 @@ def test_confirmation_lock_refuses_unscoped_replay():
     )
 
 
-def test_legacy_confirmation_without_id_uses_same_lock_identity_for_same_snapshot():
+def test_legacy_confirmation_without_id_uses_same_lock_identity_for_same_snapshot(client):
     captured_ids = []
+    base_context, stored = _bind_confirmation_scope({
+        "chat_db_context_data": _waiting_context(confirmation_id=""),
+        "chat_session_uuid": "wa-legacy-session-001",
+        "anon_id": "+5492613168608",
+    })
 
     def _fail_after_capture(action_data):
         captured_ids.append(action_data["claim_confirmation_id"])
@@ -291,14 +324,10 @@ def test_legacy_confirmation_without_id_uses_same_lock_identity_for_same_snapsho
                 "confirmation_id",
                 None,
             )
-            handler = ReclamoFlowHandler(
-                {
-                    "chat_db_context_data": legacy_context,
-                    "chat_session_uuid": "wa-legacy-session-001",
-                    "anon_id": "+5492613168608",
-                },
-                chat_db_context=None,
-            )
+            stored.context_data = legacy_context
+            db.session.commit()
+            handler_context = {**base_context, "chat_db_context_data": stored.context_data}
+            handler = ReclamoFlowHandler(handler_context, stored)
             handler.handle_confirmacion("1", {})
 
     assert len(captured_ids) == 2

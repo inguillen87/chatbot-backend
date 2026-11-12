@@ -94,6 +94,9 @@ def test_registration_logs_never_include_submitted_secrets(client, monkeypatch):
     )
 
     assert response.status_code == 201
+    from services.auth_session_lifecycle import descriptor_for_token
+    with client.application.app_context():
+        assert response.get_json()['session_retirement'] == descriptor_for_token(response.get_json()['token'])
     log_text = "\n".join(emitted_logs)
     assert "[register] Registration attempt metadata=" in log_text
     for secret in submitted_secrets.values():
@@ -115,6 +118,10 @@ def test_clerk_config_contract(client, monkeypatch):
     resp = client.get("/auth/clerk/config")
 
     assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == (
+        "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+    )
+    assert "Origin" in resp.headers["Vary"]
     payload = resp.get_json()
     assert payload["contract_version"] == "auth.clerk.v1"
     assert payload["enabled"] is True
@@ -172,6 +179,10 @@ def test_clerk_config_contract_api_alias(client, monkeypatch):
     resp = client.get("/api/auth/clerk/config")
 
     assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == (
+        "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+    )
+    assert "Origin" in resp.headers["Vary"]
     payload = resp.get_json()
     assert payload["contract_version"] == "auth.clerk.v1"
     assert payload["enabled"] is True
@@ -1257,7 +1268,7 @@ def test_terminal_clerk_webhook_disconnects_session_and_user_rooms(client, monke
     assert disconnected == [
         {
             "clerk_session_id": "sess_webhook_disconnect",
-            "clerk_user_id": "user_webhook_disconnect",
+            "clerk_user_id": None,
         }
     ]
 
@@ -1310,7 +1321,7 @@ def test_clerk_webhook_duplicate_does_not_revoke_or_disconnect_twice(client, mon
     assert disconnect_calls == [
         {
             "clerk_session_id": "sess_duplicate",
-            "clerk_user_id": "user_duplicate",
+            "clerk_user_id": None,
         }
     ]
 
@@ -1459,7 +1470,7 @@ def test_clerk_webhook_effect_and_receipt_retry_atomically(client, monkeypatch):
 
     assert failed.status_code == 500
     assert retried.status_code == 200
-    assert auth_session_version(db.session.get(User, user_id)) == 2
+    assert auth_session_version(db.session.get(User, user_id)) == 1
     receipt = WebhookDelivery.query.filter_by(
         provider="clerk",
         event_id="msg_atomic_webhook",

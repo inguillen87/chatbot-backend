@@ -12,6 +12,7 @@ from services.llm_utils import extract_complaint_details_llm
 from services.common_utils import limpiar_texto_base, parse_precio_flexible # Para procesar texto de pedido
 from services.pedido_processor_service import calcular_similitud_levenshtein, UMBRAL_SIMILITUD_PRODUCTO_PEDIDO # Reutilizar lógica de matching
 from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from services.multimodal_analyzer import UnsafeImageSource, _assert_public_remote_url
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ def _descargar_imagen(url: str) -> Optional[bytes]:
         return None
     try:
         _assert_public_remote_url(url)
+        bounded_timeout = outbox_io_timeout_seconds(10)
         response = requests.get(
             url,
             # The WhatsApp webhook authenticates and persists Twilio media
@@ -77,7 +79,7 @@ def _descargar_imagen(url: str) -> Optional[bytes]:
             auth=None,
             allow_redirects=False,
             stream=True,
-            timeout=10,
+            timeout=bounded_timeout if bounded_timeout is not None else 10,
         )
         try:
             response.raise_for_status()

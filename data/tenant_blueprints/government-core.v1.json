@@ -1,0 +1,125 @@
+{
+  "contract_version": "tenant.blueprint.manifest.v1",
+  "blueprint_id": "government-core",
+  "version": "1.0.0",
+  "label": "Gobierno digital · núcleo operativo",
+  "description": "Configuración base reutilizable para una mesa única de atención, gestión de casos y participación ciudadana.",
+  "supported_tenant_types": [
+    "municipio",
+    "gobierno"
+  ],
+  "modules": [
+    {
+      "id": "service_desk",
+      "label": "Mesa única",
+      "summary": "Ingreso, clasificación, asignación y seguimiento de solicitudes.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "crm",
+      "label": "CRM ciudadano",
+      "summary": "Contexto de personas, interacciones, consentimiento y próximas acciones.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "claims",
+      "label": "Reclamos y casos",
+      "summary": "Gestión trazable de reclamos, evidencia, responsables y niveles de servicio.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "participation",
+      "label": "Participación",
+      "summary": "Encuestas, sondeos y consultas con controles de publicación y resultados.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "territory",
+      "label": "Inteligencia territorial",
+      "summary": "Lectura territorial basada en ubicaciones verificadas y límites oficiales.",
+      "activation_state": "evidence_required"
+    },
+    {
+      "id": "knowledge",
+      "label": "Conocimiento y catalogos",
+      "summary": "Documentos, trámites y contenidos institucionales con procedencia controlada.",
+      "activation_state": "content_required"
+    },
+    {
+      "id": "channels",
+      "label": "Canales",
+      "summary": "Atención por web y WhatsApp sujeta a configuración y validación del proveedor.",
+      "activation_state": "provider_required"
+    },
+    {
+      "id": "accessibility",
+      "label": "Accesibilidad",
+      "summary": "Preferencias de lectura, navegación, lenguaje claro y formatos alternativos.",
+      "activation_state": "validation_required"
+    }
+  ],
+  "configuration_defaults": {
+    "operating_model": {
+      "case_intake": "single_desk",
+      "human_handoff": "supervised",
+      "audit_mode": "required"
+    },
+    "ticket_categories": [
+      "Alumbrado público",
+      "Baches y calzada",
+      "Arbolado",
+      "Limpieza y residuos",
+      "Agua y saneamiento",
+      "Tránsito y señalización",
+      "Espacio público",
+      "Trámites y consultas",
+      "Accesibilidad y apoyos"
+    ],
+    "employee_routing": {
+      "default_ticket_categories": [],
+      "default_channels": [],
+      "default_zones": [],
+      "assignment_mode": "manual"
+    },
+    "channels": {
+      "web_widget": {
+        "desired": true,
+        "enabled": false,
+        "activation_state": "configuration_required"
+      },
+      "whatsapp": {
+        "desired": true,
+        "enabled": false,
+        "activation_state": "provider_required"
+      }
+    },
+    "accessibility_policy": {
+      "status": "validation_required",
+      "supports": [
+        "keyboard_navigation",
+        "screen_reader",
+        "high_contrast",
+        "reduced_motion",
+        "dyslexia_friendly_reading",
+        "plain_language",
+        "voice_transcription"
+      ]
+    },
+    "module_configuration": {
+      "service_desk": {"desired": true, "activation_state": "configuration_required"},
+      "crm": {"desired": true, "activation_state": "configuration_required"},
+      "claims": {"desired": true, "activation_state": "configuration_required"},
+      "participation": {"desired": true, "activation_state": "configuration_required"},
+      "territory": {"desired": true, "activation_state": "evidence_required"},
+      "knowledge": {"desired": true, "activation_state": "content_required"},
+      "channels": {"desired": true, "activation_state": "provider_required"},
+      "accessibility": {"desired": true, "activation_state": "validation_required"}
+    },
+    "data_governance": {
+      "tenant_isolation": "required",
+      "consent_tracking": "required",
+      "audit_receipts": "required",
+      "territorial_evidence": "required"
+    }
+  }
+}

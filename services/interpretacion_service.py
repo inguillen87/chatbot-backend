@@ -28,9 +28,11 @@ class InterpretacionService:
 
         mime = (archivo_adjunto.mime or "").lower()
         if mime.startswith("audio/"):
-            from services.audio_transcription_service import transcribe_audio_from_url
+            from services.audio_transcription_service import transcribe_audio_bytes
+            from services.attachment_delivery import read_authorized_attachment_bytes
             try:
-                texto = transcribe_audio_from_url(archivo_adjunto.url, mime)
+                data = read_authorized_attachment_bytes(archivo_adjunto.url, mime, attachment=archivo_adjunto)
+                texto = transcribe_audio_bytes(data, mime)
                 if texto:
                     resultado["texto_extraido"] = texto
             except Exception as exc:

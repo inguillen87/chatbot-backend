@@ -8,6 +8,7 @@ from flask import Blueprint, abort, current_app, jsonify, g, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func, or_
 
+from cutover_writer_fence import cutover_writer_view
 from models import (
     CatalogoItem,
     CategoriaTicket,
@@ -358,6 +359,7 @@ def actualizar_empleado_multitenant(current_user: User, tenant_slug: str, emplea
 
 
 @municipio_api_bp.route("/widget-config", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def obtener_widget_config(current_user: User, tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
@@ -407,6 +409,7 @@ def actualizar_widget_config(current_user: User, tenant_slug: str):
 
 
 @widget_public_bp.route("/<tenant_slug>", methods=["GET"])
+@cutover_writer_view
 def obtener_config_publica(tenant_slug: str):
     tenant = _resolve_tenant_or_404(tenant_slug)
     if not plan_allows_integration_feature(tenant, "widget_embed"):
@@ -801,6 +804,7 @@ def legacy_carrito_publico():
 
 
 @legacy_public_v2_bp.route("/productos", methods=["GET", "OPTIONS"])
+@cutover_writer_view
 @cross_origin(**_public_cors_kwargs(["GET", "OPTIONS"]))
 def legacy_productos_publicos():
     """Legacy endpoint for products retrieval requiring tenant_slug querystring."""

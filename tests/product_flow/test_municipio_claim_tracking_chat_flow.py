@@ -7,6 +7,11 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 from models import MunicipioTicket, TenantProfile, TicketComentario, User
+from tests.junin_product_flow_support import (
+    JUNIN_QA_ADDRESS,
+    JUNIN_QA_LAT,
+    JUNIN_QA_LNG,
+)
 
 
 class ProductFlowClaimConfig(Config):
@@ -27,18 +32,19 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         self.client = self.app.test_client()
 
         self.owner = User(
-            name="Municipio Flow",
+            name="Municipalidad de Junín QA",
             email="municipio-flow@test.com",
             rol="admin",
             tipo_chat="municipio",
+            tenant_slug="junin",
         )
         self.owner.set_password("secret123")
         db.session.add(self.owner)
         db.session.flush()
 
         self.tenant = TenantProfile(
-            slug="muni-flow",
-            nombre="Municipio Flow",
+            slug="junin",
+            nombre="Municipalidad de Junín QA",
             tipo="municipio",
             municipio_id=self.owner.id,
             configuracion={
@@ -64,9 +70,9 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
             pregunta="Luz apagada",
             estado="en_proceso",
             canal_ingreso="web",
-            direccion="Av. Siempre Viva 123",
-            latitud=-34.6,
-            longitud=-58.4,
+            direccion=JUNIN_QA_ADDRESS,
+            latitud=JUNIN_QA_LAT,
+            longitud=JUNIN_QA_LNG,
             nombre_vecino="Ana",
         )
         db.session.add(self.ticket)
@@ -186,7 +192,11 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
                 "pregunta": "Hay un bache peligroso frente a la plaza",
                 "demo_mode": True,
                 "tenant_slug": self.tenant.slug,
-                "location": {"lat": -34.61, "lng": -58.44, "address": "San Martin 500"},
+                "location": {
+                    "lat": JUNIN_QA_LAT,
+                    "lng": JUNIN_QA_LNG,
+                    "address": JUNIN_QA_ADDRESS,
+                },
             },
             headers={
                 "Origin": "https://www.chatboc.ar",
@@ -227,7 +237,11 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
                 "pregunta": "Donde reporto baches con ubicacion?",
                 "demo_mode": True,
                 "tenant_slug": self.tenant.slug,
-                "location": {"lat": -34.61, "lng": -58.44, "address": "San Martin 500"},
+                "location": {
+                    "lat": JUNIN_QA_LAT,
+                    "lng": JUNIN_QA_LNG,
+                    "address": JUNIN_QA_ADDRESS,
+                },
             },
             headers={
                 "Origin": "https://www.chatboc.ar",
@@ -248,7 +262,7 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         )
         self.assertIsNotNone(ticket)
         self.assertEqual(ticket.categoria, "Baches y calzada")
-        self.assertEqual(ticket.direccion, "San Martin 500")
+        self.assertEqual(ticket.direccion, JUNIN_QA_ADDRESS)
         self.assertTrue(ticket.consulta_pin)
 
         with patch("routes.tracking_ui.emit_new_chat_message") as emit_chat, patch(

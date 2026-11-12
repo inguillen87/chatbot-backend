@@ -2,7 +2,7 @@
 
 from extensions import db
 from models import User, Rubro
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 from app import create_app
 
 app = create_app()

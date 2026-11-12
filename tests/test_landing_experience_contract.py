@@ -30,7 +30,7 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertNotIn("navigation", payload)
         self.assertNotIn("sections", payload)
         self.assertEqual(payload["hero"]["contract_scope"], "operational_demo_data")
-        self.assertEqual(payload["hero"]["headline"], "Converti conversaciones en operaciones reales")
+        self.assertEqual(payload["hero"]["headline"], "Convertí conversaciones en operaciones reales")
         self.assertEqual(
             payload["hero"]["subheadline"],
             "Chatboc atiende por web o WhatsApp, pide los datos justos y deja casos, pedidos o leads listos para operar.",
@@ -40,8 +40,8 @@ class LandingExperienceContractTestCase(unittest.TestCase):
             payload["hero"]["conversation_subtitle"],
             "Un caso entra, el agente pide datos y deja una accion trazable.",
         )
-        self.assertEqual(payload["hero"]["primary_cta"]["href"], "/demo")
-        self.assertEqual(payload["hero"]["secondary_cta"]["href"], "/contacto")
+        self.assertEqual(payload["hero"]["primary_cta"]["href"], "/contacto")
+        self.assertEqual(payload["hero"]["secondary_cta"]["href"], "/demo")
         self.assertEqual(payload["hero"]["conversation_demo"]["contract_version"], "landing.hero_conversation_demo.v1")
         self.assertTrue(payload["runtime_rules"]["frontend_owns_visual_design"])
         self.assertTrue(payload["runtime_rules"]["backend_owns_visible_copy"])
