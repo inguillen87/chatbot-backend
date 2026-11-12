@@ -40,6 +40,8 @@ name: Survey and organization evidence
       - services/analytics/ticket_satisfaction.py
       - services/tenant_ticket_scope.py
       - models.py
+      - model_primitives.py
+      - models_territorial_geocoding.py
       - tests/test_ticket_csat_http.py
       - tests/test_v2_analytics_overview.py
       - tests/profile_acceptance_runtime.py
@@ -50,6 +52,7 @@ name: Survey and organization evidence
       - tests/test_territorial_geocoding_execution.py
       - tests/test_territorial_geocoding_admin_api.py
       - tests/test_territorial_geocoding_store.py
+      - tests/test_territorial_geocoding_model_imports.py
       - tests/test_ticket_public_history_scope.py
       - services/operational_intelligence.py
       - services/ticket_workflow_policy.py
@@ -175,10 +178,10 @@ jobs:
           mkdir -p "$out"
           git rev-parse HEAD > "$out/checkout.txt"
           test "$(cat "$out/checkout.txt")" = "$EXPECTED_HEAD"
-          sources=(routes/ticket.py services/ticket_service.py routes/v2/analytics.py services/analytics/ticket_satisfaction.py services/tenant_ticket_scope.py models.py tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/profile_acceptance_runtime.py tests/conftest.py services/territorial_geocoding_admin.py services/territorial_geocoding_execution.py services/territorial_geocoding_store.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py)
+          sources=(routes/ticket.py services/ticket_service.py routes/v2/analytics.py services/analytics/ticket_satisfaction.py services/tenant_ticket_scope.py models.py model_primitives.py models_territorial_geocoding.py tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/profile_acceptance_runtime.py tests/conftest.py services/territorial_geocoding_admin.py services/territorial_geocoding_execution.py services/territorial_geocoding_store.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py tests/test_territorial_geocoding_model_imports.py)
           sha256sum "${sources[@]}" > "$out/source-before.txt"
           result=0
-          for suite in tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py; do
+          for suite in tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py tests/test_territorial_geocoding_model_imports.py; do
             name="${suite##*/}"
             name="${name%.py}"
             suite_args=()

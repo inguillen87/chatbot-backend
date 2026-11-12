@@ -26,10 +26,17 @@ Los ZIP del proyecto y `main` son anteriores a esta pila de trabajo.
 ## Coordinación
 
 - ChatGPT/Codex lleva el primer corte de persistencia de preferencias y movimiento accesible.
-- Claude tiene propuesta su incorporación a la tarea para UX, diseño y revisión cruzada. Su acuse sigue pendiente; no se comprobó comunicación directa.
+- Claude fue localizado por su [PR frontend #1819](https://github.com/inguillen87/chatboc-frontend/pull/1819). Se dejó el [mensaje de coordinación](https://github.com/inguillen87/chatboc-frontend/pull/1819#issuecomment-6827760959); su acuse sigue pendiente.
 - Cada agente registra objetivo, rama/base/head, archivos a cargo y criterio de cierre antes de editar. Un escritor por rama.
 - Conservar contratos, autoridad de sesión, tenant y dominios institucionales. Reconciliar trabajo ajeno sin force-push ni reemplazarlo por snapshots.
 - Las nuevas ramas de este corte tienen autodeploy desactivado. Registrar pruebas locales, CI, preview y publicación por separado.
+
+La otra línea de trabajo del mismo día se identificó en frontend #1818
+(continuidad de escritura y mapa) y backend #2826 (inicialización territorial).
+Se dejó un mensaje en #1818 y sus cambios se componen en los PR #1820 y #2828,
+conservando intactas las ramas de origen. El aporte global de
+Claude aplica la política inicial de movimiento del sistema a Framer Motion;
+Confetti cubre por separado canvas y cambios de preferencia en vivo.
 
 La unificación alcanza decisiones, código y referencias accesibles. No fusiona
 físicamente historiales de ChatGPT, no transfiere sesiones y no recupera cambios

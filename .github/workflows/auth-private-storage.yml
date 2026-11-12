@@ -9,6 +9,7 @@ name: Durable sessions and private attachments
       - config/**
       - middleware/cutover_writer_fence.py
       - models.py
+      - model_primitives.py
       - middleware/tenant_context.py
       - routes/auth.py
       - routes/admin_tenant.py
@@ -197,7 +198,7 @@ jobs:
           set -euo pipefail
           mkdir -p .qa-artifacts/auth-private-storage/employee-scope
           git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/employee-scope/checkout.txt
-          sha256sum .github/workflows/auth-private-storage.yml vercel.json app.py config/__init__.py models.py routes/admin_tenant.py middleware/tenant_context.py services/employee_routing.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_scope_revocation.py tests/test_employee_scope_and_assignment.py > .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt
+          sha256sum .github/workflows/auth-private-storage.yml vercel.json app.py config/__init__.py models.py model_primitives.py routes/admin_tenant.py middleware/tenant_context.py services/employee_routing.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_scope_revocation.py tests/test_employee_scope_and_assignment.py > .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt
           python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/employee-scope/tests.log
           from tests.profile_acceptance_runtime import prepare_process
           prepare_process()
@@ -250,7 +251,7 @@ jobs:
             blob_sha="$(git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
             printf '%s  %s\n' "$blob_sha" "$source_file"
           done | tee .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-blob-sha256.txt | sha256sum --check - > .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-source-check.log
-          sha256sum .github/workflows/auth-private-storage.yml app.py config/__init__.py models.py routes/v2/saas.py routes/v2/tickets.py services/employee_routing.py services/employee_ticket_access.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_routing_category_revocation.py > .qa-artifacts/auth-private-storage/employee-category-revocation/source-sha256.txt
+          sha256sum .github/workflows/auth-private-storage.yml app.py config/__init__.py models.py model_primitives.py routes/v2/saas.py routes/v2/tickets.py services/employee_routing.py services/employee_ticket_access.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_routing_category_revocation.py > .qa-artifacts/auth-private-storage/employee-category-revocation/source-sha256.txt
           python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/employee-category-revocation/tests.log
           from tests.profile_acceptance_runtime import prepare_process
           prepare_process()
@@ -295,7 +296,7 @@ jobs:
             blob_sha="$(git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
             printf '%s  %s\n' "$blob_sha" "$source_file"
           done | tee .qa-artifacts/auth-private-storage/backoffice-export/checkout-blob-sha256.txt | sha256sum --check - > .qa-artifacts/auth-private-storage/backoffice-export/checkout-source-check.log
-          sha256sum .github/workflows/auth-private-storage.yml requirements.txt app.py models.py routes/backoffice.py services/backoffice_export_pdf.py services/contact_intake.py middleware/tenant_context.py services/auth_session_lifecycle.py utils/auth_helpers.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py tests/test_canonical_contact_backoffice.py > .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt
+          sha256sum .github/workflows/auth-private-storage.yml requirements.txt app.py models.py model_primitives.py routes/backoffice.py services/backoffice_export_pdf.py services/contact_intake.py middleware/tenant_context.py services/auth_session_lifecycle.py utils/auth_helpers.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py tests/test_canonical_contact_backoffice.py > .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt
           python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/backoffice-export/tests.log
           from tests.profile_acceptance_runtime import prepare_process
           prepare_process()
@@ -360,7 +361,7 @@ jobs:
             test "$pr_parent" = "$EXPECTED_PR_HEAD"
           fi
           sources=(
-            .github/workflows/auth-private-storage.yml models.py models_survey_governance.py
+            .github/workflows/auth-private-storage.yml models.py model_primitives.py models_survey_governance.py
             models_survey_jurisdiction.py routes/encuestas_public.py routes/meta_whatsapp_callback.py
             routes/v2/surveys.py services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
             services/meta_whatsapp_survey.py services/survey_governance.py services/survey_jurisdiction.py
@@ -464,7 +465,7 @@ jobs:
             printf 'pull_request_head %s\n' "$pr_parent" >> "$output/checkout.txt"
           fi
           sources=(
-            .github/workflows/auth-private-storage.yml models.py models_survey_jurisdiction.py
+            .github/workflows/auth-private-storage.yml models.py model_primitives.py models_survey_jurisdiction.py
             routes/meta_whatsapp_callback.py routes/v2/surveys.py
             services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
             services/meta_whatsapp_survey.py services/survey_governance.py
