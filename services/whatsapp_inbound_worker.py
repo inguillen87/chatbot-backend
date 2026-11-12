@@ -49,6 +49,7 @@ from services.outbox_execution_budget import (
     outbox_twilio_http_client,
 )
 from services.provider_platform import is_sender_ready_status
+from services.whatsapp_provider_policy import meta_provider_isolation_enabled
 from services.twilio_tech_provider import (
     TwilioRuntimeCredentials,
     resolve_twilio_runtime_credentials,
@@ -132,14 +133,23 @@ def _rotate_tenant_ids(tenant_ids: tuple[int, ...]) -> tuple[int, ...]:
     return tenant_ids[start:] + tenant_ids[:start]
 
 
-def _worker_tenant_ids(tenant_id: Optional[int]) -> tuple[int, ...]:
+def _worker_tenant_ids(
+    tenant_id: Optional[int], *, provider: Optional[str] = None,
+) -> tuple[int, ...]:
     """Return only configured canaries; explicit non-canaries are rejected."""
 
     if not has_app_context():
         raise WhatsAppInboundDurabilityConfigurationError(
             "whatsapp_inbound_worker_app_context_required"
         )
-    canaries = resolve_whatsapp_inbound_queue_tenants(current_app.config)
+    config = current_app.config
+    if provider is not None:
+        canaries = resolve_whatsapp_inbound_queue_tenants(config, provider=provider)
+    else:
+        canaries = resolve_whatsapp_inbound_queue_tenants(config)
+        if (config.get("META_WHATSAPP_INBOUND_WORKER_ENABLED") is True
+                or config.get("META_WHATSAPP_OUTBOUND_ENABLED") is True):
+            canaries |= resolve_whatsapp_inbound_queue_tenants(config, provider="meta")
     if tenant_id is None:
         return _rotate_tenant_ids(tuple(sorted(canaries)))
     if isinstance(tenant_id, bool):
@@ -461,8 +471,12 @@ def _response_status_code(response: Any) -> int:
 
 
 def _inbound_worker_providers(tenant_id: int) -> tuple[str, ...]:
+    providers = ("twilio",) if tenant_id in resolve_whatsapp_inbound_queue_tenants(
+        current_app.config) else ()
     if current_app.config.get("META_WHATSAPP_INBOUND_WORKER_ENABLED") is not True:
-        return ("twilio",)
+        return providers
+    if tenant_id not in resolve_whatsapp_inbound_queue_tenants(current_app.config, provider="meta"):
+        return providers
     from services.domain_effect_gate import (
         DomainEffectOutboxConfigurationError, resolve_domain_effect_outbox_policy,
     )
@@ -470,8 +484,18 @@ def _inbound_worker_providers(tenant_id: int) -> tuple[str, ...]:
     try:
         policy = resolve_domain_effect_outbox_policy(current_app.config, tenant_id=tenant_id)
     except DomainEffectOutboxConfigurationError:
-        return ("twilio",)
-    return ("twilio", "meta") if policy.enabled else ("twilio",)
+        return providers
+    return (*providers, "meta") if policy.enabled else providers
+
+
+def _outbound_worker_providers(tenant_id: int) -> tuple[str, ...]:
+    providers = ("twilio",) if tenant_id in resolve_whatsapp_inbound_queue_tenants(
+        current_app.config) else ()
+    if (current_app.config.get("META_WHATSAPP_OUTBOUND_ENABLED") is True
+            and tenant_id in resolve_whatsapp_inbound_queue_tenants(
+                current_app.config, provider="meta")):
+        return (*providers, "meta")
+    return providers
 
 
 def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProcessingResult:
@@ -482,6 +506,7 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
     from services.meta_whatsapp_runtime import MetaRuntimeError
     from services.municipio_responder import try_execute_municipal_meta_claim_draft
     from services.meta_whatsapp_survey import try_execute_meta_survey
+    from services.meta_whatsapp_welcome import try_execute_meta_welcome
     from services.whatsapp_conversation_contract import ConversationMode, ConversationTurn
     from services.whatsapp_conversation_turn import execute_municipal_meta_text_followup
     from services.whatsapp_conversation_uow import (
@@ -494,7 +519,9 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
         return InboundProcessingResult(status, claim.turn_id, claim.tenant_id,
                                        outbound_count=outbound_count, error_code=error_code)
 
-    _worker_tenant_ids(claim.tenant_id)
+    _worker_tenant_ids(claim.tenant_id, provider="meta")
+    if "meta" not in _inbound_worker_providers(claim.tenant_id):
+        raise WhatsAppWorkerScopeError("meta_inbound_worker_provider_not_enabled")
     try:
         if not arm_meta_whatsapp_inbound_execution(claim.turn_id, claim.lease_token):
             return result("lost_lease", "meta_execution_fence_not_owned")
@@ -543,7 +570,9 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
                     mode=ConversationMode(False, False), unit_of_work=unit,
                 )
                 sink = MetaConversationSink(unit)
-                if not try_execute_meta_survey(turn, sink) and not try_execute_municipal_meta_claim_draft(turn, sink):
+                if (not try_execute_meta_welcome(turn, sink)
+                        and not try_execute_meta_survey(turn, sink)
+                        and not try_execute_municipal_meta_claim_draft(turn, sink)):
                     if kind != "text":
                         unit.fail("meta_inbound_worker_kind_unsupported")
                     execute_municipal_meta_text_followup(turn, sink)
@@ -807,6 +836,9 @@ def process_whatsapp_inbound_stream(
             break
         if deadline_monotonic is not None and clock() >= deadline_monotonic:
             break
+        providers = _inbound_worker_providers(current_tenant_id)
+        if not providers:
+            continue
         tenants_remaining = len(tenant_ids) - tenant_index
         tenant_limit = max(
             1,
@@ -818,7 +850,7 @@ def process_whatsapp_inbound_stream(
             claim = claim_next_whatsapp_inbound_turn(
                 tenant_id=current_tenant_id,
                 stream_key=stream_key,
-                providers=_inbound_worker_providers(current_tenant_id),
+                providers=providers,
                 lease_seconds=lease_seconds,
             )
             if claim is None:
@@ -922,8 +954,14 @@ def dispatch_next_whatsapp_outbound_attempt(
     tenant_ids = _worker_tenant_ids(tenant_id)
     claim = None
     for current_tenant_id in tenant_ids:
+        providers = _outbound_worker_providers(current_tenant_id)
+        if not providers:
+            continue
         claim = claim_next_whatsapp_outbound_attempt(
             tenant_id=current_tenant_id,
+            # Retain the previous quarantine/unsupported-provider cleanup
+            # contract until the explicit isolated rollout is enabled.
+            providers=(providers if meta_provider_isolation_enabled(current_app.config) else None),
             lease_seconds=int(
                 current_app.config.get("WHATSAPP_INBOUND_LEASE_SECONDS", 180) or 180
             ),
@@ -1100,7 +1138,9 @@ def dispatch_whatsapp_outbound_attempts(
     }
 
 
-def enqueue_whatsapp_inbound_stream(*, tenant_id: int, stream_key: str) -> bool:
+def enqueue_whatsapp_inbound_stream(
+    *, tenant_id: int, stream_key: str, provider: str = "twilio",
+) -> bool:
     """Best-effort broker wakeup; the committed DB queue remains authoritative."""
 
     if not has_app_context():
@@ -1110,6 +1150,7 @@ def enqueue_whatsapp_inbound_stream(*, tenant_id: int, stream_key: str) -> bool:
     policy = resolve_whatsapp_inbound_durability_policy(
         current_app.config,
         tenant_id=tenant_id,
+        provider=provider,
     )
     if not policy.queue_enabled:
         return False
@@ -1337,7 +1378,8 @@ def run_whatsapp_durable_worker(
             current_app.config.get("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy")
             or "legacy"
         ).strip().lower()
-        if mode == "legacy" and standby_when_legacy:
+        tenant_ids = _worker_tenant_ids(None)
+        if mode == "legacy" and not tenant_ids and standby_when_legacy:
             logger.warning(
                 "[WHATSAPP_WORKER] Standby: durable queue remains disabled."
             )
@@ -1351,12 +1393,13 @@ def run_whatsapp_durable_worker(
                 "mode": "legacy",
                 **totals,
             }
-        if mode != "queue":
+        if mode not in {"legacy", "queue"} or not tenant_ids:
             raise RuntimeError("whatsapp_durable_worker_requires_queue_mode")
         # Validate the full queue contract and explicit worker scope before the
         # first database query. An empty or malformed allowlist must not turn a
         # global poller into a cross-tenant claimant.
-        resolve_whatsapp_inbound_queue_tenants(current_app.config)
+        # _worker_tenant_ids validates each provider independently. A Meta-only
+        # poller must not promote the global/Twilio mode to queue.
 
         # Fail at startup when the migration/table contract is missing instead
         # of running a process that silently acknowledges no work.
@@ -1546,7 +1589,11 @@ def main() -> int:
     durability_mode = str(
         os.getenv("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy") or "legacy"
     ).strip().lower()
-    if args.standby_when_legacy and durability_mode == "legacy":
+    isolated_meta_worker = _strict_env_switch("META_WHATSAPP_PROVIDER_ISOLATION_ENABLED", default=False) and (
+        _strict_env_switch("META_WHATSAPP_INBOUND_WORKER_ENABLED", default=False)
+        or _strict_env_switch("META_WHATSAPP_OUTBOUND_ENABLED", default=False)
+    )
+    if args.standby_when_legacy and durability_mode == "legacy" and not isolated_meta_worker:
         if not _strict_env_switch(
             "WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED",
             default=False,

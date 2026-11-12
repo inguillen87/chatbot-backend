@@ -20,6 +20,7 @@ from models import (
     MunicipioTicket,
     Notification,
     NotificationAttempt,
+    ProviderConnection,
     ProviderSender,
     PymeTicket,
     TenantProfile,
@@ -123,8 +124,18 @@ class TwilioWebhookCredentialScopingTestCase(unittest.TestCase):
 
         sender = None
         if create_provider_sender:
+            connection = ProviderConnection(
+                tenant_id=tenant.id, provider="twilio", channel="whatsapp",
+                environment="production", status="connected",
+                external_account_id=CHILD_ACCOUNT_SID if child_scoped else PARENT_ACCOUNT_SID,
+                credentials_ref=f"env:{CHILD_TOKEN_REF}" if child_scoped else "env:twilio_parent",
+                config={},
+            )
+            db.session.add(connection)
+            db.session.flush()
             sender = ProviderSender(
                 tenant_id=tenant.id,
+                provider_connection_id=connection.id,
                 channel="whatsapp",
                 phone_number=SENDER_NUMBER,
                 sender_id=f"whatsapp:{SENDER_NUMBER}",
@@ -808,6 +819,73 @@ class TwilioWebhookCredentialScopingTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         client_factory.assert_not_called()
         self.parent_client.messages.create.assert_called()
+
+    def _add_meta_sender(self, tenant, *, phone=SENDER_NUMBER):
+        connection = ProviderConnection(tenant_id=tenant.id, provider="meta", channel="whatsapp",
+            environment="production", status="connected", external_app_id="1719510329487224",
+            external_account_id="10068207913300410", credentials_ref="vault:meta:whatsapp_access_token:v1", config={})
+        db.session.add(connection)
+        db.session.flush()
+        sender = ProviderSender(tenant_id=tenant.id, provider_connection_id=connection.id,
+            channel="whatsapp", phone_number=phone, sender_id=f"whatsapp:{SENDER_NUMBER}",
+            phone_number_id="660753250460901", waba_id=connection.external_account_id, status="connected")
+        db.session.add(sender)
+        db.session.commit()
+        return sender
+
+    def _resolve_test_sender(self):
+        return webhook_module._resolve_provider_sender_for_twilio_request(
+            to_number_raw=f"whatsapp:{SENDER_NUMBER}", normalized_to=SENDER_NUMBER,
+            messaging_service_sid=MESSAGING_SERVICE_SID)
+
+    def test_meta_sender_does_not_capture_legacy_twilio_ingress(self):
+        self._create_sender(child_scoped=False, create_provider_sender=False)
+        tenant = TenantProfile.query.filter_by(slug="scoped-tenant-0").one()
+        self._add_meta_sender(tenant)
+        self.assertEqual(self._resolve_test_sender(), (None, None))
+        payload = {"AccountSid": PARENT_ACCOUNT_SID, "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}", "Body": "Hola", "MessageSid": "SM_legacy_meta_coexist"}
+        with patch.object(webhook_module, "responder_chatboc", return_value=self._bot_response()):
+            response = self.client.post("/webhook/whatsapp", data=payload,
+                headers={"X-Twilio-Signature": self._signature("/webhook/whatsapp", payload, PARENT_AUTH_TOKEN)})
+        self.assertEqual(response.status_code, 200)
+        self.parent_client.messages.create.assert_called()
+
+    def test_meta_hint_does_not_make_existing_twilio_sender_ambiguous(self):
+        sender = self._create_sender(child_scoped=True)
+        self._add_meta_sender(sender.tenant, phone=None)
+        resolved, error = self._resolve_test_sender()
+        self.assertIsNone(error)
+        self.assertEqual(resolved.id, sender.id)
+
+    def test_orphan_sender_fails_closed_instead_of_parent_fallback(self):
+        sender = self._create_sender(child_scoped=True)
+        sender.provider_connection_id = None
+        db.session.commit()
+        db.session.expire_all()
+        self.assertEqual(self._resolve_test_sender(), (None, "twilio_sender_connection_missing"))
+
+    def test_mismatched_sender_connection_tenant_fails_closed(self):
+        sender = self._create_sender(child_scoped=True)
+        owner = User(name="Foreign", email="foreign-connection@example.invalid", rol="empresa",
+                     password_hash="synthetic-not-a-login", tipo_chat="pyme")
+        db.session.add(owner)
+        db.session.flush()
+        other = TenantProfile(slug="foreign-connection", nombre="Foreign", tipo="pyme", pyme_id=owner.id)
+        db.session.add(other)
+        db.session.flush()
+        sender.provider_connection.tenant_id = other.id
+        db.session.commit()
+        db.session.expire_all()
+        self.assertEqual(self._resolve_test_sender(), (None, "twilio_sender_connection_scope_invalid"))
+
+    def test_two_twilio_hints_remain_ambiguous(self):
+        sender = self._create_sender(child_scoped=True)
+        duplicate = ProviderSender(tenant_id=sender.tenant_id, provider_connection_id=sender.provider_connection_id,
+            channel="whatsapp", sender_id=sender.sender_id, messaging_service_sid=MESSAGING_SERVICE_SID, status="active")
+        db.session.add(duplicate)
+        db.session.commit()
+        self.assertEqual(self._resolve_test_sender(), (None, "ambiguous_sender_hints"))
 
     def test_missing_child_secret_does_not_fall_back_to_parent(self):
         self._create_sender(child_scoped=True)

@@ -32,6 +32,7 @@ from models import (
     TenantTicket,
     TenantProfile,
     Notification,
+    ProviderConnection,
     ProviderSender,
     MessageTemplateRegistry,
     MessagingEventLedger,
@@ -247,6 +248,18 @@ class TestConfig(Config):
 
 class WhatsAppWebhookTestCase(unittest.TestCase):
 
+    def _twilio_sender(self, *, tenant_id, **values):
+        """Valid transport fixtures always bind their provider explicitly."""
+        connection = ProviderConnection.query.filter_by(tenant_id=tenant_id,
+            provider="twilio", channel="whatsapp", environment="production").first()
+        if connection is None:
+            connection = ProviderConnection(tenant_id=tenant_id, provider="twilio", channel="whatsapp",
+                environment="production", status="connected", external_account_id=TestConfig.TWILIO_ACCOUNT_SID,
+                credentials_ref="env:twilio_parent", config={})
+            db.session.add(connection)
+            db.session.flush()
+        return ProviderSender(tenant_id=tenant_id, provider_connection_id=connection.id, **values)
+
     def setUp(self):
         environment = patch.dict(os.environ, {
             "TWILIO_ACCOUNT_SID": TestConfig.TWILIO_ACCOUNT_SID,
@@ -439,7 +452,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
     def test_twilio_helper_shares_atomic_hourly_reservation_with_flow_sender(self):
         tenant = self._attach_tenant_to_owner(slug="shared-rate-limit", tipo="municipio")
-        sender = ProviderSender(
+        sender = self._twilio_sender(
             tenant_id=tenant.id,
             channel="whatsapp",
             phone_number=self.test_whatsapp_number_str,
@@ -985,7 +998,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         )
         db.session.add(tenant)
         db.session.flush()
-        provider_sender = ProviderSender(
+        provider_sender = self._twilio_sender(
             tenant_id=tenant.id,
             channel="whatsapp",
             phone_number="+15559876543",
@@ -1914,7 +1927,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         # Arrange
         self._set_owner_tipo_chat("municipio")
         tenant = self._attach_tenant_to_owner(slug="junin", tipo="municipio")
-        sender = ProviderSender(tenant_id=tenant.id, channel="whatsapp",
+        sender = self._twilio_sender(tenant_id=tenant.id, channel="whatsapp",
             phone_number=self.test_whatsapp_number_str,
             sender_id=f"whatsapp:{self.test_whatsapp_number_str}", status="active")
         db.session.add(sender)
@@ -2046,7 +2059,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
     def test_twilio_whatsapp_status_persists_delivery_ledger_idempotently(self):
         tenant = self._attach_tenant_to_owner(slug="junin-status", tipo="municipio")
-        sender = ProviderSender(
+        sender = self._twilio_sender(
             tenant_id=tenant.id,
             channel="whatsapp",
             phone_number=self.test_whatsapp_number_str,
@@ -2119,7 +2132,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             slug="junin-status-persistence-failure",
             tipo="municipio",
         )
-        sender = ProviderSender(
+        sender = self._twilio_sender(
             tenant_id=tenant.id,
             channel="whatsapp",
             phone_number=self.test_whatsapp_number_str,
@@ -2150,7 +2163,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
     def test_twilio_whatsapp_failed_status_reconciles_native_flow_without_pii(self):
         tenant = self._attach_tenant_to_owner(slug="junin-flow-status", tipo="municipio")
-        sender = ProviderSender(
+        sender = self._twilio_sender(
             tenant_id=tenant.id,
             channel="whatsapp",
             phone_number=self.test_whatsapp_number_str,
@@ -2217,7 +2230,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
     def test_native_flow_uncertain_callback_binds_sid_and_never_regresses(self):
         tenant = self._attach_tenant_to_owner(slug="junin-flow-uncertain", tipo="municipio")
-        sender = ProviderSender(
+        sender = self._twilio_sender(
             tenant_id=tenant.id,
             channel="whatsapp",
             phone_number=self.test_whatsapp_number_str,

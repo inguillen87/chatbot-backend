@@ -27,6 +27,17 @@ on:
       - 'services/tdf_meta_audio.py'
       - 'services/meta_whatsapp_webhook.py'
       - 'services/meta_whatsapp_runtime.py'
+      - 'services/meta_whatsapp_welcome.py'
+      - 'services/whatsapp_provider_policy.py'
+      - 'services/meta_credential_operations.py'
+      - 'scripts/manage_meta_whatsapp_credentials.py'
+      - 'tests/test_meta_whatsapp_welcome.py'
+      - 'tests/test_meta_whatsapp_welcome_isolated.py'
+      - 'tests/test_meta_provider_isolation.py'
+      - 'tests/test_meta_provider_policy.py'
+      - 'tests/test_meta_outbox_canary_scope.py'
+      - 'tests/test_meta_credential_operations.py'
+      - 'tests/test_whatsapp_webhook_twilio_scoping.py'
       - 'services/meta_whatsapp_outbox.py'
       - 'services/whatsapp_inbound_worker.py'
       - 'services/whatsapp_conversation_contract.py'
@@ -386,6 +397,13 @@ jobs:
               'tests/test_meta_whatsapp_inbound_worker.py',
               'tests/test_meta_whatsapp_outbound_hold.py',
               'tests/test_meta_whatsapp_outbox.py',
+              'tests/test_meta_whatsapp_welcome.py',
+              'tests/test_meta_whatsapp_welcome_isolated.py',
+              'tests/test_meta_provider_isolation.py',
+              'tests/test_meta_provider_policy.py',
+              'tests/test_meta_outbox_canary_scope.py',
+              'tests/test_meta_credential_operations.py',
+              'tests/test_whatsapp_webhook_twilio_scoping.py',
               'tests/test_municipal_conversation_uow.py',
               'tests/test_whatsapp_conversation_domain_writers.py',
               'tests/test_whatsapp_conversation_forwarding.py',
@@ -403,6 +421,9 @@ jobs:
               'services/meta_whatsapp_conversation_sink.py', 'services/meta_whatsapp_credentials.py',
               'services/meta_whatsapp_media.py', 'services/meta_whatsapp_outbox.py',
               'services/meta_whatsapp_runtime.py', 'services/meta_whatsapp_webhook.py',
+              'services/meta_whatsapp_welcome.py', 'services/whatsapp_provider_policy.py',
+              'services/meta_credential_operations.py', 'scripts/manage_meta_whatsapp_credentials.py',
+              'services/common_utils.py',
               'services/municipal_conversation_uow.py', 'services/municipio_responder.py',
               'services/outbox_execution_budget.py', 'services/ticket_service.py',
               'services/whatsapp_conversation_contract.py', 'services/whatsapp_conversation_turn.py',

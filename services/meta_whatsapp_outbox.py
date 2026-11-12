@@ -28,6 +28,9 @@ from services.meta_whatsapp_runtime import MetaOutboundRuntime, MetaRuntimeError
 from services.meta_whatsapp_webhook import MetaWebhookEvent
 from services.meta_whatsapp_media import MetaMediaReference, parse_media_reference, revalidate_media_reference
 from services.whatsapp_inbound_durability import resolve_whatsapp_inbound_queue_tenants
+from services.whatsapp_provider_policy import (
+    WhatsAppProviderPolicyError, meta_provider_isolation_enabled, whatsapp_provider_config,
+)
 from services.outbox_execution_budget import (
     OutboxExecutionBudgetExceeded, outbox_persistence_operation,
     require_outbox_time_remaining,
@@ -246,7 +249,8 @@ def _validate_envelope(payload, now):
     required = {"contract_version", "identity", "credential_revision", "source",
                 "authorization_kind", "message", "sequence_no", "bundle_size"}
     media_keys = {"media_reference"} if isinstance(payload, dict) and isinstance(payload.get("message"), dict) and isinstance(payload["message"].get("type"), str) and payload["message"]["type"] in {"image", "sticker"} else set()
-    if (not isinstance(payload, dict) or set(payload) != required | media_keys
+    canary_keys = {"canary_scope_digest"} if isinstance(payload, dict) and "canary_scope_digest" in payload else set()
+    if (not isinstance(payload, dict) or set(payload) != required | media_keys | canary_keys
             or payload.get("contract_version") != CONTRACT
             or payload.get("authorization_kind") != "inbound_service_reply"
             or type(payload.get("credential_revision")) is not int
@@ -257,6 +261,12 @@ def _validate_envelope(payload, now):
         raise MetaRuntimeError("meta_outbox_contract_invalid")
     identity = _identity(payload["identity"])
     source = _source(payload["source"], now)
+    saved_scope = payload.get("canary_scope_digest")
+    if canary_keys and (not isinstance(saved_scope, str) or not re.fullmatch(r"[0-9a-f]{64}", saved_scope)):
+        raise MetaRuntimeError("meta_outbox_canary_scope_invalid")
+    live_scope = _recipient_canary_scope(identity, source, required=bool(canary_keys))
+    if live_scope != saved_scope:
+        raise MetaRuntimeError("meta_outbox_canary_scope_changed")
     message = payload["message"]
     if not isinstance(message, dict) or message.get("to") != source["recipient"]:
         raise MetaRuntimeError("meta_reply_recipient_mismatch")
@@ -314,8 +324,44 @@ def _transaction(session=None):
 
 
 def _canary(tenant_id):
-    if tenant_id not in resolve_whatsapp_inbound_queue_tenants(current_app.config):
+    if tenant_id not in resolve_whatsapp_inbound_queue_tenants(current_app.config, provider="meta"):
         raise MetaRuntimeError("meta_outbox_tenant_not_canary")
+
+
+def _recipient_canary_scope(identity, source, *, required=False):
+    """Bind isolated sends to the exact callback authority, including revocation.
+
+    An isolated envelope keeps this requirement even if isolation is later
+    disabled. Legacy envelopes retain their original contract only while the
+    explicit isolated rollout is off. No phone normalization occurs here.
+    """
+    config = current_app.config
+    try:
+        isolated = meta_provider_isolation_enabled(config)
+    except WhatsAppProviderPolicyError:
+        raise MetaRuntimeError("meta_outbox_canary_scope_invalid") from None
+    if not isolated:
+        if required:
+            raise MetaRuntimeError("meta_outbox_canary_scope_retired")
+        return None
+    if config.get("META_WHATSAPP_CALLBACK_ENABLED") is not True:
+        raise MetaRuntimeError("meta_outbox_canary_scope_retired")
+    # Admission imports this module's producer contract. Resolve its pure
+    # allowlist parser lazily to avoid a module-initialization dependency cycle.
+    from services.meta_whatsapp_batch_admission import (
+        MetaBatchAdmissionError, meta_callback_recipient_scope,
+    )
+    try:
+        scope = meta_callback_recipient_scope(config, identity.app_id)
+    except MetaBatchAdmissionError:
+        raise MetaRuntimeError("meta_outbox_canary_scope_retired") from None
+    allowed = scope.get((identity.waba_id, identity.phone_number_id))
+    if (allowed is None or allowed[0] != identity.tenant_id
+            or source["recipient"] not in allowed[1]):
+        raise MetaRuntimeError("meta_outbox_canary_recipient_denied")
+    return _canonical({"app_id": identity.app_id, "waba_id": identity.waba_id,
+        "phone_number_id": identity.phone_number_id, "tenant_id": identity.tenant_id,
+        "contacts": sorted(allowed[1])})
 
 
 def _completed_meta_source_matches(turn, reference, *, now):
@@ -401,6 +447,7 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
             or turn.provider_message_sid != source["message_id"]):
         raise MetaRuntimeError("meta_turn_binding_mismatch")
     _canary(identity.tenant_id)
+    canary_scope = _recipient_canary_scope(identity, source)
     binding = binding or runtime.load_binding(identity, session=session)
     if binding.sender != identity:
         raise MetaRuntimeError("meta_turn_binding_mismatch")
@@ -412,6 +459,8 @@ def _stage_on_turn(session, turn, source_record, reply, runtime, *, claim=None, 
             "credential_revision": binding.credential.revision, "source": source,
             "authorization_kind": "inbound_service_reply", "message": message,
             "sequence_no": sequence_no, "bundle_size": len(messages)}
+        if canary_scope is not None:
+            envelope["canary_scope_digest"] = canary_scope
         reference = contents[sequence_no - 1].media
         if reference is not None:
             reference = revalidate_media_reference(reference, identity, session=session, now=runtime.now())
@@ -501,7 +550,7 @@ def produce_meta_service_reply(event: MetaWebhookEvent, reply: MetaReplyContent 
             return WhatsAppInboundTurn(turn_id=str(uuid.uuid4()), tenant_id=binding.sender.tenant_id,
                 provider_connection_id=binding.sender.connection_id, provider_sender_id=binding.sender.sender_id,
                 provider="meta", provider_message_sid=event.message_id,
-                stream_key=derive_whatsapp_stream_key(secret=current_app.config["WHATSAPP_INBOUND_HASH_SECRET"],
+                stream_key=derive_whatsapp_stream_key(secret=whatsapp_provider_config(current_app.config, "meta")["WHATSAPP_INBOUND_HASH_SECRET"],
                     tenant_id=binding.sender.tenant_id, sender=event.contact,
                     destination=f"meta:{binding.sender.app_id}:{binding.sender.waba_id}:{binding.sender.phone_number_id}"),
                 message_kind=event.content_type, payload_digest=_canonical(source_record),

@@ -1557,6 +1557,12 @@ class Config:
     # Production callback admission is independent of the test-number pilot.
     META_WHATSAPP_CALLBACK_ENABLED = _env_strict_opt_in("META_WHATSAPP_CALLBACK_ENABLED")
     META_WHATSAPP_INBOUND_WORKER_ENABLED = _env_strict_opt_in("META_WHATSAPP_INBOUND_WORKER_ENABLED")
+    # Provider-specific migration. Does not rotate global/Twilio identity keys.
+    META_WHATSAPP_PROVIDER_ISOLATION_ENABLED = _env_strict_opt_in("META_WHATSAPP_PROVIDER_ISOLATION_ENABLED")
+    META_WHATSAPP_QUEUE_TENANT_IDS = os.getenv("META_WHATSAPP_QUEUE_TENANT_IDS", "")
+    META_WHATSAPP_INBOUND_HASH_SECRET = os.getenv("META_WHATSAPP_INBOUND_HASH_SECRET")
+    META_CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1 = os.getenv("META_CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1")
+    META_CHANNEL_SESSION_IDENTITY_VERSION = os.getenv("META_CHANNEL_SESSION_IDENTITY_VERSION", "")
     META_WHATSAPP_OUTBOUND_ENABLED = _env_strict_opt_in("META_WHATSAPP_OUTBOUND_ENABLED")
     META_WHATSAPP_APP_SECRETS = _meta_callback_credentials("META_WHATSAPP_APP_SECRETS_JSON", max_length=4096)
     META_WHATSAPP_CALLBACK_VERIFY_TOKENS = _meta_callback_credentials(
@@ -2192,6 +2198,22 @@ def validate_runtime_security(config: Any) -> list[str]:
             )
             break
 
+    from services.whatsapp_provider_policy import (
+        WhatsAppProviderPolicyError, meta_provider_isolation_enabled,
+    )
+    from services.whatsapp_inbound_durability import (
+        WhatsAppInboundDurabilityConfigurationError,
+        resolve_whatsapp_inbound_queue_tenants,
+    )
+    isolated_meta_queue = False
+    try:
+        if meta_provider_isolation_enabled(config):
+            resolve_whatsapp_inbound_queue_tenants(config, provider="meta")
+            isolated_meta_queue = True
+    except (WhatsAppProviderPolicyError, WhatsAppInboundDurabilityConfigurationError) as exc:
+        # These exception types contain fixed codes, never key material.
+        errors.append(f"META_WHATSAPP_PROVIDER_ISOLATION_ENABLED invalido: {exc}.")
+
     session_identity_mode = str(
         getattr(config, "get", lambda *_: None)(
             "CHANNEL_SESSION_IDENTITY_MODE",
@@ -2314,6 +2336,7 @@ def validate_runtime_security(config: Any) -> list[str]:
             errors.append(
                 "WHATSAPP_INBOUND_HASH_SECRET debe tener al menos 32 bytes en modo queue."
             )
+    if durability_mode == "queue" or isolated_meta_queue:
         queue_bounds = (
             ("WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES", 1024, 65536, int),
             ("WHATSAPP_INBOUND_LEASE_SECONDS", 30, 3600, int),
@@ -2449,6 +2472,11 @@ def validate_runtime_security(config: Any) -> list[str]:
     if (
         process_role == "whatsapp-durable-worker"
         and durability_mode != "queue"
+        and not (isolated_meta_queue and any(
+            config.get(flag) is True for flag in (
+                "META_WHATSAPP_INBOUND_WORKER_ENABLED", "META_WHATSAPP_OUTBOUND_ENABLED",
+            )
+        ))
         and durable_worker_standby is not True
     ):
         errors.append(

@@ -22,6 +22,7 @@ from extensions import db
 from flask import current_app
 from models import WhatsAppInboundTurn, TenantProfile, ChatSessionContext, ChannelSessionIdentityBinding
 from services.whatsapp_inbound_turns import InboundTurnClaim
+from services.whatsapp_provider_policy import WhatsAppProviderPolicyError, whatsapp_provider_config
 
 
 class ConversationUnitOfWorkError(RuntimeError):
@@ -260,12 +261,13 @@ class ConversationUnitOfWork:
             # binding HMAC, version and recipient establish this partition
             # without copying the raw phone back into context storage.
             expected = derive_channel_session_identity_hmac(
-                secret=resolve_channel_session_identity_secret(current_app.config),
+                secret=resolve_channel_session_identity_secret(whatsapp_provider_config(current_app.config, "meta")),
                 tenant_id=c.tenant_id, provider="meta", identity_version=c.session_identity_version,
                 provider_identity=canonical_phone)
             if not hmac.compare_digest(expected, c.session_identity_hmac):
                 self._poison("conversation_uow_recipient_binding_mismatch")
-        except (MetaRuntimeError, ChannelSessionIdentityError, WhatsAppTurnValidationError):
+        except (MetaRuntimeError, ChannelSessionIdentityError, WhatsAppTurnValidationError,
+                WhatsAppProviderPolicyError):
             self._poison("conversation_uow_identity_scope_mismatch")
         return profile, context, canonical_phone
 

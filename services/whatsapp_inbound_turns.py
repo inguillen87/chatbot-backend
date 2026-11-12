@@ -1758,6 +1758,7 @@ def _quarantine_expired_outbound_sends(
     *,
     now: datetime,
     tenant_id: Optional[int] = None,
+    providers: Optional[tuple[str, ...]] = None,
 ) -> int:
     error_code, error_digest = _safe_error_details("send_lease_expired")
     statement = update(WhatsAppOutboundAttempt).where(
@@ -1767,6 +1768,8 @@ def _quarantine_expired_outbound_sends(
         )
     if tenant_id is not None:
         statement = statement.where(WhatsAppOutboundAttempt.tenant_id == tenant_id)
+    if providers is not None:
+        statement = statement.where(WhatsAppOutboundAttempt.provider.in_(providers))
     transition = session.execute(
         statement.values(
             status=WhatsAppOutboundAttempt.STATUS_SEND_UNCERTAIN,
@@ -1785,11 +1788,17 @@ def _quarantine_expired_outbound_sends(
 def claim_next_whatsapp_outbound_attempt(
     *,
     tenant_id: Any = None,
+    providers: Optional[tuple[str, ...]] = None,
     lease_seconds: Any = DEFAULT_LEASE_SECONDS,
     now: Optional[datetime] = None,
 ) -> Optional[OutboundAttemptClaim]:
     """Claim an ordered send; expired sends become uncertain, never due again."""
 
+    if providers is not None and (
+        not isinstance(providers, tuple) or not providers
+        or any(provider not in ("twilio", "meta") for provider in providers)
+    ):
+        raise WhatsAppTurnValidationError("invalid_outbound_claim_providers")
     operation_now = _coerce_utc(now)
     lease_duration = _bounded_lease_seconds(lease_seconds)
     resolved_tenant_id = (
@@ -1817,6 +1826,7 @@ def claim_next_whatsapp_outbound_attempt(
             session,
             now=operation_now,
             tenant_id=resolved_tenant_id,
+            providers=providers,
         )
         if quarantined:
             session.commit()
@@ -1833,6 +1843,8 @@ def claim_next_whatsapp_outbound_attempt(
         )
         if not meta_whatsapp_outbound_enabled():
             due = and_(due, WhatsAppOutboundAttempt.provider != "meta")
+        if providers is not None:
+            due = and_(due, WhatsAppOutboundAttempt.provider.in_(providers))
         query = select(WhatsAppOutboundAttempt.id, WhatsAppOutboundAttempt.status,
                        WhatsAppOutboundAttempt.attempt_count).where(due, no_blocking_predecessor)
         if resolved_tenant_id is not None:

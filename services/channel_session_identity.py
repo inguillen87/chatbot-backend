@@ -17,6 +17,8 @@ import re
 import uuid
 from typing import Any, Mapping, Optional
 
+from services.whatsapp_provider_policy import whatsapp_provider_config, meta_provider_isolation_enabled
+
 from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, SessionTransaction
@@ -393,12 +395,14 @@ def resolve_channel_session_identity(
 ) -> Optional[ChannelSessionIdentityResolution]:
     """Resolve, safely adopt, or isolate one canonical channel context."""
 
+    provider_scope = _scope(provider, "session_identity_provider_invalid")
+    isolated_meta = provider_scope == "meta" and meta_provider_isolation_enabled(config)
+    config = whatsapp_provider_config(config, provider_scope)
     mode = channel_session_identity_mode(config)
     if mode == MODE_LEGACY:
         raise ChannelSessionIdentityError("session_identity_mode_legacy")
     tenant = _positive_int(tenant_id, "session_identity_tenant_invalid")
     channel_scope = _scope(channel, "session_identity_channel_invalid")
-    provider_scope = _scope(provider, "session_identity_provider_invalid")
     version = _identity_version(
         identity_version or config.get("CHANNEL_SESSION_IDENTITY_VERSION_V1")
     )
@@ -431,6 +435,10 @@ def resolve_channel_session_identity(
                 ).with_for_update()
             )
             if binding is not None:
+                if isolated_meta and session.scalar(select(ChannelSessionIdentityBinding.id).where(
+                    ChannelSessionIdentityBinding.chat_session_id == binding.chat_session_id,
+                    ChannelSessionIdentityBinding.provider != "meta").limit(1)) is not None:
+                    raise ChannelSessionIdentityConflict("session_identity_provider_context_shared")
                 return _repair_or_return_existing(
                     session,
                     binding=binding,
@@ -440,13 +448,16 @@ def resolve_channel_session_identity(
                     now=now,
                 )
 
-            candidates, conflict_code = _legacy_candidates(
-                session,
-                tenant_id=tenant,
-                owner_user_id=owner_id,
-                normalized_identity=normalized_identity,
-                explicit_chat_session_id=explicit_legacy_id,
-            )
+            if isolated_meta:
+                candidates, conflict_code = [], None
+            else:
+                candidates, conflict_code = _legacy_candidates(
+                    session,
+                    tenant_id=tenant,
+                    owner_user_id=owner_id,
+                    normalized_identity=normalized_identity,
+                    explicit_chat_session_id=explicit_legacy_id,
+                )
             if not candidates and not conflict_code and not create_if_missing:
                 session.rollback()
                 return None
@@ -623,6 +634,8 @@ def stage_meta_channel_session_identity(
     claim execution are separate transactions by design.
     """
     _require_meta_admission_transaction(session, transaction)
+    isolated_meta = meta_provider_isolation_enabled(config)
+    config = whatsapp_provider_config(config, "meta")
     mode = channel_session_identity_mode(config)
     if mode == MODE_LEGACY:
         raise ChannelSessionIdentityError("session_identity_mode_legacy")
@@ -656,6 +669,10 @@ def stage_meta_channel_session_identity(
                 .with_for_update().execution_options(populate_existing=True))
             outcome, conflict_code, preserved = "existing", None, True
             if binding is not None:
+                if isolated_meta and session.scalar(select(ChannelSessionIdentityBinding.id).where(
+                    ChannelSessionIdentityBinding.chat_session_id == binding.chat_session_id,
+                    ChannelSessionIdentityBinding.provider != "meta").limit(1)) is not None:
+                    raise ChannelSessionIdentityConflict("session_identity_provider_context_shared")
                 if (binding.contract_version != CONTRACT_VERSION or type(binding.generation) is not int
                         or binding.generation < 1):
                     raise ChannelSessionIdentityConflict("session_identity_admission_binding_invalid")
@@ -672,9 +689,14 @@ def stage_meta_channel_session_identity(
                 else:
                     previous_digest = None
             else:
-                candidates, conflict_code = _legacy_candidates(session, tenant_id=tenant_id,
-                    owner_user_id=owner_user_id, normalized_identity=normalized_identity,
-                    explicit_chat_session_id=explicit_id)
+                if isolated_meta:
+                    # Even unbound legacy contexts may contain Twilio history.
+                    # A new isolated Meta identity always owns fresh state.
+                    candidates, conflict_code = [], None
+                else:
+                    candidates, conflict_code = _legacy_candidates(session, tenant_id=tenant_id,
+                        owner_user_id=owner_user_id, normalized_identity=normalized_identity,
+                        explicit_chat_session_id=explicit_id)
                 previous_digest = None
                 if len(candidates) == 1 and not conflict_code:
                     context = session.scalar(select(ChatSessionContext).where(

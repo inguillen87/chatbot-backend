@@ -21,6 +21,7 @@ from models import (
     EncRespuesta,
     MessageTemplateRegistry,
     Order,
+    ProviderConnection,
     ProviderSender,
     TenantProfile,
     User,
@@ -332,8 +333,14 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
         )
         db.session.add(self.tenant)
         db.session.flush()
+        connection = ProviderConnection(tenant_id=self.tenant.id, provider="twilio", channel="whatsapp",
+            environment="production", status="connected", external_account_id=_WebhookConfig.TWILIO_ACCOUNT_SID,
+            credentials_ref="env:twilio_parent", config={})
+        db.session.add(connection)
+        db.session.flush()
         self.sender = ProviderSender(
             tenant_id=self.tenant.id,
+            provider_connection_id=connection.id,
             channel="whatsapp",
             phone_number="+15551234567",
             sender_id="whatsapp:+15551234567",

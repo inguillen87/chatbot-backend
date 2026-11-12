@@ -36,6 +36,7 @@ from services.meta_whatsapp_outbox import (
     _completed_meta_source_matches, verified_inbound_payload,
 )
 from services.whatsapp_inbound_durability import resolve_whatsapp_inbound_queue_tenants
+from services.whatsapp_provider_policy import whatsapp_provider_config
 from services.whatsapp_inbound_turns import (
     PAYLOAD_SCRUB_CONTRACT_VERSION, derive_whatsapp_stream_key,
 )
@@ -187,6 +188,7 @@ def _projection(item, binding, now):
 
 
 def _stream(config, item):
+    config = whatsapp_provider_config(config, "meta")
     secret = config.get("WHATSAPP_INBOUND_HASH_SECRET")
     if not isinstance(secret, str) or len(secret.encode()) < 32:
         raise MetaBatchAdmissionError("meta_batch_stream_secret_missing")
@@ -301,7 +303,7 @@ def _lock_scopes(session, bindings, runtime):
         for identifier in sorted(ids):
             if session.scalar(select(model.id).where(model.id == identifier).with_for_update()) is None:
                 raise MetaBatchAdmissionError("meta_batch_scope_retired")
-    allowed = resolve_whatsapp_inbound_queue_tenants(runtime.config)
+    allowed = resolve_whatsapp_inbound_queue_tenants(runtime.config, provider="meta")
     owners = {}
     for binding in sorted(bindings.values(), key=lambda value: (value.sender.tenant_id,
             value.sender.connection_id, value.sender.sender_id)):
