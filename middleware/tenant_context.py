@@ -498,6 +498,11 @@ def tenant_middleware(app) -> None:
         from services.auth_session_lifecycle import is_retirement_request
         if is_retirement_request():
             return
+        from utils.meta_credential_http import is_meta_credential_admin_request
+        if is_meta_credential_admin_request():
+            # These authenticated platform operations resolve a fixed target
+            # internally. Never parse/cache credential JSON as tenant hints.
+            return
         # Reset every tenant alias at the beginning of each request. This also
         # protects test/worker code that intentionally reuses an app context;
         # a failed resolution must never inherit the previous request's tenant.

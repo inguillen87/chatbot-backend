@@ -1555,6 +1555,7 @@ class Config:
     TENANT_PROVIDER_CREDENTIAL_KEYRING = os.getenv("TENANT_PROVIDER_CREDENTIAL_KEYRING")
     TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID = os.getenv("TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID")
     # Production callback admission is independent of the test-number pilot.
+    META_CREDENTIAL_ADMIN_ENABLED = _env_strict_opt_in("META_CREDENTIAL_ADMIN_ENABLED")
     META_WHATSAPP_CALLBACK_ENABLED = _env_strict_opt_in("META_WHATSAPP_CALLBACK_ENABLED")
     META_WHATSAPP_INBOUND_WORKER_ENABLED = _env_strict_opt_in("META_WHATSAPP_INBOUND_WORKER_ENABLED")
     # Provider-specific migration. Does not rotate global/Twilio identity keys.

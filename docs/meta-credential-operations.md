@@ -2,6 +2,123 @@
 
 Contract: `chatboc.meta_credential_operation.v1`.
 
+## Production administrative screen
+
+The supported execution path for the current Vercel deployment is an
+authenticated administrative adapter inside the backend itself. It uses the
+existing `db.engine`, private runtime configuration and global writer lease.
+It does not export protected Vercel secrets, impersonate a Vercel runtime on a
+workstation, use a Sandbox as the Production process, or execute arbitrary code.
+The CLI below remains useful only where an operator already has a legitimate
+private runtime; having its source does not provide that execution access.
+
+`META_CREDENTIAL_ADMIN_ENABLED` is strictly opt-in and defaults to false. The
+registered routes return 404 while disabled. When enabled they require the real
+Vercel Production web runtime, an authenticated allowlisted platform superadmin
+with an active Clerk-backed Chatboc session, and the existing shared Redis rate
+limiter. An in-memory limiter in Production fails closed.
+
+Authentication accepts either an explicit `Authorization: Bearer` Chatboc JWT
+or the existing HttpOnly `AUTH_TOKEN_COOKIE_NAME` cookie (default `auth_token`).
+An invalid explicit Authorization header never falls back to cookies. Cookie
+requests additionally require an exact Origin of `https://chatboc.ar` or
+`https://www.chatboc.ar`; absent/null/lookalike origins, trailing dots, extra
+ports or whitespace fail closed. All requests use bounded JSON POSTs. Flask
+login, widget credentials, query-string tokens and JSON authentication tokens
+cannot authorize these routes. The actor is derived from the verified session,
+never supplied by the client. Provider-session and lineage revocation, actor
+version, account status and the allowlist are rechecked and share-locked in the
+apply transaction.
+
+### HTTP contract
+
+| Path | JSON input | Result |
+| --- | --- | --- |
+| `/api/internal/meta-credentials/status` | `target` only | Fixed target IDs and phone; current/expected/next revision; current writer epoch; runtime prerequisites; current expiry; sanitized last operation receipt |
+| `/api/internal/meta-credentials/plan` | `target`, `access_token`, `expected_revision`, `expected_writer_epoch`; optional `expires_at` | Read-only plan, state/token-bound `plan_sha256`, database identity hash, verified local expiry |
+| `/api/internal/meta-credentials/apply` | Plan input plus exact `expires_at` from plan, `approved_plan_sha256`, `expected_database_identity_sha256` | Metadata and `committed: true` only after the actual database commit succeeds |
+
+Only `junin-production` and `tdf-sandbox` are valid targets. Extra or duplicate
+JSON keys are rejected, including actor, tenant, provider, runtime and DSN
+overrides. Request bodies are limited to 16 KiB. Status has a per-actor limit of
+30 requests/minute; plan and apply share 12/minute and 60/hour. The screen reads
+revision, epoch and resource metadata from status; the operator only supplies
+the new credential in a hidden field and reviews the resulting plan.
+
+Status includes `operation_available` and a finite `reason_code` when the exact
+expected state, private keyring, app-secret configuration or writer authority
+is unavailable. It does not open an old token or call Meta. A completed operation
+has `operation_available: false` under this one-time contract; the receipt and
+current revision remain readable.
+
+The screen must retain the token only in component memory while the operator
+reviews that target. Do not put it in a URL, browser storage, analytics, error
+telemetry, snapshots or a chat. Submit it only in the JSON POST body. Clear it
+after success, target changes or leaving the screen. Apply resends the same
+credential and uses the exact nonsecret expiry returned by plan; the backend
+repeats provider GET validation and recomputes the approved digest.
+
+### Expiry policy
+
+An expiry input is not required in the screen. The adapter stores the earliest
+of the finite Meta token/data-access expirations and a local limit of 30 days.
+If Meta reports no finite expiry, the stored expiry is that conservative local
+limit; it is not presented as Meta's actual token expiration. An optional
+operator limit may shorten the period but cannot exceed 30 days. Plan returns:
+
+```json
+{
+  "expiry": {
+    "expires_at": 1797115200,
+    "provider_expires_at": null,
+    "source": "local_policy",
+    "local_maximum_seconds": 2592000
+  }
+}
+```
+
+When a finite provider limit determines the result, `source` is `provider`.
+The installed vault envelope uses this local not-after value. A later renewal
+needs a separately reviewed expected-revision operation; this bounded installer
+deliberately does not silently extend or repeatedly rotate existing credentials.
+
+### Privacy, transactions and uncertain results
+
+The early HTTP boundary runs before application auth and tenant discovery.
+These exact endpoints skip the ordinary token-extraction and body-hint helpers;
+credential JSON is parsed only after successful authentication and is not cached
+on the request. No token is stored in `g`, the session, a plan cache or audit.
+Every response is private/no-store. Logging records in this narrow request
+scope have message, arguments, exception and stack details suppressed, including
+SQL/HTTP debug records; other concurrent requests keep normal logging.
+
+Planning uses a separate read-only database transaction. Applying uses a
+separate serializable transaction, exact state/revision checks, the existing
+global phone uniqueness lock, encrypted envelope installation and metadata-only
+audit. It reuses the HTTP writer middleware's request-lifetime lease, whose
+shared control-row lock survives the database commit. It never commits the
+authentication session's autobegun transaction.
+
+If apply returns `database_outcome: "unverified"`, do not retry automatically.
+Read status and compare `current_revision` and
+`last_operation.plan_sha256` with the reviewed plan. The commit can succeed
+while its acknowledgement is lost. A same-plan receipt at the expected next
+revision confirms the completed database operation; ambiguous or unrelated
+state requires an operator review. This is not proof of WhatsApp delivery.
+
+The routes never send a message, update Meta, change environment variables,
+change the historical Twilio mapping, activate cron or widen a canary. Those
+are independent reviewed rollout steps. Once both operations and their
+readbacks are complete, disable the administrative flag again.
+
+Offline tests use real JWT/session verification, synthetic SQLite persistence
+and an injected GET-only provider. They cover commit/rollback and lost-response
+semantics. PostgreSQL row/table locks and inter-runtime serialization remain
+subject to deployment review; SQLite does not certify them. Python immutable
+strings cannot promise cryptographic memory zeroization.
+
+## Private-runtime CLI
+
 `scripts/manage_meta_whatsapp_credentials.py` is an internal operator CLI. It
 does not add a public credential-upload endpoint, obtain a token, update Meta,
 change environment settings, activate workers/cron, or send a message. Default

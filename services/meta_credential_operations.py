@@ -7,7 +7,7 @@ the current global writer lease, and one transaction owned by the caller.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import hmac
 import json
@@ -80,7 +80,7 @@ class OperationRequest:
     target: str
     actor_user_id: int
     expected_revision: int
-    expires_at: int
+    expires_at: int | None
     database_identity_sha256: str
     expected_writer_epoch: int
 
@@ -115,12 +115,13 @@ class PreparedOperation:
     plan_sha256: str
     valid_until: int
     observed_at: int
+    expiry_metadata: dict | None = None
 
     def public_payload(self):
         return {"contract": CONTRACT, "dry_run": True, "plan": self.plan,
                 "plan_sha256": self.plan_sha256, "provider_checked_at": self.observed_at,
                 "writes_performed": False, "messages_sent": False,
-                "provider_mutations": False}
+                "provider_mutations": False, **({"expiry": self.expiry_metadata} if self.expiry_metadata else {})}
 
 
 def _columns(row):
@@ -210,7 +211,7 @@ def _authority_config(target, config):
     return selected
 
 
-def verify_new_credential(target, request, token, config, *, graph_get, clock):
+def verify_new_credential(target, request, token, config, *, graph_get, clock, clamp_expiry=False):
     """Use existing authority validation, permitting only three fixed GET paths."""
     config = _authority_config(target, config)
     version = config.get(GRAPH_VERSION_KEY, "v25.0")
@@ -251,9 +252,11 @@ def verify_new_credential(target, request, token, config, *, graph_get, clock):
         target.sender_id or 0, APP_ID, target.waba_id, target.phone_id, target.environment)
     credential = vault.MetaCredential(request.expected_revision + 1, request.expires_at, token)
     proof = runtime.authority(sender, credential)
-    _require(checked["phone"] and all(request.expires_at <= expiry for expiry in checked["expiries"]),
+    _require(checked["phone"] and (clamp_expiry or all(request.expires_at <= expiry for expiry in checked["expiries"])),
              "meta_operation_local_expiry_exceeds_provider")
-    return proof, version
+    provider_expiry = min(checked["expiries"]) if checked["expiries"] else None
+    expiry = min(request.expires_at, provider_expiry) if provider_expiry and clamp_expiry else request.expires_at
+    return proof, version, expiry, provider_expiry
 
 
 def _plan(request, state, version):
@@ -286,17 +289,29 @@ def _plan_digest(plan, token):
 
 
 def prepare_operation(session, request, token, config, *, graph_get=native_graph_request,
-                      clock=lambda: int(time.time())):
+                      clock=lambda: int(time.time()), expiry_policy_seconds=None):
     now = clock()
+    if expiry_policy_seconds is not None:
+        _require(expiry_policy_seconds == 30 * 24 * 3600, "meta_operation_expiry_policy_invalid")
+        if request.expires_at is None:
+            request = replace(request, expires_at=now + expiry_policy_seconds)
+        _require(type(request.expires_at) is int and request.expires_at <= now + expiry_policy_seconds,
+                 "meta_operation_expiry_exceeds_local_policy")
     request.validate(now)
     _require(isinstance(token, str) and bool(_TOKEN.fullmatch(token)), "meta_operation_token_invalid")
     _keyring(config)  # Readiness only; no token from the old envelope is opened.
     with session.no_autoflush:
         state = inspect_state(session, request)
-        proof, version = verify_new_credential(TARGETS[request.target], request, token, config,
-                                               graph_get=graph_get, clock=clock)
+        proof, version, expiry, provider_expiry = verify_new_credential(TARGETS[request.target], request, token, config,
+            graph_get=graph_get, clock=clock, clamp_expiry=expiry_policy_seconds is not None)
+    request = replace(request, expires_at=expiry)
     plan = _plan(request, state, version)
-    return PreparedOperation(request, plan, _plan_digest(plan, token), proof.valid_until, proof.observed_at)
+    metadata = None if expiry_policy_seconds is None else {
+        "expires_at": expiry, "provider_expires_at": provider_expiry,
+        "source": "provider" if provider_expiry == expiry else "local_policy",
+        "local_maximum_seconds": expiry_policy_seconds,
+    }
+    return PreparedOperation(request, plan, _plan_digest(plan, token), proof.valid_until, proof.observed_at, metadata)
 
 
 def apply_operation(session, prepared, token, config, *, approved_plan_sha256, writer_lease,
