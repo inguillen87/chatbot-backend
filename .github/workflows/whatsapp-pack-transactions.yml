@@ -52,6 +52,7 @@ name: WhatsApp draft transactions
       - tests/test_whatsapp_self_service.py
       - services/message_templates.py
       - models.py
+      - model_primitives.py
       - tests/test_whatsapp_pack_transactions.py
       - routes/v2/survey_rehearsals.py
       - routes/v2/__init__.py
