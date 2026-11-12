@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("SKIP_INIT_TENANTS", "1")
-os.environ.setdefault("OPENAI_API_KEY", "test")
 
 from twilio.request_validator import RequestValidator
 

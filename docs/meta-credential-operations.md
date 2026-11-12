@@ -111,11 +111,38 @@ change the historical Twilio mapping, activate cron or widen a canary. Those
 are independent reviewed rollout steps. Once both operations and their
 readbacks are complete, disable the administrative flag again.
 
-Offline tests use real JWT/session verification, synthetic SQLite persistence
-and an injected GET-only provider. They cover commit/rollback and lost-response
-semantics. PostgreSQL row/table locks and inter-runtime serialization remain
-subject to deployment review; SQLite does not certify them. Python immutable
-strings cannot promise cryptographic memory zeroization.
+Offline HTTP tests use real JWT/session verification, synthetic SQLite
+persistence and an injected GET-only provider. They cover commit/rollback and
+lost-response semantics. Python immutable strings cannot promise cryptographic
+memory zeroization.
+
+The additional opt-in runner `tests/run_meta_credential_admin_postgres.py`
+exercises the original HTTP adapter, JSONB CAS, session locks and global writer
+lease on a new dedicated PostgreSQL 18 cluster with TLS. It accepts only the
+existing disposable-fixture contract: loopback, database
+`chatboc_auth_lifecycle_ci`, user `postgres`, no other application databases or
+roles, and an empty public schema before setup. It never reads `DATABASE_URL`.
+Use `--fresh-loopback-fixture --port PORT` with the existing synthetic
+`CHATBOC_AUTH_LIFECYCLE_TEST_PASSWORD` input, or the guarded GitHub fixture mode.
+The cluster must already exist and support TLS; the runner does not install or
+start PostgreSQL. Do not point it at a reused/customer database.
+
+Four cases passed locally on PostgreSQL 18.6 with real separate connections:
+
+1. Concurrent TDF rotations wait on a physically observed PostgreSQL table lock;
+   exactly one JSONB/CAS writer commits revision 7 and one audit.
+2. A previously revoked Clerk session cannot apply its earlier plan.
+3. Revocation from another connection waits until an admitted credential
+   transaction commits.
+4. The global authority transition waits through that commit and the HTTP
+   request lease; it then advances the epoch and fences the writer.
+
+The provider and hosting-identity check are explicit synthetic test adapters;
+auth/session verification, the authority engine and SQL locks are originals.
+These tests establish local PostgreSQL concurrency behavior, not readiness of
+the actual Production keyring, provider token or deployed configuration. The
+existing `auth-private-storage.yml` isolated PostgreSQL job uses the same
+fixture identity; it needs a fresh TLS-enabled service to add this runner.
 
 ## Private-runtime CLI
 
