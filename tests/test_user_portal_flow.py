@@ -1,7 +1,8 @@
 import pytest
 from models import CatalogoItem, Promocion, TenantProfile, TenantFollower, TenantTicket, User, MunicipioPost, OrderEvent, EncEncuesta, EncRespuesta, PointsTransaction, SugerenciaCiudadano, Notification, AdminAuditLog
 from app import db
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from services.auth_session_lifecycle import issue_token
 
 def test_full_flow(client):
     # 1. Create Owner User
@@ -320,3 +321,56 @@ def test_full_flow(client):
     assert i18n_resp.json["current_language"] == "en"
     language_codes = {item["code"] for item in i18n_resp.json["available_languages"]}
     assert {"es", "en", "pt"}.issubset(language_codes)
+
+
+def test_portal_settings_preserve_and_persist_existing_preferences(
+    client, viewer_user, owner_user
+):
+    original_preferences = {
+        "font_size": "large",
+        "dyslexia": True,
+        "notifications": {"email": True, "push": False},
+    }
+    viewer_user.accesibilidad = dict(original_preferences)
+    tenant = TenantProfile(
+        slug="portal-settings-regression",
+        nombre="Portal Settings Municipality",
+        tipo="municipio",
+        municipio_id=owner_user.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+    viewer_id = viewer_user.id
+    endpoint = f"/api/v1/portal/{tenant.slug}/settings"
+    # Real application lineage: bare legacy JWTs are rejected by current auth.
+    token = issue_token(
+        {"user_id": viewer_id, "exp": datetime.now(timezone.utc) + timedelta(hours=1)}
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Start with preferences loaded from storage, not a newly assigned dict.
+    db.session.remove()
+    loaded_viewer = db.session.get(User, viewer_id)
+    initial = client.get(endpoint, headers=headers)
+    assert initial.status_code == 200
+    assert initial.json["preferences"] == {
+        **original_preferences,
+        "theme_mode": "system",
+        "animations_enabled": True,
+        "language": "es",
+    }
+    # GET defaults belong to the response and must not mutate the ORM value.
+    assert loaded_viewer.accesibilidad == original_preferences
+
+    update = {"theme_mode": "dark", "language": "en", "animations_enabled": False}
+    expected = {**original_preferences, **update}
+    changed = client.put(endpoint, headers=headers, json=update)
+    assert changed.status_code == 200
+    assert changed.json == {"success": True, "preferences": expected}
+
+    # A fresh session proves persistence, rather than reading the mutated dict.
+    db.session.remove()
+    assert db.session.get(User, viewer_id).accesibilidad == expected
+    reloaded = client.get(endpoint, headers=headers)
+    assert reloaded.status_code == 200
+    assert reloaded.json["preferences"] == expected

@@ -1,5 +1,8 @@
 # Chatboc: continuidad entre Chat, Work y Codex
 
+> Índice vigente: [Chatboc · Conversa TDF · Junín](CHATBOC_CONTINUIDAD.md).
+> Este documento conserva el registro histórico de septiembre.
+
 Registro del 22 de septiembre de 2026, solicitado por Marcelo. Retomar el mismo
 producto y sus revisiones comprobadas, sin crear otra aplicación ni depender de
 una supuesta sincronización de historiales. Consultar estados actuales antes de escribir.

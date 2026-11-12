@@ -2,6 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": {
+      "codex/chatboc-unified-portal-20261112": false,
       "fix/canonical-contact-export-20261103": false,
       "fix/enterprise-operator-workflows-20261103": false,
       "fix/employee-category-revocation-20261103": false,
