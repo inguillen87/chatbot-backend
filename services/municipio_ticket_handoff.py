@@ -19,7 +19,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import String, cast, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import aliased
 from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
@@ -34,6 +36,9 @@ from models import (
 CONTRACT_VERSION = MunicipioTicketHandoffEvent.CONTRACT_VERSION
 PROJECTION_CONTRACT_VERSION = MunicipioTicketHandoffEvent.PROJECTION_CONTRACT_VERSION
 SUPPORTED_CHANNELS = {"operator", "live_chat", "phone"}
+HANDOFF_ACCEPTANCE_COVERAGE = "municipal_inbox_request_acceptance_audit.v1"
+HANDOFF_REQUESTED_AUDIT_EVENT = "municipio_ticket.handoff.requested"
+HANDOFF_ACCEPTED_AUDIT_EVENT = "municipio_ticket.handoff.accepted"
 _TERMINAL_PROJECTION_STATES = {
     "resolved",
     "cancelled",
@@ -353,7 +358,8 @@ def request_human_handoff(
         AuditEvent(
             tenant_id=int(tenant_id),
             actor_user_id=actor.id,
-            event_type="municipio_ticket.handoff.requested",
+            event_type=HANDOFF_REQUESTED_AUDIT_EVENT,
+            created_at=now,
             resource_type="municipio_ticket",
             resource_id=str(ticket.id),
             details={
@@ -364,6 +370,7 @@ def request_human_handoff(
                 "channel": channel,
                 "external_dispatch": False,
                 "reason_present": True,
+                "acceptance_coverage": HANDOFF_ACCEPTANCE_COVERAGE,
                 "raw_idempotency_key_persisted": False,
             },
         )
@@ -382,6 +389,54 @@ def request_human_handoff(
         return _result_for_event(collision, replayed=True)
 
     return _result_for_event(event, replayed=False)
+
+
+def handoff_acceptance_audit_exists(event_type: str, *, cutoff: datetime | None = None):
+    """Match a typed request or acceptance audit row to its normalized request."""
+    request = MunicipioTicketHandoffEvent
+    audit = aliased(AuditEvent)
+    query = select(audit.id).where(
+        audit.tenant_id == request.tenant_id,
+        audit.resource_type == "municipio_ticket",
+        audit.resource_id == cast(request.ticket_id, String),
+        audit.event_type == event_type,
+        audit.actor_user_id > 0,
+        audit.details["event_id"].as_string() == request.event_id,
+        audit.details["acceptance_coverage"].as_string() == HANDOFF_ACCEPTANCE_COVERAGE,
+        audit.created_at >= request.created_at,
+    )
+    if cutoff is not None:
+        query = query.where(audit.created_at < cutoff)
+    return query.correlate(request).exists()
+
+
+def stage_recorded_handoff_acceptance(
+    *, tenant_id: int, ticket_id: int, event_id: Any, actor_user_id: int, occurred_at: datetime,
+) -> None:
+    """Stage one analytics receipt inside the caller's locked ticket transaction."""
+    if not isinstance(event_id, str) or not event_id:
+        return
+    request = MunicipioTicketHandoffEvent
+    tracked_request = db.session.scalar(select(request.id).where(
+        request.tenant_id == tenant_id,
+        request.ticket_id == ticket_id,
+        request.event_id == event_id,
+        request.contract_version == CONTRACT_VERSION,
+        request.created_at <= occurred_at,
+        handoff_acceptance_audit_exists(HANDOFF_REQUESTED_AUDIT_EVENT),
+        ~handoff_acceptance_audit_exists(HANDOFF_ACCEPTED_AUDIT_EVENT),
+    ))
+    if tracked_request is None:
+        return
+    db.session.add(AuditEvent(
+        tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+        event_type=HANDOFF_ACCEPTED_AUDIT_EVENT,
+        resource_type="municipio_ticket",
+        resource_id=str(ticket_id),
+        created_at=occurred_at,
+        details={"event_id": event_id, "acceptance_coverage": HANDOFF_ACCEPTANCE_COVERAGE},
+    ))
 
 
 def list_handoff_events(

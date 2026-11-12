@@ -2,6 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": {
+      "fix/territorial-geocoding-imports-20261112": false,
+      "fix/canonical-contact-export-20261103": false,
       "fix/enterprise-operator-workflows-20261103": false,
       "fix/employee-category-revocation-20261103": false,
       "release/enterprise-access-knowledge-20261029": false,

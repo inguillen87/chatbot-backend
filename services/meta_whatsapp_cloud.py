@@ -164,6 +164,19 @@ def list_payload(*, recipient: str, body: str, rows: tuple[dict, ...],
             "action": {"button": button, "sections": [{"title": section, "rows": safe_rows}]}})
 
 
+def media_payload(*, recipient: str, kind: str, media_id: str) -> dict:
+    """Native media ID only; asset authority is a separate server/outbox fence.
+
+    No URLs, caption truncation, ContentSid or template conversion. Schema is
+    proposed from archived official examples; real Graph validation is pending.
+    """
+    if (not isinstance(recipient, str) or not _RECIPIENT.fullmatch(recipient)
+            or not isinstance(kind, str) or kind not in {"image", "sticker"}):
+        raise MetaContractError("meta_media_payload_invalid")
+    return dict(messaging_product="whatsapp", recipient_type="individual", to=recipient,
+                type=kind, **{kind: {"id": meta_id(media_id)}})
+
+
 def template_payload(*, recipient: str, name: str, language: str,
                      body_parameters: tuple[str, ...] = ()) -> dict:
     """Text-body templates only; approval/consent are separately required to send."""
@@ -224,6 +237,9 @@ def send_once(*, binding_loader: Callable[[], VerifiedMetaBinding], payload: dic
             safe = list_payload(recipient=payload["to"], body=item["body"]["text"],
                 rows=tuple(sections[0]["rows"]), button=item["action"]["button"],
                 section=sections[0]["title"])
+        elif payload.get("type") in {"image", "sticker"}:
+            kind = payload["type"]
+            safe = media_payload(recipient=payload["to"], kind=kind, media_id=payload[kind]["id"])
         elif payload.get("type") == "template":
             tpl = payload["template"]
             parts = tpl.get("components", [])

@@ -76,9 +76,28 @@ def responder_chatboc(
     anon_id=None,
     chat_session_uuid=None,
     channel: str = "web", # Add channel parameter
+    *,
+    unit_of_work=None,
+    conversation_turn_id=None,
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
+    # Bound as explicit server-only parameters before **kwargs can reach
+    # municipal/PyME payloads, context merges or an LLM. No global commit proxy.
+    if unit_of_work is not None:
+        from services.whatsapp_conversation_uow import ConversationUnitOfWork, ConversationUnitOfWorkError
+        if not isinstance(unit_of_work, ConversationUnitOfWork):
+            raise ConversationUnitOfWorkError("conversation_uow_server_unit_required")
+        with db.session.no_autoflush:
+            unit_of_work.require_writer_scope(session=db.session(),
+                tenant_id=kwargs.get("tenant_id"), turn_id=conversation_turn_id)
+            # These downstream paths still contain writers/transports outside
+            # the unit. A late commit guard cannot undo their earlier effects.
+            # Do not whitelist a path based on a response label or intent.
+            unit_of_work.fail("conversation_engine_path_not_ported")
+    elif conversation_turn_id is not None:
+        from services.whatsapp_conversation_uow import ConversationUnitOfWorkError
+        raise ConversationUnitOfWorkError("conversation_engine_unit_required")
     question_length = len(pregunta) if isinstance(pregunta, str) else None
     logger.debug(
         "[responder_chatboc] start owner_id=%s viewer_id=%s tipo=%s rubro_id=%s "

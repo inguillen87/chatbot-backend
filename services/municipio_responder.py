@@ -1,3 +1,9 @@
+from services.contact_service import read_contact_projection, current_contact_phone
+from services.municipal_conversation_uow import (
+    MunicipalUnitHandler, private_municipal_arguments, require_municipal_context,
+    flush_municipal_context, persist_municipal_changes, municipal_handler,
+    unported_municipal_call, require_supported_municipal_output,
+)
 import os
 from flask import jsonify
 import pandas as pd
@@ -854,7 +860,9 @@ def _build_sugerencia_success_payload(
     context: Dict[str, Any],
     datos_confirmados: Dict[str, Any],
     handler_response: Dict[str, Any],
+    *, unit_of_work=None, conversation_turn_id=None,
 ) -> Dict[str, Any]:
+    require_municipal_context(context, unit_of_work, conversation_turn_id)
     ticket_info = handler_response.get("data") or {}
     nro_ticket = ticket_info.get("nro_ticket") or handler_response.get("nro_ticket")
     consulta_pin = ticket_info.get("consulta_pin") or handler_response.get("consulta_pin")
@@ -905,6 +913,8 @@ def _build_sugerencia_success_payload(
         try:
             return _normalize_url_for_comparison(url)
         except Exception:
+            if unit_of_work is not None:
+                unit_of_work.fail("municipal_uow_operation_failed", cause=None)
             return None
 
     def _register_button(button: Any):
@@ -950,6 +960,9 @@ def _build_sugerencia_success_payload(
     promo_section = promo_service.build_ticket_promo_section(
         ticket_number=nro_ticket,
         neighbor_name=nombre_vecino,
+        **({"owner_user": context.get("user_obj"),
+            "tenant_profile": context.get("tenant_profile"),
+            "municipio_config": municipio_config} if unit_of_work is not None else {}),
     )
 
     image_url = handler_response.get("image_url") or municipio_config.get("promo_image_url")
@@ -1123,8 +1136,10 @@ def clear_municipio_cache() -> None:
     """Utility mainly for tests to clear the local municipio response cache."""
     MUNICIPIO_RESPONSE_CACHE.clear()
 
-class ReclamoFlowHandler:
-    def __init__(self, context, chat_db_context):
+class ReclamoFlowHandler(MunicipalUnitHandler):
+    def __init__(self, context, chat_db_context, *, unit_of_work=None, conversation_turn_id=None):
+        self.unit_of_work, self.conversation_turn_id = unit_of_work, conversation_turn_id
+        require_municipal_context(context, unit_of_work, conversation_turn_id)
         self.context = context
         self.chat_db_context = chat_db_context
         # Ensure the flow data lives inside the main municipio context so it
@@ -1164,7 +1179,7 @@ class ReclamoFlowHandler:
                     followup_action,
                     self.context,
                     self.chat_db_context,
-                )
+                **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id))
                 if response:
                     return response
             return self.end_flow(
@@ -1249,14 +1264,22 @@ class ReclamoFlowHandler:
         session = self.chat_db_context
         owner_id = getattr(self.context.get("user_obj"), "id", None)
         tenant_id = getattr(tenant, "id", None)
-        actor_id = getattr(self.context.get("viewer_user_obj"), "id", None)
-        session_actor_id = getattr(session, "user_id", None)
-        session_anon_id = getattr(session, "anon_id", None)
-        identity_matches = (
-            type(session_actor_id) is int and type(actor_id) is int and actor_id == session_actor_id
-            if session_anon_id is None
-            else bool(self.context.get("anon_id") and self.context["anon_id"] == session_anon_id)
-        )
+        if self.unit_of_work is not None:
+            if session is not self.context.get("chat_db_context_obj"):
+                self.unit_of_work.fail("municipal_uow_context_scope_mismatch")
+            # Canonical Meta sessions keep the phone out of anon_id. The Unit
+            # verifies the persisted session and recipient binding for this turn.
+            require_municipal_context(self.context, self.unit_of_work, self.conversation_turn_id)
+            identity_matches = True
+        else:
+            actor_id = getattr(self.context.get("viewer_user_obj"), "id", None)
+            session_actor_id = getattr(session, "user_id", None)
+            session_anon_id = getattr(session, "anon_id", None)
+            identity_matches = (
+                type(session_actor_id) is int and type(actor_id) is int and actor_id == session_actor_id
+                if session_anon_id is None
+                else bool(self.context.get("anon_id") and self.context["anon_id"] == session_anon_id)
+            )
         return bool(
             isinstance(tenant, TenantProfile)
             and type(tenant_id) is int and type(owner_id) is int
@@ -1274,9 +1297,15 @@ class ReclamoFlowHandler:
             return None
         tenant_id = self.context["tenant_id"]
         try:
-            with db.session.begin_nested():
-                configured = CategoriaTicket.query.filter_by(tenant_id=tenant_id).all()
+            if self.unit_of_work is not None:
+                with db.session.no_autoflush:
+                    configured = CategoriaTicket.query.filter_by(tenant_id=tenant_id).all()
+            else:
+                with db.session.begin_nested():
+                    configured = CategoriaTicket.query.filter_by(tenant_id=tenant_id).all()
         except SQLAlchemyError as exc:
+            if self.unit_of_work is not None:
+                self.unit_of_work.fail("municipal_uow_operation_failed", cause=exc)
             if not db.session.is_active or getattr(exc, "connection_invalidated", False):
                 raise
             logger.warning("Claim category authority unavailable error_type=%s", type(exc).__name__)
@@ -1532,11 +1561,11 @@ class ReclamoFlowHandler:
             if resumen:
                 datos['descripcion_resumida'] = resumen
 
-        def _apply_prefill(field: str, *candidates) -> None:
+        def _apply_prefill(field: str, *candidates) -> bool:
             """Populate ``datos`` with the first meaningful value available."""
             existing = datos.get(field)
             if existing and existing != 'Vecino/a' and '@whatsapp.chatboc.com' not in str(existing):
-                return
+                return False
             for candidate in candidates:
                 if not candidate:
                     continue
@@ -1561,7 +1590,8 @@ class ReclamoFlowHandler:
                             continue
                         candidate = cleaned_candidate
                 datos[field] = candidate
-                break
+                return True
+            return False
 
         # --- Comprehensive Contact Prefill (Refactored) ---
         viewer = self.context.get("viewer_user_obj")
@@ -1626,6 +1656,8 @@ class ReclamoFlowHandler:
                                 last_ticket.nro_ticket,
                             )
         except Exception as exc:
+            if self.unit_of_work is not None:
+                self.unit_of_work.fail("municipal_uow_operation_failed", cause=exc)
             logger.warning(
                 "Error fetching last ticket for prefill error_type=%s",
                 type(exc).__name__,
@@ -1678,6 +1710,8 @@ class ReclamoFlowHandler:
                     "Skipping previous-session contact prefill without authoritative tenant scope."
                 )
         except Exception as exc:
+            if self.unit_of_work is not None:
+                self.unit_of_work.fail("municipal_uow_operation_failed", cause=exc)
             logger.warning(
                 "Error fetching previous session contact for prefill error_type=%s",
                 type(exc).__name__,
@@ -1693,11 +1727,16 @@ class ReclamoFlowHandler:
         # 5. From WhatsApp profile name if no other name is found
         _apply_prefill('nombre', self.context.get('profile_name'))
 
+        # This lookup can prefill this claim, without becoming reusable identity.
+        lookup_name_prefill = _apply_prefill('nombre', self.context.get('contact_lookup_display_name'))
+
         # 6. From anon_id as a fallback for phone number
         _apply_prefill('telefono', _phone_from_anon_id(self.context.get('anon_id')))
 
         # Remember any newly found data in the session cache
         for campo in ['nombre', 'dni', 'email', 'telefono']:
+            if campo == 'nombre' and lookup_name_prefill:
+                continue
             if datos.get(campo):
                 contacto_cache.setdefault(campo, datos.get(campo))
 
@@ -1786,7 +1825,7 @@ class ReclamoFlowHandler:
             municipio_config = self.context.get("municipio_config_actual", {})
             default_localidad = municipio_config.get("ciudad")
             default_provincia = municipio_config.get("provincia")
-            details = extract_reclamo_details_from_text(user_input, plain_options, default_localidad=default_localidad, default_provincia=default_provincia)
+            details = extract_reclamo_details_from_text(user_input, plain_options, default_localidad=default_localidad, default_provincia=default_provincia, **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id))
             category = details.pop("categoria", None)
 
         if category and normalizar_texto(category) in RETURN_TO_MAIN_MENU_NORMALIZED:
@@ -1972,8 +2011,10 @@ class ReclamoFlowHandler:
                 from services.address_normalizer import normalize_and_geocode
 
                 municipio_cfg = self.context.get("municipio_config_actual", {})
-                normalizado = normalize_and_geocode(direccion_ingresada, municipio_cfg)
+                normalizado = unported_municipal_call(self.unit_of_work, "municipal_uow_external_path_not_ported", normalize_and_geocode, direccion_ingresada, municipio_cfg)
             except Exception:
+                if self.unit_of_work is not None:
+                    self.unit_of_work.fail("municipal_uow_operation_failed", cause=None)
                 normalizado = None
 
             if isinstance(normalizado, dict):
@@ -2568,7 +2609,7 @@ class ReclamoFlowHandler:
                 "motivo_llamada": datos.get("motivo_llamada"),
                 "claim_confirmation_id": confirmation_id,
             }
-            handler = CrearReclamoActionHandler(self.context)
+            handler = municipal_handler(CrearReclamoActionHandler, self.context, **private_municipal_arguments(self.unit_of_work, self.conversation_turn_id))
             result = handler.execute(action_data)
             if result.get("success"):
                 ticket_data = result.get("data", {})
@@ -2716,20 +2757,20 @@ load_dotenv(encoding="utf-8-sig")
 # Placeholder for API key management
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-def configure_geolocator():
+def configure_geolocator(*, unit_of_work=None, conversation_turn_id=None):
     """Configura y retorna un geolocalizador con la API key."""
     if not GOOGLE_API_KEY:
         raise ValueError("La API key de Google Maps no está configurada.")
-    return GoogleV3(api_key=GOOGLE_API_KEY)
+    return unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GoogleV3, api_key=GOOGLE_API_KEY)
 
-def obtener_municipios_cercanos(latitud, longitud, radio_km=5):
+def obtener_municipios_cercanos(latitud, longitud, radio_km=5, *, unit_of_work=None, conversation_turn_id=None):
     """
     Encuentra municipios cercanos a una latitud y longitud dadas.
     """
-    geolocator = configure_geolocator()
+    geolocator = configure_geolocator(**private_municipal_arguments(unit_of_work, conversation_turn_id))
     try:
         # Intenta obtener la dirección (localidad) desde las coordenadas
-        location = geolocator.reverse((latitud, longitud), exactly_one=True)
+        location = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", geolocator.reverse, (latitud, longitud), exactly_one=True)
         address = location.raw.get('address_components', [])
 
         # Busca el componente de la dirección que corresponde a la localidad
@@ -2751,6 +2792,8 @@ def obtener_municipios_cercanos(latitud, longitud, radio_km=5):
     except (GeocoderTimedOut, GeocoderServiceError) as e:
         return jsonify({"error": f"Error en el servicio de geolocalización: {e}"}), 500
     except Exception as e:
+        if unit_of_work is not None:
+            unit_of_work.fail("municipal_uow_operation_failed", cause=e)
         return jsonify({"error": f"Error inesperado: {e}"}), 500
 
 logger = logging.getLogger(__name__)
@@ -2789,7 +2832,7 @@ def _try_handle_emoji_shortcut(
     contexto_municipio_actual: dict,
     context,
     chat_db_context,
-):
+*, unit_of_work=None, conversation_turn_id=None):
     """Trigger quick actions when the user sends a single emoji.
 
     This works regardless of the current conversation state so accessibility
@@ -2809,7 +2852,7 @@ def _try_handle_emoji_shortcut(
 
     emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu)
     if emoji_category:
-        handler = ReclamoFlowHandler(context, chat_db_context)
+        handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         response_dict = handler.start_flow(categoria_inicial=emoji_category)
         contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
         if chat_db_context:
@@ -2821,7 +2864,7 @@ def _try_handle_emoji_shortcut(
         contexto_municipio_actual["estado_conversacion"] = None
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-        return handle_main_menu_action(emoji_action, context, chat_db_context)
+        return handle_main_menu_action(emoji_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
 
     return None
 
@@ -2879,7 +2922,7 @@ def _maybe_route_menu_input_to_llm(
     owner_user,
     chat_db_context,
     demo_metadata=None,
-):
+*, unit_of_work=None, conversation_turn_id=None):
     """Escalate long natural sentences sent during menu selection to the LLM."""
     if not _looks_like_free_form_input(pregunta_str):
         return None
@@ -2899,7 +2942,7 @@ def _maybe_route_menu_input_to_llm(
         chat_db_context,
         default_localidad=municipio_config.get("ciudad"),
         default_provincia=municipio_config.get("provincia"),
-    )
+    **private_municipal_arguments(unit_of_work, conversation_turn_id))
     if claim_payload:
         contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
         if chat_db_context:
@@ -2924,7 +2967,7 @@ def _maybe_route_menu_input_to_llm(
         chat_db_context,
         contexto_municipio_actual,
         demo_metadata=demo_metadata,
-    )
+    **private_municipal_arguments(unit_of_work, conversation_turn_id))
     return response_dict
 
 
@@ -3757,14 +3800,20 @@ class GreetingHandler(BaseMunicipioHandler):
             f"[GreetingHandler] Nuevo estado de conversación: {contexto_municipio_actual['estado_conversacion']}"
         )
 
-        # Usar la función centralizada para obtener el payload del menú.
-        return _get_main_menu_payload(self.context)
+        # A current lookup may personalize this menu, but must never become
+        # profile_name in the shared flow context or a stored declaration.
+        menu_context = dict(self.context)
+        declared_contact = contexto_municipio_actual.get("contacto_usuario", {})
+        if not (menu_context.get("profile_name") or chat_db_context_data.get("profile_name")
+                or (declared_contact.get("nombre") if isinstance(declared_contact, dict) else None)):
+            menu_context["profile_name"] = self.context.get("contact_lookup_display_name")
+        return _get_main_menu_payload(menu_context)
 
 
 
-def _message_with_menu(message, context, include_greeting: bool = True):
+def _message_with_menu(message, context, include_greeting: bool = True, *, unit_of_work=None, conversation_turn_id=None):
     if include_greeting:
-        menu_payload = GreetingHandler(context).handle({})
+        menu_payload = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context).handle({})
         if not menu_payload.get("options_list") and isinstance(
             menu_payload.get("botones"), list
         ):
@@ -4188,7 +4237,7 @@ def _responder_con_navegacion(response: dict, context: dict, chat_db_context) ->
 
     return response
 
-def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> dict:
+def handle_main_menu_action(action_id: str, context: dict, chat_db_context, *, unit_of_work=None, conversation_turn_id=None) -> dict:
     """
     Handles actions from the new categorized main menu.
     """
@@ -4336,7 +4385,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 None,
             )
 
-        result = SolicitarLlamadaActionHandler(callback_context).execute({})
+        result = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", SolicitarLlamadaActionHandler, callback_context).execute({})
         delivery_state = str(
             (result.get("data") or {}).get("delivery_state") or "not_requested"
         )
@@ -4429,9 +4478,9 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 reclamo_opts,
                 default_localidad=default_localidad,
                 default_provincia=default_provincia,
-            )
+            **private_municipal_arguments(unit_of_work, conversation_turn_id))
             detected_category = details.pop("categoria", None)
-        handler = ReclamoFlowHandler(context, chat_db_context)
+        handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         if detected_category:
             logger.info(
                 f"[MENU_ACTION] Auto-detected category '{detected_category}' from input."
@@ -4472,7 +4521,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
                 page = max(1, int(action_id.rsplit("::", 1)[-1]))
             except (TypeError, ValueError):
                 page = 1
-        submenu = _get_encuestas_menu(context, page=page)
+        submenu = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", _get_encuestas_menu, context, page=page)
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
         contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_SELECCION_DE_LISTA.name
         opciones_accionables = [
@@ -4529,7 +4578,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             urljoin(f"{base_url}/", f"e/{slug_publico}"),
             tenant_slug,
         )
-        response = start_whatsapp_survey_flow(
+        response = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", start_whatsapp_survey_flow, 
             context,
             slug_publico,
             public_url=public_url,
@@ -4540,7 +4589,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
     if action_id.startswith("encuesta_compartir::"):
         slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
-        return _build_encuesta_share_payload(slug_publico, context, chat_db_context)
+        return unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", _build_encuesta_share_payload, slug_publico, context, chat_db_context)
 
     if action_id == "mostrar_menu_estacionamiento":
         submenu = _get_estacionamiento_menu()
@@ -5088,14 +5137,14 @@ llamar_gemini = llamar_llm_con_fallback
 
 
 
-def accion_crear_reclamo_municipio(datos_reclamo, context):
+def accion_crear_reclamo_municipio(datos_reclamo, context, *, unit_of_work=None, conversation_turn_id=None):
     """Wrapper que delega la creación de reclamos al ActionHandler dedicado."""
     payload = dict(datos_reclamo or {})
     if not payload.get("descripcion"):
         raw_user_input = str(context.get("user_input_raw") or "").strip()
         if len(raw_user_input.split()) >= 3:
             payload["descripcion"] = raw_user_input
-    handler = CrearReclamoActionHandler(context=context)
+    handler = municipal_handler(CrearReclamoActionHandler, context=context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
     return handler.execute(payload)
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
@@ -5238,7 +5287,9 @@ def _create_legacy_reclamo_from_confirmation(contexto_municipio_actual: dict, co
     }
 
 
-def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual, demo_metadata=None):
+def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, chat_db_context, contexto_municipio_actual, demo_metadata=None, *, unit_of_work=None, conversation_turn_id=None):
+    if unit_of_work is not None:
+        unit_of_work.fail("municipal_uow_llm_path_not_ported")
     logger_actual = app.logger if app else (current_app.logger if has_app_context() else logging.getLogger(__name__))
     datos_actuales = {} # Initialize to prevent UnboundLocalError
 
@@ -5257,7 +5308,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             or "Solicitud de atencion humana",
         )
 
-        handler = DerivarHumanoActionHandler(context)
+        handler = municipal_handler(DerivarHumanoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         handler_result = handler.execute(action_payload)
         data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
         ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
@@ -5513,7 +5564,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     high_priority_action,
                     context,
                     chat_db_context,
-                )
+                **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 return response, contexto_municipio_actual
             logger_actual.info(
                 f"Guardando dato esperado '{campo_esperado}' en el contexto antes de llamar al LLM."
@@ -5760,9 +5811,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 if confirmation_payload:
                     return confirmation_payload, contexto_municipio_actual
             if pending_flow == "sugerencia":
-                handler = HacerSugerenciaActionHandler(context)
+                handler = municipal_handler(HacerSugerenciaActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             else:
-                handler = CrearReclamoActionHandler(context)
+                handler = municipal_handler(CrearReclamoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             handler_response = handler.execute(datos_parciales)
 
             normalized_pending_fields = _normalize_pedir_info_fields(handler_response.get("pedir_info"))
@@ -5834,7 +5885,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
 
         try:
             mensaje_para_llm = json.dumps(mensaje_completo_para_llm)
-            respuesta_llm_dict, context_dict = llamar_gemini(
+            respuesta_llm_dict, context_dict = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", llamar_gemini, 
                 app=app,
                 mensaje_usuario=mensaje_para_llm,
                 usuario=usuario_info_llm,
@@ -5868,6 +5919,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 chat_db_context.context_data.update(context_dict)
             logger_actual.info(f"[HANDLE_LLM] Accion backend LLM: {respuesta_llm_dict.get('accion_backend')}")
         except Exception as exc:
+            if unit_of_work is not None:
+                unit_of_work.fail("municipal_uow_operation_failed", cause=exc)
             logger.error(
                 "[RESPONDER_MUNICIPIO_LLM_ERROR] Error general en la llamada al LLM "
                 "(error_type=%s)",
@@ -5902,7 +5955,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         if accion_backend_llm == "saludar":
             logger.info("LLM detectó un saludo. Invocando GreetingHandler.")
             # The 'context' dict passed to handle_llm_interaction has the necessary nested structure.
-            handler = GreetingHandler(context)
+            handler = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context)
             response = handler.handle({})  # Pass empty payload
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -5950,7 +6003,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     # This prevents a premature confirmation from the LLM being shown
                     # if the handler then asks for more information.
                     logger_actual.info("[HANDLE_LLM] LLM provided all data. Executing CrearReclamoActionHandler for validation and creation.")
-                    handler = CrearReclamoActionHandler(context)
+                    handler = municipal_handler(CrearReclamoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     handler_response = handler.execute(datos_actuales)
 
                     pending_fields = _normalize_pedir_info_fields(handler_response.get("pedir_info"))
@@ -5983,7 +6036,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                         pending_fields_only_contact = False
                         break
                 if pending_fields_only_contact:
-                    handler = CrearReclamoActionHandler(context)
+                    handler = municipal_handler(CrearReclamoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     handler_response = handler.execute(datos_actuales)
                     if handler_response.get("success"):
                         return handler_response, contexto_municipio_actual
@@ -6044,7 +6097,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 )
                 if confirmation_payload:
                     return confirmation_payload, contexto_municipio_actual
-                handler = HacerSugerenciaActionHandler(context)
+                handler = municipal_handler(HacerSugerenciaActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 handler_response = handler.execute(datos_actuales_sugerencia)
 
                 pending_fields = _normalize_pedir_info_fields(handler_response.get("pedir_info"))
@@ -6084,7 +6137,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 "mostrar_menu_reclamos",
                 context,
                 chat_db_context,
-            )
+            **private_municipal_arguments(unit_of_work, conversation_turn_id))
 
             # ``handle_main_menu_action`` ya actualiza el contexto y marca la sesión
             # como modificada, pero devolvemos explícitamente el estado actualizado
@@ -6204,6 +6257,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     }, contexto_municipio_actual
 
                 except Exception as exc:
+                    if unit_of_work is not None:
+                        unit_of_work.fail("municipal_uow_operation_failed", cause=exc)
                     logger.error(
                         "[HERRAMIENTA] Execution failed tool=%s error_type=%s",
                         nombre_herramienta,
@@ -6350,7 +6405,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     logger_actual.info(
                         "[HANDLE_LLM] Validando datos parciales de reclamo con handler tras respuesta directa."
                     )
-                    handler = CrearReclamoActionHandler(context)
+                    handler = municipal_handler(CrearReclamoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     handler_response = handler.execute(datos_reclamo_actuales)
                     pending_fields = _normalize_pedir_info_fields(handler_response.get("pedir_info"))
                     if pending_fields:
@@ -6405,7 +6460,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             else:
                 # User sent a correction. Extract new data, merge, and re-confirm.
                 logger_actual.info("[HANDLE_LLM_CONFIRM] No es confirmación, asumiendo corrección.")
-                datos_nuevos = extract_multiple_contact_details_llm(pregunta_str)
+                datos_nuevos = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", extract_multiple_contact_details_llm, pregunta_str)
                 datos_actuales = contexto_municipio_actual.get("datos_parciales_llm_reclamo", {})
                 datos_actuales.update(datos_nuevos)
                 contexto_municipio_actual["datos_parciales_llm_reclamo"] = datos_actuales
@@ -6465,7 +6520,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     )
                     if confirmation_payload:
                         return confirmation_payload, contexto_municipio_actual
-                    handler = HacerSugerenciaActionHandler(context)
+                    handler = municipal_handler(HacerSugerenciaActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     datos_sugerencia = contexto_municipio_actual.get("datos_parciales_llm_sugerencia", {})
                     return handler.execute(datos_sugerencia), contexto_municipio_actual
                 else:
@@ -6475,6 +6530,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general_v2"}, contexto_municipio_actual
 
     except Exception as e_llm:
+        if unit_of_work is not None:
+            unit_of_work.fail("municipal_uow_operation_failed", cause=e_llm)
         logger.error(
             "[HANDLE_LLM] Processing failed error_type=%s",
             type(e_llm).__name__,
@@ -6982,7 +7039,7 @@ def find_global_menu_action(user_input: str, context: Optional[dict] = None) -> 
     return action
 
 
-def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actual: dict, context: dict, chat_db_context) -> dict | None:
+def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actual: dict, context: dict, chat_db_context, *, unit_of_work=None, conversation_turn_id=None) -> dict | None:
     """If the user mentions starting a complaint or requests any global menu option
     while in the suggestion flow, abort the suggestion workflow and transition."""
     normalized = normalizar_texto(pregunta_str or "")
@@ -6990,7 +7047,7 @@ def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actu
         contexto_municipio_actual.pop('datos_sugerencia', None)
         contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', None)
         contexto_municipio_actual.pop('estado_conversacion', None)
-        handler = ReclamoFlowHandler(context, chat_db_context)
+        handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         response = handler.start_flow(datos_iniciales={"descripcion": pregunta_str})
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
@@ -7003,7 +7060,7 @@ def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actu
         contexto_municipio_actual.pop('estado_conversacion', None)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
-        return handle_main_menu_action(global_action, context, chat_db_context)
+        return handle_main_menu_action(global_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
 
     return None
 
@@ -7632,7 +7689,7 @@ def extract_reclamo_details_from_text(
     default_localidad: str | None = None,
     default_provincia: str | None = None,
     require_claim_intent: bool = False,
-) -> dict:
+*, unit_of_work=None, conversation_turn_id=None) -> dict:
     """Attempt to extract category, description, address, and contact details from a user message.
 
     Heuristics may enrich a draft without a provider call. Automatic bootstrap
@@ -7653,6 +7710,11 @@ def extract_reclamo_details_from_text(
     category = find_reclamo_category_by_input(user_input, reclamo_options)
     if category:
         details["categoria_sugerida"] = category
+    # These advisory infer_* functions may reach the remote HF adapter even
+    # before the later LLM HOLD. Keep this boundary before every inference.
+    if unit_of_work is not None:
+        private_municipal_arguments(unit_of_work, conversation_turn_id)
+        unit_of_work.fail("municipal_uow_hf_enrichment_not_ported")
     try:
         from services.municipio_ai_classifier import (
             infer_reclamo_category,
@@ -7696,6 +7758,8 @@ def extract_reclamo_details_from_text(
             details["sentimiento_confianza"] = sentiment.get("score")
             details["sentimiento_provider"] = sentiment.get("provider")
     except Exception:
+        if unit_of_work is not None:
+            unit_of_work.fail("municipal_uow_operation_failed", cause=None)
         logger.exception("No se pudo aplicar clasificacion Hugging Face al reclamo")
 
     # --- Address heuristics (incluye intersecciones) ---
@@ -7751,7 +7815,7 @@ def extract_reclamo_details_from_text(
         "dni_cliente",
         "direccion_cliente",
     ]
-    contact_details = extract_multiple_contact_details_llm(user_input, contact_fields) or {}
+    contact_details = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", extract_multiple_contact_details_llm, user_input, contact_fields) or {}
     contact_mapping = {
         "nombre_cliente": "nombre_sugerido",
         "telefono_cliente": "telefono_sugerido",
@@ -7799,7 +7863,7 @@ def extract_reclamo_details_from_text(
     llm_details = {}
     if needs_llm:
         try:
-            llm_details = extract_complaint_details_llm(
+            llm_details = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", extract_complaint_details_llm, 
                 user_input,
                 default_localidad=default_localidad,
                 default_provincia=default_provincia,
@@ -7807,7 +7871,7 @@ def extract_reclamo_details_from_text(
         except TypeError:
             # Backward compatibility for tests and older integrations that
             # monkeypatch this extractor with the historic single-arg callable.
-            llm_details = extract_complaint_details_llm(user_input) or {}
+            llm_details = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", extract_complaint_details_llm, user_input) or {}
 
     if llm_details:
         llm_intent = llm_details.get("intencion")
@@ -8300,7 +8364,7 @@ def _try_start_explicit_reclamo_from_text(
     text: str,
     context: dict[str, Any],
     chat_db_context,
-) -> Optional[dict[str, Any]]:
+*, unit_of_work=None, conversation_turn_id=None) -> Optional[dict[str, Any]]:
     """Execute an explicit create command without requiring an AI provider.
 
     This opens only the existing reviewable draft. Category keywords are not
@@ -8362,7 +8426,7 @@ def _try_start_explicit_reclamo_from_text(
         )
     }
     category = None
-    handler = ReclamoFlowHandler(context, chat_db_context)
+    handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
     if len(matches) == 1:
         matched_category = next(iter(matches))
         authority = handler._resolve_current_category(matched_category)
@@ -8378,6 +8442,276 @@ def _try_start_explicit_reclamo_from_text(
     return response
 
 
+def _meta_declared_address(value: str) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if (not 5 <= len(candidate) <= 255 or re.search(r"https?://|@", candidate, re.IGNORECASE)
+            or not any(character.isalpha() for character in candidate)
+            or not _looks_like_address(candidate)):
+        return None
+    return candidate
+
+
+def _valid_meta_claim_point(latitude, longitude) -> bool:
+    return (type(latitude) in (int, float) and type(longitude) in (int, float)
+            and -90 <= latitude <= 90 and -180 <= longitude <= 180)
+
+
+def _native_meta_claim_policy_enabled(config):
+    policy = config.get("whatsapp_meta_native_claim")
+    return (isinstance(policy, dict) and set(policy) == {"enabled", "domain_effects"}
+            and policy["enabled"] is True and policy["domain_effects"] == "municipal_existing")
+
+
+def _native_meta_claim_candidate(handler, values, shared_location):
+    """Build only explicitly approved, validated municipal claim fields."""
+    tenant = handler.context["tenant_profile"]
+    config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    if not _native_meta_claim_policy_enabled(config):
+        return None
+    # Serialize the native confirmation against policy/catalog changes.
+    with db.session.no_autoflush:
+        db.session.refresh(tenant, with_for_update=True)
+        config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        required = config.get("campos_requeridos_reclamo")
+        allowed = {"categoria", "descripcion", "ubicacion", "telefono"}
+        if (not _native_meta_claim_policy_enabled(config)
+                or not isinstance(required, list) or not required
+                or not all(isinstance(field, str) and field in allowed for field in required)
+                or len(set(required)) != len(required)
+                or not {"descripcion", "ubicacion", "telefono"}.issubset(required)):
+            return None
+        CategoriaTicket.query.filter_by(tenant_id=tenant.id).with_for_update().populate_existing().all()
+        category = handler._resolve_current_category(values.get("categoria"))
+    draft = handler.flow_context
+    if (not category or category.get("source") != "tenant_ticket_catalog"
+            or draft.get("category_authority") != category):
+        return None
+    description = values.get("descripcion")
+    address = _meta_declared_address(values.get("direccion") or "")
+    confirmation_id = draft.get("confirmation_id")
+    if (not isinstance(description, str) or not 1 <= len(description.strip()) <= 1000
+            or bool(address) == shared_location
+            or not isinstance(confirmation_id, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", confirmation_id)):
+        return None
+    phone = handler.unit_of_work.contact_identity
+    ticket_data = {
+        "tenant_id": tenant.id,
+        "municipio_id": tenant.municipio_id,
+        "user_id": None,
+        "anon_id": phone,
+        "telefono_vecino": phone,
+        "categoria": category["name"],
+        "asunto": f"Reclamo por {category['name']}",
+        "pregunta": description,
+        "detalles": description,
+        "direccion": address,
+        "canal_ingreso": "whatsapp",
+        "datos_extra": {
+            "whatsapp_claim_confirmation_id": confirmation_id,
+            "ubicacion_origen": "whatsapp_location" if shared_location else "direccion_declarada",
+        },
+    }
+    if shared_location:
+        ticket_data.update(latitud=values["coordenadas"]["lat"], longitud=values["coordenadas"]["lon"])
+    revision = hashlib.sha256(json.dumps(
+        {"ticket": ticket_data, "required": sorted(required), "category": category},
+        sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    return ticket_data, revision, category["category_id"]
+
+
+_META_CLAIM_CONFIRMATION_TEXT = re.compile(r"confirmar\s+([a-f0-9]{8})", re.IGNORECASE)
+
+
+def _advance_native_meta_claim_confirmation(handler, candidate, body, sink):
+    """Issue a scoped confirmation challenge or create and stage the native receipt."""
+    import secrets
+    from services.actions.municipio_actions import _durable_ticket_effect_kwargs
+
+    ticket_data, revision, category_id = candidate
+    unit = handler.unit_of_work
+    draft = handler.flow_context
+    now = unit.clock()
+    pending = draft.get("meta_claim_confirmation")
+    text = _META_CLAIM_CONFIRMATION_TEXT.fullmatch(body)
+    if (isinstance(pending, dict) and pending.get("revision") == revision
+            and type(pending.get("issued_at")) is int and pending["issued_at"] <= now
+            and now < pending["issued_at"] + 600
+            and isinstance(pending.get("code_digest"), str)):
+        inbound_at = unit.claim.payload["reference"]["source"]["timestamp"]
+        if (not text or inbound_at < pending["issued_at"] or not secrets.compare_digest(
+                hashlib.sha256(text.group(1).upper().encode("ascii")).hexdigest(),
+                pending["code_digest"])):
+            return "El reclamo sigue como borrador. Para registrarlo, escribí CONFIRMAR y el código del mensaje anterior."
+        ticket_data["consulta_pin"] = f"{secrets.randbelow(1_000_000):06d}"
+        ticket = servicio_tickets.crear_nuevo_ticket(
+            "municipio", ticket_data, return_object=True, municipal_category_id=category_id,
+            **_durable_ticket_effect_kwargs(handler.context, "municipio_claim_create",
+                unit_of_work=unit, conversation_turn_id=unit.claim.turn_id),
+        )
+        if not isinstance(ticket, MunicipioTicket):
+            unit.fail("meta_municipal_claim_create_failed")
+        sink.emit_claim_receipt(ticket_id=ticket.id, text_only_followup=True)
+        handler.end_flow(None)
+        created_at = unit.clock()
+        handler.context["chat_db_context_data"]["active_ticket_followup"] = {
+            "ticket_id": ticket.id,
+            "ticket_nro": f"M-{ticket.nro_ticket}",
+            "started_at": created_at,
+            "until": created_at + CLAIM_FOLLOWUP_WINDOW_SECONDS,
+        }
+        return None
+    code = secrets.token_hex(4).upper()
+    draft["state"] = ReclamoState.ESPERANDO_CONFIRMACION.name
+    draft["meta_claim_confirmation"] = {
+        "revision": revision,
+        "issued_at": now,
+        "code_digest": hashlib.sha256(code.encode("ascii")).hexdigest(),
+    }
+    location = ticket_data["direccion"] or "Ubicación compartida por WhatsApp"
+    return (f"Revisá el borrador de tu reclamo.\nCategoría: {ticket_data['categoria']}"
+            f"\nDescripción: {ticket_data['detalles']}\nUbicación: {location}"
+            f"\n\nPara registrarlo, escribí CONFIRMAR {code}. El código vence en 10 minutos.")
+
+
+def try_execute_municipal_meta_claim_draft(turn, sink) -> bool:
+    """Advance an explicit text draft with declared text or signed GPS."""
+    unit = turn.unit_of_work
+    private = private_municipal_arguments(unit, turn.durable_claim.turn_id)
+    if not private or unit.claim.message_kind not in {"text", "location"}:
+        return False
+    unit.require_turn(turn)
+    tenant = turn.tenant_profile
+    if tenant.tipo != "municipio" or turn.owner_user.tipo_chat != "municipio":
+        return False
+    session = turn.session_context
+    db.session.refresh(session, with_for_update=True)
+    unit.require_turn(turn)
+    data = session.context_data
+    if not isinstance(data, dict):
+        unit.fail("meta_municipal_draft_context_invalid")
+    context = {
+        "tenant_profile": tenant,
+        "tenant_id": turn.tenant_id,
+        "user_obj": turn.owner_user,
+        "viewer_user_obj": None,
+        "channel": "whatsapp",
+        "anon_id": turn.contact_identity,
+        "chat_db_context_obj": session,
+        "chat_db_context_data": data,
+        "chat_session_uuid": turn.chat_session_id,
+        "source_event_id": turn.source_event_id,
+        "durable_turn_id": unit.claim.turn_id,
+        "municipio_config_actual": tenant.configuracion if isinstance(tenant.configuracion, dict) else {},
+    }
+    if has_active_whatsapp_survey_flow(context):
+        unit.fail("meta_municipal_draft_survey_active")
+    municipal = data.get(CONTEXTO_MUNICIPIO) or {}
+    flow = municipal.get("reclamo_flow_v2") or {}
+    active = flow.get("meta_text_draft_v1") is True and bool(flow.get("state"))
+    location_turn = unit.claim.message_kind == "location"
+    if location_turn and (
+        not active or flow.get("state") != ReclamoState.ESPERANDO_DIRECCION.name
+    ):
+        return False
+    body = turn.message_body.strip()
+    if not active:
+        if _META_CLAIM_CONFIRMATION_TEXT.fullmatch(body):
+            sink.emit_text("Ese código ya no corresponde a un borrador activo. No se registró otro reclamo.")
+            return True
+        if flow.get("state") or municipal.get("estado_conversacion") not in {
+            None, ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
+        }:
+            return False
+        started = _try_start_explicit_reclamo_from_text(body, context, session, **private)
+        if started is None:
+            return False
+    handler = municipal_handler(ReclamoFlowHandler, context, session, **private)
+    draft = handler.flow_context
+    values = draft["datos_reclamo"]
+    draft["meta_text_draft_v1"] = True
+    draft["state"] = draft.get("state") or ReclamoState.ESPERANDO_DESCRIPCION.name
+    state = draft["state"]
+    if active and classify_reclamo_confirmation_turn(body).intent is ReclamoTurnIntent.CANCEL:
+        handler.municipal_ctx.pop("reclamo_flow_v2", None)
+        handler.municipal_ctx.pop("estado_conversacion", None)
+        reply = "Borrador cancelado. No se registró ningún reclamo."
+    else:
+        if not active:
+            issue = _extract_reclamo_issue_phrase(body)
+            if values.get("descripcion"):
+                inline_address = None
+                if re.search(r"\b(?:en|sobre)\s+", issue, re.IGNORECASE):
+                    inline_address = _meta_declared_address(_normalize_reclamo_address_candidate(issue) or "")
+                if inline_address and not values.get("direccion"):
+                    values["direccion"] = inline_address
+                values["descripcion"] = _strip_address_from_reclamo_description(issue, inline_address)
+                values["descripcion_resumida"] = construir_descripcion_breve(values["descripcion"])
+        elif state == ReclamoState.ESPERANDO_CATEGORIA.name:
+            authority = handler._resolve_current_category(body)
+            if authority:
+                values["categoria"] = authority["name"]
+                draft["category_authority"] = authority
+        elif state == ReclamoState.ESPERANDO_DESCRIPCION.name:
+            handler.handle_descripcion(body, {})
+        elif state == ReclamoState.ESPERANDO_DIRECCION.name:
+            if location_turn:
+                lat, lon = unit.claim.payload["input"]["location"]
+                if (turn.location != {"latitude": lat, "longitude": lon}
+                        or not _valid_meta_claim_point(lat, lon) or values.get("direccion")):
+                    unit.fail("meta_municipal_draft_location_not_accepted")
+                values["coordenadas"] = {"lat": lat, "lon": lon}
+                values["ubicacion_origen"] = "whatsapp_location"
+            else:
+                address = _meta_declared_address(body)
+                if address:
+                    values["direccion"] = address
+        # Existing case follow-up must not consume turns after this new draft.
+        if not active:
+            from services.whatsapp_conversation_turn import _clear_municipal_ticket_followup
+            _clear_municipal_ticket_followup(data)
+
+        coordinates = values.get("coordenadas")
+        shared_location = (
+            values.get("ubicacion_origen") == "whatsapp_location"
+            and isinstance(coordinates, dict)
+            and _valid_meta_claim_point(coordinates.get("lat"), coordinates.get("lon"))
+        )
+        current_category = handler._resolve_current_category(values.get("categoria"))
+        if not current_category or current_category != draft.get("category_authority"):
+            values.pop("categoria", None)
+            draft.pop("category_authority", None)
+            draft.pop("meta_claim_confirmation", None)
+            draft["state"] = ReclamoState.ESPERANDO_CATEGORIA.name
+            authority = handler._current_category_authority() or {}
+            options = ", ".join(row["name"] for row in authority.get("options", ())[:8])
+            reply = "Escribí el nombre de la categoría del reclamo."
+            if options:
+                reply += f" Opciones: {options}."
+        elif not values.get("descripcion"):
+            draft["state"] = ReclamoState.ESPERANDO_DESCRIPCION.name
+            reply = "Contame brevemente qué está pasando."
+        elif not (values.get("direccion") or shared_location):
+            draft["state"] = ReclamoState.ESPERANDO_DIRECCION.name
+            reply = f"Reclamo por *{values['categoria']}*. ¿Dónde ocurre? Escribí la dirección."
+        else:
+            candidate = _native_meta_claim_candidate(handler, values, shared_location)
+            if candidate is None:
+                draft.pop("meta_claim_confirmation", None)
+                handler.ask_for_contact_details()
+                location_label = "la ubicación compartida" if shared_location else "la dirección"
+                reply = f"Guardé el borrador con la categoría, la descripción y {location_label}. El reclamo todavía no fue registrado."
+            else:
+                reply = _advance_native_meta_claim_confirmation(handler, candidate, body, sink)
+    flush_municipal_context(context, **private)
+    if reply is not None:
+        sink.emit_text(reply)
+    return True
+
+
 def _try_start_reclamo_from_text(
     pregunta_str: str,
     context: dict[str, Any],
@@ -8385,7 +8719,7 @@ def _try_start_reclamo_from_text(
     *,
     default_localidad: str | None = None,
     default_provincia: str | None = None,
-) -> Optional[dict[str, Any]]:
+unit_of_work=None, conversation_turn_id=None) -> Optional[dict[str, Any]]:
     """Attempt to bootstrap the reclamo flow directly from a free-text message."""
 
     if not pregunta_str:
@@ -8393,7 +8727,7 @@ def _try_start_reclamo_from_text(
 
     explicit_payload = _try_start_explicit_reclamo_from_text(
         pregunta_str, context, chat_db_context
-    )
+    , **private_municipal_arguments(unit_of_work, conversation_turn_id))
     if explicit_payload:
         return explicit_payload
 
@@ -8414,7 +8748,7 @@ def _try_start_reclamo_from_text(
         default_localidad=default_localidad,
         default_provincia=default_provincia,
         require_claim_intent=True,
-    )
+    **private_municipal_arguments(unit_of_work, conversation_turn_id))
 
     # Category and description extraction can enrich a draft, but they do not
     # prove that the citizen wants to create one. Missing, malformed,
@@ -8429,7 +8763,7 @@ def _try_start_reclamo_from_text(
     if not category:
         return None
 
-    handler = ReclamoFlowHandler(context, chat_db_context)
+    handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
 
     datos_iniciales: dict[str, Any] = {}
     field_mapping = (
@@ -10932,8 +11266,33 @@ def responder_municipio(
     anon_id=None,
     channel: str = "web",
     location=None,
-    **kwargs
+    *, unit_of_work=None, conversation_turn_id=None, **kwargs
 ):
+    if unit_of_work is not None:
+        private_municipal_arguments(unit_of_work, conversation_turn_id)
+        with db.session.no_autoflush:
+            unit_of_work.require_writer_scope(session=db.session(),
+                tenant_id=kwargs.get("tenant_id"), turn_id=conversation_turn_id)
+            require_municipal_context({
+                "tenant_profile": kwargs.get("tenant_profile"), "tenant_id": kwargs.get("tenant_id"),
+                "user_obj": owner_user, "viewer_user_obj": viewer_user, "channel": channel,
+                "anon_id": anon_id, "chat_db_context_obj": chat_db_context,
+                "chat_db_context_data": getattr(chat_db_context, "context_data", None),
+                "chat_session_uuid": kwargs.get("chat_session_uuid"),
+                "source_event_id": kwargs.get("source_event_id"),
+                "durable_turn_id": kwargs.get("durable_turn_id"),
+            }, unit_of_work, conversation_turn_id)
+        payload = pregunta_original if isinstance(pregunta_original, dict) else {}
+        source_kind = unit_of_work.claim.payload["reference"]["source"]["content_type"]
+        if (source_kind not in {"text", "interactive"}
+                or channel != "whatsapp" or kwargs.get("demo_metadata") or kwargs.get("education_context")
+                or kwargs.get("whatsapp_flow_submission") or location
+                or any(payload.get(key) or kwargs.get(key) for key in (
+                    "media_url", "es_audio", "es_foto", "foto_url", "es_archivo",
+                    "uploaded_file_info", "datos_interpretados_archivo", "es_ubicacion", "location"))):
+            unit_of_work.fail("municipal_uow_input_transport_not_ported")
+        if "unit_of_work" in payload or "conversation_turn_id" in payload:
+            unit_of_work.fail("municipal_uow_capability_payload_rejected")
     logger_actual = current_app.logger if has_app_context() else logger
 
     demo_metadata = kwargs.pop("demo_metadata", None)
@@ -10952,6 +11311,10 @@ def responder_municipio(
 
     def _finalize_response(response):
         """Return the response unchanged; also store it in cache for repeated queries."""
+        if unit_of_work is not None:
+            require_municipal_context(context, unit_of_work, conversation_turn_id)
+            require_supported_municipal_output(response, unit_of_work)
+            flush_municipal_context(context, unit_of_work, conversation_turn_id)
         if cache_key is not None:
             MUNICIPIO_RESPONSE_CACHE[cache_key] = response
         if isinstance(response, dict):
@@ -11056,6 +11419,8 @@ def responder_municipio(
             ) and tenant_profile.nombre:
                 final_municipio_config["nombre"] = tenant_profile.nombre
     except Exception:  # pragma: no cover - defensive for optional tenant profiles
+        if unit_of_work is not None:
+            unit_of_work.fail("municipal_uow_operation_failed", cause=None)
         tenant_profile = None
 
     if tenant_profile:
@@ -11104,7 +11469,8 @@ def responder_municipio(
                 "Municipio Inteligente",
             ):
                 final_municipio_config["nombre_municipio"] = "Municipalidad de Junín"
-            configuracion = tenant_profile.configuracion
+            configuracion = (dict(tenant_profile.configuracion) if unit_of_work is not None
+                and isinstance(tenant_profile.configuracion, dict) else tenant_profile.configuracion)
             if not isinstance(configuracion, dict):
                 configuracion = {}
             if configuracion.get("assistant_name") != "JUNI":
@@ -11117,11 +11483,15 @@ def responder_municipio(
                 configuracion["nombre"] = "Municipalidad de Junín"
                 updated_config = True
             if updated_config:
+                if unit_of_work is not None:
+                    unit_of_work.fail("municipal_uow_config_repair_not_ported")
                 tenant_profile.configuracion = configuracion
                 try:
                     db.session.add(tenant_profile)
-                    db.session.commit()
+                    persist_municipal_changes(unit_of_work)
                 except Exception:  # pragma: no cover - avoid breaking responder
+                    if unit_of_work is not None:
+                        unit_of_work.fail("municipal_uow_operation_failed", cause=None)
                     db.session.rollback()
 
     # Override with data from the User model (database) if available
@@ -11164,6 +11534,8 @@ def responder_municipio(
         try:
             flag_modified(chat_db_context, "context_data")
         except Exception:  # pragma: no cover - admite contextos livianos en integraciones/tests
+            if unit_of_work is not None:
+                unit_of_work.fail("municipal_uow_operation_failed", cause=None)
             logger.debug("No se pudo marcar context_data como modificado", exc_info=True)
 
     live_chat_cta_action = _resolve_live_chat_cta_action(
@@ -11313,6 +11685,8 @@ def responder_municipio(
     else:
         cache_key = None
 
+    if unit_of_work is not None:
+        cache_key = None  # Never expose a result cached before the outer commit.
     cached_response = (
         MUNICIPIO_RESPONSE_CACHE.get(cache_key)
         if cache_key is not None
@@ -11429,6 +11803,7 @@ def responder_municipio(
         # Retain that exact text together with the safe modality metadata.
         "user_input_raw": pregunta_str,
     }
+    require_municipal_context(context, unit_of_work, conversation_turn_id)
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
@@ -11441,7 +11816,7 @@ def responder_municipio(
         received_payload.get("action_id") or received_payload.get("action")
     )
     if has_active_whatsapp_survey_flow(context):
-        survey_response = handle_whatsapp_survey_flow_turn(
+        survey_response = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", handle_whatsapp_survey_flow_turn, 
             context,
             text=pregunta_str,
             action_id=whatsapp_survey_action,
@@ -11455,7 +11830,7 @@ def responder_municipio(
                     navigation_action,
                     context,
                     chat_db_context,
-                )
+                **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(survey_response)
@@ -11497,7 +11872,7 @@ def responder_municipio(
         if cta_message.lower() in _LIVE_CHAT_CTA_ACTIONS or not cta_message:
             cta_message = "Solicitud de atencion humana"
         context["pregunta_actual_usuario"] = cta_message
-        handler_result = DerivarHumanoActionHandler(context).execute(
+        handler_result = municipal_handler(DerivarHumanoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id)).execute(
             {
                 "motivo_derivacion": received_payload.get("motivo_derivacion")
                 or received_payload.get("reason")
@@ -11551,7 +11926,7 @@ def responder_municipio(
     ):
         from services.actions.municipio_actions import DerivarHumanoActionHandler
 
-        handler = DerivarHumanoActionHandler(context)
+        handler = municipal_handler(DerivarHumanoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         handler_result = handler.execute({"motivo_derivacion": urgency_reason})
         data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
         ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
@@ -11594,7 +11969,7 @@ def responder_municipio(
             .get("state")
         )
         if flow_state == ReclamoState.ESPERANDO_DIRECCION.name:
-            handler = ReclamoFlowHandler(context, chat_db_context)
+            handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             payload_con_ubicacion = dict(received_payload)
             payload_con_ubicacion["es_ubicacion"] = True
             payload_con_ubicacion.setdefault("ubicacion_usuario", {}).update(
@@ -11653,7 +12028,7 @@ def responder_municipio(
         or pregunta_str == "__INIT__"
     ):
         logger_actual.info("Greeting keyword detected. Resetting conversation and showing main menu.")
-        handler = GreetingHandler(context)
+        handler = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context)
         response = handler.handle(received_payload)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
@@ -11663,7 +12038,7 @@ def responder_municipio(
     if not interrupt_action and pregunta_str:
         interrupt_action = find_global_menu_action(pregunta_str)
     if interrupt_action == "limpiar_contexto":
-        response = handle_main_menu_action("limpiar_contexto", context, chat_db_context)
+        response = handle_main_menu_action("limpiar_contexto", context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         return _finalize_response(response)
 
     # --- START OF RESTRUCTURED LOGIC ---
@@ -11679,7 +12054,7 @@ def responder_municipio(
     ):
         # Location may arrive in the previous WhatsApp turn. An explicit claim
         # command already supplies the intention; do not make it a menu choice.
-        explicit_draft = _try_start_explicit_reclamo_from_text(pregunta_str, context, chat_db_context)
+        explicit_draft = _try_start_explicit_reclamo_from_text(pregunta_str, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         if explicit_draft:
             return _finalize_response(explicit_draft)
     if (
@@ -11715,7 +12090,7 @@ def responder_municipio(
     # Permitir atajos por emoji en cualquier estado para accesibilidad.
     emoji_response = _try_handle_emoji_shortcut(
         pregunta_original, contexto_municipio_actual, context, chat_db_context
-    )
+    , **private_municipal_arguments(unit_of_work, conversation_turn_id))
     if emoji_response:
         return _finalize_response(emoji_response)
 
@@ -11723,7 +12098,7 @@ def responder_municipio(
     if estado_conversacion:
         if estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_RECLAMO.name:
             if _is_confirmation_text(pregunta_str, action or received_payload.get("action_id")):
-                response = _create_legacy_reclamo_from_confirmation(
+                response = unported_municipal_call(unit_of_work, "municipal_uow_legacy_claim_path_not_ported", _create_legacy_reclamo_from_confirmation,
                     contexto_municipio_actual,
                     context,
                 )
@@ -11756,7 +12131,7 @@ def responder_municipio(
             # Atajo por emoji para iniciar flujos sin texto adicional.
             emoji_category = EMOJI_RECLAMO_CATEGORIES.get(pregunta_str_menu.strip())
             if emoji_category:
-                handler = ReclamoFlowHandler(context, chat_db_context)
+                handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 response_dict = handler.start_flow(categoria_inicial=emoji_category)
                 contexto_municipio_actual['estado_conversacion'] = 'EN_FLUJO_RECLAMO'
                 if chat_db_context:
@@ -11768,7 +12143,7 @@ def responder_municipio(
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
-                response = handle_main_menu_action(emoji_action, context, chat_db_context)
+                response = handle_main_menu_action(emoji_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 if response:
                     return _finalize_response(response)
 
@@ -11779,7 +12154,7 @@ def responder_municipio(
             if selected_action:
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
-                response = handle_main_menu_action(selected_action, context, chat_db_context)
+                response = handle_main_menu_action(selected_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 if response:
                     return _finalize_response(response)
             else:
@@ -11792,7 +12167,7 @@ def responder_municipio(
                     owner_user,
                     chat_db_context,
                     demo_metadata=demo_metadata,
-                )
+                **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 if response_dict:
                     return _finalize_response(response_dict)
                 logger_actual.info("Input is not a menu option. Treating as a general query.")
@@ -11841,11 +12216,11 @@ def responder_municipio(
                         selected_option.get("action_id"),
                         context,
                         chat_db_context,
-                    )
+                    **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     return _finalize_response(response)
 
                 if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
-                    return _finalize_response(GreetingHandler(context).handle({}))
+                    return _finalize_response(unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context).handle({}))
 
                 reclamo_options = _get_reclamos_menu().get("options_list", [])
                 if pregunta_str_reclamo.isdigit():
@@ -11859,11 +12234,11 @@ def responder_municipio(
                         for opt in reclamo_options
                         if opt.get("category_name")
                     ]
-                    details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+                    details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     selected_category_name = details.pop("categoria_sugerida", None)
 
             if selected_category_name:
-                handler = ReclamoFlowHandler(context, chat_db_context)
+                handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 existing_flow_data = (
                     contexto_municipio_actual.get("reclamo_flow_v2", {})
                     .get("datos_reclamo", {})
@@ -11916,13 +12291,13 @@ def responder_municipio(
                     if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
                     return _finalize_response(
-                        PointsOfInterestHandler(context).handle(
+                        unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                             {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
                         )
                     )
 
             if action == "iniciar_reclamo_con_ubicacion":
-                handler = ReclamoFlowHandler(context, chat_db_context)
+                handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 datos_iniciales = {"direccion": address}
                 if ubicacion_contextual:
                     datos_iniciales['coordenadas'] = {"lat": ubicacion_contextual.get("latitude"), "lon": ubicacion_contextual.get("longitude")}
@@ -11943,7 +12318,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context).handle(
+                    unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                         {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -11952,7 +12327,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context).handle(
+                    unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                         {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -11970,7 +12345,7 @@ def responder_municipio(
                 )
 
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
-            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if switch_response:
                 return _finalize_response(switch_response)
             if not pregunta_str.strip() and (
@@ -12055,7 +12430,7 @@ def responder_municipio(
             })
 
         elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name:
-            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if switch_response:
                 return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
@@ -12071,12 +12446,14 @@ def responder_municipio(
             campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
             if campos_faltantes:
                 try:
-                    llm_datos = extract_multiple_contact_details_llm(
+                    llm_datos = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", extract_multiple_contact_details_llm, 
                         pregunta_str, campos_extraibles
                     )
                     if llm_datos:
                         _update_sugerencia_contact_fields(datos_guardados, llm_datos)
                 except Exception as e:
+                    if unit_of_work is not None:
+                        unit_of_work.fail("municipal_uow_operation_failed", cause=e)
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
                 campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
 
@@ -12118,7 +12495,7 @@ def responder_municipio(
             })
 
         elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name:
-            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if switch_response:
                 return _finalize_response(switch_response)
             texto_normalizado = normalizar_texto(pregunta_str)
@@ -12129,7 +12506,7 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = HacerSugerenciaActionHandler(context)
+                handler = municipal_handler(HacerSugerenciaActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
                     # Re-synchronize the in-memory context after the handler cleanup
@@ -12147,7 +12524,7 @@ def responder_municipio(
                         context,
                         datos_confirmados,
                         response,
-                    )
+                    **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     return _finalize_response(final_payload)
                 contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
                 if response.get("pedir_info"):
@@ -12184,7 +12561,7 @@ def responder_municipio(
         and isinstance(datos_interpretados_archivo, dict)
         and datos_interpretados_archivo.get("es_reclamo")
     ):
-        handler = ReclamoFlowHandler(context, chat_db_context)
+        handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         if flujo_activo:
             # Merge suggested data into the existing flow and continue
             flow_data = (
@@ -12219,7 +12596,7 @@ def responder_municipio(
     # --- INICIO: Análisis de Imágenes Multimodal ---
     if received_payload.get("es_foto") and received_payload.get("foto_url"):
         if flujo_activo:
-            handler = ReclamoFlowHandler(context, chat_db_context)
+            handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             response_dict = handler.handle("", received_payload)
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -12241,7 +12618,7 @@ def responder_municipio(
         Si no puedes identificar un problema claro o la imagen no es relevante para un reclamo municipal, devuelve un JSON con "intent": "invalido".
         """
 
-        analysis_result = analizar_imagen_con_fallback(
+        analysis_result = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", analizar_imagen_con_fallback, 
             received_payload.get("foto_url"), vision_prompt
         )
 
@@ -12272,7 +12649,7 @@ def responder_municipio(
                 bool(datos_iniciales.get("categoria")),
                 bool(datos_iniciales.get("descripcion")),
             )
-            handler = ReclamoFlowHandler(context, chat_db_context)
+            handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             response_dict = handler.start_flow(datos_iniciales=datos_iniciales)
 
             if chat_db_context:
@@ -12323,7 +12700,7 @@ def responder_municipio(
         )
 
         if contexto_municipio_actual.get("reclamo_flow_v2", {}).get("state") == ReclamoState.ESPERANDO_DIRECCION.name:
-            handler = ReclamoFlowHandler(context, chat_db_context)
+            handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             response_dict = handler.handle("", received_payload)
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -12341,7 +12718,7 @@ def responder_municipio(
                     f"Location received for last POI query '{ultima_consulta}'."
                 )
                 return _finalize_response(
-                    PointsOfInterestHandler(context).handle(
+                    unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                         {
                             "pregunta": ultima_consulta,
                             "location": received_payload.get("ubicacion_usuario"),
@@ -12453,15 +12830,26 @@ def responder_municipio(
     # --- END CONTEXT INITIALIZATION ---
 
     profile_name = kwargs.get("profile_name")
-    resolved_contact = kwargs.get("resolved_contact") or chat_db_context_live_data.get("resolved_contact")
+    resolved_contact = (read_contact_projection(kwargs.get("resolved_contact"),
+        tenant_id=getattr(tenant_profile, "id", None),
+        phone=current_contact_phone(anon_id, getattr(viewer_user, "telefono", None),
+            getattr(chat_db_context, "anon_id", None))) or read_contact_projection(
+            chat_db_context_live_data.get("resolved_contact"),
+            tenant_id=getattr(tenant_profile, "id", None),
+            phone=current_contact_phone(anon_id, getattr(viewer_user, "telefono", None),
+                getattr(chat_db_context, "anon_id", None))))
+    # Only channel/declaration input may populate flat profile and draft fields.
+    # The database lookup remains separately available to this turn.
+    declared_profile_name = profile_name
     if resolved_contact and not profile_name:
         profile_name = resolved_contact.get("nombre")
-    if isinstance(profile_name, str) and profile_name.strip():
+    context["contact_lookup_display_name"] = resolved_contact.get("nombre")
+    if isinstance(declared_profile_name, str) and declared_profile_name.strip():
         if not chat_db_context_live_data.get("profile_name"):
-            chat_db_context_live_data["profile_name"] = profile_name.strip()
+            chat_db_context_live_data["profile_name"] = declared_profile_name.strip()
         contacto_usuario = contexto_municipio_actual.setdefault("contacto_usuario", {})
         if isinstance(contacto_usuario, dict) and not contacto_usuario.get("nombre"):
-            contacto_usuario["nombre"] = profile_name.strip()
+            contacto_usuario["nombre"] = declared_profile_name.strip()
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
 
@@ -12487,7 +12875,7 @@ def responder_municipio(
             # arbitrary follow-up messages or any other pending flow.
             payload = _try_start_explicit_reclamo_from_text(
                 pregunta_str, context, chat_db_context
-            )
+            , **private_municipal_arguments(unit_of_work, conversation_turn_id))
         else:
             payload = _try_start_reclamo_from_text(
                 pregunta_str,
@@ -12495,7 +12883,7 @@ def responder_municipio(
                 chat_db_context,
                 default_localidad=final_municipio_config.get("ciudad"),
                 default_provincia=final_municipio_config.get("provincia"),
-            )
+            **private_municipal_arguments(unit_of_work, conversation_turn_id))
 
         if payload:
             municipal_ctx = (
@@ -12528,7 +12916,7 @@ def responder_municipio(
             if audio_message_count >= 2 and not viewer_user.prefers_audio:
                 viewer_user.prefers_audio = True
                 db.session.add(viewer_user)
-                db.session.commit()
+                persist_municipal_changes(unit_of_work)
                 logger_actual.info(f"User {viewer_user.id} prefers audio after {audio_message_count} audio messages.")
 
         audio_mime_type = str(
@@ -12537,7 +12925,7 @@ def responder_municipio(
             or pregunta_original.get("mime")
             or "audio/ogg"
         ).strip()
-        transcription_result = transcribe_audio_from_url(
+        transcription_result = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", transcribe_audio_from_url, 
             pregunta_original["media_url"],
             audio_mime_type,
         )
@@ -12578,7 +12966,7 @@ def responder_municipio(
     action_id = received_payload.get("action_id") or received_payload.get("action")
     survey_action_candidate = action_id or pregunta_str
     if survey_action_candidate and find_global_menu_action(str(survey_action_candidate)) == "mostrar_menu_encuestas":
-        response = handle_main_menu_action("mostrar_menu_encuestas", context, chat_db_context)
+        response = handle_main_menu_action("mostrar_menu_encuestas", context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         if response:
             return _finalize_response(response)
 
@@ -12590,7 +12978,7 @@ def responder_municipio(
         or action_id == "menu_principal"
     ):
         contexto_municipio_actual.pop("reclamo_flow_v2", None)
-        handler = GreetingHandler(context)
+        handler = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context)
         response = handler.handle(received_payload)
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
@@ -12610,7 +12998,7 @@ def responder_municipio(
 
     if not is_llm_active and "reclamo_flow_v2" in contexto_municipio_actual and contexto_municipio_actual["reclamo_flow_v2"].get("state"):
         logger_actual.info(f"Reclamo flow is active. State: {contexto_municipio_actual['reclamo_flow_v2'].get('state')}. Handing off to ReclamoFlowHandler.")
-        handler = ReclamoFlowHandler(context, chat_db_context)
+        handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         response = handler.handle(pregunta_str, received_payload)
         if response and response.get("success"):
             contexto_municipio_actual.pop("reclamo_flow_v2", None)
@@ -12645,7 +13033,7 @@ def responder_municipio(
         "reclamo_otros": "Otros",
     }
     if action_id in direct_reclamo_categories:
-        handler = ReclamoFlowHandler(context, chat_db_context)
+        handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         response = handler.start_flow(
             categoria_inicial=direct_reclamo_categories[action_id],
         )
@@ -12661,9 +13049,9 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             if inferred_action == "iniciar_reclamo":
-                response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context)
+                response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             else:
-                response = handle_main_menu_action(inferred_action, context, chat_db_context)
+                response = handle_main_menu_action(inferred_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response:
                 return _finalize_response(response)
     # --- END GLOBAL MENU SHORTCUTS ---
@@ -12686,7 +13074,7 @@ def responder_municipio(
             estado_conversacion,
         )
     else:
-        intent, intent_payload = intent_classifier.classify(pregunta_str)
+        intent, intent_payload = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", intent_classifier.classify, pregunta_str)
         logger_actual.info(
             "[IntentClassifier] Classified intent=%s payload_keys=%s",
             intent.get("categoria") if isinstance(intent, dict) else intent,
@@ -12705,7 +13093,7 @@ def responder_municipio(
             intent_name = None
         else:
             logger_actual.info("Greeting intent detected. Bypassing LLM and showing main menu.")
-            handler = GreetingHandler(context)
+            handler = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context)
             response = handler.handle(received_payload)
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -12764,7 +13152,7 @@ def responder_municipio(
     # happen before fuzzy matching to menu keywords to avoid misclassifications
     # such as interpreting "farmacias de turno" as a request for appointments.
     if es_consulta_general(pregunta_str):
-        poi_handler = PointsOfInterestHandler(context)
+        poi_handler = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context)
         loc_data = None
         location = received_payload.get("location")
         if isinstance(location, dict):
@@ -12808,7 +13196,7 @@ def responder_municipio(
     # dispatcher. This allows frontend buttons to work even when they send an
     # action identifier instead of free-form text.
     if action and not estado_conversacion:
-        response = handle_main_menu_action(action, context, chat_db_context)
+        response = handle_main_menu_action(action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         if response and not response.get("fuente", "").startswith("unimplemented_"):
             return _finalize_response(response)
 
@@ -12838,9 +13226,9 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             if inferred_action == "iniciar_reclamo":
-                response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context)
+                response = handle_main_menu_action("mostrar_menu_reclamos", context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             else:
-                response = handle_main_menu_action(inferred_action, context, chat_db_context)
+                response = handle_main_menu_action(inferred_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response:
                 return _finalize_response(response)
 
@@ -12875,7 +13263,7 @@ def responder_municipio(
             if selected_action:
                 contexto_municipio_actual['estado_conversacion'] = None
                 if chat_db_context: flag_modified(chat_db_context, "context_data")
-                response = handle_main_menu_action(selected_action, context, chat_db_context)
+                response = handle_main_menu_action(selected_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 if response:
                     return _finalize_response(response)
             else:
@@ -12910,7 +13298,7 @@ def responder_municipio(
             else:
                 normalized_input = normalizar_texto(pregunta_str_reclamo or "")
                 if pregunta_str_reclamo == "0" or normalized_input in RETURN_TO_MAIN_MENU:
-                    return _finalize_response(GreetingHandler(context).handle({}))
+                    return _finalize_response(unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context).handle({}))
 
                 reclamo_options = _get_reclamos_menu().get("options_list", [])
                 if pregunta_str_reclamo.isdigit():
@@ -12924,11 +13312,11 @@ def responder_municipio(
                         for opt in reclamo_options
                         if opt.get("category_name")
                     ]
-                    details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+                    details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     selected_category_name = details.pop("categoria_sugerida", None)
 
             if selected_category_name:
-                handler = ReclamoFlowHandler(context, chat_db_context)
+                handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 datos_iniciales = {}
                 if details.get("descripcion_sugerida"):
                     datos_iniciales["descripcion"] = details["descripcion_sugerida"]
@@ -12957,7 +13345,7 @@ def responder_municipio(
                 action = find_menu_action_by_input(pregunta_menu, _location_action_options())
 
             if action == "iniciar_reclamo_con_ubicacion":
-                handler = ReclamoFlowHandler(context, chat_db_context)
+                handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 datos_iniciales = {"direccion": address}
                 if ubicacion_contextual:
                     datos_iniciales['coordenadas'] = {"lat": ubicacion_contextual.get("latitude"), "lon": ubicacion_contextual.get("longitude")}
@@ -12978,7 +13366,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context).handle(
+                    unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                         {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -12987,7 +13375,7 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context).handle(
+                    unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                         {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
                     )
                 )
@@ -13066,7 +13454,7 @@ def responder_municipio(
                 mensaje = (
                     "No encontramos un ticket con ese número y PIN. Por favor, verifica los datos e intenta nuevamente."
                 )
-            final_payload = _message_with_menu(mensaje, context)
+            final_payload = _message_with_menu(mensaje, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context: flag_modified(chat_db_context, "context_data")
@@ -13076,7 +13464,7 @@ def responder_municipio(
                 final_payload['message_type'] = 'interactive_buttons'
             return _finalize_response(final_payload)
         elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:
-            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if switch_response:
                 return _finalize_response(switch_response)
             sugerencia_texto = pregunta_str
@@ -13146,7 +13534,7 @@ def responder_municipio(
             })
 
         elif estado_conversacion == ConversationState.ESPERANDO_DATOS_CONTACTO_SUGERENCIA.name:
-            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if switch_response:
                 return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
@@ -13163,12 +13551,14 @@ def responder_municipio(
             # Utilizar el LLM solo si todavía faltan campos
             if campos_faltantes:
                 try:
-                    llm_datos = extract_multiple_contact_details_llm(
+                    llm_datos = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", extract_multiple_contact_details_llm, 
                         pregunta_str, campos_extraibles
                     )
                     if llm_datos:
                         _update_sugerencia_contact_fields(datos_guardados, llm_datos)
                 except Exception as e:
+                    if unit_of_work is not None:
+                        unit_of_work.fail("municipal_uow_operation_failed", cause=e)
                     logger.error("[DATOS_SUGERENCIA] LLM fallback failed: %s", e)
                 campos_faltantes = _get_missing_sugerencia_contact_fields(datos_guardados)
 
@@ -13211,7 +13601,7 @@ def responder_municipio(
             })
 
         elif estado_conversacion == ConversationState.ESPERANDO_CONFIRMACION_SUGERENCIA.name:
-            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context)
+            switch_response = _detect_reclamo_during_sugerencia(pregunta_str, contexto_municipio_actual, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if switch_response:
                 return _finalize_response(switch_response)
             texto_normalizado = normalizar_texto(pregunta_str)
@@ -13222,7 +13612,7 @@ def responder_municipio(
                 or any(a in texto_normalizado for a in afirmativos)
             ):
                 datos_confirmados = contexto_municipio_actual.pop('datos_sugerencia', {})
-                handler = HacerSugerenciaActionHandler(context)
+                handler = municipal_handler(HacerSugerenciaActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 response = handler.execute(datos_confirmados)
                 if response.get("success"):
                     contexto_municipio_actual = chat_db_context_live_data.setdefault(
@@ -13239,7 +13629,7 @@ def responder_municipio(
                         context,
                         datos_confirmados,
                         response,
-                    )
+                    **private_municipal_arguments(unit_of_work, conversation_turn_id))
                     return _finalize_response(final_payload)
                 contexto_municipio_actual['datos_sugerencia'] = datos_confirmados
                 if response.get("pedir_info"):
@@ -13273,7 +13663,7 @@ def responder_municipio(
 
     # 2. If no state is active, then handle actions that start new flows.
     elif action:
-        response = handle_main_menu_action(action, context, chat_db_context)
+        response = handle_main_menu_action(action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         if response:
             return _finalize_response(response)
     else:
@@ -13303,9 +13693,9 @@ def responder_municipio(
                     "mostrar_menu_reclamos",
                     context,
                     chat_db_context,
-                )
+                **private_municipal_arguments(unit_of_work, conversation_turn_id))
             else:
-                response = handle_main_menu_action(inferred_action, context, chat_db_context)
+                response = handle_main_menu_action(inferred_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response:
                 return _finalize_response(response)
 
@@ -13343,7 +13733,7 @@ def responder_municipio(
             # Si el análisis automático ya determinó que es un reclamo, iniciar el flujo directamente
             if datos_interpretados.get("es_reclamo"):
                 logger_actual.info("Iniciando flujo de reclamo desde imagen interpretada")
-                handler = ReclamoFlowHandler(context, chat_db_context)
+                handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
                 datos_iniciales = {
                     "categoria": datos_interpretados.get("categoria_sugerida"),
                     "descripcion": datos_interpretados.get("descripcion_sugerida"),
@@ -13387,7 +13777,7 @@ def responder_municipio(
                 chat_db_context,
                 contexto_municipio_actual,
                 demo_metadata=demo_metadata,
-            )
+            **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response_dict:
                 return _finalize_response(response_dict)
     # --- FIN: Manejo proactivo ---
@@ -13462,7 +13852,7 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
 
-            response = handle_main_menu_action(selected_action, context, chat_db_context)
+            response = handle_main_menu_action(selected_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response:
                 # After the action, ask a generic follow-up question unless the handler
                 # wants to take control of the conversation (e.g., by setting a new state).
@@ -13539,7 +13929,7 @@ def responder_municipio(
             contexto_municipio_actual.pop('menu_opciones', None)
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(selected_action, context, chat_db_context)
+            response = handle_main_menu_action(selected_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response:
                 new_state = contexto_municipio_actual.get("estado_conversacion")
                 if not new_state:
@@ -13555,7 +13945,7 @@ def responder_municipio(
                 owner_user,
                 chat_db_context,
                 demo_metadata=demo_metadata,
-            )
+            **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response_dict:
                 return _finalize_response(response_dict)
             # Reenviar el mismo submenú si la opción no es válida
@@ -13624,7 +14014,7 @@ def responder_municipio(
             contexto_municipio_actual.pop('menu_opciones', None)
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(selected_action, context, chat_db_context)
+            response = handle_main_menu_action(selected_action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response:
                 return _finalize_response(response)
 
@@ -13649,7 +14039,7 @@ def responder_municipio(
         # The handler expects the data in the payload dict
         received_payload['nombre_tramite'] = pregunta_str
 
-        handler = ConsultarInfoTramiteActionHandler(context)
+        handler = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", ConsultarInfoTramiteActionHandler, context)
         handler_response = handler.execute(received_payload)
 
         # The handler should now succeed and return a standard response with the info.
@@ -13681,12 +14071,12 @@ def responder_municipio(
                 selected_option.get("action_id"),
                 context,
                 chat_db_context,
-            )
+            **private_municipal_arguments(unit_of_work, conversation_turn_id))
             return _finalize_response(response)
 
         if pregunta_str_reclamo in {"0"} or normalized_input in RETURN_TO_MAIN_MENU:
             logger_actual.info("User requested to return to main menu from reclamos menu.")
-            handler = GreetingHandler(context)
+            handler = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", GreetingHandler, context)
             response = handler.handle({})
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
@@ -13721,7 +14111,7 @@ def responder_municipio(
                 for opt in reclamo_options
                 if opt.get("category_name")
             ]
-            details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options)
+            details = extract_reclamo_details_from_text(pregunta_str_reclamo, plain_text_options, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             selected_category_name = details.pop("categoria_sugerida", None)
 
         if selected_category_name:
@@ -13742,7 +14132,7 @@ def responder_municipio(
             constructed_prompt = f"Quiero iniciar un reclamo de {selected_category_name}"
 
             # --- INICIO: Integración del nuevo ReclamoFlowHandler ---
-            handler = ReclamoFlowHandler(context, chat_db_context)
+            handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             datos_iniciales = {}
             if details.get("descripcion_sugerida"):
                 datos_iniciales["descripcion"] = details["descripcion_sugerida"]
@@ -13768,7 +14158,7 @@ def responder_municipio(
             contexto_municipio_actual['estado_conversacion'] = None
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
-            response = handle_main_menu_action(action, context, chat_db_context)
+            response = handle_main_menu_action(action, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             if response:
                 return _finalize_response(response)
 
@@ -13805,9 +14195,11 @@ def responder_municipio(
         if len(nombre_usuario) > 2:
             # Save the name
             if viewer_user:
+                if unit_of_work is not None:
+                    unit_of_work.fail("municipal_uow_user_profile_write_not_ported")
                 viewer_user.name = nombre_usuario
                 db.session.add(viewer_user)
-                db.session.commit()
+                persist_municipal_changes(unit_of_work)
 
             context["profile_name"] = nombre_usuario
             chat_data = context.get("chat_db_context_data")
@@ -13885,7 +14277,7 @@ def responder_municipio(
             return _finalize_response({"message_body": "Para actualizar tus datos, primero necesitás iniciar sesión. ¿Querés que te ayude con eso?", "fuente": "update_data_login_required"})
         else:
             from services.user_service import actualizar_perfil_usuario
-            resultado_actualizacion = actualizar_perfil_usuario(
+            resultado_actualizacion = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", actualizar_perfil_usuario, 
                 user_id=viewer_user.id,
                 datos_actualizacion={campo_a_actualizar: nuevo_valor}
             )
@@ -13930,7 +14322,7 @@ def responder_municipio(
                     "Received location; processing saved query query_length=%s",
                     len(str(consulta_guardada or "")),
                 )
-                return _finalize_response(PointsOfInterestHandler(context).handle({"pregunta": consulta_guardada, "location": location}))
+                return _finalize_response(unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle({"pregunta": consulta_guardada, "location": location}))
             else:
                 logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
                 return _finalize_response({"message_body": "Recibí tu ubicación, pero no recuerdo qué estabas buscando. ¿Podrías decírmelo de nuevo?", "options_list": [], "message_type": "text", "fuente": "error_no_saved_query"})
@@ -13944,7 +14336,7 @@ def responder_municipio(
                 )
 
                 # We can use the simpler geocoding tool here
-                geocoded_location = validar_y_formatear_direccion(pregunta_str, municipio_config=context.get("municipio_config_actual"))
+                geocoded_location = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", validar_y_formatear_direccion, pregunta_str, municipio_config=context.get("municipio_config_actual"))
 
                 if geocoded_location:
                     # Address was valid, proceed with the original query
@@ -13965,7 +14357,7 @@ def responder_municipio(
                             "lat": geocoded_location.get("lat"),
                             "lon": geocoded_location.get("lng"),
                         }
-                        return _finalize_response(PointsOfInterestHandler(context).handle({"pregunta": consulta_guardada, "location": loc_payload}))
+                        return _finalize_response(unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle({"pregunta": consulta_guardada, "location": loc_payload}))
                     else:
                         # This case is unlikely but handled for safety
                         logger_actual.warning("Geocoded address but no saved query found.")
@@ -14004,7 +14396,7 @@ def responder_municipio(
             datos_confirmados = contexto_municipio_actual.pop("datos_a_confirmar", {})
 
             # Llamar a la acción de creación de reclamo
-            handler = CrearReclamoActionHandler(context)
+            handler = municipal_handler(CrearReclamoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             response = handler.execute(datos_confirmados)
 
             # Limpiar el estado de la conversación solo si la creación fue exitosa
@@ -14041,13 +14433,13 @@ def responder_municipio(
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
                 return _finalize_response(
-                    PointsOfInterestHandler(context).handle(
+                    unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                         {"pregunta": pregunta_menu.strip(), "location": ubicacion_contextual or {}}
                     )
                 )
 
         if action == "iniciar_reclamo_con_ubicacion":
-            handler = ReclamoFlowHandler(context, chat_db_context)
+            handler = municipal_handler(ReclamoFlowHandler, context, chat_db_context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
             datos_iniciales = {"direccion": address}
             if ubicacion_contextual:
                 datos_iniciales['coordenadas'] = {
@@ -14077,7 +14469,7 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(
-                PointsOfInterestHandler(context).handle(
+                unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                     {"pregunta": "estacionamiento", "location": ubicacion_contextual or {}}
                 )
             )
@@ -14086,7 +14478,7 @@ def responder_municipio(
             if chat_db_context:
                 flag_modified(chat_db_context, "context_data")
             return _finalize_response(
-                PointsOfInterestHandler(context).handle(
+                unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", PointsOfInterestHandler, context).handle(
                     {"pregunta": "lugares cercanos", "location": ubicacion_contextual or {}}
                 )
             )
@@ -14128,7 +14520,7 @@ def responder_municipio(
                 datos_solicitud.setdefault(key_map.get(k, k), v)
 
         # Create ticket
-        handler = CrearReclamoActionHandler(context)
+        handler = municipal_handler(CrearReclamoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         response = handler.execute(datos_solicitud)
 
         if response.get("success"):
@@ -14157,7 +14549,7 @@ def responder_municipio(
             len(pregunta_str or ""),
         )
 
-        datos_nuevos = extract_multiple_contact_details_llm(pregunta_str, ["nombre", "email", "telefono", "ubicacion", "descripcion"])
+        datos_nuevos = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", extract_multiple_contact_details_llm, pregunta_str, ["nombre", "email", "telefono", "ubicacion", "descripcion"])
         datos_pendientes = contexto_municipio_actual.get("datos_a_confirmar", {})
 
         # Mapeo de claves para actualizar correctamente
@@ -14371,7 +14763,7 @@ def responder_municipio(
         )
         _merge_contacto_usuario(contexto_municipio_actual, datos_sugerencia)
 
-        handler = CrearReclamoActionHandler(context)
+        handler = municipal_handler(CrearReclamoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
         response = handler.execute(datos_sugerencia)
 
         # Modificar el mensaje de éxito para que sea específico para sugerencias
@@ -14450,7 +14842,7 @@ def responder_municipio(
             chat_db_context,
             contexto_municipio_actual,
             demo_metadata=demo_metadata,
-        )
+        **private_municipal_arguments(unit_of_work, conversation_turn_id))
         logger_actual.info(
             "[AFTER_HANDLE_LLM] estado=%s contexto_claves=%s",
             contexto_municipio_actual.get("estado_conversacion")
@@ -14516,7 +14908,7 @@ def responder_municipio(
 
     # --- Fallback logic ---
     logger_actual.info(f"LLM no manejó la respuesta. Intentando fallback con Google Search.")
-    search_results = google_search(pregunta_str)
+    search_results = unported_municipal_call(unit_of_work, "municipal_uow_external_path_not_ported", google_search, pregunta_str)
     if search_results:
         search_items = []
         for result in search_results[:3]:
@@ -14545,8 +14937,10 @@ def responder_municipio(
                 respuesta=final_response_dict["message_body"], fuente=final_response_dict["fuente"],
                 rubro=getattr(rubro_obj, "nombre", "municipio_general"), user_id=None,
             ))
-            db.session.commit()
+            persist_municipal_changes(unit_of_work)
         except Exception as e_conv_muni_final:
+            if unit_of_work is not None:
+                unit_of_work.fail("municipal_uow_operation_failed", cause=e_conv_muni_final)
             logger_actual.error(
                 "Error guardando Conversacion final (municipio; error_type=%s)",
                 type(e_conv_muni_final).__name__,

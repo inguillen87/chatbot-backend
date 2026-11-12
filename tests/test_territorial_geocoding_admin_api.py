@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 import os
-
-import jwt
+from secrets import token_urlsafe
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
@@ -19,6 +18,9 @@ from models_territorial_geocoding import (
 from services.territorial_geocoding_admin import proposal_digest
 
 
+_TEST_PASSWORD = token_urlsafe(24)
+
+
 class TerritorialGeocodingAdminTestConfig(Config):
     TESTING = True
     ENABLE_DEMO_MODE = True
@@ -29,16 +31,11 @@ class TerritorialGeocodingAdminTestConfig(Config):
 
 
 def _auth(app, user: User, tenant_slug: str) -> dict[str, str]:
-    token = jwt.encode(
-        {
-            "user_id": user.id,
-            "rol": user.rol,
-            "tenant_slug": user.tenant_slug,
-            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
-        },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
-    )
+    client = app.test_client()
+    response = client.post("/auth/login", json={"email": user.email, "password": _TEST_PASSWORD})
+    assert response.status_code == 200
+    token = response.get_json()["token"]
+    assert isinstance(token, str) and token
     return {
         "Authorization": f"Bearer {token}",
         "X-Tenant-Slug": tenant_slug,
@@ -170,17 +167,17 @@ def _setup():
     admin = User(
         name="Admin Junin",
         email="admin-geocoding@junin.test",
-        password_hash="hash",
         rol="admin",
         tenant_slug="junin",
     )
     other_admin = User(
         name="Admin Other",
         email="admin-geocoding@other.test",
-        password_hash="hash",
         rol="admin",
         tenant_slug="other",
     )
+    admin.set_password(_TEST_PASSWORD)
+    other_admin.set_password(_TEST_PASSWORD)
     db.session.add_all([admin, other_admin])
     db.session.flush()
     tenant = TenantProfile(
@@ -204,12 +201,15 @@ def _setup():
     employee = User(
         name="Employee Junin",
         email="employee-geocoding@junin.test",
-        password_hash="hash",
         rol="empleado",
         tenant_id=tenant.id,
         tenant_slug="junin",
         es_empleado=True,
     )
+    employee.set_password(_TEST_PASSWORD)
+    for user, owner in ((admin, admin), (other_admin, other_admin), (employee, admin)):
+        user.tipo_chat = "municipio"
+        user.municipio_id = owner.id
     db.session.add(employee)
     db.session.flush()
 

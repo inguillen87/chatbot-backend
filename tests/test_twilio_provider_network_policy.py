@@ -395,6 +395,7 @@ def test_durable_worker_blocks_before_twilio_client_and_keeps_attempt_retryable(
         attempt_id="attempt-private",
         tenant_id=17,
         lease_token="lease-private",
+        provider="twilio",
         payload={"from_": "whatsapp:+15550000001", "body": "private-body"},
     )
     credentials = SimpleNamespace(

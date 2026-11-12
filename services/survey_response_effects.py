@@ -305,7 +305,16 @@ def _stage_one(
     payload: Mapping[str, Any],
     now: datetime,
     max_attempts: int,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> SurveyResponseEffect:
+    if unit_of_work is not None:
+        from services.whatsapp_conversation_uow import ConversationUnitOfWork, ConversationUnitOfWorkError
+
+        if not isinstance(unit_of_work, ConversationUnitOfWork):
+            raise ConversationUnitOfWorkError("survey_effect_owner_invalid")
+        unit_of_work.require_writer_scope(session=db.session(), tenant_id=tenant_id,
+                                          turn_id=conversation_turn_id)
     effect_key = _effect_key(response_id, effect_type)
     existing = _find_existing_effect(
         tenant_id=tenant_id,
@@ -332,6 +341,14 @@ def _stage_one(
         available_at=now,
         contract_version=OUTBOX_CONTRACT_VERSION,
     )
+
+    if unit_of_work is not None:
+        # The survey writer already holds the instrument's response lock. Its
+        # owner owns vote, receipt, effects and reply. A collision aborts that
+        # transaction without an internal SAVEPOINT or rollback.
+        db.session.add(effect)
+        unit_of_work.flush()
+        return effect
 
     # A SAVEPOINT confines a concurrent unique-scope collision to this one
     # insert.  Never call session.rollback() here: the outer response and its
@@ -368,6 +385,8 @@ def stage_survey_response_effects(
     stage_analytics: bool = True,
     now: Optional[datetime] = None,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> list[SurveyResponseEffect]:
     """Stage every applicable effect without owning the outer transaction.
 
@@ -411,6 +430,8 @@ def stage_survey_response_effects(
                 },
                 now=staged_at,
                 max_attempts=max_attempts,
+                unit_of_work=unit_of_work,
+                conversation_turn_id=conversation_turn_id,
             )
         )
 
@@ -440,6 +461,8 @@ def stage_survey_response_effects(
                 },
                 now=staged_at,
                 max_attempts=max_attempts,
+                unit_of_work=unit_of_work,
+                conversation_turn_id=conversation_turn_id,
             )
         )
 
@@ -465,6 +488,8 @@ def stage_survey_response_effects(
                 },
                 now=staged_at,
                 max_attempts=max_attempts,
+                unit_of_work=unit_of_work,
+                conversation_turn_id=conversation_turn_id,
             )
         )
 

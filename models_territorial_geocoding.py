@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import uuid
 
-from models import JSONType, TimestampMixin, db
+from database import db
+from model_primitives import JSONType, TimestampMixin
 
 
 class TerritorialGeocodingJob(db.Model, TimestampMixin):

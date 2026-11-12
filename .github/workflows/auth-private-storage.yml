@@ -9,6 +9,7 @@ name: Durable sessions and private attachments
       - config/**
       - middleware/cutover_writer_fence.py
       - models.py
+      - model_primitives.py
       - middleware/tenant_context.py
       - routes/auth.py
       - routes/admin_tenant.py
@@ -16,7 +17,9 @@ name: Durable sessions and private attachments
       - routes/v2/saas.py
       - routes/backoffice.py
       - services/backoffice_export_pdf.py
+      - services/contact_intake.py
       - tests/test_backoffice_export_integrity.py
+      - tests/test_canonical_contact_backoffice.py
       - tests/test_backoffice_contracts.py
       - tests/test_backoffice_export_pdf_layout.py
       - routes/super_admin.py
@@ -95,6 +98,29 @@ name: Durable sessions and private attachments
       - tests/profile_acceptance_runtime.py
       - tests/crm_template_integrity_http.py
       - tests/run_crm_template_integrity_postgres.py
+      - models_survey_governance.py
+      - models_survey_jurisdiction.py
+      - routes/encuestas_public.py
+      - routes/meta_whatsapp_callback.py
+      - routes/v2/surveys.py
+      - services/encuestas_service.py
+      - services/meta_whatsapp_conversation_sink.py
+      - services/meta_whatsapp_survey.py
+      - services/survey_governance.py
+      - services/survey_jurisdiction.py
+      - services/survey_participation_assurance.py
+      - services/survey_response_effects.py
+      - services/whatsapp_conversation_uow.py
+      - services/whatsapp_inbound_worker.py
+      - services/whatsapp_survey_conversation.py
+      - tests/run_meta_whatsapp_survey_postgres.py
+      - tests/test_meta_whatsapp_crm_acceptance.py
+      - tests/test_meta_whatsapp_inbound_worker.py
+      - tests/test_meta_whatsapp_outbox.py
+      - tests/test_meta_whatsapp_survey_journey.py
+      - tests/test_survey_participation_assurance.py
+      - tests/test_v2_surveys.py
+      - tests/test_whatsapp_survey_conversation.py
       - .github/workflows/auth-private-storage.yml
   workflow_dispatch:
 permissions:
@@ -172,7 +198,7 @@ jobs:
           set -euo pipefail
           mkdir -p .qa-artifacts/auth-private-storage/employee-scope
           git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/employee-scope/checkout.txt
-          sha256sum .github/workflows/auth-private-storage.yml vercel.json app.py config/__init__.py models.py routes/admin_tenant.py middleware/tenant_context.py services/employee_routing.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_scope_revocation.py tests/test_employee_scope_and_assignment.py > .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt
+          sha256sum .github/workflows/auth-private-storage.yml vercel.json app.py config/__init__.py models.py model_primitives.py routes/admin_tenant.py middleware/tenant_context.py services/employee_routing.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_scope_revocation.py tests/test_employee_scope_and_assignment.py > .qa-artifacts/auth-private-storage/employee-scope/source-sha256.txt
           python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/employee-scope/tests.log
           from tests.profile_acceptance_runtime import prepare_process
           prepare_process()
@@ -225,7 +251,7 @@ jobs:
             blob_sha="$(git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
             printf '%s  %s\n' "$blob_sha" "$source_file"
           done | tee .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-blob-sha256.txt | sha256sum --check - > .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-source-check.log
-          sha256sum .github/workflows/auth-private-storage.yml app.py config/__init__.py models.py routes/v2/saas.py routes/v2/tickets.py services/employee_routing.py services/employee_ticket_access.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_routing_category_revocation.py > .qa-artifacts/auth-private-storage/employee-category-revocation/source-sha256.txt
+          sha256sum .github/workflows/auth-private-storage.yml app.py config/__init__.py models.py model_primitives.py routes/v2/saas.py routes/v2/tickets.py services/employee_routing.py services/employee_ticket_access.py services/ticket_assignment_policy.py services/auth_session_lifecycle.py utils/auth_helpers.py utils/tenant_admin_access.py utils/roles.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_employee_routing_category_revocation.py > .qa-artifacts/auth-private-storage/employee-category-revocation/source-sha256.txt
           python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/employee-category-revocation/tests.log
           from tests.profile_acceptance_runtime import prepare_process
           prepare_process()
@@ -258,7 +284,7 @@ jobs:
           sha256sum --check .qa-artifacts/auth-private-storage/employee-category-revocation/source-sha256.txt > .qa-artifacts/auth-private-storage/employee-category-revocation/source-recheck.log
           git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-after.txt
           cmp .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-before.txt .qa-artifacts/auth-private-storage/employee-category-revocation/checkout-head-after.txt
-      - name: Private complete backoffice exports and PDF layout contracts
+      - name: Private complete backoffice exports, canonical contacts and PDF layout contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -266,11 +292,11 @@ jobs:
           git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-before.txt
           test "$(cat .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-before.txt)" = "$GITHUB_SHA"
           git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/backoffice-export/checkout.txt
-          for source_file in app.py routes/backoffice.py services/backoffice_export_pdf.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py; do
+          for source_file in app.py routes/backoffice.py services/backoffice_export_pdf.py services/contact_intake.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py tests/test_canonical_contact_backoffice.py; do
             blob_sha="$(git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks show "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
             printf '%s  %s\n' "$blob_sha" "$source_file"
           done | tee .qa-artifacts/auth-private-storage/backoffice-export/checkout-blob-sha256.txt | sha256sum --check - > .qa-artifacts/auth-private-storage/backoffice-export/checkout-source-check.log
-          sha256sum .github/workflows/auth-private-storage.yml requirements.txt app.py models.py routes/backoffice.py services/backoffice_export_pdf.py middleware/tenant_context.py services/auth_session_lifecycle.py utils/auth_helpers.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py > .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt
+          sha256sum .github/workflows/auth-private-storage.yml requirements.txt app.py models.py model_primitives.py routes/backoffice.py services/backoffice_export_pdf.py services/contact_intake.py middleware/tenant_context.py services/auth_session_lifecycle.py utils/auth_helpers.py tests/conftest.py tests/profile_acceptance_runtime.py tests/test_backoffice_export_integrity.py tests/test_backoffice_contracts.py tests/test_backoffice_export_pdf_layout.py tests/test_canonical_contact_backoffice.py > .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt
           python -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/auth-private-storage/backoffice-export/tests.log
           from tests.profile_acceptance_runtime import prepare_process
           prepare_process()
@@ -289,6 +315,10 @@ jobs:
               "tests/test_backoffice_contracts.py::test_backoffice_v2_employee_sees_and_exports_only_allowed_ticket_categories",
               "tests/test_backoffice_contracts.py::test_backoffice_mutation_selector_denial_precedes_export_or_summary_effects",
               "tests/test_backoffice_export_pdf_layout.py",
+              "tests/test_canonical_contact_backoffice.py",
+              "tests/test_backoffice_contracts.py::test_backoffice_v2_contacts_summary_publishes_segments_without_frontend_rules",
+              "tests/test_backoffice_contracts.py::test_backoffice_team_counts_only_consistent_enabled_staff_and_preserves_customer_contacts",
+              "tests/test_backoffice_contracts.py::test_backoffice_ambiguous_legacy_staff_and_contacts_remain_quarantined",
               "--junitxml=.qa-artifacts/auth-private-storage/backoffice-export/tests.xml",
           ])
           tree = ET.parse(".qa-artifacts/auth-private-storage/backoffice-export/tests.xml").getroot()
@@ -302,11 +332,12 @@ jobs:
               "export_integrity": sum(c.attrib.get("classname") == "tests.test_backoffice_export_integrity" for c in cases),
               "existing_compatibility": sum(c.attrib.get("classname") == "tests.test_backoffice_contracts" for c in cases),
               "pdf_layout": sum(c.attrib.get("classname") == "tests.test_backoffice_export_pdf_layout" for c in cases),
+              "canonical_contacts": sum(c.attrib.get("classname") == "tests.test_canonical_contact_backoffice" for c in cases),
           }
           print(json.dumps(summary, sort_keys=True))
-          if int(code) != 0 or summary["tests"] != 35:
+          if int(code) != 0 or summary["tests"] != 61:
               raise SystemExit(1)
-          if (summary["export_integrity"], summary["existing_compatibility"], summary["pdf_layout"]) != (20, 9, 6):
+          if (summary["export_integrity"], summary["existing_compatibility"], summary["pdf_layout"], summary["canonical_contacts"]) != (20, 13, 6, 22):
               raise SystemExit(1)
           if any(summary[key] for key in ("failures", "errors", "skipped")):
               raise SystemExit(1)
@@ -314,6 +345,68 @@ jobs:
           sha256sum --check .qa-artifacts/auth-private-storage/backoffice-export/source-sha256.txt > .qa-artifacts/auth-private-storage/backoffice-export/source-recheck.log
           git -c maintenance.auto=false -c core.fsmonitor=false --no-optional-locks rev-parse HEAD > .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-after.txt
           cmp .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-before.txt .qa-artifacts/auth-private-storage/backoffice-export/checkout-head-after.txt
+      - name: Signed WhatsApp survey journey and participation assurance
+        shell: bash
+        env:
+          EXPECTED_CHECKOUT: ${{ github.sha }}
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          output=.qa-artifacts/auth-private-storage/meta-whatsapp-survey
+          mkdir -p "$output"
+          git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > "$output/checkout.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
+          if [[ -n "$EXPECTED_PR_HEAD" ]]; then
+            pr_parent="$(git cat-file -p HEAD | awk 'BEGIN {header=1} header && /^parent / {if (++n==2) print $2} /^$/ {header=0}')"
+            test "$pr_parent" = "$EXPECTED_PR_HEAD"
+          fi
+          sources=(
+            .github/workflows/auth-private-storage.yml models.py model_primitives.py models_survey_governance.py
+            models_survey_jurisdiction.py routes/encuestas_public.py routes/meta_whatsapp_callback.py
+            routes/v2/surveys.py services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
+            services/meta_whatsapp_survey.py services/survey_governance.py services/survey_jurisdiction.py
+            services/survey_participation_assurance.py services/survey_response_effects.py
+            services/whatsapp_conversation_uow.py services/whatsapp_inbound_worker.py
+            services/whatsapp_survey_conversation.py tests/profile_acceptance_runtime.py
+            tests/test_meta_whatsapp_crm_acceptance.py tests/test_meta_whatsapp_inbound_worker.py
+            tests/test_meta_whatsapp_outbox.py tests/test_meta_whatsapp_survey_journey.py
+            tests/test_survey_participation_assurance.py tests/test_v2_surveys.py
+            tests/test_whatsapp_survey_conversation.py
+          )
+          for source_file in "${sources[@]}"; do
+            blob_sha="$(git cat-file blob "HEAD:$source_file" | sha256sum | cut -d ' ' -f1)"
+            printf '%s  %s\n' "$blob_sha" "$source_file"
+          done > "$output/source-sha256.txt"
+          sha256sum --check "$output/source-sha256.txt" > "$output/source-before.log"
+          python -B -X utf8 - "$output/tests.xml" <<'PY' 2>&1 | tee "$output/tests.log"
+          from contextlib import ExitStack
+          import os
+          import socket
+          import sys
+          from unittest.mock import patch
+
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ.update(CORS_ALLOWED_ORIGINS="https://panel.example.invalid", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
+
+          def deny(*_args, **_kwargs):
+              raise RuntimeError("fixture_network_attempt_blocked")
+
+          with ExitStack() as guard:
+              for method in ("connect", "connect_ex", "sendto"):
+                  guard.enter_context(patch.object(socket.socket, method, deny))
+              guard.enter_context(patch.object(socket, "getaddrinfo", deny))
+              import pytest
+              raise SystemExit(pytest.main([
+                  "--noconftest", "-p", "no:cacheprovider", "-q",
+                  "tests/test_meta_whatsapp_survey_journey.py",
+                  "tests/test_whatsapp_survey_conversation.py",
+                  "tests/test_survey_participation_assurance.py",
+                  f"--junitxml={sys.argv[1]}",
+              ]))
+          PY
+          sha256sum --check "$output/source-sha256.txt" > "$output/source-after.log"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
       - name: Preserve disposable HTTP evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -328,6 +421,7 @@ jobs:
             .qa-artifacts/auth-private-storage/employee-scope/
             .qa-artifacts/auth-private-storage/employee-category-revocation/
             .qa-artifacts/auth-private-storage/backoffice-export/
+            .qa-artifacts/auth-private-storage/meta-whatsapp-survey/
           include-hidden-files: true
   isolated-postgres:
     runs-on: ubuntu-24.04
@@ -354,6 +448,40 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: Install existing application dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Native WhatsApp survey and territorial review serialize in PostgreSQL
+        shell: bash
+        env:
+          EXPECTED_CHECKOUT: ${{ github.sha }}
+          EXPECTED_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          output=.qa-artifacts/meta-whatsapp-survey-postgres
+          mkdir -p "$output"
+          git show --no-patch --format='commit %H%ntree %T' HEAD > "$output/checkout.txt"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_CHECKOUT"
+          if [[ -n "$EXPECTED_PR_HEAD" ]]; then
+            pr_parent="$(git cat-file -p HEAD | awk 'BEGIN {header=1} header && /^parent / {if (++n==2) print $2} /^$/ {header=0}')"
+            test "$pr_parent" = "$EXPECTED_PR_HEAD"
+            printf 'pull_request_head %s\n' "$pr_parent" >> "$output/checkout.txt"
+          fi
+          sources=(
+            .github/workflows/auth-private-storage.yml models.py model_primitives.py models_survey_jurisdiction.py
+            routes/meta_whatsapp_callback.py routes/v2/surveys.py
+            services/encuestas_service.py services/meta_whatsapp_conversation_sink.py
+            services/meta_whatsapp_survey.py services/survey_governance.py
+            services/survey_jurisdiction.py services/survey_participation_assurance.py
+            services/survey_response_effects.py
+            services/whatsapp_conversation_uow.py services/whatsapp_inbound_worker.py
+            services/whatsapp_survey_conversation.py
+            tests/profile_acceptance_runtime.py tests/run_auth_session_lifecycle_postgres.py
+            tests/run_meta_whatsapp_survey_postgres.py tests/test_meta_whatsapp_crm_acceptance.py
+            tests/test_meta_whatsapp_inbound_worker.py tests/test_meta_whatsapp_survey_journey.py
+            tests/test_whatsapp_survey_conversation.py
+          )
+          sha256sum "${sources[@]}" > "$output/source-before.txt"
+          python -B -X utf8 -m tests.run_meta_whatsapp_survey_postgres --github-disposable-service 2>&1 | tee "$output/postgres.log"
+          sha256sum "${sources[@]}" > "$output/source-after.txt"
+          cmp "$output/source-before.txt" "$output/source-after.txt"
       - name: Exercise exact migration, grants, session concurrency and HTTP lease CAS
         shell: bash
         run: |
@@ -381,4 +509,5 @@ jobs:
             .qa-artifacts/auth-session-postgres/enterprise-metrics.xml
             .qa-artifacts/auth-session-postgres/enterprise-metrics-checkout.txt
             .qa-artifacts/auth-session-postgres/enterprise-metrics-source-sha256.txt
+            .qa-artifacts/meta-whatsapp-survey-postgres/
           include-hidden-files: true

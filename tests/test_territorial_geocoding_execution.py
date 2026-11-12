@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
 import os
+from secrets import token_urlsafe
 from types import SimpleNamespace
 
-import jwt
 import pytest
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
@@ -28,6 +27,9 @@ from services.territorial_geocoding_execution import (
     apply_territorial_geocoding_job,
     resolve_territorial_geocoding_job,
 )
+
+
+_TEST_PASSWORD = token_urlsafe(24)
 
 
 class ExecutionConfig(Config):
@@ -93,12 +95,14 @@ def _setup(*, jurisdiction=None):
     admin = User(
         name="Admin territorial",
         email="admin-territorial-execution@test.invalid",
-        password_hash="hash",
         rol="admin",
         tenant_slug="junin",
+        tipo_chat="municipio",
     )
+    admin.set_password(_TEST_PASSWORD)
     db.session.add(admin)
     db.session.flush()
+    admin.municipio_id = admin.id
     tenant = TenantProfile(
         slug="junin",
         nombre="Municipalidad de Junín",
@@ -156,16 +160,11 @@ def _teardown(context):
 
 
 def _auth(app, user, tenant_slug):
-    token = jwt.encode(
-        {
-            "user_id": user.id,
-            "rol": user.rol,
-            "tenant_slug": tenant_slug,
-            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
-        },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
-    )
+    client = app.test_client()
+    response = client.post("/auth/login", json={"email": user.email, "password": _TEST_PASSWORD})
+    assert response.status_code == 200
+    token = response.get_json()["token"]
+    assert isinstance(token, str) and token
     return {
         "Authorization": f"Bearer {token}",
         "X-Tenant-Slug": tenant_slug,
@@ -648,5 +647,235 @@ def test_http_apply_rolls_back_when_authority_epoch_changes_before_commit(monkey
         assert persisted_ticket.latitud is None
         assert persisted_ticket.longitud is None
         assert TerritorialGeocodingAttempt.query.count() == 1
+    finally:
+        _teardown(context)
+
+
+def _manual_setup(monkeypatch, jurisdiction):
+    monkeypatch.setattr(
+        "services.territorial_geocoding_execution.resolve_tenant_jurisdiction",
+        lambda _tenant: jurisdiction,
+    )
+    return _setup(jurisdiction=jurisdiction)
+
+
+_MANUAL_POINT = {"lat": -33.05, "lng": -68.47, "expected_attempt_count": 0, "confirmed": True}
+
+
+def test_http_manual_location_requires_review_and_preserves_operator_provenance(monkeypatch):
+    app, context, admin, tenant, ticket, job = _manual_setup(monkeypatch, _official_jurisdiction())
+    try:
+        app.config.update(TERRITORIAL_GEOCODING_PROVIDER_ENABLED=False, MAPS_API_KEY="")
+        client = app.test_client()
+        auth = _auth(app, admin, tenant.slug)
+        endpoint = f"/api/v2/analytics/operations/geocoding-queue/{job.id}"
+
+        def post(action, key, body):
+            return client.post(
+                f"{endpoint}/{action}", headers={**auth, "Idempotency-Key": key}, json=body
+            )
+
+        action = client.get(endpoint, headers=auth).get_json()["item"]["actions"]["manual_location"]
+        assert action == {
+            "href": f"{endpoint}/manual-location",
+            "enabled": True,
+            "confirmation_required": True,
+            "idempotency_header": "Idempotency-Key",
+            "mutates_ticket": False,
+        }
+        response = post("manual-location", "manual-http-original", _MANUAL_POINT)
+        assert response.status_code == 201
+        assert response.headers["Cache-Control"] == "no-store"
+        proposal = response.get_json()
+        assert (proposal["action"], proposal["status"], proposal["reason_code"]) == (
+            "manual_location", "needs_review", "manual_location_proposed"
+        )
+        assert proposal["proposal"]["provenance"]["source"] == "manual_operator"
+        assert proposal["proposal"]["provenance"]["provider"] is None
+        assert not any(proposal["execution"].values())
+
+        db.session.expire_all()
+        assert ticket.latitud is None and ticket.longitud is None
+        assert "territorial_coordinate_provenance" not in ticket.datos_extra
+        attempt = TerritorialGeocodingAttempt.query.one()
+        assert attempt.action == "resolve" and attempt.provider is None
+        assert not attempt.external_call_performed and not attempt.write_performed
+        assert attempt.result_json["execution"]["actor_user_id"] == admin.id
+        assert attempt.result_json["execution"]["expected_attempt_count"] == 0
+        detail = client.get(endpoint, headers=auth).get_json()
+        assert detail["selected"]["proposal"]["provenance"]["source"] == "manual_operator"
+
+        expected = {
+            "expected_proposal_digest": proposal["proposal_digest"],
+            "expected_attempt_id": proposal["proposal_version"]["attempt_id"],
+            "expected_attempt_number": proposal["proposal_version"]["attempt_number"],
+        }
+        apply_body = {"confirmed": True, **expected}
+        app.config["TERRITORIAL_GEOCODING_WRITES_ENABLED"] = False
+        assert post("apply", "manual-http-apply", apply_body).status_code == 503
+        app.config["TERRITORIAL_GEOCODING_WRITES_ENABLED"] = True
+
+        class StableAuthorityLease:
+            decision = SimpleNamespace(
+                enabled=True, allowed=True, epoch=41, reason_code="runtime_is_global_writer_owner"
+            )
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def revalidate(self, _config):
+                return self.decision
+
+        monkeypatch.setattr(
+            "routes.v2.analytics.global_writer_authority_lease",
+            lambda _config: StableAuthorityLease(),
+        )
+        unreviewed = post("apply", "manual-http-apply", apply_body)
+        assert unreviewed.status_code == 409
+        assert unreviewed.get_json()["reason_code"] == "geocoding_current_human_approval_required"
+        approved = post("review", "manual-http-review", {
+            "decision": "approved", "reason_code": "verified_on_map", **expected
+        })
+        assert approved.status_code == 201
+        assert ticket.latitud is None and ticket.longitud is None
+
+        original_metadata = dict(ticket.datos_extra)
+        ticket.datos_extra = {**original_metadata, "address": "San Martín 251, Junín"}
+        db.session.commit()
+        stale = post("apply", "manual-http-apply", apply_body)
+        assert stale.status_code == 409
+        assert stale.get_json()["reason_code"] == "geocoding_candidate_stale"
+        assert ticket.latitud is None
+        ticket.datos_extra = original_metadata
+        db.session.commit()
+
+        applied = post("apply", "manual-http-apply", apply_body)
+        assert applied.status_code == 201
+        assert applied.get_json()["execution"]["coordinates_applied"] is True
+        db.session.expire_all()
+        assert (ticket.latitud, ticket.longitud) == (-33.05, -68.47)
+        assert ticket.datos_extra["territorial_coordinate_provenance"]["source"] == "manual_operator"
+        assert ticket.datos_extra["territorial_coordinate_provenance"]["provider"] is None
+        assert ticket.datos_extra["address"] == original_metadata["address"]
+        application = TerritorialGeocodingAttempt.query.filter_by(action="apply").one()
+        assert application.result_json["execution"]["actor_user_id"] == admin.id
+        assert application.result_json["execution"]["proposal_actor_user_id"] == admin.id
+        assert application.result_json["execution"]["human_review_id"]
+        assert post("manual-location", "manual-http-original", _MANUAL_POINT).status_code == 200
+        fresh = post("manual-location", "manual-http-new", {**_MANUAL_POINT, "expected_attempt_count": 2})
+        assert fresh.status_code == 409
+        assert fresh.get_json()["reason_code"] == "geocoding_job_already_applied"
+        assert client.get(endpoint, headers=auth).get_json()["item"]["actions"]["manual_location"]["enabled"] is False
+        assert TerritorialGeocodingAttempt.query.count() == 2
+    finally:
+        _teardown(context)
+
+
+def test_http_manual_location_rejects_invalid_and_stale_requests_before_new_attempt(monkeypatch):
+    official = _official_jurisdiction()
+    app, context, admin, tenant, ticket, job = _manual_setup(monkeypatch, official)
+    try:
+        client = app.test_client()
+        endpoint = f"/api/v2/analytics/operations/geocoding-queue/{job.id}"
+        auth = _auth(app, admin, tenant.slug)
+
+        def post(body, key="manual-conflict-key", headers=auth, action="manual-location"):
+            return client.post(f"{endpoint}/{action}", headers={**headers, "Idempotency-Key": key}, json=body)
+
+        for change in (
+            {"lat": "1"}, {"lat": True}, {"lat": float("nan")}, {"lng": float("inf")},
+            {"lat": -91}, {"lng": 181}, {"confirmed": 1}, {"expected_attempt_count": -1},
+            {"expected_attempt_count": False}, {"expected_attempt_count": 0.0}, {"tenant_id": tenant.id},
+        ):
+            assert post({**_MANUAL_POINT, **change}).status_code == 400
+        assert client.post(f"{endpoint}/manual-location", headers=auth, json=_MANUAL_POINT).status_code == 400
+        outside = post({**_MANUAL_POINT, "lng": -67})
+        assert outside.status_code == 409
+        assert outside.get_json()["reason_code"] == "geocoding_proposal_outside_official_polygon"
+        assert TerritorialGeocodingAttempt.query.count() == 0
+        created = post(_MANUAL_POINT)
+        assert created.status_code == 201
+        replay = post(_MANUAL_POINT)
+        assert replay.status_code == 200 and replay.get_json()["idempotent_replay"] is True
+        assert replay.get_json()["proposal_version"] == created.get_json()["proposal_version"]
+        for change in ({"lat": -33.06}, {"expected_attempt_count": 1}):
+            collision = post({**_MANUAL_POINT, **change})
+            assert collision.status_code == 409
+            assert collision.get_json()["reason_code"] == "geocoding_resolve_idempotency_conflict"
+        stale = post(_MANUAL_POINT, key="manual-stale-attempt")
+        assert stale.status_code == 409
+        assert stale.get_json()["reason_code"] == "geocoding_manual_location_attempt_count_stale"
+
+        provider_calls = []
+        monkeypatch.setattr(
+            "routes.v2.analytics.google_geocoding_adapter",
+            lambda *_args: provider_calls.append(True),
+        )
+        provider_collision = post({}, action="resolve")
+        assert provider_collision.status_code == 409 and provider_calls == []
+        assert TerritorialGeocodingAttempt.query.count() == 1
+        assert ticket.latitud is None and ticket.longitud is None
+    finally:
+        _teardown(context)
+
+
+def test_http_manual_location_is_tenant_and_actor_scoped(monkeypatch):
+    app, context, admin, tenant, _ticket, job = _manual_setup(monkeypatch, _official_jurisdiction())
+    try:
+        employee = User(name="Empleado", email="territorial-employee@test.invalid", password_hash="hash",
+                        rol="empleado", es_empleado=True, tenant_id=tenant.id, tenant_slug=tenant.slug)
+        peer = User(name="Segundo admin", email="territorial-peer@test.invalid", password_hash="hash",
+                    rol="admin", tenant_id=tenant.id, tenant_slug=tenant.slug)
+        foreign = User(name="Admin externo", email="territorial-foreign@test.invalid", password_hash="hash",
+                       rol="admin", tenant_slug="other")
+        db.session.add_all([employee, peer, foreign])
+        db.session.flush()
+        foreign_tenant = TenantProfile(slug="other", nombre="Otro Municipio", tipo="municipio",
+                                       municipio_id=foreign.id, plan="full")
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign.tenant_id = foreign_tenant.id
+        for user, owner in ((employee, admin), (peer, admin), (foreign, foreign)):
+            user.set_password(_TEST_PASSWORD)
+            user.tipo_chat = "municipio"
+            user.municipio_id = owner.id
+        db.session.commit()
+        client = app.test_client()
+        endpoint = f"/api/v2/analytics/operations/geocoding-queue/{job.id}/manual-location"
+
+        def post(user, slug):
+            return client.post(endpoint, json=_MANUAL_POINT, headers={
+                **_auth(app, user, slug), "Idempotency-Key": "manual-actor-key"
+            })
+
+        assert post(employee, tenant.slug).status_code == 403
+        assert post(foreign, foreign_tenant.slug).status_code == 404
+        assert TerritorialGeocodingAttempt.query.count() == 0
+        assert post(admin, tenant.slug).status_code == 201
+        peer_replay = post(peer, tenant.slug)
+        assert peer_replay.status_code == 409
+        assert peer_replay.get_json()["reason_code"] == "geocoding_resolve_idempotency_conflict"
+        assert TerritorialGeocodingAttempt.query.count() == 1
+    finally:
+        _teardown(context)
+
+
+def test_http_manual_location_rejects_bounds_without_an_official_polygon(monkeypatch):
+    jurisdiction = _official_jurisdiction()
+    jurisdiction.pop("boundary_geometry")
+    app, context, admin, tenant, ticket, job = _manual_setup(monkeypatch, jurisdiction)
+    try:
+        response = app.test_client().post(
+            f"/api/v2/analytics/operations/geocoding-queue/{job.id}/manual-location",
+            headers={**_auth(app, admin, tenant.slug), "Idempotency-Key": "manual-no-polygon"},
+            json=_MANUAL_POINT,
+        )
+        assert response.status_code == 409
+        assert response.get_json()["reason_code"] == "geocoding_official_polygon_required"
+        assert TerritorialGeocodingAttempt.query.count() == 0
+        assert ticket.latitud is None
     finally:
         _teardown(context)

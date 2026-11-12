@@ -3,17 +3,75 @@ on:
   pull_request:
     paths:
       - 'app.py'
+      - 'services/contact_service.py'
+      - 'services/actions/municipio_actions.py'
+      - 'services/voice_stream_service.py'
+      - 'services/whatsapp_survey_conversation.py'
+      - 'tests/contact_scope_fixtures.py'
+      - 'tests/test_contact_scope_core.py'
+      - 'tests/test_contact_scope_consumers.py'
+      - 'tests/test_contact_scope_inline_readers.py'
+      - 'tests/test_contact_explicit_e164.py'
+      - 'tests/test_voice_stream_service.py'
+      - 'tests/test_whatsapp_survey_conversation.py'
       - 'routes/institutional_assistant.py'
       - 'routes/chat.py'
       - 'routes/whatsapp_webhook.py'
       - 'routes/meta_tdf_sandbox.py'
       - 'routes/tdf_meta_sandbox.py'
+      - 'services/institutional_assistant.py'
       - 'services/institutional_assistant_*.py'
       - 'services/meta_tdf_sandbox.py'
       - 'services/tdf_meta_sandbox.py'
       - 'services/tdf_meta_contact_identity.py'
       - 'services/tdf_meta_audio.py'
       - 'services/meta_whatsapp_webhook.py'
+      - 'services/meta_whatsapp_runtime.py'
+      - 'services/meta_whatsapp_outbox.py'
+      - 'services/whatsapp_inbound_worker.py'
+      - 'services/whatsapp_conversation_contract.py'
+      - 'services/whatsapp_conversation_turn.py'
+      - 'tests/test_whatsapp_conversation_turn.py'
+      - 'tests/test_whatsapp_post_claim_followup.py'
+      - 'tests/test_whatsapp_claim_completion_integrity.py'
+      - 'tests/test_whatsapp_flow_submissions.py'
+      - 'tests/test_meta_whatsapp_scrub.py'
+      - 'tests/test_meta_whatsapp_outbox.py'
+      - 'routes/meta_whatsapp_callback.py'
+      - 'services/channel_session_identity.py'
+      - 'services/domain_effect_gate.py'
+      - 'services/logic.py'
+      - 'services/meta_whatsapp_batch_admission.py'
+      - 'services/meta_whatsapp_cloud.py'
+      - 'services/meta_whatsapp_conversation_sink.py'
+      - 'services/meta_whatsapp_credentials.py'
+      - 'services/meta_whatsapp_media.py'
+      - 'services/municipal_conversation_uow.py'
+      - 'services/whatsapp_conversation_uow.py'
+      - 'services/whatsapp_inbound_durability.py'
+      - 'services/whatsapp_inbound_turns.py'
+      - 'services/whatsapp_receipts.py'
+      - 'models.py'
+      - 'model_primitives.py'
+      - 'tests/conftest.py'
+      - 'tests/profile_acceptance_runtime.py'
+      - 'tests/test_meta_channel_identity_admission.py'
+      - 'tests/test_meta_media_url_binding.py'
+      - 'tests/test_meta_native_media_output.py'
+      - 'tests/test_meta_raw_batch_admission.py'
+      - 'tests/test_meta_whatsapp_callback.py'
+      - 'tests/test_meta_whatsapp_crm_acceptance.py'
+      - 'tests/test_meta_whatsapp_inbound_execution_fence.py'
+      - 'tests/test_meta_whatsapp_inbound_worker.py'
+      - 'tests/test_meta_whatsapp_outbound_hold.py'
+      - 'tests/test_municipal_conversation_uow.py'
+      - 'tests/test_whatsapp_conversation_domain_writers.py'
+      - 'tests/test_whatsapp_conversation_forwarding.py'
+      - 'tests/test_whatsapp_conversation_uow.py'
+      - 'tests/test_whatsapp_conversation_uow_direct_scope.py'
+      - 'tests/test_whatsapp_conversation_uow_scope.py'
+      - 'tests/test_whatsapp_inbound_turns.py'
+      - 'tests/test_twilio_provider_network_policy.py'
       - 'services/audio_transcription_service.py'
       - 'services/tts_audio_artifacts.py'
       - 'services/tts_orchestrator.py'
@@ -40,6 +98,7 @@ on:
       - 'config/__init__.py'
       - 'app/__init__.py'
       - 'tests/*institutional_assistant*'
+      - 'tests/test_institutional_source_navigation.py'
       - 'tests/test_tdf_meta_sandbox.py'
       - 'tests/test_tdf_meta_audio.py'
       - 'tests/test_web_audio_multipart.py'
@@ -98,6 +157,462 @@ jobs:
           cache: pip
       - name: Install existing runtime dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Verify tenant-scoped contact projections and current readers offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/contact-scope
+          git rev-parse HEAD > .qa-artifacts/contact-scope/checkout.txt
+          test "$(cat .qa-artifacts/contact-scope/checkout.txt)" = "$EXPECTED_HEAD"
+          for cohort in new voice-context-cold survey-cold; do
+            mkdir -p ".qa-artifacts/contact-scope/$cohort"
+            python -I -B -X utf8 - "$cohort" <<'PY' 2>&1 | tee ".qa-artifacts/contact-scope/$cohort/tests.log"
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path.cwd()
+          cohort = sys.argv[1]
+          out = root / '.qa-artifacts/contact-scope' / cohort
+          paths = [
+              'routes/whatsapp_webhook.py', 'services/contact_service.py',
+              'services/municipio_responder.py', 'services/pymes.py',
+              'services/voice_stream_service.py', 'services/whatsapp_conversation_turn.py',
+              'services/whatsapp_survey_conversation.py', 'services/actions/municipio_actions.py',
+              'tests/contact_scope_fixtures.py', 'tests/test_contact_scope_core.py',
+              'tests/test_contact_scope_consumers.py', 'tests/test_contact_scope_inline_readers.py',
+              'tests/test_contact_explicit_e164.py',
+              'tests/test_whatsapp_welcome_each_greeting.py', 'tests/test_whatsapp_welcome_optional_audio.py',
+              'tests/test_whatsapp_webhook.py', 'tests/test_whatsapp_inbound_queue_webhook.py',
+              'tests/test_voice_stream_service.py', 'tests/test_whatsapp_survey_conversation.py',
+              'models.py', 'model_primitives.py', 'models_memory.py', 'services/common_utils.py', 'services/pyme_menu.py',
+              'tests/profile_acceptance_runtime.py', 'tests/conftest.py', 'pytest.ini',
+              '.github/workflows/tdf-accessible-channel.yml',
+          ]
+          def pins():
+              return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+          before = pins()
+          committed = {
+              path: hashlib.sha256(subprocess.run(
+                  ['git', 'show', 'HEAD:' + path], check=True, capture_output=True,
+              ).stdout).hexdigest() for path in paths
+          }
+          (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
+          (out / 'source-git-head.json').write_text(json.dumps(committed, indent=2), encoding='utf-8')
+          if before != committed:
+              raise RuntimeError('contact_scope_checkout_blob_mismatch')
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+          watched = ('TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'OPENAI_API_KEY')
+          environment_before = [key for key in watched if key in os.environ]
+          if environment_before:
+              raise RuntimeError('contact_scope_fixture_environment_not_clean')
+          targets_by_cohort = {
+              'new': [
+                  'tests/test_contact_scope_core.py',
+                  'tests/test_contact_scope_consumers.py',
+                  'tests/test_contact_scope_inline_readers.py',
+                  'tests/test_contact_explicit_e164.py',
+              ],
+              'voice-context-cold': [
+                  'tests/test_voice_stream_service.py::VoiceStreamServiceTenantResolutionTests::test_provider_sender_routes_voice_to_dedicated_tenant',
+              ],
+              'survey-cold': [
+                  'tests/test_whatsapp_survey_conversation.py::WhatsAppSurveyConversationTest::test_governed_yes_no_and_city_vote_pins_release_and_emits_realtime',
+                  'tests/test_whatsapp_survey_conversation.py::WhatsAppSurveyConversationTest::test_duplicate_is_prevented_and_uncertain_retry_replays_same_submission',
+              ],
+          }
+          targets = targets_by_cohort[cohort]
+          import pytest
+          collected = []
+          class Collection:
+              def pytest_collection_finish(self, session):
+                  collected.extend(item.nodeid for item in session.items)
+          args = ['-q', '-p', 'no:cacheprovider']
+          if cohort == 'new':
+              args.extend(['-p', 'tests.contact_scope_fixtures'])
+          result = pytest.main([*args, *targets, '--junitxml=' + str(out / 'tests.xml')], plugins=[Collection()])
+          after = pins()
+          environment_after = [key for key in watched if key in os.environ]
+          (out / 'source-after.json').write_text(json.dumps(after, indent=2), encoding='utf-8')
+          (out / 'collected-nodeids.json').write_text(json.dumps(collected, indent=2), encoding='utf-8')
+          (out / 'environment-presence.json').write_text(json.dumps({
+              'watched_keys': watched, 'before': environment_before, 'after': environment_after,
+              'values_recorded': False,
+          }, indent=2), encoding='utf-8')
+          counts = None
+          native_testcase_elements = None
+          if (out / 'tests.xml').is_file():
+              report = ET.parse(out / 'tests.xml').getroot()
+              suites = [node for node in report.iter('testsuite') if not node.findall('testsuite')]
+              counts = {key: sum(int(node.attrib.get(key, 0)) for node in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+              native_testcase_elements = len(list(report.iter('testcase')))
+          covered = bool(collected) and len(collected) == len(set(collected)) and all(
+              any(node == target or node.startswith(target + '::') or node.startswith(target + '[')
+                  for node in collected) for target in targets
+          )
+          valid = (int(result) == 0 and before == committed == after and covered
+                   and counts is not None and counts['tests'] > 0
+                   and environment_before == environment_after
+                   and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped')))
+          summary = {
+              'checkout': (out.parent / 'checkout.txt').read_text().strip(), 'cohort': cohort,
+              'exit_code': int(result), 'targets': targets, 'collected_items': len(collected),
+              'native_xml_counts': counts, 'native_testcase_elements': native_testcase_elements,
+              'source_pins_unchanged': before == after, 'checkout_blob_equal': before == committed,
+              'fixture_environment_restored': environment_before == environment_after,
+              'provider_delivery_verified': False, 'production_state_verified': False, 'passed': valid,
+          }
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+          done
+      - name: Preserve tenant-scoped contact native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: contact-scope-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/contact-scope/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify production Meta outbox dispatch offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/meta-whatsapp-outbox
+          git rev-parse HEAD > .qa-artifacts/meta-whatsapp-outbox/checkout.txt
+          test "$(cat .qa-artifacts/meta-whatsapp-outbox/checkout.txt)" = "$EXPECTED_HEAD"
+          python -I -B -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/meta-whatsapp-outbox/tests.log
+          import hashlib, json, os, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path.cwd()
+          out = root / '.qa-artifacts/meta-whatsapp-outbox'
+          paths = ['services/meta_whatsapp_runtime.py', 'services/meta_whatsapp_outbox.py',
+                   'services/whatsapp_inbound_worker.py', 'tests/test_meta_whatsapp_outbox.py',
+                   'tests/test_meta_whatsapp_scrub.py',
+                   'tests/test_outbox_execution_budget.py', 'tests/test_twilio_provider_network_policy.py',
+                   'tests/test_whatsapp_inbound_queue_webhook.py', 'tests/test_whatsapp_inbound_turns.py',
+                   'services/meta_whatsapp_cloud.py', 'services/meta_whatsapp_webhook.py',
+                   'services/meta_whatsapp_credentials.py', 'services/outbox_execution_budget.py',
+                   'services/whatsapp_inbound_turns.py', 'services/whatsapp_inbound_durability.py',
+                   'models.py', 'model_primitives.py', 'tests/profile_acceptance_runtime.py',
+                   '.github/workflows/tdf-accessible-channel.yml']
+          def pins(): return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+          before = pins()
+          (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+          import pytest
+          targets = [
+              "tests/test_meta_whatsapp_outbox.py",
+              "tests/test_meta_whatsapp_scrub.py",
+              "tests/test_twilio_provider_network_policy.py::test_durable_worker_blocks_before_twilio_client_and_keeps_attempt_retryable",
+              "tests/test_whatsapp_inbound_queue_webhook.py::WhatsAppInboundQueueWebhookTestCase::test_pre_provider_configuration_failure_is_retryable_not_uncertain",
+              "tests/test_whatsapp_inbound_queue_webhook.py::WhatsAppInboundQueueWebhookTestCase::test_provider_timeout_is_uncertain_and_never_claimed_again",
+              "tests/test_whatsapp_inbound_turns.py::test_outbound_attempts_are_fifo_within_a_stream",
+              "tests/test_whatsapp_inbound_turns.py::test_expired_outbound_sending_becomes_uncertain_and_is_never_retried",
+          ]
+          result = pytest.main(['--noconftest', '-q', '-p', 'no:cacheprovider',
+                                *targets, '--junitxml=' + str(out / 'tests.xml')])
+          after = pins()
+          (out / 'source-after.json').write_text(json.dumps(after, indent=2), encoding='utf-8')
+          counts = None
+          testcase_elements = None
+          if (out / 'tests.xml').is_file():
+              report = ET.parse(out / 'tests.xml').getroot()
+              suites = [node for node in report.iter('testsuite') if not node.findall('testsuite')]
+              counts = {key: sum(int(node.attrib.get(key, 0)) for node in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+              testcase_elements = len(list(report.iter('testcase')))
+          valid = (int(result) == 0 and before == after and counts is not None
+                   and counts['tests'] > 0 and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped')))
+          summary = {'checkout': (out / 'checkout.txt').read_text().strip(), 'exit_code': int(result),
+                     'targets': targets, 'counts': counts, 'native_testcase_elements': testcase_elements,
+                     'source_pins_unchanged': before == after, 'passed': valid}
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Preserve Meta outbox native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: meta-whatsapp-outbox-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/meta-whatsapp-outbox/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify dormant Meta callback, claim and CRM circuit offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          out=.qa-artifacts/meta-native-claim
+          mkdir -p "$out"
+          git rev-parse HEAD > "$out/checkout.txt"
+          test "$(cat "$out/checkout.txt")" = "$EXPECTED_HEAD"
+          python -I -B -X utf8 - <<'PY' 2>&1 | tee "$out/tests.log"
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          root = Path.cwd()
+          out = root / '.qa-artifacts/meta-native-claim'
+          checkout = (out / 'checkout.txt').read_text().strip()
+          targets = [
+              'tests/test_meta_channel_identity_admission.py',
+              'tests/test_meta_media_url_binding.py',
+              'tests/test_meta_native_media_output.py',
+              'tests/test_meta_raw_batch_admission.py',
+              'tests/test_meta_whatsapp_callback.py',
+              'tests/test_meta_whatsapp_crm_acceptance.py',
+              'tests/test_meta_whatsapp_inbound_execution_fence.py',
+              'tests/test_meta_whatsapp_inbound_worker.py',
+              'tests/test_meta_whatsapp_outbound_hold.py',
+              'tests/test_meta_whatsapp_outbox.py',
+              'tests/test_municipal_conversation_uow.py',
+              'tests/test_whatsapp_conversation_domain_writers.py',
+              'tests/test_whatsapp_conversation_forwarding.py',
+              'tests/test_whatsapp_conversation_uow.py',
+              'tests/test_whatsapp_conversation_uow_direct_scope.py',
+              'tests/test_whatsapp_conversation_uow_scope.py',
+          ]
+          paths = [
+              'app.py', 'config/__init__.py', 'database.py', 'extensions.py', 'models.py', 'model_primitives.py',
+              'routes/meta_whatsapp_callback.py', 'routes/whatsapp_webhook.py',
+              'services/actions/municipio_actions.py', 'services/channel_session_identity.py',
+              'services/contact_service.py', 'services/crm_intelligence.py',
+              'services/domain_effect_gate.py', 'services/logic.py',
+              'services/meta_whatsapp_batch_admission.py', 'services/meta_whatsapp_cloud.py',
+              'services/meta_whatsapp_conversation_sink.py', 'services/meta_whatsapp_credentials.py',
+              'services/meta_whatsapp_media.py', 'services/meta_whatsapp_outbox.py',
+              'services/meta_whatsapp_runtime.py', 'services/meta_whatsapp_webhook.py',
+              'services/municipal_conversation_uow.py', 'services/municipio_responder.py',
+              'services/outbox_execution_budget.py', 'services/ticket_service.py',
+              'services/whatsapp_conversation_contract.py', 'services/whatsapp_conversation_turn.py',
+              'services/whatsapp_conversation_uow.py', 'services/whatsapp_inbound_durability.py',
+              'services/whatsapp_inbound_turns.py', 'services/whatsapp_inbound_worker.py',
+              'services/whatsapp_receipt_branding.py', 'services/whatsapp_receipts.py',
+              'tests/test_whatsapp_inbound_turns.py', 'tests/conftest.py',
+              'tests/profile_acceptance_runtime.py', 'pytest.ini',
+              '.github/workflows/tdf-accessible-channel.yml', *targets,
+          ]
+          def digest(value):
+              return hashlib.sha256(value).hexdigest()
+
+          def pins():
+              return {path: digest((root / path).read_bytes()) for path in paths}
+
+          def evidence(name, value):
+              (out / name).write_text(json.dumps(value, indent=2), encoding='utf-8')
+
+          before = pins()
+          committed = {path: digest(subprocess.check_output(['git', 'show', checkout + ':' + path]))
+                       for path in paths}
+          evidence('source-before.json', before)
+          evidence('checkout-blobs.json', committed)
+          if before != committed:
+              raise SystemExit('Meta circuit files do not match checked-out blobs')
+
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          import pytest
+
+          watched = ('OPENAI_API_KEY', 'TWILIO_AUTH_TOKEN', 'META_WHATSAPP_APP_SECRETS_JSON',
+                     'META_WHATSAPP_CALLBACK_VERIFY_TOKENS_JSON', 'META_WHATSAPP_CALLBACK_CANARY_RECIPIENTS_JSON',
+                     'META_WHATSAPP_CALLBACK_ENABLED', 'META_WHATSAPP_INBOUND_WORKER_ENABLED',
+                     'META_WHATSAPP_OUTBOUND_ENABLED')
+          env_before = [key for key in watched if key in os.environ]
+          if env_before or os.environ.get('DATABASE_URL') != 'sqlite:///:memory:':
+              raise SystemExit('Meta circuit test environment is not isolated')
+
+          collected = []
+          class CollectionEvidence:
+              def pytest_collection_finish(self, session):
+                  collected.extend(item.nodeid for item in session.items)
+
+          report_path = out / 'tests.xml'
+          result = pytest.main(['-q', '-p', 'no:cacheprovider', *targets,
+                                '--junitxml=' + str(report_path)], plugins=[CollectionEvidence()])
+          after = pins()
+          head_after = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          env_after = [key for key in watched if key in os.environ]
+          evidence('source-after.json', after)
+          evidence('collected-nodeids.json', collected)
+          evidence('environment-presence.json', {'before': env_before, 'after': env_after,
+                                                 'values_recorded': False})
+          counts = None
+          testcase_elements = None
+          if report_path.is_file():
+              report = ET.parse(report_path).getroot()
+              suites = [node for node in report.iter('testsuite') if not node.findall('testsuite')]
+              counts = {key: sum(int(node.attrib.get(key, 0)) for node in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+              testcase_elements = len(list(report.iter('testcase')))
+          covered = bool(collected) and len(collected) == len(set(collected)) and all(
+              any(node.startswith(target + '::') for node in collected) for target in targets)
+          valid = (int(result) == 0 and checkout == head_after and before == committed == after
+                   and covered and not env_after and counts is not None
+                   and counts['tests'] == testcase_elements == len(collected)
+                   and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped')))
+          summary = {
+              'checkout': checkout, 'checkout_after': head_after, 'exit_code': int(result),
+              'targets': targets, 'collected_items': len(collected), 'native_xml_counts': counts,
+              'native_testcase_elements': testcase_elements, 'source_pins_unchanged': before == after,
+              'checkout_blob_equal': before == committed, 'fixture_environment_restored': env_before == env_after,
+              'report_sha256': digest(report_path.read_bytes()) if report_path.is_file() else None,
+              'provider_delivery_verified': False, 'production_state_verified': False, 'passed': valid,
+          }
+          evidence('summary.json', summary)
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Preserve Meta native claim and CRM evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: meta-native-claim-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/meta-native-claim/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify common WhatsApp conversation and legacy contracts offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/whatsapp-common-conversation
+          git rev-parse HEAD > .qa-artifacts/whatsapp-common-conversation/checkout.txt
+          test "$(cat .qa-artifacts/whatsapp-common-conversation/checkout.txt)" = "$EXPECTED_HEAD"
+          python -I -B -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/whatsapp-common-conversation/tests.log
+          import hashlib, json, os, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path.cwd()
+          out = root / '.qa-artifacts/whatsapp-common-conversation'
+          paths = ['services/whatsapp_conversation_contract.py', 'services/whatsapp_conversation_turn.py', 'routes/whatsapp_webhook.py', 'tests/test_whatsapp_conversation_turn.py', 'tests/test_whatsapp_post_claim_followup.py', 'tests/test_whatsapp_claim_completion_integrity.py', 'tests/test_whatsapp_webhook.py', 'tests/test_whatsapp_flow_submissions.py', 'tests/test_education_context_first_draft.py', 'services/response_formatter.py', 'services/ticket_service.py', 'services/crm_intelligence.py', 'services/contact_service.py', 'services/logic.py', 'services/municipio_responder.py', 'models.py', 'model_primitives.py', 'models_memory.py', 'tests/profile_acceptance_runtime.py', 'tests/conftest.py', 'pytest.ini', '.github/workflows/tdf-accessible-channel.yml']
+          def pins(): return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+          before = pins()
+          (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+          watched_environment_keys = ('TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'OPENAI_API_KEY')
+          environment_before = [key for key in watched_environment_keys if key in os.environ]
+          if environment_before:
+              raise RuntimeError('common_conversation_fixture_environment_not_clean')
+          import pytest
+          targets = ['tests/test_whatsapp_conversation_turn.py', 'tests/test_whatsapp_post_claim_followup.py', 'tests/test_whatsapp_claim_completion_integrity.py', 'tests/test_whatsapp_flow_submissions.py::WhatsAppFlowWebhookIntegrationTest', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_whatsapp_webhook_valid_request', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_institutional_numeric_reply_is_not_rewritten_by_webhook', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_institutional_stale_response_clears_previous_whatsapp_menu', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_numeric_input_ignored_when_waiting_info', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_numeric_input_ignored_when_waiting_claim_info', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_numeric_option_is_mapped_to_text', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_numeric_option_uses_category_name', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_whatsapp_webhook_pdf_attachment', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_whatsapp_webhook_docx_attachment', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_whatsapp_webhook_image_attachment', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_image_attachment_skips_analysis_when_reclamo_active', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_whatsapp_webhook_audio_attachment_skips_classification', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_whatsapp_webhook_audio_attachment_transcribes_text', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_whatsapp_payload_sends_pre_messages_before_main_message', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_text_response_with_image_sends_media', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_chatboc_demo_business_free_text_order_keeps_context', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_chatboc_demo_public_number_stays_limited_after_limit', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_chatboc_demo_school_free_text_keeps_context', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_provider_sender_routes_inbound_to_its_tenant_without_demo_override']
+          result = pytest.main(['-q', '-p', 'no:cacheprovider', *targets,
+                                '--junitxml=' + str(out / 'tests.xml')])
+          after = pins()
+          environment_after = [key for key in watched_environment_keys if key in os.environ]
+          (out / 'source-after.json').write_text(json.dumps(after, indent=2), encoding='utf-8')
+          (out / 'environment-presence.json').write_text(json.dumps({
+              'watched_keys': watched_environment_keys, 'before': environment_before,
+              'after': environment_after, 'values_recorded': False}, indent=2), encoding='utf-8')
+          counts = None
+          native_testcase_elements = None
+          if (out / 'tests.xml').is_file():
+              report = ET.parse(out / 'tests.xml').getroot()
+              suites = [node for node in report.iter('testsuite') if not node.findall('testsuite')]
+              counts = {key: sum(int(node.attrib.get(key, 0)) for node in suites)
+                        for key in ('tests', 'failures', 'errors', 'skipped')}
+              native_testcase_elements = len(list(report.iter('testcase')))
+          valid = (int(result) == 0 and before == after and counts is not None
+                   and counts['tests'] > 0 and not environment_after
+                   and all(counts[key] == 0 for key in ('failures', 'errors', 'skipped')))
+          summary = {'checkout': (out / 'checkout.txt').read_text().strip(),
+              'exit_code': int(result), 'targets': targets, 'counts': counts,
+              'native_testcase_elements': native_testcase_elements,
+              'source_pins_unchanged': before == after,
+              'fixture_environment_restored': environment_before == environment_after,
+              'existing_step_coverage': {'tests/test_education_context_first_draft.py::EducationContextFirstHttpTest::test_dynamic_confirmation_id_reaches_real_webhook_and_creates_once': 'Verify scoped context-first drafts across municipal, school and delivery flows offline', 'tests/test_whatsapp_webhook.py::WhatsAppWebhookTestCase::test_chatboc_demo_limit_yes_marks_hot_lead_without_resetting_public_limit': 'Verify CRM commercial signals and separate consent offline'}, 'passed': valid}
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Preserve common conversation native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: whatsapp-common-conversation-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/whatsapp-common-conversation/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify source catalog navigation and channel isolation offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/source-navigation
+          git rev-parse HEAD > .qa-artifacts/source-navigation/checkout.txt
+          test "$(cat .qa-artifacts/source-navigation/checkout.txt)" = "$EXPECTED_HEAD"
+          python -I -B -X utf8 - <<'PY' 2>&1 | tee .qa-artifacts/source-navigation/tests.log
+          import hashlib, json, os, sys
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          root = Path.cwd()
+          out = root / '.qa-artifacts/source-navigation'
+          paths = ['services/institutional_assistant.py', 'services/institutional_assistant_content.py',
+                   'services/response_formatter.py', 'routes/institutional_assistant.py',
+                   'tests/test_institutional_source_navigation.py', 'tests/profile_acceptance_runtime.py',
+                   'tests/conftest.py']
+          def pins(): return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
+          before = pins()
+          (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
+          sys.path.insert(0, str(root))
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          os.environ['CORS_ALLOWED_ORIGINS'] = 'https://panel.example.invalid'
+          os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
+          os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+          import pytest
+          result = pytest.main(['--noconftest', '-p', 'tests.conftest', '-q', '-p', 'no:cacheprovider',
+                                'tests/test_institutional_source_navigation.py', '--junitxml=' + str(out / 'tests.xml')])
+          suite = ET.parse(out / 'tests.xml').getroot().find('testsuite')
+          counts = {key: int(suite.attrib[key]) for key in ('tests', 'failures', 'errors', 'skipped')}
+          after = pins()
+          (out / 'source-after.json').write_text(json.dumps(after, indent=2), encoding='utf-8')
+          valid = result == 0 and counts == {'tests': 20, 'failures': 0, 'errors': 0, 'skipped': 0} and before == after
+          summary = {'checkout': (out / 'checkout.txt').read_text().strip(), 'exit_code': int(result),
+                     'counts': counts, 'source_pins_unchanged': before == after, 'passed': valid}
+          (out / 'summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
+          print(json.dumps(summary))
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Preserve source navigation native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-navigation-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/source-navigation
+          if-no-files-found: error
+          retention-days: 7
       - name: Verify public routes, revision withdrawal and audio isolation
         run: python -X utf8 -m tests.institutional_assistant_http
       - name: Verify Meta binding, signature, durable delivery and canonical menus offline

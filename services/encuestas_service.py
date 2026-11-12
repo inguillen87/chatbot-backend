@@ -595,6 +595,10 @@ class EncuestaError(Exception):
         return data
 
 
+class SurveyParticipationAlreadyRecorded(EncuestaError):
+    """A duplicate found by the scoped prewrite probe, before staging a response."""
+
+
 def _encuesta_jurisdiction_error(exc: Exception) -> EncuestaError:
     """Preserve the jurisdiction gate's stable public error contract."""
 
@@ -7067,7 +7071,19 @@ def save_respuesta(
     submission_id: Optional[str] = None,
     eligibility_credential: Any = None,
     eligibility_transport: Optional[str] = None,
+    unit_of_work=None,
+    conversation_turn_id: Optional[str] = None,
 ) -> EncRespuesta:
+    if unit_of_work is not None:
+        from services.whatsapp_conversation_uow import ConversationUnitOfWork, ConversationUnitOfWorkError
+
+        if (not isinstance(unit_of_work, ConversationUnitOfWork) or commit is not False
+                or require_tenant_match is not True or authenticated_user is not None):
+            raise ConversationUnitOfWorkError("survey_conversation_writer_scope_invalid")
+        unit_of_work.require_writer_scope(session=db.session(), tenant_id=preferred_tenant_id,
+                                          turn_id=conversation_turn_id)
+    elif conversation_turn_id is not None:
+        raise ValueError("survey_conversation_owner_required")
     if not isinstance(payload, dict):
         if isinstance(payload, Mapping):
             payload = dict(payload)
@@ -7076,14 +7092,21 @@ def save_respuesta(
     else:
         payload = dict(payload)
 
+    if unit_of_work is not None:
+        participant = unit_of_work.contact_identity
+        if (not isinstance(request_ctx, Mapping) or request_ctx.get("anon_id") != participant
+                or payload.get("phone") != participant or request_ctx.get("canal") != "whatsapp_chat"
+                or payload.get("canal") != "whatsapp_chat"):
+            unit_of_work.fail("survey_conversation_participant_mismatch")
+
     _reject_survey_eligibility_credential_smuggling(payload)
 
     submission_id = resolve_survey_submission_id(
         payload,
         header_value=submission_id,
-        required=False,
+        required=unit_of_work is not None,
     )
-    if submission_id is not None and not commit:
+    if submission_id is not None and not commit and unit_of_work is None:
         raise EncuestaError(
             "submission_id no admite una transaccion externa sin savepoint propietario",
             status_code=500,
@@ -7095,7 +7118,7 @@ def save_respuesta(
             },
         )
 
-    if submission_id is not None:
+    if submission_id is not None and unit_of_work is None:
         replay = find_survey_response_replay(
             slug_publico,
             payload,
@@ -7113,7 +7136,12 @@ def save_respuesta(
         preferred_tenant_id=preferred_tenant_id,
         require_tenant_match=require_tenant_match,
     )
-    encuesta = _acquire_encuesta_response_guard(encuesta.id)
+    if unit_of_work is None:
+        encuesta = _acquire_encuesta_response_guard(encuesta.id)
+    else:
+        # Native Meta owns the reply and the response effects. Serialize the
+        # receipt and duplicate probes against every writer on this instrument.
+        encuesta = _acquire_encuesta_write_guard(encuesta.id)
     _ensure_locked_public_encuesta(encuesta)
     expected_structure_revision = int(encuesta.structure_revision or 1)
 
@@ -7253,6 +7281,10 @@ def save_respuesta(
             response_origin=SURVEY_RESPONSE_ORIGIN_REAL,
         ).first()
         if existing:
+            if unit_of_work is not None:
+                duplicate = _survey_duplicate_response_error()
+                raise SurveyParticipationAlreadyRecorded(
+                    duplicate.message, duplicate.status_code, duplicate.payload)
             raise _survey_duplicate_response_error()
 
     genero = _normalize_genero(payload.get("genero") or payload.get("sexo"))
@@ -7520,12 +7552,19 @@ def save_respuesta(
             grant_reward=grant_reward and not source_anonymous,
             emit_realtime_update=emit_realtime_update,
             stage_analytics=True,
+            unit_of_work=unit_of_work,
+            conversation_turn_id=conversation_turn_id,
         )
+        if unit_of_work is not None:
+            unit_of_work.require_writer_scope(session=db.session(), tenant_id=tenant_id,
+                                              turn_id=conversation_turn_id)
         if commit:
             db.session.commit()
         else:
             db.session.flush()
     except IntegrityError as exc:
+        if unit_of_work is not None:
+            unit_of_work.fail("survey_conversation_write_integrity_failed", exc)
         if commit:
             db.session.rollback()
         if submission_id is not None and submission_payload_hash is not None:

@@ -36,6 +36,23 @@ name: Survey and organization evidence
       - routes/backoffice.py
       - routes/ticket.py
       - services/ticket_service.py
+      - routes/v2/analytics.py
+      - services/analytics/ticket_satisfaction.py
+      - services/tenant_ticket_scope.py
+      - models.py
+      - model_primitives.py
+      - models_territorial_geocoding.py
+      - tests/test_ticket_csat_http.py
+      - tests/test_v2_analytics_overview.py
+      - tests/profile_acceptance_runtime.py
+      - tests/conftest.py
+      - services/territorial_geocoding_admin.py
+      - services/territorial_geocoding_execution.py
+      - services/territorial_geocoding_store.py
+      - tests/test_territorial_geocoding_execution.py
+      - tests/test_territorial_geocoding_admin_api.py
+      - tests/test_territorial_geocoding_store.py
+      - tests/test_territorial_geocoding_model_imports.py
       - tests/test_ticket_public_history_scope.py
       - services/operational_intelligence.py
       - services/ticket_workflow_policy.py
@@ -56,6 +73,10 @@ name: Survey and organization evidence
       - tests/test_ticket_operational_badges.py
       - tests/test_v2_operational_analytics.py
       - tests/test_v2_sla_truth.py
+      - services/v2/sla_service.py
+      - tests/test_sla_detector_stored_evidence.py
+      - services/tenant_portability_inventory.py
+      - tests/test_tenant_portability_inventory.py
       - services/twilio_tech_provider.py
       - tests/v2_tenant_membership_http.py
       - services/native_admin_membership.py
@@ -103,6 +124,84 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Stored SLA obligations remain evidence-based
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/sla-stored-evidence
+          git rev-parse HEAD > .qa-artifacts/sla-stored-evidence/checkout.txt
+          test "$(cat .qa-artifacts/sla-stored-evidence/checkout.txt)" = "$EXPECTED_HEAD"
+          sha256sum services/v2/sla_service.py routes/v2/sla.py tests/test_sla_detector_stored_evidence.py tests/test_v2_sla_truth.py tests/profile_acceptance_runtime.py > .qa-artifacts/sla-stored-evidence/source-before.txt
+          python -I -B -X utf8 -c "import sys; from pathlib import Path; sys.path.insert(0,str(Path.cwd())); from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD']='1'; import pytest; raise SystemExit(pytest.main(['--noconftest','-p','no:cacheprovider','-q','tests/test_sla_detector_stored_evidence.py','--junitxml=.qa-artifacts/sla-stored-evidence/tests.xml']))" 2>&1 | tee .qa-artifacts/sla-stored-evidence/tests.log
+          sha256sum services/v2/sla_service.py routes/v2/sla.py tests/test_sla_detector_stored_evidence.py tests/test_v2_sla_truth.py tests/profile_acceptance_runtime.py > .qa-artifacts/sla-stored-evidence/source-after.txt
+          cmp .qa-artifacts/sla-stored-evidence/source-before.txt .qa-artifacts/sla-stored-evidence/source-after.txt
+      - name: Preserve stored SLA native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sla-stored-evidence-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/sla-stored-evidence/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Partial tenant portability has finite canonical JSON and honest completeness
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/tenant-portability-inventory
+          git rev-parse HEAD > .qa-artifacts/tenant-portability-inventory/checkout.txt
+          test "$(cat .qa-artifacts/tenant-portability-inventory/checkout.txt)" = "$EXPECTED_HEAD"
+          sha256sum services/tenant_portability_inventory.py tests/test_tenant_portability_inventory.py tests/conftest.py tests/profile_acceptance_runtime.py > .qa-artifacts/tenant-portability-inventory/source-before.txt
+          python -I -B -X utf8 -c "import sys; from pathlib import Path; sys.path.insert(0,str(Path.cwd())); from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD']='1'; import pytest; raise SystemExit(pytest.main(['--noconftest','-p','tests.conftest','-p','no:cacheprovider','-q','tests/test_tenant_portability_inventory.py','--junitxml=.qa-artifacts/tenant-portability-inventory/tests.xml']))" 2>&1 | tee .qa-artifacts/tenant-portability-inventory/tests.log
+          sha256sum services/tenant_portability_inventory.py tests/test_tenant_portability_inventory.py tests/conftest.py tests/profile_acceptance_runtime.py > .qa-artifacts/tenant-portability-inventory/source-after.txt
+          cmp .qa-artifacts/tenant-portability-inventory/source-before.txt .qa-artifacts/tenant-portability-inventory/source-after.txt
+      - name: Preserve tenant portability native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tenant-portability-inventory-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/tenant-portability-inventory/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+      - name: Verify ticket ratings, analytics overview and territorial review offline
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          out=.qa-artifacts/ticket-satisfaction
+          mkdir -p "$out"
+          git rev-parse HEAD > "$out/checkout.txt"
+          test "$(cat "$out/checkout.txt")" = "$EXPECTED_HEAD"
+          sources=(routes/ticket.py services/ticket_service.py routes/v2/analytics.py services/analytics/ticket_satisfaction.py services/tenant_ticket_scope.py models.py model_primitives.py models_territorial_geocoding.py tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/profile_acceptance_runtime.py tests/conftest.py services/territorial_geocoding_admin.py services/territorial_geocoding_execution.py services/territorial_geocoding_store.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py tests/test_territorial_geocoding_model_imports.py)
+          sha256sum "${sources[@]}" > "$out/source-before.txt"
+          result=0
+          for suite in tests/test_ticket_csat_http.py tests/test_v2_analytics_overview.py tests/test_territorial_geocoding_execution.py tests/test_territorial_geocoding_admin_api.py tests/test_territorial_geocoding_store.py tests/test_territorial_geocoding_model_imports.py; do
+            name="${suite##*/}"
+            name="${name%.py}"
+            suite_args=()
+            case "$suite" in
+              tests/test_territorial_geocoding_*.py) suite_args+=(--noconftest) ;;
+            esac
+            python -I -B -X utf8 -c "import os, sys; from pathlib import Path; sys.path.insert(0, str(Path.cwd())); from tests.profile_acceptance_runtime import prepare_process; prepare_process(); os.environ['CORS_ALLOWED_ORIGINS']='https://panel.example.invalid'; os.environ['PYTEST_DISABLE_PLUGIN_AUTOLOAD']='1'; import pytest; raise SystemExit(pytest.main(['-q', '-p', 'no:cacheprovider', sys.argv[1], '--junitxml='+sys.argv[2], *sys.argv[3:]]))" "$suite" "$out/$name.xml" "${suite_args[@]}" 2>&1 | tee "$out/$name.log" || result=1
+          done
+          sha256sum "${sources[@]}" > "$out/source-after.txt"
+          cmp "$out/source-before.txt" "$out/source-after.txt"
+          exit "$result"
+      - name: Preserve ticket satisfaction native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ticket-satisfaction-${{ github.event.pull_request.head.sha }}
+          path: .qa-artifacts/ticket-satisfaction/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
       - name: Public ticket history keeps only case-linked comments
         shell: bash
         run: |

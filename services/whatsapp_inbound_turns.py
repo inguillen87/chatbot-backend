@@ -20,7 +20,8 @@ import secrets
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy import and_, exists, func, or_, select, update
+from flask import current_app
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
@@ -68,6 +69,8 @@ DEFAULT_PAYLOAD_SCRUB_BATCH_SIZE = 200
 MAX_PAYLOAD_SCRUB_BATCH_SIZE = 500
 
 _PAYLOAD_SCRUB_MARKER = "_chatboc_payload_scrub"
+_META_EXECUTION_ARMED = "meta_execution_armed"
+_META_COMMIT_UNCERTAIN = "meta_commit_uncertain"
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _MEDIA_FIELD = re.compile(r"^(?:MediaUrl|MediaContentType|MediaSid)([0-9])$")
@@ -252,6 +255,7 @@ class OutboundAttemptClaim:
     max_attempts: int
     lease_token: str
     leased_until: datetime
+    claimed_from_status: Optional[str] = None
 
 
 def _utc_now() -> datetime:
@@ -910,6 +914,21 @@ def ingest_whatsapp_inbound_turn(
         return _receipt(turn, INGEST_CREATED)
 
 
+def _meta_execution_armed():
+    return and_(
+        WhatsAppInboundTurn.provider == "meta",
+        WhatsAppInboundTurn.last_error_code.is_not_distinct_from(_META_EXECUTION_ARMED),
+    )
+
+
+def _expired_inbound_lease(now: datetime):
+    return and_(
+        WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
+        WhatsAppInboundTurn.leased_until.isnot(None),
+        WhatsAppInboundTurn.leased_until <= now,
+    )
+
+
 def _inbound_due_filter(now: datetime):
     return or_(
         and_(
@@ -923,40 +942,46 @@ def _inbound_due_filter(now: datetime):
             WhatsAppInboundTurn.available_at <= now,
         ),
         and_(
-            WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
-            WhatsAppInboundTurn.leased_until.isnot(None),
-            WhatsAppInboundTurn.leased_until <= now,
+            _expired_inbound_lease(now),
+            ~_meta_execution_armed(),
             WhatsAppInboundTurn.attempt_count < WhatsAppInboundTurn.max_attempts,
         ),
     )
 
 
-def _quarantine_exhausted_inbound_leases(
+def _quarantine_expired_inbound_leases(
     session: Session,
     *,
     now: datetime,
     tenant_id: Optional[int] = None,
     stream_key: Optional[str] = None,
+    providers: Optional[tuple[str, ...]] = None,
 ) -> int:
-    """Terminate crashed turns that exhausted their bounded processing budget."""
+    """Stop expired armed Meta turns and turns that exhausted their retry budget."""
 
     statement = update(WhatsAppInboundTurn).where(
-            WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
-            WhatsAppInboundTurn.leased_until.isnot(None),
-            WhatsAppInboundTurn.leased_until <= now,
+        _expired_inbound_lease(now),
+        or_(
+            _meta_execution_armed(),
             WhatsAppInboundTurn.attempt_count >= WhatsAppInboundTurn.max_attempts,
-        )
+        ),
+    )
     if tenant_id is not None:
         statement = statement.where(WhatsAppInboundTurn.tenant_id == tenant_id)
     if stream_key is not None:
         statement = statement.where(WhatsAppInboundTurn.stream_key == stream_key)
+    if providers is not None:
+        statement = statement.where(WhatsAppInboundTurn.provider.in_(providers))
     transition = session.execute(
         statement.values(
             status=WhatsAppInboundTurn.STATUS_DEAD,
             lease_token=None,
             leased_until=None,
             completed_at=now,
-            last_error_code="processing_lease_expired",
+            last_error_code=case(
+                (_meta_execution_armed(), _META_COMMIT_UNCERTAIN),
+                else_="processing_lease_expired",
+            ),
             updated_at=now,
         )
         .execution_options(synchronize_session=False)
@@ -968,6 +993,7 @@ def claim_next_whatsapp_inbound_turn(
     *,
     tenant_id: Any = None,
     stream_key: Any = None,
+    providers: Optional[tuple[str, ...]] = None,
     lease_seconds: Any = DEFAULT_LEASE_SECONDS,
     now: Optional[datetime] = None,
 ) -> Optional[InboundTurnClaim]:
@@ -975,6 +1001,11 @@ def claim_next_whatsapp_inbound_turn(
 
     operation_now = _coerce_utc(now)
     lease_duration = _bounded_lease_seconds(lease_seconds)
+    if providers is not None and (
+        not isinstance(providers, tuple) or not providers
+        or any(provider not in ("twilio", "meta") for provider in providers)
+    ):
+        raise WhatsAppTurnValidationError("invalid_inbound_claim_providers")
     resolved_tenant_id = (
         _positive_int(tenant_id, code="invalid_tenant_id")
         if tenant_id is not None
@@ -1007,18 +1038,21 @@ def claim_next_whatsapp_inbound_turn(
     )
 
     with Session(bind=db.engine, expire_on_commit=False) as session:
-        exhausted = _quarantine_exhausted_inbound_leases(
+        quarantined = _quarantine_expired_inbound_leases(
             session,
             now=operation_now,
             tenant_id=resolved_tenant_id,
             stream_key=resolved_stream_key,
+            providers=providers,
         )
-        if exhausted:
+        if quarantined:
             session.commit()
         candidate_query = select(WhatsAppInboundTurn.id).where(
             _inbound_due_filter(operation_now),
             head_of_stream,
         )
+        provider_filter = () if providers is None else (WhatsAppInboundTurn.provider.in_(providers),)
+        candidate_query = candidate_query.where(*provider_filter)
         if resolved_tenant_id is not None:
             candidate_query = candidate_query.where(
                 WhatsAppInboundTurn.tenant_id == resolved_tenant_id
@@ -1044,6 +1078,7 @@ def claim_next_whatsapp_inbound_turn(
                 .where(
                     WhatsAppInboundTurn.id == int(candidate_id),
                     _inbound_due_filter(operation_now),
+                    *provider_filter,
                 )
                 .values(
                     status=WhatsAppInboundTurn.STATUS_PROCESSING,
@@ -1159,6 +1194,54 @@ def renew_whatsapp_inbound_turn_lease(
             return None
         session.commit()
         return renewed_until
+
+
+@outbox_persistence_operation
+def arm_meta_whatsapp_inbound_execution(
+    turn_id: Any,
+    lease_token: Any,
+    *,
+    now: Optional[datetime] = None,
+) -> bool:
+    """Commit a one-use execution fence before opening the business transaction."""
+
+    resolved_turn_id = _normalize_identifier(
+        turn_id, code="invalid_turn_id", max_length=36, lowercase=True,
+    )
+    resolved_lease_token = _normalize_identifier(
+        lease_token, code="invalid_lease_token", max_length=64, lowercase=True,
+    )
+    scope = (
+        WhatsAppInboundTurn.turn_id == resolved_turn_id,
+        WhatsAppInboundTurn.provider == "meta",
+        WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
+        WhatsAppInboundTurn.lease_token == resolved_lease_token,
+    )
+    lease_query = select(WhatsAppInboundTurn.leased_until).where(*scope)
+    unarmed = WhatsAppInboundTurn.last_error_code.is_(None)
+    with Session(bind=db.engine) as session:
+        leased_until = session.scalar(lease_query.where(unarmed).with_for_update())
+        operation_now = _coerce_utc(now)
+        if leased_until is None or _coerce_utc(leased_until) <= operation_now:
+            return False
+        transition = session.execute(
+            update(WhatsAppInboundTurn)
+            .where(
+                *scope,
+                unarmed,
+                WhatsAppInboundTurn.leased_until > operation_now,
+            )
+            .values(last_error_code=_META_EXECUTION_ARMED, updated_at=operation_now)
+            .execution_options(synchronize_session=False)
+        )
+        if int(transition.rowcount or 0) != 1:
+            session.rollback()
+            return False
+        session.commit()
+        live_until = session.scalar(lease_query.where(_meta_execution_armed()))
+        # An expired or unreadable lease never authorizes business execution,
+        # even if the marker itself committed and will need quarantine.
+        return live_until is not None and _coerce_utc(live_until) > _coerce_utc(now)
 
 
 def normalize_whatsapp_outbound_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1316,6 +1399,7 @@ def complete_whatsapp_inbound_turn(
                 WhatsAppInboundTurn.turn_id == resolved_turn_id,
                 WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
                 WhatsAppInboundTurn.lease_token == resolved_lease_token,
+                ~_meta_execution_armed(),
             )
         )
         if turn is None:
@@ -1334,6 +1418,7 @@ def complete_whatsapp_inbound_turn(
                 WhatsAppInboundTurn.id == turn.id,
                 WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
                 WhatsAppInboundTurn.lease_token == resolved_lease_token,
+                ~_meta_execution_armed(),
             )
             .values(
                 status=WhatsAppInboundTurn.STATUS_COMPLETED,
@@ -1413,6 +1498,7 @@ def _fail_whatsapp_inbound_turn(
     error: Any,
     *,
     permanent: bool,
+    meta_rollback_confirmed: Optional[bool] = None,
     now: Optional[datetime] = None,
 ) -> Optional[str]:
     resolved_turn_id = _normalize_identifier(
@@ -1427,21 +1513,35 @@ def _fail_whatsapp_inbound_turn(
         max_length=64,
         lowercase=True,
     )
-    operation_now = _coerce_utc(now)
+    operation_now = _coerce_utc(now) if meta_rollback_confirmed is None else None
     error_code, _ = _safe_error_details(error)
-
+    scope = [
+        WhatsAppInboundTurn.turn_id == resolved_turn_id,
+        WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
+        WhatsAppInboundTurn.lease_token == resolved_lease_token,
+    ]
+    query = select(WhatsAppInboundTurn).where(*scope)
+    if meta_rollback_confirmed is not None:
+        query = query.where(_meta_execution_armed()).with_for_update()
     with Session(bind=db.engine, expire_on_commit=False) as session:
-        turn = session.scalar(
-            select(WhatsAppInboundTurn).where(
-                WhatsAppInboundTurn.turn_id == resolved_turn_id,
-                WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
-                WhatsAppInboundTurn.lease_token == resolved_lease_token,
-            )
-        )
+        turn = session.scalar(query)
         if turn is None:
             session.rollback()
             return None
-        dead = permanent or int(turn.attempt_count) >= int(turn.max_attempts)
+        armed = turn.provider == "meta" and turn.last_error_code == _META_EXECUTION_ARMED
+        # Fence against an arm racing this read, including generic worker errors.
+        scope.append(_meta_execution_armed() if armed else ~_meta_execution_armed())
+        if meta_rollback_confirmed is not None:
+            operation_now = _coerce_utc(now)
+            if turn.leased_until is None or _coerce_utc(turn.leased_until) <= operation_now:
+                return None
+            scope.append(WhatsAppInboundTurn.leased_until > operation_now)
+        uncertain = armed and meta_rollback_confirmed is not True
+        dead = uncertain or permanent or int(turn.attempt_count) >= int(turn.max_attempts)
+        if uncertain:
+            error_code = _META_COMMIT_UNCERTAIN
+        elif turn.provider == "meta" and error_code in {_META_EXECUTION_ARMED, _META_COMMIT_UNCERTAIN}:
+            error_code = "turn_processing_failed"
         target = (
             WhatsAppInboundTurn.STATUS_DEAD
             if dead
@@ -1456,8 +1556,7 @@ def _fail_whatsapp_inbound_turn(
             update(WhatsAppInboundTurn)
             .where(
                 WhatsAppInboundTurn.id == turn.id,
-                WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_PROCESSING,
-                WhatsAppInboundTurn.lease_token == resolved_lease_token,
+                *scope,
             )
             .values(
                 status=target,
@@ -1475,6 +1574,27 @@ def _fail_whatsapp_inbound_turn(
             return None
         session.commit()
         return target
+
+
+def fail_meta_whatsapp_inbound_execution(
+    turn_id: Any,
+    lease_token: Any,
+    error: Any,
+    *,
+    rollback_confirmed: bool = False,
+    permanent: bool = False,
+    now: Optional[datetime] = None,
+) -> Optional[str]:
+    """Close an armed execution; only a confirmed rollback allows a retry."""
+
+    return _fail_whatsapp_inbound_turn(
+        turn_id,
+        lease_token,
+        error,
+        permanent=permanent,
+        meta_rollback_confirmed=rollback_confirmed is True,
+        now=now,
+    )
 
 
 def retry_whatsapp_inbound_turn(
@@ -1711,11 +1831,14 @@ def claim_next_whatsapp_outbound_attempt(
             < WhatsAppOutboundAttempt.max_attempts,
             WhatsAppOutboundAttempt.available_at <= operation_now,
         )
-        query = select(WhatsAppOutboundAttempt.id).where(due, no_blocking_predecessor)
+        if not meta_whatsapp_outbound_enabled():
+            due = and_(due, WhatsAppOutboundAttempt.provider != "meta")
+        query = select(WhatsAppOutboundAttempt.id, WhatsAppOutboundAttempt.status,
+                       WhatsAppOutboundAttempt.attempt_count).where(due, no_blocking_predecessor)
         if resolved_tenant_id is not None:
             query = query.where(WhatsAppOutboundAttempt.tenant_id == resolved_tenant_id)
-        candidate_ids = list(
-            session.scalars(
+        candidates = list(
+            session.execute(
                 query.order_by(
                     WhatsAppOutboundAttempt.created_at.asc(),
                     WhatsAppOutboundAttempt.inbound_turn_id.asc(),
@@ -1723,20 +1846,25 @@ def claim_next_whatsapp_outbound_attempt(
                 ).limit(MAX_CANDIDATE_LIMIT)
             )
         )
-        for candidate_id in candidate_ids:
+        for candidate_id, previous_status, previous_count in candidates:
             token = secrets.token_hex(24)
             leased_until = operation_now + timedelta(seconds=lease_duration)
             transition = session.execute(
                 update(WhatsAppOutboundAttempt)
-                .where(WhatsAppOutboundAttempt.id == int(candidate_id), due)
+                .where(WhatsAppOutboundAttempt.id == int(candidate_id), due,
+                       WhatsAppOutboundAttempt.status == previous_status,
+                       WhatsAppOutboundAttempt.attempt_count == previous_count)
                 .values(
                     status=WhatsAppOutboundAttempt.STATUS_SENDING,
                     attempt_count=WhatsAppOutboundAttempt.attempt_count + 1,
                     lease_token=token,
                     leased_until=leased_until,
                     completed_at=None,
-                    last_error_code=None,
-                    last_error_digest=None,
+                    # Meta may give back a live pre-POST lease without an attempt.
+                    last_error_code=case((WhatsAppOutboundAttempt.provider == "meta",
+                                          WhatsAppOutboundAttempt.last_error_code), else_=None),
+                    last_error_digest=case((WhatsAppOutboundAttempt.provider == "meta",
+                                            WhatsAppOutboundAttempt.last_error_digest), else_=None),
                     updated_at=operation_now,
                 )
                 .execution_options(synchronize_session=False)
@@ -1779,8 +1907,42 @@ def claim_next_whatsapp_outbound_attempt(
                 max_attempts=int(attempt.max_attempts),
                 lease_token=token,
                 leased_until=_coerce_utc(attempt.leased_until),
+                claimed_from_status=previous_status,
             )
     return None
+
+
+def meta_whatsapp_outbound_enabled() -> bool:
+    """A separate, default-off gate for direct Meta dispatch only."""
+    return current_app.config.get("META_WHATSAPP_OUTBOUND_ENABLED") is True
+
+
+@outbox_persistence_operation
+def hold_meta_whatsapp_outbound_before_post(claim: OutboundAttemptClaim) -> bool:
+    """Give back an owned live claim only when this dispatcher never started POST."""
+    if (not isinstance(claim, OutboundAttemptClaim) or claim.provider != "meta"
+            or claim.claimed_from_status not in {WhatsAppOutboundAttempt.STATUS_PENDING,
+                                                WhatsAppOutboundAttempt.STATUS_RETRY_WAIT}
+            or claim.attempt_count < 1):
+        return False
+    attempt = WhatsAppOutboundAttempt
+    scope = (attempt.id == claim.database_id, attempt.attempt_id == claim.attempt_id,
+             attempt.tenant_id == claim.tenant_id, attempt.provider == "meta",
+             attempt.status == attempt.STATUS_SENDING, attempt.lease_token == claim.lease_token,
+             attempt.attempt_count == claim.attempt_count)
+    with Session(bind=db.engine) as session:
+        leased_until = session.scalar(select(attempt.leased_until).where(*scope).with_for_update())
+        now = _utc_now()
+        if leased_until is None or _coerce_utc(leased_until) <= now:
+            return False
+        transition = session.execute(update(attempt).where(*scope).values(
+            status=claim.claimed_from_status, attempt_count=claim.attempt_count - 1,
+            lease_token=None, leased_until=None, updated_at=now,
+        ).execution_options(synchronize_session=False))
+        if transition.rowcount != 1:
+            return False
+        session.commit()
+        return True
 
 
 @outbox_persistence_operation
@@ -2244,6 +2406,16 @@ def summarize_whatsapp_turn_health(
         inbound_due_query = select(func.count(WhatsAppInboundTurn.id)).where(
             _inbound_due_filter(operation_now)
         )
+        inbound_uncertain_query = select(func.count(WhatsAppInboundTurn.id)).where(
+            WhatsAppInboundTurn.provider == "meta",
+            or_(
+                and_(
+                    WhatsAppInboundTurn.status == WhatsAppInboundTurn.STATUS_DEAD,
+                    WhatsAppInboundTurn.last_error_code == _META_COMMIT_UNCERTAIN,
+                ),
+                and_(_expired_inbound_lease(operation_now), _meta_execution_armed()),
+            ),
+        )
         outbound_due_query = select(func.count(WhatsAppOutboundAttempt.id)).where(
             WhatsAppOutboundAttempt.status.in_(
                 [
@@ -2262,6 +2434,9 @@ def summarize_whatsapp_turn_health(
             inbound_due_query = inbound_due_query.where(
                 WhatsAppInboundTurn.tenant_id == resolved_tenant_id
             )
+            inbound_uncertain_query = inbound_uncertain_query.where(
+                WhatsAppInboundTurn.tenant_id == resolved_tenant_id
+            )
             outbound_due_query = outbound_due_query.where(
                 WhatsAppOutboundAttempt.tenant_id == resolved_tenant_id
             )
@@ -2276,6 +2451,7 @@ def summarize_whatsapp_turn_health(
                 "total": sum(inbound_by_status.values()),
                 "due": int(session.scalar(inbound_due_query) or 0),
                 "dead": inbound_by_status[WhatsAppInboundTurn.STATUS_DEAD],
+                "commit_uncertain": int(session.scalar(inbound_uncertain_query) or 0),
                 "in_flight": inbound_by_status[WhatsAppInboundTurn.STATUS_PROCESSING],
                 "by_status": inbound_by_status,
             },
@@ -2305,12 +2481,14 @@ __all__ = [
     "WhatsAppTurnStateError",
     "WhatsAppTurnValidationError",
     "accept_whatsapp_outbound_attempt",
+    "arm_meta_whatsapp_inbound_execution",
     "claim_next_whatsapp_inbound_turn",
     "claim_next_whatsapp_outbound_attempt",
     "complete_whatsapp_inbound_turn",
     "dead_whatsapp_outbound_attempt",
     "dead_whatsapp_inbound_turn",
     "derive_whatsapp_stream_key",
+    "fail_meta_whatsapp_inbound_execution",
     "ingest_whatsapp_inbound_turn",
     "normalize_whatsapp_inbound_payload",
     "normalize_whatsapp_outbound_payload",

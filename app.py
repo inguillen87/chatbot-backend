@@ -1088,6 +1088,10 @@ def create_app(config_class=Config):
     app.register_blueprint(whatsapp_rules_bp)
     app.register_blueprint(meta_flow_data_exchange_bp)
     app.register_blueprint(tdf_meta_sandbox_bp)
+    if app.config.get("META_WHATSAPP_CALLBACK_ENABLED") is True:
+        from routes.meta_whatsapp_callback import meta_whatsapp_callback_bp
+
+        app.register_blueprint(meta_whatsapp_callback_bp)
 
     from routes.tracking_ui import tracking_ui_bp
     app.register_blueprint(tracking_ui_bp)

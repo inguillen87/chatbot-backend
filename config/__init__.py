@@ -193,6 +193,31 @@ def _env_strict_opt_in(name: str) -> bool:
     return False
 
 
+def _meta_callback_credentials(name: str, *, max_length: int) -> dict[str, str]:
+    raw = os.getenv(name, "{}")
+    if len(raw) > 128 * 1024:
+        return {}
+
+    def unique_pairs(pairs):
+        result = dict(pairs)
+        if len(result) != len(pairs):
+            raise ValueError
+        return result
+
+    try:
+        registry = json.loads(raw, object_pairs_hook=unique_pairs)
+        if (not isinstance(registry, dict) or len(registry) > 32
+                or any(not re.fullmatch(r"[1-9][0-9]{0,39}", app_id)
+                    or not isinstance(value, str) or not value.isascii() or not value.isprintable()
+                    or not 16 <= len(value) <= max_length or value.strip() != value
+                    for app_id, value in registry.items())
+                or len(set(registry.values())) != len(registry)):
+            return {}
+        return registry
+    except (ValueError, RecursionError):
+        return {}
+
+
 def _bounded_timeout_seconds(
     value: object,
     *,
@@ -1529,6 +1554,15 @@ class Config:
     # Dedicated AES-256 keyring; never reuse SECRET_KEY or a provider token.
     TENANT_PROVIDER_CREDENTIAL_KEYRING = os.getenv("TENANT_PROVIDER_CREDENTIAL_KEYRING")
     TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID = os.getenv("TENANT_PROVIDER_CREDENTIAL_ACTIVE_KEY_ID")
+    # Production callback admission is independent of the test-number pilot.
+    META_WHATSAPP_CALLBACK_ENABLED = _env_strict_opt_in("META_WHATSAPP_CALLBACK_ENABLED")
+    META_WHATSAPP_INBOUND_WORKER_ENABLED = _env_strict_opt_in("META_WHATSAPP_INBOUND_WORKER_ENABLED")
+    META_WHATSAPP_OUTBOUND_ENABLED = _env_strict_opt_in("META_WHATSAPP_OUTBOUND_ENABLED")
+    META_WHATSAPP_APP_SECRETS = _meta_callback_credentials("META_WHATSAPP_APP_SECRETS_JSON", max_length=4096)
+    META_WHATSAPP_CALLBACK_VERIFY_TOKENS = _meta_callback_credentials(
+        "META_WHATSAPP_CALLBACK_VERIFY_TOKENS_JSON", max_length=256,
+    )
+    META_WHATSAPP_CALLBACK_CANARY_RECIPIENTS_JSON = os.getenv("META_WHATSAPP_CALLBACK_CANARY_RECIPIENTS_JSON")
     # Dedicated, disabled-by-default TDF Meta test-number pilot. Access tokens
     # remain in the existing tenant credential envelope, never a shared env key.
     META_TDF_SANDBOX_ENABLED = os.getenv("META_TDF_SANDBOX_ENABLED", "").lower() == "true"

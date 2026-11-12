@@ -7919,12 +7919,18 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             if current_assignee_id is not None and current_assignee_id != current_user.id
             else None
         )
-        _apply_handoff_transition(
+        handoff = _apply_handoff_transition(
             extra,
             action="accept_handoff",
             actor=current_user,
             occurred_at=now_iso,
             transferred_from=transferred_from,
+        )
+        from services.municipio_ticket_handoff import stage_recorded_handoff_acceptance
+
+        stage_recorded_handoff_acceptance(
+            tenant_id=int(tenant.id), ticket_id=ticket.id, event_id=handoff.get("event_id"),
+            actor_user_id=current_user.id, occurred_at=now,
         )
         ticket.asignado_a_id = current_user.id
         ticket.asignado_en = now

@@ -24,6 +24,7 @@ def build_claim_created_followup_text(
     consulta_pin: Optional[str],
     *,
     callback_requested: bool = False,
+    text_only_followup: bool = False,
 ) -> str:
     """Return the short, non-duplicative companion to the claim receipt.
 
@@ -37,10 +38,13 @@ def build_claim_created_followup_text(
     lines = []
     if pin_value:
         lines.append(f"🔐 Guardá tu PIN de consulta: *{pin_value}*")
-    lines.append(
-        "Respondé a este chat con una foto, un audio o un comentario y lo "
-        "vamos a asociar al mismo reclamo."
-    )
+    if text_only_followup:
+        lines.append("Podés sumar un comentario de texto en este chat mientras el seguimiento esté abierto.")
+    else:
+        lines.append(
+            "Respondé a este chat con una foto, un audio o un comentario y lo "
+            "vamos a asociar al mismo reclamo."
+        )
     if callback_requested:
         lines.append(
             "📞 Tu solicitud de llamada quedó registrada como pendiente. "

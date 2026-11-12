@@ -47,6 +47,8 @@ CONTRACT_VERSION = "operations.territorial_geocoding_execution.v1"
 METRICS_CONTRACT_VERSION = "operations.territorial_geocoding_transition_metrics.v1"
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 _MAX_PROVIDER_ADDRESS_CHARS = 512
+_MANUAL_ACTION = "manual_location"
+_MANUAL_REASON = "manual_location_proposed"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -394,6 +396,28 @@ def _bounded_provider_timeout(value: Any) -> float:
     return min(max(timeout, 1.0), 10.0)
 
 
+def _require_official_polygon_location(lat: Any, lng: Any, jurisdiction: dict[str, Any]) -> None:
+    authority = jurisdiction.get("boundary_authority")
+    if not (
+        jurisdiction.get("containment_verified")
+        and jurisdiction.get("containment_method") == "point_in_polygon"
+        and isinstance(jurisdiction.get("boundary_geometry"), dict)
+        and isinstance(authority, dict)
+        and str(authority.get("kind") or "").strip().lower() == "official"
+    ):
+        raise TerritorialGeocodingAdminError(
+            "geocoding_official_polygon_required",
+            status_code=409,
+            action_hint="configure_verified_official_boundary",
+        )
+    if coordinate_jurisdiction_status(lat, lng, jurisdiction) != "within":
+        raise TerritorialGeocodingAdminError(
+            "geocoding_proposal_outside_official_polygon",
+            status_code=409,
+            action_hint="resolve_or_reject_proposal",
+        )
+
+
 def _stamp_execution_receipt(
     session: Any,
     *,
@@ -568,6 +592,127 @@ def resolve_territorial_geocoding_job(
     )
 
 
+def propose_manual_territorial_geocoding_job(
+    session: Any,
+    *,
+    tenant: TenantProfile,
+    job_id: str,
+    actor_user_id: int,
+    idempotency_key: Any,
+    payload: Any,
+) -> dict[str, Any]:
+    """Save an operator's WGS84 point for separate review and application."""
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"lat", "lng", "expected_attempt_count", "confirmed"}
+        or payload["confirmed"] is not True
+        or type(payload["expected_attempt_count"]) is not int
+        or payload["expected_attempt_count"] < 0
+        or type(payload["lat"]) not in (int, float)
+        or type(payload["lng"]) not in (int, float)
+        or not -90 <= payload["lat"] <= 90
+        or not -180 <= payload["lng"] <= 180
+    ):
+        raise TerritorialGeocodingAdminError(
+            "geocoding_manual_location_payload_invalid",
+            action_hint="confirm_manual_location_and_current_attempt_count",
+            message="Confirmá las coordenadas WGS84 y la versión actual del caso.",
+        )
+    # Range comparisons reject non-finite floats before coercion. Normalize
+    # integer and decimal representations, including signed zero, for retries.
+    lat, lng = (float(payload[field]) or 0.0 for field in ("lat", "lng"))
+    expected_count = payload["expected_attempt_count"]
+    _key, key_hash = _idempotency_key(idempotency_key, action="resolve")
+    job = _tenant_job(session, tenant_id=int(tenant.id), job_id=job_id)
+    digest = _digest({
+        "action": _MANUAL_ACTION,
+        "lat": lat,
+        "lng": lng,
+        "expected_attempt_count": expected_count,
+        "scope_digest": _request_digest(
+            action="resolve",
+            tenant_id=int(tenant.id),
+            job=job,
+            actor_user_id=actor_user_id,
+            key_hash=key_hash,
+            current_proposal_digest=None,
+        ),
+    })
+    replay = _idempotent_result(
+        session, job=job, action="resolve", key_hash=key_hash, request_digest=digest
+    )
+    if replay is not None:
+        return _response(
+            tenant_id=int(tenant.id), tenant_slug=tenant.slug,
+            job_id=job.id, action=_MANUAL_ACTION, outcome=replay,
+        )
+    if job.status == "applied":
+        raise TerritorialGeocodingAdminError(
+            "geocoding_job_already_applied",
+            status_code=409,
+            action_hint="inspect_applied_job",
+        )
+    if expected_count != int(job.attempt_count or 0):
+        raise TerritorialGeocodingAdminError(
+            "geocoding_manual_location_attempt_count_stale",
+            status_code=409,
+            action_hint="refresh_geocoding_detail",
+        )
+
+    candidate, jurisdiction, _record = _rehydrate_candidate(
+        session, tenant=tenant, job=job, lock_source=True
+    )
+    _require_official_polygon_location(lat, lng, jurisdiction)
+    outcome = {
+        "contract_version": "operations.territorial_geocoding.v1",
+        "status": "needs_review",
+        "reason_code": _MANUAL_REASON,
+        "provider": None,
+        "proposal": {
+            "lat": lat,
+            "lng": lng,
+            "coordinate_reference": "WGS84",
+            "location_type": "MANUAL",
+            "provider_reference_present": False,
+            "provenance": {
+                "contract_version": "operations.coordinate_provenance.v1",
+                "source": "manual_operator",
+                "provider": None,
+                "source_address_retained": False,
+            },
+        },
+        "validation": {
+            "auto_apply_eligible": True,
+            "issues": [],
+            "jurisdiction_status": "within",
+        },
+        "candidate": candidate.audit_identity(),
+        "request_digest": digest,
+        "external_call_performed": False,
+        "write_performed": False,
+        "dry_run": True,
+        "idempotent_replay": False,
+        "execution": {
+            # The existing attempt table groups proposals under "resolve".
+            "action": "resolve",
+            "idempotency_key_hash": key_hash,
+            "actor_user_id": int(actor_user_id),
+            "expected_attempt_count": expected_count,
+        },
+        "transition_metrics": _transition(str(job.status), "needs_review", action=_MANUAL_ACTION),
+    }
+    attempt = SQLAlchemyTerritorialGeocodingAuditStore(session).record_attempt(
+        candidate, digest, outcome, external_call_performed=False, write_performed=False
+    )
+    _stamp_execution_receipt(
+        session, job=job, attempt=attempt, outcome=outcome, proposal_attempt=attempt
+    )
+    return _response(
+        tenant_id=int(tenant.id), tenant_slug=tenant.slug,
+        job_id=job.id, action=_MANUAL_ACTION, outcome=outcome,
+    )
+
+
 def apply_territorial_geocoding_job(
     session: Any,
     *,
@@ -657,6 +802,7 @@ def apply_territorial_geocoding_job(
         session, tenant=tenant, job=job, lock_source=True
     )
     validation = job.validation_json if isinstance(job.validation_json, dict) else {}
+    manual_proposal = current_proposal_attempt.reason_code == _MANUAL_REASON
     proposal = {
         "lat": job.proposed_lat,
         "lng": job.proposed_lng,
@@ -674,7 +820,11 @@ def apply_territorial_geocoding_job(
         ),
         "provenance": {
             "contract_version": "operations.coordinate_provenance.v1",
-            "source": "approved_geocoding_proposal",
+            "source": (
+                "manual_operator"
+                if manual_proposal
+                else "approved_geocoding_proposal"
+            ),
             "provider": job.provider,
             "proposal_digest": current_proposal_digest,
             "source_address_retained": False,
@@ -718,27 +868,7 @@ def apply_territorial_geocoding_job(
             action_hint="approve_current_proposal",
         )
 
-    authority = jurisdiction.get("boundary_authority")
-    official_polygon = bool(
-        jurisdiction.get("containment_verified")
-        and jurisdiction.get("containment_method") == "point_in_polygon"
-        and isinstance(authority, dict)
-        and str(authority.get("kind") or "").strip().lower() == "official"
-    )
-    if not official_polygon:
-        raise TerritorialGeocodingAdminError(
-            "geocoding_official_polygon_required",
-            status_code=409,
-            action_hint="configure_verified_official_boundary",
-        )
-    if coordinate_jurisdiction_status(
-        proposal["lat"], proposal["lng"], jurisdiction
-    ) != "within":
-        raise TerritorialGeocodingAdminError(
-            "geocoding_proposal_outside_official_polygon",
-            status_code=409,
-            action_hint="resolve_or_reject_proposal",
-        )
+    _require_official_polygon_location(proposal["lat"], proposal["lng"], jurisdiction)
     if (
         not writer_authority_confirmed
         or isinstance(writer_authority_epoch, bool)
@@ -783,6 +913,14 @@ def apply_territorial_geocoding_job(
             "writer_authority_reason": str(writer_authority_reason or "unknown"),
             "writer_authority_epoch": int(writer_authority_epoch),
             "official_polygon_verified": True,
+            **(
+                {
+                    "actor_user_id": int(actor_user_id),
+                    "proposal_actor_user_id": current_proposal_attempt.result_json["execution"]["actor_user_id"],
+                }
+                if manual_proposal
+                else {}
+            ),
         },
     }
     outcome["transition_metrics"] = _transition(

@@ -1,5 +1,6 @@
 # services/ticket_service.py
 import hashlib
+from functools import wraps
 import json
 import logging
 import math
@@ -14,6 +15,7 @@ from typing import Dict, Any, Literal, Union, Iterable, Optional
 from models import (
     AuditEvent,
     ArchivoAdjunto,
+    CategoriaTicket,
     MunicipioTicket,
     MunicipioTicketReplyEvent,
     PymeTicket,
@@ -192,23 +194,56 @@ def canonical_ticket_payload_hash(effect_kind: str, payload: Dict[str, Any]) -> 
     return hashlib.sha256(encoded).hexdigest()
 
 
+
+def _conversation_ticket_writer(method):
+    """Opt-in writer fence. Default callers retain the exact legacy branch.
+
+    Only server code passes this capability and the current turn identity.
+    No request/context/LLM field can create a unit or supply writer authority.
+    """
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        unit = kwargs.get("unit_of_work")
+        if unit is None:
+            return method(self, *args, **kwargs)
+        from services.whatsapp_conversation_uow import (
+            ConversationUnitOfWork, ConversationUnitOfWorkError,
+        )
+        if not isinstance(unit, ConversationUnitOfWork):
+            raise ConversationUnitOfWorkError("conversation_uow_writer_capability_invalid")
+        try:
+            with db.session.no_autoflush:
+                identity = self._prepare_idempotency_identity(
+                    kwargs.get("idempotency_key"), kwargs.get("idempotency_tenant_id"))
+                if identity is None:
+                    unit.fail("conversation_uow_ticket_effect_identity_required")
+                key, tenant_id = identity
+                unit.require_writer_scope(session=db.session(), tenant_id=tenant_id,
+                    turn_id=kwargs.get("conversation_turn_id"), effect_key=key)
+                result = method(self, *args, **kwargs)
+                if result is None:
+                    unit.fail("conversation_uow_ticket_write_rejected")
+                return result
+        except Exception as exc:
+            unit.fail("conversation_uow_ticket_writer_failed", cause=exc)
+    return wrapped
+
+
 class TicketCreator:
     def create(self, ticket_data: Dict[str, Any]) -> Union[PymeTicket, MunicipioTicket]:
         raise NotImplementedError
 
 class MunicipioTicketCreator(TicketCreator):
     def create(self, ticket_data: Dict[str, Any]) -> MunicipioTicket:
-        lat = (
-            ticket_data.get("latitud")
-            or ticket_data.get("lat")
-            or ticket_data.get("latitude")
-        )
-        lon = (
-            ticket_data.get("longitud")
-            or ticket_data.get("lon")
-            or ticket_data.get("lng")
-            or ticket_data.get("longitude")
-        )
+        def coordinate(*keys):
+            for key in keys:
+                value = ticket_data.get(key)
+                if value or (type(value) in (int, float) and value == 0):
+                    return value
+            return None
+
+        lat = coordinate("latitud", "lat", "latitude")
+        lon = coordinate("longitud", "lon", "lng", "longitude")
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
             municipio_id=ticket_data.get("municipio_id"),
@@ -878,6 +913,7 @@ class ServicioTickets:
             "effects_queued": False,
         }
 
+    @_conversation_ticket_writer
     def crear_nuevo_ticket(
         self,
         tipo_ticket: Literal["municipio", "pyme"],
@@ -886,6 +922,9 @@ class ServicioTickets:
         return_object: bool = False,
         idempotency_key: Optional[str] = None,
         idempotency_tenant_id: Optional[int] = None,
+        unit_of_work=None,
+        conversation_turn_id: Optional[str] = None,
+        municipal_category_id: Optional[int] = None,
     ) -> Union[PymeTicket, MunicipioTicket, None, dict]:
         creator = self.creators.get(tipo_ticket)
         if not creator:
@@ -906,7 +945,27 @@ class ServicioTickets:
                 ticket_data["categoria"] = tipo_general
 
         # Normalizar categoría para evitar duplicados como variantes de 'luminarias'
-        if "categoria" in ticket_data:
+        if municipal_category_id is not None:
+            from services.whatsapp_conversation_uow import ConversationUnitOfWork
+            if (tipo_ticket != "municipio" or not isinstance(unit_of_work, ConversationUnitOfWork)
+                    or type(municipal_category_id) is not int or municipal_category_id <= 0):
+                raise TicketIdempotencyValidationError("municipal_ticket_category_unit_required")
+            unit_of_work.require_writer_scope(session=db.session(), tenant_id=idempotency_tenant_id,
+                                              turn_id=conversation_turn_id, effect_key=idempotency_key)
+            if idempotency_key != build_whatsapp_ticket_effect_key(
+                idempotency_tenant_id, conversation_turn_id, "municipio_claim_create",
+            ):
+                unit_of_work.fail("municipal_ticket_category_effect_invalid")
+            current_category = (
+                db.session.query(CategoriaTicket.nombre).filter_by(
+                    id=municipal_category_id, tenant_id=idempotency_tenant_id, tipo="ticket",
+                ).with_for_update().scalar()
+            )
+            if (not isinstance(current_category, str) or not current_category.strip()
+                    or current_category.strip() != ticket_data.get("categoria")):
+                unit_of_work.fail("municipal_ticket_category_scope_invalid")
+            ticket_data["categoria_id"] = municipal_category_id
+        elif "categoria" in ticket_data:
             ticket_data["categoria"] = normalize_category(ticket_data.get("categoria"))
 
         # Eliminar el prefijo "Reclamo (LLM):" del asunto si existe.
@@ -961,6 +1020,8 @@ class ServicioTickets:
         effects_queued = False
         try:
             ticket = creator.create(ticket_data)
+            if municipal_category_id is not None:
+                ticket.categoria_id = municipal_category_id
             db.session.add(ticket)
             db.session.flush() # flush para obtener el ID del ticket para el comentario
 
@@ -971,7 +1032,9 @@ class ServicioTickets:
             ):
                 try:
                     self.asignar_ticket_municipal(ticket, auto=True)
-                except Exception:
+                except Exception as exc:
+                    if unit_of_work is not None:
+                        unit_of_work.fail("conversation_uow_ticket_assignment_failed", cause=exc)
                     logger.exception("No se pudo asignar automáticamente el ticket municipal")
 
             # Si viene un comentario opcional, lo agregamos
@@ -1028,9 +1091,11 @@ class ServicioTickets:
                             if tipo_ticket == "municipio"
                             else ticket_data.get("pyme_id")
                         ),
-                        session=db.session,
+                        session=(unit_of_work.session if unit_of_work is not None else db.session),
                     )
-            except Exception:
+            except Exception as exc:
+                if unit_of_work is not None:
+                    unit_of_work.fail("conversation_uow_ticket_effect_staging_failed", cause=exc)
                 db.session.rollback()
                 logger.exception(
                     "Ticket effect staging failed type=%s tenant_id=%s",
@@ -1039,6 +1104,12 @@ class ServicioTickets:
                 )
                 raise
 
+            if unit_of_work is not None:
+                if not effects_queued:
+                    unit_of_work.fail("conversation_uow_ticket_outbox_required")
+                unit_of_work.flush()
+                # Poller owns dispatch after the outer commit; no early broker wakeup.
+                return ticket if return_object else self._serialize_ticket(ticket, tipo_ticket)
             db.session.commit()
             # Ticket models contain phone numbers, email, DNI, free-form text
             # and the public tracking PIN.  Logging ``__dict__`` exposed all of
@@ -1122,6 +1193,8 @@ class ServicioTickets:
                 return ticket
             return self._serialize_ticket(ticket, tipo_ticket)
         except IntegrityError as e:
+            if unit_of_work is not None:
+                unit_of_work.fail("conversation_uow_ticket_integrity_failed", cause=e)
             db.session.rollback()
             if idempotency_identity and payload_hash:
                 normalized_key, normalized_tenant_id = idempotency_identity
@@ -1143,6 +1216,8 @@ class ServicioTickets:
             )
             return None
         except SQLAlchemyError as exc:
+            if unit_of_work is not None:
+                unit_of_work.fail("conversation_uow_ticket_database_failed", cause=exc)
             db.session.rollback()
             logger.error(
                 "Error de DB al crear ticket error_type=%s",
@@ -1204,6 +1279,7 @@ class ServicioTickets:
                 exc_info=True,
             )
 
+    @_conversation_ticket_writer
     def crear_comentario(
         self,
         ticket_id: int,
@@ -1214,6 +1290,8 @@ class ServicioTickets:
         idempotency_tenant_id: Optional[int] = None,
         legacy_effects_owned_by_caller: bool = False,
         reply_actor: User | None = None,
+        unit_of_work=None,
+        conversation_turn_id: Optional[str] = None,
     ) -> Union[TicketComentario, None]:
         """Persist one comment and stage canary effects in the same transaction.
 
@@ -1226,6 +1304,8 @@ class ServicioTickets:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
 
         comentario_data = dict(comentario_data or {})
+        if unit_of_work is not None and comentario_data.get("es_admin", False):
+            unit_of_work.fail("conversation_uow_ticket_operator_delivery_not_ported")
         idempotency_identity = self._prepare_idempotency_identity(
             idempotency_key,
             idempotency_tenant_id,
@@ -1361,9 +1441,11 @@ class ServicioTickets:
                         requested_channels=comentario_data.get(
                             "requested_channels"
                         ),
-                        session=db.session,
+                        session=(unit_of_work.session if unit_of_work is not None else db.session),
                     )
-            except Exception:
+            except Exception as exc:
+                if unit_of_work is not None:
+                    unit_of_work.fail("conversation_uow_ticket_effect_staging_failed", cause=exc)
                 db.session.rollback()
                 logger.exception(
                     "Ticket comment effect staging failed type=%s tenant_id=%s",
@@ -1371,6 +1453,11 @@ class ServicioTickets:
                     getattr(ticket, "tenant_id", None),
                 )
                 raise
+            if unit_of_work is not None:
+                if not comment_effects_queued:
+                    unit_of_work.fail("conversation_uow_ticket_outbox_required")
+                unit_of_work.flush()
+                return nuevo_comentario
             db.session.commit()
             should_notify = bool(
                 comentario_data.get("emit_notifications", True)
@@ -1469,6 +1556,8 @@ class ServicioTickets:
 
             return nuevo_comentario
         except IntegrityError as e:
+            if unit_of_work is not None:
+                unit_of_work.fail("conversation_uow_ticket_integrity_failed", cause=e)
             db.session.rollback()
             if idempotency_identity and payload_hash:
                 normalized_key, normalized_tenant_id = idempotency_identity
@@ -1488,6 +1577,8 @@ class ServicioTickets:
             )
             return None
         except SQLAlchemyError as exc:
+            if unit_of_work is not None:
+                unit_of_work.fail("conversation_uow_ticket_database_failed", cause=exc)
             db.session.rollback()
             logger.error(
                 "Error de DB al crear comentario error_type=%s",
@@ -1503,8 +1594,22 @@ class ServicioTickets:
         idempotency_key: str,
         idempotency_tenant_id: int,
         reply_actor: User,
+        unit_of_work=None,
+        conversation_turn_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Persist and queue one tenant-bound municipal WhatsApp reply."""
+
+        if unit_of_work is not None:
+            from services.whatsapp_conversation_uow import (
+                ConversationUnitOfWork, ConversationUnitOfWorkError,
+            )
+            if not isinstance(unit_of_work, ConversationUnitOfWork):
+                raise ConversationUnitOfWorkError("conversation_uow_writer_capability_invalid")
+            with db.session.no_autoflush:
+                unit_of_work.require_writer_scope(session=db.session(),
+                    tenant_id=idempotency_tenant_id, turn_id=conversation_turn_id,
+                    effect_key=idempotency_key)
+                unit_of_work.fail("conversation_uow_ticket_operator_delivery_not_ported")
 
         if not isinstance(ticket, MunicipioTicket):
             raise TicketIdempotencyValidationError(
@@ -1886,6 +1991,8 @@ class ServicioTickets:
         idempotency_key: str,
         idempotency_tenant_id: int,
         reply_actor: User | None = None,
+        unit_of_work=None,
+        conversation_turn_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Persist one TenantTicket operator reply and its durable effects.
 
@@ -1894,6 +2001,18 @@ class ServicioTickets:
         retry cannot duplicate a reply or reuse the same client identity for a
         different ticket.
         """
+
+        if unit_of_work is not None:
+            from services.whatsapp_conversation_uow import (
+                ConversationUnitOfWork, ConversationUnitOfWorkError,
+            )
+            if not isinstance(unit_of_work, ConversationUnitOfWork):
+                raise ConversationUnitOfWorkError("conversation_uow_writer_capability_invalid")
+            with db.session.no_autoflush:
+                unit_of_work.require_writer_scope(session=db.session(),
+                    tenant_id=idempotency_tenant_id, turn_id=conversation_turn_id,
+                    effect_key=idempotency_key)
+                unit_of_work.fail("conversation_uow_ticket_operator_delivery_not_ported")
 
         if not isinstance(ticket, TenantTicket):
             raise TicketIdempotencyValidationError(
