@@ -18,9 +18,8 @@ from sqlalchemy import (
     ForeignKeyConstraint,
 )
 from sqlalchemy.orm import defer, deferred, validates
-from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
-from sqlalchemy.dialects.postgresql import JSONB
 from database import db
+from model_primitives import JSONType, TimestampMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
 
@@ -77,9 +76,6 @@ def _coerce_reference_time(at: Optional[datetime]) -> datetime:
     if reference.tzinfo is None:
         return reference.replace(tzinfo=timezone.utc)
     return reference.astimezone(timezone.utc)
-
-
-JSONType = JSONB().with_variant(SQLITE_JSON, "sqlite")
 
 
 class AuthProviderSession(db.Model):
@@ -180,21 +176,6 @@ class CatalogoModalidad(str, Enum):
 
         return cls.VENTA
 
-
-class TimestampMixin:
-    """Mixin providing created/updated timestamps compatible with UTC."""
-
-    created_at = db.Column(
-        db.DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        nullable=False,
-    )
-    updated_at = db.Column(
-        db.DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
-        nullable=False,
-    )
 
 class Rubro(db.Model):
     id = db.Column(db.Integer, primary_key=True)

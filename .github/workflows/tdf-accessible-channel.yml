@@ -52,6 +52,7 @@ on:
       - 'services/whatsapp_inbound_turns.py'
       - 'services/whatsapp_receipts.py'
       - 'models.py'
+      - 'model_primitives.py'
       - 'tests/conftest.py'
       - 'tests/profile_acceptance_runtime.py'
       - 'tests/test_meta_channel_identity_admission.py'
@@ -185,7 +186,7 @@ jobs:
               'tests/test_whatsapp_welcome_each_greeting.py', 'tests/test_whatsapp_welcome_optional_audio.py',
               'tests/test_whatsapp_webhook.py', 'tests/test_whatsapp_inbound_queue_webhook.py',
               'tests/test_voice_stream_service.py', 'tests/test_whatsapp_survey_conversation.py',
-              'models.py', 'models_memory.py', 'services/common_utils.py', 'services/pyme_menu.py',
+              'models.py', 'model_primitives.py', 'models_memory.py', 'services/common_utils.py', 'services/pyme_menu.py',
               'tests/profile_acceptance_runtime.py', 'tests/conftest.py', 'pytest.ini',
               '.github/workflows/tdf-accessible-channel.yml',
           ]
@@ -305,7 +306,7 @@ jobs:
                    'services/meta_whatsapp_cloud.py', 'services/meta_whatsapp_webhook.py',
                    'services/meta_whatsapp_credentials.py', 'services/outbox_execution_budget.py',
                    'services/whatsapp_inbound_turns.py', 'services/whatsapp_inbound_durability.py',
-                   'models.py', 'tests/profile_acceptance_runtime.py',
+                   'models.py', 'model_primitives.py', 'tests/profile_acceptance_runtime.py',
                    '.github/workflows/tdf-accessible-channel.yml']
           def pins(): return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
           before = pins()
@@ -393,7 +394,7 @@ jobs:
               'tests/test_whatsapp_conversation_uow_scope.py',
           ]
           paths = [
-              'app.py', 'config/__init__.py', 'database.py', 'extensions.py', 'models.py',
+              'app.py', 'config/__init__.py', 'database.py', 'extensions.py', 'models.py', 'model_primitives.py',
               'routes/meta_whatsapp_callback.py', 'routes/whatsapp_webhook.py',
               'services/actions/municipio_actions.py', 'services/channel_session_identity.py',
               'services/contact_service.py', 'services/crm_intelligence.py',
@@ -509,7 +510,7 @@ jobs:
           import xml.etree.ElementTree as ET
           root = Path.cwd()
           out = root / '.qa-artifacts/whatsapp-common-conversation'
-          paths = ['services/whatsapp_conversation_contract.py', 'services/whatsapp_conversation_turn.py', 'routes/whatsapp_webhook.py', 'tests/test_whatsapp_conversation_turn.py', 'tests/test_whatsapp_post_claim_followup.py', 'tests/test_whatsapp_claim_completion_integrity.py', 'tests/test_whatsapp_webhook.py', 'tests/test_whatsapp_flow_submissions.py', 'tests/test_education_context_first_draft.py', 'services/response_formatter.py', 'services/ticket_service.py', 'services/crm_intelligence.py', 'services/contact_service.py', 'services/logic.py', 'services/municipio_responder.py', 'models.py', 'models_memory.py', 'tests/profile_acceptance_runtime.py', 'tests/conftest.py', 'pytest.ini', '.github/workflows/tdf-accessible-channel.yml']
+          paths = ['services/whatsapp_conversation_contract.py', 'services/whatsapp_conversation_turn.py', 'routes/whatsapp_webhook.py', 'tests/test_whatsapp_conversation_turn.py', 'tests/test_whatsapp_post_claim_followup.py', 'tests/test_whatsapp_claim_completion_integrity.py', 'tests/test_whatsapp_webhook.py', 'tests/test_whatsapp_flow_submissions.py', 'tests/test_education_context_first_draft.py', 'services/response_formatter.py', 'services/ticket_service.py', 'services/crm_intelligence.py', 'services/contact_service.py', 'services/logic.py', 'services/municipio_responder.py', 'models.py', 'model_primitives.py', 'models_memory.py', 'tests/profile_acceptance_runtime.py', 'tests/conftest.py', 'pytest.ini', '.github/workflows/tdf-accessible-channel.yml']
           def pins(): return {path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in paths}
           before = pins()
           (out / 'source-before.json').write_text(json.dumps(before, indent=2), encoding='utf-8')
