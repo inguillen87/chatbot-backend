@@ -8,6 +8,7 @@ import os
 import re
 import unicodedata
 from typing import Any, Iterable
+from urllib.parse import parse_qs, urlsplit
 
 
 _LATITUDE_KEYS = {"lat", "latitude", "latitud"}
@@ -276,6 +277,110 @@ def _boundary_contains_position(geometry: dict[str, Any], lng: float, lat: float
     return False
 
 
+def _official_boundary_source_query(
+    authority: dict[str, Any], *, publisher: str, host: str, path: str, service: str,
+) -> dict[str, str] | None:
+    """Check a known publisher's exact HTTPS endpoint without making a request."""
+
+    if (
+        _scalar_text(authority.get("publisher")) != publisher
+        or _scalar_text(authority.get("service")) != service
+    ):
+        return None
+    try:
+        source = urlsplit(_scalar_text(authority.get("source_url")) or "")
+        if (
+            source.scheme != "https"
+            or source.hostname != host
+            or source.port not in (None, 443)
+            or source.username is not None
+            or source.password is not None
+            or source.path != path
+            or source.fragment
+        ):
+            return None
+        query = parse_qs(source.query, keep_blank_values=True, strict_parsing=True)
+    except (TypeError, ValueError):
+        return None
+    if any(len(values) != 1 for values in query.values()):
+        return None
+    normalized = {key.lower(): values[0] for key, values in query.items()}
+    return normalized if len(normalized) == len(query) else None
+
+
+def _official_boundary_identity(
+    feature: dict[str, Any], payload: dict[str, Any], authority: dict[str, Any],
+) -> tuple[str, str, str] | None:
+    """Bind a supported source schema to a complete configured jurisdiction."""
+
+    properties = feature.get("properties")
+    if feature.get("type") != "Feature" or not isinstance(properties, dict):
+        return None
+    if _scalar_text(payload.get("country")) != "AR":
+        return None
+    schema = authority.get("schema", "ide_mendoza_department.v1")
+    if schema == "ide_mendoza_department.v1":
+        code = _scalar_text(authority.get("department_code"))
+        global_id = _scalar_text(authority.get("global_id"))
+        name = _scalar_text(properties.get("departamen"))
+        query = _official_boundary_source_query(
+            authority,
+            publisher="Infraestructura de Datos Espaciales de Mendoza",
+            host="ide.mendoza.gov.ar",
+            path="/server/rest/services/Hosted/Departamentos_Mendoza/FeatureServer/0/query",
+            service="Hosted/Departamentos_Mendoza/FeatureServer/0",
+        )
+        if (
+            not code
+            or not re.fullmatch(r"\d{2}", code)
+            or not global_id
+            or not name
+            or _normalized_key(payload.get("state")) != "mendoza"
+            or _normalized_key(name) != _normalized_key(payload.get("city"))
+            or _scalar_text(properties.get("codigo_dep")) != code
+            or _scalar_text(properties.get("globalid")) != global_id
+            or query is None
+            or query.get("where") != f"codigo_dep='{code}'"
+            or query.get("outsr") != "4326"
+            or query.get("f") != "geojson"
+            or query.get("returngeometry", "").lower() != "true"
+        ):
+            return None
+        return code, name, "official_department_boundary_generalized"
+    if schema == "ign_arcgis_province.v1":
+        code = _scalar_text(authority.get("province_code"))
+        feature_id = _scalar_text(authority.get("feature_id"))
+        name = _scalar_text(properties.get("FNA"))
+        query = _official_boundary_source_query(
+            authority,
+            publisher="Instituto Geográfico Nacional",
+            host="ide.ign.gob.ar",
+            path="/geoservicios/rest/services/servicio_fondos/MapServer/23/query",
+            service="servicio_fondos/MapServer/23",
+        )
+        if (
+            not code
+            or not re.fullmatch(r"\d{2}", code)
+            or not feature_id
+            or not re.fullmatch(r"[0-9]+", feature_id)
+            or _scalar_text(feature.get("id")) != feature_id
+            or _scalar_text(properties.get("OBJECTID")) != feature_id
+            or not name
+            or _normalized_key(name) != _normalized_key(payload.get("state"))
+            or _normalized_key(properties.get("Objeto")) != "provincia"
+            or _scalar_text(properties.get("Entidad")) != "5"
+            or _scalar_text(properties.get("IN1")) != code
+            or query is None
+            or query.get("where") != f"IN1='{code}' AND Entidad=5"
+            or query.get("outsr") != "4326"
+            or query.get("f") != "geojson"
+            or query.get("returngeometry", "").lower() != "true"
+        ):
+            return None
+        return code, name, "official_province_boundary_generalized"
+    return None
+
+
 def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     boundary_config = payload.get("boundary")
     if not isinstance(boundary_config, dict):
@@ -312,23 +417,21 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
     feature = features[0]
     if not isinstance(feature, dict):
         return None
-    properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-    if (
-        _normalized_key(properties.get("departamen")) != _normalized_key(payload.get("city"))
-        or _scalar_text(properties.get("codigo_dep")) != _scalar_text(authority.get("department_code"))
-        or _scalar_text(properties.get("globalid")) != _scalar_text(authority.get("global_id"))
-    ):
+    identity = _official_boundary_identity(feature, payload, authority)
+    if identity is None:
         return None
+    boundary_id, boundary_name, truth_boundary = identity
+    properties = feature["properties"]
     geometry = _validated_boundary_geometry(feature.get("geometry"))
     bounds = _boundary_geometry_bounds(geometry or {})
     if geometry is None or bounds is None:
         return None
     public_feature = {
         "type": "Feature",
-        "id": _scalar_text(authority.get("department_code")) or "official-boundary",
+        "id": boundary_id,
         "properties": {
             **properties,
-            "name": _scalar_text(properties.get("departamen")) or _scalar_text(payload.get("city")),
+            "name": boundary_name,
         },
         "geometry": geometry,
     }
@@ -344,6 +447,7 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
         "geometry": geometry,
         "bounds": bounds,
         "authority": public_authority,
+        "truth_boundary": truth_boundary,
         "feature_collection": {
             "type": "FeatureCollection",
             "metadata": {
@@ -414,7 +518,7 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
                     "ref": relative_path.replace(os.sep, "/"),
                 },
                 "truth_boundary": (
-                    "official_department_boundary_generalized"
+                    verified_boundary["truth_boundary"]
                     if verified_boundary
                     else "operational_envelope_not_official_boundary"
                 ),

@@ -1,0 +1,31 @@
+{
+  "city": "Tierra del Fuego",
+  "state": "Tierra del Fuego, Antártida e Islas del Atlántico Sur",
+  "country": "AR",
+  "region_hint": "ar",
+  "locale": "es-AR",
+  "bounds": [
+    -74.029854,
+    -90.0,
+    -25.023145,
+    -51.000057
+  ],
+  "boundary": {
+    "file": "official_province_boundary.geojson",
+    "authority": {
+      "kind": "official",
+      "schema": "ign_arcgis_province.v1",
+      "publisher": "Instituto Geográfico Nacional",
+      "service": "servicio_fondos/MapServer/23",
+      "source_url": "https://ide.ign.gob.ar/geoservicios/rest/services/servicio_fondos/MapServer/23/query?where=IN1%3D%2794%27+AND+Entidad%3D5&outFields=OBJECTID%2CEntidad%2CObjeto%2CIN1%2CFNA&returnGeometry=true&outSR=4326&f=geojson&maxAllowableOffset=0.0001&geometryPrecision=6",
+      "province_code": "94",
+      "feature_id": "361",
+      "retrieved_at": "2026-11-12T16:32:09.973814+00:00"
+    },
+    "snapshot_sha256": "71811b67b81af7bd9715e957ea4a0f6c3e6376f490c7e0fc8f7f67c6798aa90b",
+    "out_sr": 4326,
+    "geometry_precision": 6,
+    "max_allowable_offset_degrees": 0.0001,
+    "generalization_note": "Geometría oficial del IGN generalizada por el servicio ArcGIS en EPSG:4326 (maxAllowableOffset=0.0001, geometryPrecision=6). Incluye la jurisdicción provincial completa, Antártida e islas; no sustituye mensura catastral."
+  }
+}

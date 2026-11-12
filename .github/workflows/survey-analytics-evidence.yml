@@ -80,8 +80,10 @@ name: Survey and organization evidence
       - tests/native_admin_membership_http.py
       - tests/native_admin_membership_postgres.py
       - tests/test_territorial_boundary_packaging.py
+      - services/territorial_evidence.py
       - data/municipios/junin/geo.json
       - data/municipios/junin/official_department_boundary.geojson
+      - data/tenants/tierra-del-fuego/**
       - .gitattributes
       - tests/twilio_provisioning_without_render_regression.py
       - data/conversation_guides/**
