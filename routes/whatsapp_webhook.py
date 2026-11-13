@@ -4487,6 +4487,28 @@ def _resolve_provider_sender_for_twilio_request(
             .all()
         )
 
+    def _twilio_transport_matches(senders):
+        selected = []
+        for sender in senders:
+            connection = getattr(sender, "provider_connection", None)
+            provider = str(getattr(connection, "provider", "") or "").strip().lower()
+            # Meta can own the same business phone while legacy Twilio mappings
+            # remain for history. Its sender is never a Twilio credential hint.
+            if provider == "meta":
+                continue
+            if connection is None:
+                return [], "twilio_sender_connection_missing"
+            if (provider != "twilio" or connection.channel != "whatsapp"
+                    or connection.tenant_id != sender.tenant_id):
+                return [], "twilio_sender_connection_scope_invalid"
+            selected.append(sender)
+        return selected, None
+
+    address_matches, address_error = _twilio_transport_matches(address_matches)
+    service_matches, service_error = _twilio_transport_matches(service_matches)
+    if address_error or service_error:
+        return None, address_error or service_error
+
     def _by_id(senders: Iterable[ProviderSender]) -> Dict[int, ProviderSender]:
         return {
             int(sender.id): sender

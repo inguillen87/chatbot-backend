@@ -711,6 +711,8 @@ def _get_main_menu_payload(
     context: dict,
     welcome_message_override: Optional[str] = None,
     reduced: bool = False,
+    *,
+    native_text_actions: tuple[str, ...] | None = None,
 ) -> Dict[str, Any]:
     """
     Generates the main menu payload with the new, structured layout.
@@ -895,6 +897,37 @@ def _get_main_menu_payload(
         return pyme_payload
 
     # --- MUNICIPIO LOGIC (Existing) ---
+
+    if native_text_actions is not None:
+        # An explicit server capability projection for the native text canary.
+        # Keep institutional/personalized identity from this same producer,
+        # without offering legacy media, name capture or unsupported actions.
+        supported = {
+            "iniciar_reclamo": "Iniciar reclamo",
+            "mostrar_menu_encuestas": "Encuestas",
+        }
+        if (not isinstance(native_text_actions, tuple) or not native_text_actions
+                or any(action not in supported for action in native_text_actions)
+                or len(set(native_text_actions)) != len(native_text_actions)):
+            raise ValueError("municipal_native_text_actions_invalid")
+        assistant_name = _sanitize_assistant_name(
+            municipio_config.get("assistant_name") or municipio_config.get("bot_name")
+        ) if isinstance(municipio_config, dict) else ""
+        assistant_name = assistant_name or (tenant_name_text if tenant_name_text != "tu municipio" else "JUNI")
+        greeting = (
+            f"👋 *¡Hola, {user_name}!* Bienvenido a *{tenant_name_text}*."
+            if user_name else f"¡Hola! Soy {assistant_name}, asistente virtual de {tenant_name_text}."
+        )
+        return {
+            "message_body": welcome_message_override or greeting,
+            "message_type": "text",
+            "options_list": [
+                {"texto": supported[action], "action_id": action}
+                for action in native_text_actions
+                if action != "mostrar_menu_encuestas" or FEATURE_ENCUESTAS
+            ],
+            "fuente": "municipal_native_text_welcome_v1",
+        }
 
     if welcome_message_override:
         welcome_message = welcome_message_override

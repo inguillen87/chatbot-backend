@@ -19,6 +19,7 @@ from models import (
     ChannelSessionIdentityBinding,
     ChatSessionContext,
     MunicipioTicket,
+    ProviderConnection,
     ProviderSender,
     PymeTicket,
     TenantProfile,
@@ -117,8 +118,14 @@ class WhatsAppInboundQueueWebhookTestCase(unittest.TestCase):
         db.session.add(self.tenant)
         db.session.flush()
 
+        connection = ProviderConnection(tenant_id=self.tenant.id, provider="twilio", channel="whatsapp",
+            environment="production", status="connected", external_account_id=CHILD_ACCOUNT_SID,
+            credentials_ref=f"env:{CHILD_TOKEN_REF}", config={})
+        db.session.add(connection)
+        db.session.flush()
         self.sender = ProviderSender(
             tenant_id=self.tenant.id,
+            provider_connection_id=connection.id,
             channel="whatsapp",
             phone_number=SENDER_NUMBER,
             sender_id=f"whatsapp:{SENDER_NUMBER}",
@@ -197,8 +204,14 @@ class WhatsAppInboundQueueWebhookTestCase(unittest.TestCase):
         )
         db.session.add(tenant)
         db.session.flush()
+        connection = ProviderConnection(tenant_id=tenant.id, provider="twilio", channel="whatsapp",
+            environment="production", status="connected", external_account_id=SECOND_CHILD_ACCOUNT_SID,
+            credentials_ref=f"env:{SECOND_CHILD_TOKEN_REF}", config={})
+        db.session.add(connection)
+        db.session.flush()
         sender = ProviderSender(
             tenant_id=tenant.id,
+            provider_connection_id=connection.id,
             channel="whatsapp",
             phone_number=SECOND_SENDER_NUMBER,
             sender_id=f"whatsapp:{SECOND_SENDER_NUMBER}",

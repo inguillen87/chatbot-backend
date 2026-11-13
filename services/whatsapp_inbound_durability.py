@@ -1,14 +1,16 @@
 """Fail-closed tenant canary policy for durable WhatsApp inbound turns.
 
-The allowlist scopes queue ingress and worker claims. It does not make
-``CHANNEL_SESSION_IDENTITY_MODE=enforce`` tenant-specific; that prerequisite is
-still process-wide and must be audited for every tenant before queue rollout.
+The allowlist scopes queue ingress and worker claims. The legacy provider
+contract uses process-wide identity enforcement; explicitly isolated Meta uses
+its own enforced identity and queue configuration without changing Twilio.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from services.whatsapp_provider_policy import whatsapp_provider_config
 
 
 class WhatsAppInboundDurabilityConfigurationError(RuntimeError):
@@ -85,9 +87,11 @@ def resolve_whatsapp_inbound_durability_policy(
     config: Mapping[str, Any] | Any,
     *,
     tenant_id: Any,
+    provider: str = "twilio",
 ) -> WhatsAppInboundDurabilityPolicy:
     """Resolve queue vs. legacy only from a trusted, canonical tenant id."""
 
+    config = whatsapp_provider_config(config, provider)
     mode = str(
         _config_value(config, "WHATSAPP_INBOUND_DURABILITY_MODE", "legacy")
         or "legacy"
@@ -138,9 +142,11 @@ def resolve_whatsapp_inbound_durability_policy(
 
 def resolve_whatsapp_inbound_queue_tenants(
     config: Mapping[str, Any] | Any,
+    *, provider: str = "twilio",
 ) -> frozenset[int]:
     """Return the explicit worker scope after validating the queue contract."""
 
+    config = whatsapp_provider_config(config, provider)
     mode = str(
         _config_value(config, "WHATSAPP_INBOUND_DURABILITY_MODE", "legacy")
         or "legacy"

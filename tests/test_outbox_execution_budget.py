@@ -227,7 +227,14 @@ def test_whatsapp_outbound_dispatch_injects_the_bounded_transport():
     import services.whatsapp_inbound_worker as worker
 
     app = Flask(__name__)
-    app.config["WHATSAPP_INBOUND_LEASE_SECONDS"] = 180
+    app.config.update(
+        WHATSAPP_INBOUND_LEASE_SECONDS=180,
+        WHATSAPP_INBOUND_DURABILITY_MODE="queue",
+        WHATSAPP_INBOUND_QUEUE_TENANT_IDS="17",
+        WHATSAPP_INBOUND_HASH_SECRET="synthetic-budget-stream-" + "q" * 32,
+        CHANNEL_SESSION_IDENTITY_MODE="enforce",
+        CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1="synthetic-budget-identity-" + "i" * 32,
+    )
     claim = SimpleNamespace(
         attempt_id="attempt-1",
         tenant_id=17,

@@ -260,6 +260,8 @@ def create_app(config_class=Config):
 
     # Opt-in cutover control. Register it before auth, tenant resolution and
     # route handlers so no HTTP mutation reaches application or provider code.
+    from utils.meta_credential_http import register_meta_credential_http_boundary
+    register_meta_credential_http_boundary(app)
     register_cutover_writer_fence(app)
 
     # Error handling unificado JSON
@@ -416,6 +418,9 @@ def create_app(config_class=Config):
             """
             Adjunta usuario a g.viewer. Evita tocar DB en migraciones.
             """
+            from utils.meta_credential_http import is_meta_credential_admin_request
+            if is_meta_credential_admin_request():
+                return
             g.viewer = None
             g.pop('_login_user', None)
             g.current_user = None
@@ -1076,6 +1081,8 @@ def create_app(config_class=Config):
     app.register_blueprint(runtime_readiness_bp)
     app.register_blueprint(internal_cron_bp)
     app.register_blueprint(internal_cutover_bp)
+    from routes.meta_credential_admin import meta_credential_admin_bp
+    app.register_blueprint(meta_credential_admin_bp)
     app.register_blueprint(voice_bp)
     app.register_blueprint(browser_realtime_bp)
     app.register_blueprint(catalog_v2_bp)
