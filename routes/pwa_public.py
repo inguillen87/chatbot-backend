@@ -185,6 +185,9 @@ def _tenant_info_response():
     tenant = _require_tenant()
     request_id = _request_id()
     public_payload = tenant.to_public_dict()
+    from services.organization_branding import build_public_workspace_appearance
+    public_payload["workspace_appearance"] = build_public_workspace_appearance(
+        tenant, exact_resolution=getattr(g, "public_tenant_resolution_exact", False))
     cart_url, _, _ = _build_public_cart_url(tenant)
     public_payload.setdefault("public_cart_url", cart_url)
     public_payload.setdefault("public_catalog_url", f"/api/pwa/public/catalog?tenant={tenant.slug}")
@@ -196,6 +199,7 @@ def _tenant_info_response():
     }
     response = jsonify(body)
     response.headers["X-Request-Id"] = request_id
+    response.headers["Cache-Control"] = "no-store"
     return response
 
 
@@ -291,6 +295,7 @@ def public_pwa_tenant_info():
 
 
 def _require_tenant() -> TenantProfile:
+    g.public_tenant_resolution_exact = False
     raw_tenant_id = request.args.get("tenant_id") or request.headers.get("X-Tenant-Id")
     widget_token = (
         request.args.get("widget_token")
@@ -306,6 +311,10 @@ def _require_tenant() -> TenantProfile:
         or request.headers.get("X-Tenant-Slug")
         or request.headers.get("X-Tenant")
     )
+
+    # Keep the original selector for appearance provenance. Referrer discovery
+    # and routing aliases may help old clients but are not an exact brand claim.
+    public_brand_requested_slug = tenant_slug
 
     # Referrer discovery helps embedded public apps. A concrete /t/<tenant>
     # referrer may replace only legacy generic aliases left by older widget
@@ -371,6 +380,11 @@ def _require_tenant() -> TenantProfile:
     if tenant is not None:
         g.tenant_profile = tenant
         g.tenant_profile_slug = tenant.slug
+        from services.organization_branding import public_brand_id_matches, public_brand_slug_matches
+        g.public_tenant_resolution_exact = (
+            public_brand_id_matches(tenant, raw_tenant_id) if raw_tenant_id
+            else public_brand_slug_matches(tenant, public_brand_requested_slug)
+        )
 
     if tenant is None:
         abort(_tenant_resolution_error_response())
@@ -784,7 +798,13 @@ def public_cart_clear():
 @cross_origin(**_cors_kwargs(["GET"]))
 def tenant_info():
     tenant = _require_tenant()
-    return jsonify(tenant.to_public_dict())
+    from services.organization_branding import build_public_workspace_appearance
+    public_payload = tenant.to_public_dict()
+    public_payload["workspace_appearance"] = build_public_workspace_appearance(
+        tenant, exact_resolution=getattr(g, "public_tenant_resolution_exact", False))
+    response = jsonify(public_payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @pwa_public_bp.get("/surveys")

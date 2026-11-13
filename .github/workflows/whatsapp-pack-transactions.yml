@@ -17,6 +17,9 @@ name: WhatsApp draft transactions
       - tests/test_module_selection_assistance.py
       - tests/module_assistance_http_acceptance.py
       - services/organization_branding.py
+      - services/institutional_assistant.py
+      - tests/test_public_workspace_appearance.py
+      - tests/test_institutional_import_review_ui.py
       - services/organization_domain_binding.py
       - services/organization_domain_vercel.py
       - services/organization_addresses.py
@@ -241,5 +244,21 @@ jobs:
         with:
           name: survey-r18-new-suites-evidence
           path: .qa-artifacts/survey-r18/new-suites.xml
+          if-no-files-found: error
+          retention-days: 14
+      - name: Verify public workspace appearance and institutional review UI copy
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          from pathlib import Path; Path('.qa-artifacts/public-brand-review').mkdir(parents=True, exist_ok=True);
+          import pytest; raise SystemExit(pytest.main(['-q',
+          'tests/test_public_workspace_appearance.py',
+          'tests/test_institutional_import_review_ui.py',
+          '--junitxml=.qa-artifacts/public-brand-review/new-suites.xml']))"
+      - name: Preserve separate public brand and review JUnit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-brand-review-new-suites-evidence
+          path: .qa-artifacts/public-brand-review/new-suites.xml
           if-no-files-found: error
           retention-days: 14
