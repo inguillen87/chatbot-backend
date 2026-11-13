@@ -153,6 +153,29 @@ def _jurisdiction_bounds(value: Any) -> dict[str, float] | None:
     }
 
 
+def _initial_view_bounds(value: Any, jurisdiction_bounds: dict[str, float]) -> dict[str, float] | None:
+    """Optional first camera framing, valid only inside the jurisdiction envelope.
+
+    A province can span far beyond where its people live (Tierra del Fuego
+    reaches the South Pole). Without activity to frame, the map needs a declared
+    starting view. It is presentation, not territory.
+    """
+
+    if not isinstance(value, dict):
+        return None
+    bounds = _jurisdiction_bounds(value.get("bounds"))
+    if bounds is None:
+        return None
+    if not (
+        jurisdiction_bounds["west"] <= bounds["west"]
+        and bounds["east"] <= jurisdiction_bounds["east"]
+        and jurisdiction_bounds["south"] <= bounds["south"]
+        and bounds["north"] <= jurisdiction_bounds["north"]
+    ):
+        return None
+    return bounds
+
+
 def _safe_config_segment(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized or not re.fullmatch(r"[a-z0-9_-]+", normalized):
@@ -482,6 +505,7 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
                 continue
             verified_boundary = _load_verified_boundary(config_path, payload)
             effective_bounds = (verified_boundary or {}).get("bounds") or bounds
+            initial_view = _initial_view_bounds(payload.get("initial_view"), effective_bounds)
             return {
                 "contract_version": "operations.tenant_jurisdiction.v1",
                 "state": "configured",
@@ -492,6 +516,9 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
                 "locale": _scalar_text(payload.get("locale")),
                 "region_hint": _scalar_text(payload.get("region_hint")),
                 "bounds": effective_bounds,
+                # Camera hint only: it never widens, narrows or replaces the
+                # jurisdiction used for containment.
+                "initial_view_bounds": initial_view,
                 "containment_method": "point_in_polygon" if verified_boundary else "operational_envelope",
                 "containment_verified": bool(verified_boundary),
                 "boundary_authority": (verified_boundary or {}).get("authority"),

@@ -11,6 +11,15 @@
     -25.023145,
     -51.000057
   ],
+  "initial_view": {
+    "bounds": [
+      -68.75,
+      -55.15,
+      -63.7,
+      -52.55
+    ],
+    "note": "Encuadre inicial del mapa cuando todavía no hay ubicaciones: Isla Grande (sector argentino) e Isla de los Estados. Es sólo la vista de arranque; no es un límite, no recorta la provincia y no interviene en la contención."
+  },
   "boundary": {
     "file": "official_province_boundary.geojson",
     "authority": {

@@ -3433,6 +3433,7 @@ def _heatmap_viewport_presets(
     hotspots: list[dict[str, Any]],
     quality: dict[str, Any],
     geocoding_candidates: list[dict[str, Any]],
+    initial_view: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     center = _bounds_center(bounds)
     presets: list[dict[str, Any]] = []
@@ -3474,6 +3475,22 @@ def _heatmap_viewport_presets(
                 "default": not bool(presets),
                 "reason_code": "addresses_need_geocoding",
                 "candidate_count": len(geocoding_candidates),
+            }
+        )
+    initial_center = _bounds_center(initial_view)
+    if not presets and initial_view and initial_center:
+        # No activity to frame: use the view declared for this organization
+        # instead of leaving the client to fit the whole official boundary.
+        presets.append(
+            {
+                "id": "tenant_region_empty",
+                "label": "Vista inicial",
+                "mode": "fit_bounds",
+                "default": True,
+                "bounds": initial_view,
+                "center": initial_center,
+                "padding_px": 24,
+                "reason_code": quality.get("reason_code") or "no_points",
             }
         )
     if not presets:
@@ -4637,6 +4654,7 @@ def build_operational_heatmap(
         hotspots=hotspots,
         quality=quality,
         geocoding_candidates=geocoding_candidates,
+        initial_view=jurisdiction.get("initial_view_bounds") if jurisdiction_verified else None,
     )
     layer_style_contract = _heatmap_layer_style_contract(
         ai_layers=ai_layers,
