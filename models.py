@@ -5820,3 +5820,8 @@ from models_tenant_blueprints import TenantBlueprintApplication
 from models_government_launch import TenantBlueprintLaunchReceipt
 
 from models_survey_methodology import SurveyMethodologyRevision
+
+# General settings writers may hold a stale copy of configuracion. Address
+# authority is preserved atomically even when those routes replace the JSON.
+from services.organization_address_config_guard import install_address_config_guard
+install_address_config_guard(TenantProfile)

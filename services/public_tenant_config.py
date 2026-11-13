@@ -10,6 +10,7 @@ _PRIVATE_CONFIG_SECTIONS = frozenset(
         "organization_setup_modules",
         "organization_workspace_branding",
         "organization_domain_binding",
+        "organization_address_bindings_v2",
         "organization_branding_workflow_copy",
         "credentials",
         "integration_credentials",

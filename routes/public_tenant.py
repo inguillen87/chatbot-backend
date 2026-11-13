@@ -108,6 +108,32 @@ def public_host_readiness():
         return reply({**empty, 'reason_code': 'host_readiness_unavailable'}, 503)
     return reply(payload, 200) if payload is not None else reply(empty, 404)
 
+@public_tenant_bp.route('/api/public/address-readiness', methods=['GET'])
+def public_address_readiness():
+    """Exact v2 pending infrastructure proof; no tenant selection or activation."""
+    from services.organization_addresses import DomainBindingError, READINESS, build_readiness
+    def reply(payload, status):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'no-store'
+        return result, status
+    empty = {'contract_version': READINESS, 'reason_code': 'host_not_available', 'tenant': None}
+    keys = {'host', 'tenant_id', 'tenant_slug', 'kind', 'revision', 'nonce'}
+    if (set(request.args) != keys or any(len(request.args.getlist(key)) != 1 for key in keys)
+            or not re.fullmatch(r'[1-9][0-9]{0,9}', request.args.get('tenant_id', ''))):
+        return reply({**empty, 'reason_code': 'address_readiness_invalid'}, 400)
+    try:
+        payload = build_readiness(db.session, TenantProfile, host=request.args['host'],
+            tenant_id=int(request.args['tenant_id']), tenant_slug=request.args['tenant_slug'],
+            kind=request.args['kind'], expected_revision=request.args['revision'], nonce=request.args['nonce'],
+            backend_source=current_app.config.get('BACKEND_VERSION'), config=current_app.config)
+    except DomainBindingError as exc:
+        return reply({**empty, 'reason_code': 'address_readiness_unavailable' if exc.status == 503
+            else 'address_readiness_invalid'}, 503 if exc.status == 503 else 400)
+    except Exception:
+        return reply({**empty, 'reason_code': 'address_readiness_unavailable'}, 503)
+    return reply(payload, 200) if payload is not None else reply(empty, 404)
+
+
 RESERVED_PUBLIC_SLUGS = {
     "demo",
     "demo-catalogs",

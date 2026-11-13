@@ -419,7 +419,8 @@ def create_app(config_class=Config):
             Adjunta usuario a g.viewer. Evita tocar DB en migraciones.
             """
             from utils.meta_credential_http import is_meta_credential_admin_request
-            if is_meta_credential_admin_request():
+            from utils.organization_address_http import is_address_operator_request
+            if is_meta_credential_admin_request() or is_address_operator_request():
                 return
             g.viewer = None
             g.pop('_login_user', None)
@@ -1067,6 +1068,8 @@ def create_app(config_class=Config):
     app.register_blueprint(pwa_app_legacy_bp)
     app.register_blueprint(webauthn_bp)
     app.register_blueprint(admin_tenant_bp)
+    from routes.organization_addresses import organization_addresses_bp
+    app.register_blueprint(organization_addresses_bp)
     app.register_blueprint(institutional_assistant_bp)
     app.register_blueprint(public_tenant_bp)
     app.register_blueprint(public_flow_runtime_bp)
