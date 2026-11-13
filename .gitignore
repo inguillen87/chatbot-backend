@@ -25,6 +25,7 @@ instance/*
 !data/estacionamiento/camaras.json
 !data/estacionamiento/parking_spots.json
 !data/municipios/**
+!data/tenants/tierra-del-fuego/geo.json
 !data/pyme/**
 __pycache__/
 *.pyc

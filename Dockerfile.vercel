@@ -25,6 +25,14 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY . .
 
+# Require the actual container context to contain each official boundary with
+# its declared digest. Missing files or mismatches must fail the Vercel build.
+RUN python -c "import hashlib, json, sys; from pathlib import Path; \
+    configs = [Path('data/municipios/junin/geo.json'), Path('data/tenants/tierra-del-fuego/geo.json')]; \
+    snapshots = [(path.parent, json.loads(path.read_text(encoding='utf-8'))['boundary']) for path in configs]; \
+    mismatches = [str(base / spec['file']) for base, spec in snapshots if hashlib.sha256((base / spec['file']).read_bytes()).hexdigest() != spec['snapshot_sha256']]; \
+    sys.exit('Corrupt official boundary snapshot in container: ' + ', '.join(mismatches)) if mismatches else None"
+
 # Bake application bytecode into the immutable image. The runtime intentionally
 # disables bytecode writes, so without this step every cold instance recompiles
 # the full Flask route tree before Gunicorn can become ready.
