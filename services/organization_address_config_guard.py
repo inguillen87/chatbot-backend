@@ -134,25 +134,10 @@ def install_address_config_guard(tenant_model):
         tenant.configuracion = {key: deepcopy(value) for key, value in candidate.items()
             if key not in SECTIONS or key == permitted}
 
-    def reject_bulk(execute_state):
-        if not execute_state.is_update:
-            return
-        statement = execute_state.statement
-        target = getattr(statement, 'table', None)
-        if not targets_model(target):
-            return
-        names = {getattr(key, 'key', key) for key in (getattr(statement, '_values', None) or {})}
-        parameters = execute_state.parameters
-        for row in parameters if isinstance(parameters, list) else [parameters]:
-            if isinstance(row, dict):
-                names.update(row)
-        if 'configuracion' in names:
-            raise AddressConfigGuardError('address_bulk_configuration_write_forbidden')
-
     def reject_unguarded_update(_connection, statement, multiparams, params, _execution_options):
-        # Legacy bulk_update_mappings/bulk_save_objects do not dispatch mapper
-        # events or do_orm_execute. Reject that bypass at the compiled UPDATE
-        # boundary as well; ordinary updates carry the expression above.
+        # Modern ORM/Core and legacy bulk writes all reach this boundary, even
+        # when mapper events are skipped. Ordinary updates carry the guarded
+        # expression above; unguarded configuration writes are rejected here.
         if not isinstance(statement, (Insert, Update)):
             return
         target = statement.table
@@ -211,7 +196,9 @@ def install_address_config_guard(tenant_model):
 
     event.listen(tenant_model, 'before_update', protect_update, propagate=True)
     event.listen(tenant_model, 'before_insert', protect_insert, propagate=True)
-    event.listen(Session, 'do_orm_execute', reject_bulk)
+    # Do not add a redundant Session.do_orm_execute listener. In SQLAlchemy
+    # 2.0.41 its presence alone propagates yield_per into selectinload queries,
+    # breaking their internal unique() even when the listener ignores SELECT.
     event.listen(Engine, 'before_execute', reject_unguarded_update)
     event.listen(Session, 'after_flush_postexec', _clear)
     event.listen(Session, 'after_flush_postexec', expire_expression_results)

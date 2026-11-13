@@ -356,6 +356,7 @@ class AddressLifecycleTests(unittest.TestCase):
         methods = (
             lambda: self.db.session.query(self.Tenant).filter_by(id=self.tenant_id).update({'configuracion': forged}),
             lambda: self.db.session.execute(update(self.Tenant).where(self.Tenant.id == self.tenant_id).values(configuracion=forged)),
+            lambda: self.db.session.execute(update(self.Tenant), [{'id': self.tenant_id, 'configuracion': forged}]),
             lambda: self.db.session.bulk_update_mappings(self.Tenant, [{'id': self.tenant_id, 'configuracion': forged}]),
             lambda: self.db.session.bulk_insert_mappings(self.Tenant, [{'id': 99000, 'slug': 'forged-fixture',
                 'nombre': 'Synthetic', 'tipo': 'municipio', 'configuracion': forged}]),
@@ -381,6 +382,37 @@ class AddressLifecycleTests(unittest.TestCase):
         self.db.session.expire_all()
         self.assertEqual(self.tenant().plan, 'pro')
         self.assertEqual(self.Audit.query.count(), 0)
+
+    def test_private_config_guard_keeps_batched_relationship_reads(self):
+        # The application guard is already installed. A global ORM execution
+        # listener must not make unrelated selectinload + yield_per reads fail.
+        from sqlalchemy import Column, ForeignKey, Integer, create_engine
+        from sqlalchemy.orm import Session, declarative_base, relationship, selectinload
+        base = declarative_base()
+
+        class Parent(base):
+            __tablename__ = 'address_guard_read_parent'
+            id = Column(Integer, primary_key=True)
+
+        class Child(base):
+            __tablename__ = 'address_guard_read_child'
+            id = Column(Integer, primary_key=True)
+            parent_id = Column(Integer, ForeignKey(Parent.id), nullable=False)
+
+        Parent.children = relationship(Child, order_by=Child.id)
+        engine = create_engine('sqlite:///:memory:')
+        try:
+            base.metadata.create_all(engine)
+            with Session(engine) as session:
+                session.add_all([Parent(id=1, children=[Child(id=11), Child(id=12)]),
+                    Parent(id=2), Parent(id=3, children=[Child(id=31)])])
+                session.commit()
+                session.expunge_all()
+                rows = session.query(Parent).options(selectinload(Parent.children)).order_by(Parent.id).yield_per(2)
+                self.assertEqual([(row.id, [child.id for child in row.children]) for row in rows],
+                    [(1, [11, 12]), (2, []), (3, [31])])
+        finally:
+            engine.dispose()
 
     def test_private_write_permit_is_one_section_one_flush_and_cleared_on_failure(self):
         from services.organization_address_config_guard import address_section_write, _PERMITS
