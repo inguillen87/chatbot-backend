@@ -33,6 +33,17 @@ UI = {
     'version': 'Versión', 'preview': 'Probar respuestas', 'large_text': 'Texto ampliado',
     'answer': 'Respuesta', 'evidence': 'Información respaldada por documentos', 'close': 'Cerrar fuentes',
     'pending': 'El cambio no está confirmado. Consultá el estado antes de volver a intentarlo.',
+    'import_review_current_version': 'Versión actual',
+    'import_review_proposed_version': 'Versión a incorporar',
+    'import_review_empty_current': 'Sin versión incorporada',
+    'import_review_destination': 'Organización de destino',
+    'import_review_declared_tenant': 'Organización declarada en el archivo',
+    'import_review_declared_sources': 'Fuentes declaradas',
+    'import_review_evaluation_only': 'Uso sólo para evaluación declarado',
+    'import_review_approval_status': 'Estado de aprobación declarado (sin verificar)',
+    'import_review_not_reported': 'Sin información',
+    'import_review_yes': 'Sí', 'import_review_no': 'No',
+    'import_review_notice': 'Vista previa local del archivo. El servidor validará el contenido al confirmar. Estas declaraciones no acreditan aprobación institucional ni vigencia.',
 }
 _CHANNEL_UI_KEYS = ('more_options', 'previous_options', 'options_page', 'large_text', 'source_details')
 

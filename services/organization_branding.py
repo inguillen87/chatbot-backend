@@ -91,6 +91,51 @@ def build_workspace_appearance(tenant, *, entitled=False):
     return {'contract_version':'organization.workspace_appearance.v1','tenant':brand['tenant'],
         'version':brand['version'],'appearance':brand['appearance']}
 
+_PUBLIC_BRAND_PLACEHOLDERS = {
+    'default', 'municipio', 'municipal', 'gobierno', 'gobiernos',
+    'pyme', 'pymes', 'empresa', 'empresas', 'pwa', 'whatsapp',
+    'market', 'marketplace', 'estadisticas', 'iframe', 'embed', 'widget',
+}
+
+
+def public_brand_slug_matches(tenant, requested_slug):
+    """Presentation provenance only; routing aliases are not an exact slug."""
+    if not isinstance(requested_slug, str):
+        return False
+    cleaned = requested_slug.strip().lower()
+    actual = getattr(tenant, 'slug', None)
+    return bool(cleaned not in _PUBLIC_BRAND_PLACEHOLDERS
+        and re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,79}', cleaned)
+        and isinstance(actual, str) and actual.lower() == cleaned)
+
+
+def public_brand_id_matches(tenant, requested_id):
+    """Use the actual id-selected row; never coerce bool or ambient identity."""
+    if not isinstance(requested_id, str):
+        return False
+    cleaned = requested_id.strip()
+    identifier = getattr(tenant, 'id', None)
+    return bool(re.fullmatch(r'[0-9]{1,10}', cleaned)
+        and type(identifier) is int and identifier > 0 and int(cleaned) == identifier)
+
+
+def build_public_workspace_appearance(tenant, *, exact_resolution=False):
+    """Only an exact public tenant may expose its existing active Full palette.
+
+    Storage, CAS, history and entitlement remain the existing authorities.
+    No default tenant, private store, editor or provider configuration is public.
+    """
+    if exact_resolution is not True:
+        return None
+    from services.plan_access import tenant_allows_workspace_branding
+    if tenant_allows_workspace_branding(tenant) is not True:
+        return None
+    projected = build_workspace_appearance(tenant, entitled=True)
+    if projected is None or projected['appearance']['active'] is not True:
+        return None
+    return projected
+
+
 def save_branding(session, tenant_model, user_model, audit_model, *, tenant_id, actor_id, data, authorize, entitlement):
     try:
         if not isinstance(data,dict) or set(data)!={'organization_branding','expected_revision'}:

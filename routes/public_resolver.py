@@ -2519,9 +2519,14 @@ def tenant_profile():
             }
         ), 404
 
+    from services.organization_branding import build_public_workspace_appearance, public_brand_slug_matches
+    public_appearance = build_public_workspace_appearance(tenant,
+        exact_resolution=not resolved_from_fallback and public_brand_slug_matches(tenant, tenant_slug_original))
+    tenant_info["workspace_appearance"] = public_appearance
     payload = {
         "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
         "tenant": tenant_info,
+        "workspace_appearance": public_appearance,
         "integration_access": integration_access,
         "embed_locked": not bool(integration_access.get("enabled")),
     }
@@ -2537,6 +2542,7 @@ def tenant_profile():
         }
 
     response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
 
     if canonical_widget_token:
         cookie_args = {
