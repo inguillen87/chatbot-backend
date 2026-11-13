@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import threading
 import unicodedata
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlsplit
@@ -276,6 +277,8 @@ _VERIFIED_BOUNDARY_CACHE: dict[tuple[Any, ...], dict[str, Any] | None] = {}
 # id(geometry) -> (geometry, per-polygon envelopes). The geometry reference is
 # kept so an unrelated object reusing the same id can never match.
 _BOUNDARY_ENVELOPES: dict[int, tuple[dict[str, Any], list[tuple[float, float, float, float] | None]]] = {}
+_BOUNDARY_CACHE_LOCK = threading.RLock()
+_CACHE_MISS: Any = object()
 
 
 def _polygon_envelope(polygon: Any) -> tuple[float, float, float, float] | None:
@@ -304,8 +307,9 @@ def _forget_boundary_geometry(boundary: dict[str, Any] | None) -> None:
 def clear_verified_boundary_cache() -> None:
     """Drop every cached snapshot and its envelopes (tests and operators)."""
 
-    _VERIFIED_BOUNDARY_CACHE.clear()
-    _BOUNDARY_ENVELOPES.clear()
+    with _BOUNDARY_CACHE_LOCK:
+        _VERIFIED_BOUNDARY_CACHE.clear()
+        _BOUNDARY_ENVELOPES.clear()
 
 
 def _boundary_contains_position(geometry: dict[str, Any], lng: float, lat: float) -> bool:
@@ -450,18 +454,27 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
     key = _verified_boundary_cache_key(config_path, payload)
     if key is None:
         return _read_verified_boundary(config_path, payload)
-    if key in _VERIFIED_BOUNDARY_CACHE:
-        return _VERIFIED_BOUNDARY_CACHE[key]
-    boundary = _read_verified_boundary(config_path, payload)
-    # Only verified results are remembered: a rejected file is re-read, so a
-    # corrected snapshot is picked up without restarting.
-    if boundary is not None:
-        while len(_VERIFIED_BOUNDARY_CACHE) >= _BOUNDARY_CACHE_LIMIT:
-            _forget_boundary_geometry(_VERIFIED_BOUNDARY_CACHE.pop(next(iter(_VERIFIED_BOUNDARY_CACHE))))
-        _VERIFIED_BOUNDARY_CACHE[key] = boundary
-        if isinstance(boundary.get("geometry"), dict):
-            _index_boundary_geometry(boundary["geometry"])
-    return boundary
+    cached = _VERIFIED_BOUNDARY_CACHE.get(key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+    # One loader at a time: concurrent cold requests for the same snapshot wait
+    # and reuse the single verified object instead of each indexing its own
+    # copy. Lookup, insertion and eviction happen under the same lock, so an
+    # entry and its envelopes are always added and removed together.
+    with _BOUNDARY_CACHE_LOCK:
+        cached = _VERIFIED_BOUNDARY_CACHE.get(key, _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return cached
+        boundary = _read_verified_boundary(config_path, payload)
+        # Only verified results are remembered: a rejected file is re-read, so
+        # a corrected snapshot is picked up without restarting.
+        if boundary is not None:
+            while len(_VERIFIED_BOUNDARY_CACHE) >= _BOUNDARY_CACHE_LIMIT:
+                _forget_boundary_geometry(_VERIFIED_BOUNDARY_CACHE.pop(next(iter(_VERIFIED_BOUNDARY_CACHE))))
+            if isinstance(boundary.get("geometry"), dict):
+                _index_boundary_geometry(boundary["geometry"])
+            _VERIFIED_BOUNDARY_CACHE[key] = boundary
+        return boundary
 
 
 def _read_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[str, Any] | None:

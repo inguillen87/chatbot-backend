@@ -3,6 +3,7 @@ import hashlib
 import json
 import random
 import shutil
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -115,3 +116,86 @@ def test_cache_is_bounded_and_drops_envelopes_with_the_entry(tmp_path):
         assert _load(folder)[0] is not None
     assert len(evidence._VERIFIED_BOUNDARY_CACHE) == evidence._BOUNDARY_CACHE_LIMIT
     assert len(evidence._BOUNDARY_ENVELOPES) <= evidence._BOUNDARY_CACHE_LIMIT
+
+
+def test_concurrent_cold_requests_share_one_verified_snapshot_and_one_index(monkeypatch):
+    """Nueve hilos en frío sobre el MultiPolygon real: una lectura, una entrada, un índice."""
+    workers = 9
+    ready = threading.Barrier(workers)
+    reads = []
+    original = evidence._read_verified_boundary
+
+    def slow_read(*args):
+        reads.append(threading.get_ident())
+        return original(*args)
+
+    monkeypatch.setattr(evidence, '_read_verified_boundary', slow_read)
+    config = json.loads((TDF / 'geo.json').read_text(encoding='utf-8'))
+    results, errors = [], []
+
+    def worker():
+        try:
+            ready.wait(timeout=30)
+            results.append(evidence._load_verified_boundary(str(TDF / 'geo.json'), config))
+        except Exception as error:  # pragma: no cover - se informa abajo
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+
+    assert errors == [] and len(results) == workers
+    assert len(reads) == 1
+    assert all(result is results[0] for result in results)
+    assert len(evidence._VERIFIED_BOUNDARY_CACHE) == 1
+    assert list(evidence._BOUNDARY_ENVELOPES) == [id(results[0]['geometry'])]
+
+
+def test_evicting_the_provincial_snapshot_releases_its_index(tmp_path):
+    provincial, _ = _load(TDF)
+    provincial_id = id(provincial['geometry'])
+    assert provincial_id in evidence._BOUNDARY_ENVELOPES
+
+    for index in range(evidence._BOUNDARY_CACHE_LIMIT):
+        folder = tmp_path / str(index) / 'copia'
+        shutil.copytree(JUNIN, folder)
+        assert _load(folder)[0] is not None
+
+    assert provincial not in evidence._VERIFIED_BOUNDARY_CACHE.values()
+    assert provincial_id not in evidence._BOUNDARY_ENVELOPES
+    assert len(evidence._VERIFIED_BOUNDARY_CACHE) == evidence._BOUNDARY_CACHE_LIMIT
+    # Sólo quedan índices de entradas vivas (Junín es un Polygon y no indexa).
+    live = {id(entry['geometry']) for entry in evidence._VERIFIED_BOUNDARY_CACHE.values()}
+    assert set(evidence._BOUNDARY_ENVELOPES) <= live
+
+
+def test_concurrent_loads_of_many_snapshots_respect_the_limits(tmp_path):
+    folders = []
+    for index in range(evidence._BOUNDARY_CACHE_LIMIT + 4):
+        folder = tmp_path / str(index) / 'copia'
+        shutil.copytree(JUNIN, folder)
+        folders.append(folder)
+    folders += [TDF] * 4
+    ready = threading.Barrier(len(folders))
+    errors = []
+
+    def worker(folder):
+        try:
+            ready.wait(timeout=30)
+            for _ in range(3):
+                assert _load(folder)[0] is not None
+        except Exception as error:  # pragma: no cover - se informa abajo
+            errors.append(error)
+
+    threads = [threading.Thread(target=worker, args=(folder,)) for folder in folders]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+
+    assert errors == []
+    assert len(evidence._VERIFIED_BOUNDARY_CACHE) <= evidence._BOUNDARY_CACHE_LIMIT
+    live = {id(entry['geometry']) for entry in evidence._VERIFIED_BOUNDARY_CACHE.values()}
+    assert set(evidence._BOUNDARY_ENVELOPES) <= live
