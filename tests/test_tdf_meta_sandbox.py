@@ -1171,3 +1171,85 @@ def test_runtime_transport_limits_stream_and_closes_on_failure(monkeypatch):
         pilot._graph_request("GET", "https://graph.facebook.com/v25.0/debug_token",
                              allow_redirects=False, verify=True)
     assert len(connections) == 1 and connections[0].closed
+
+
+# --- Avisos de cuenta y plantillas: se aceptan sin procesar -------------------
+
+ACCOUNT_FIELDS = ("message_template_status_update", "message_template_quality_update",
+                  "message_template_components_update", "template_category_update",
+                  "account_update", "account_review_update", "account_alerts")
+PRIVATE_TEMPLATE, FOREIGN_WABA = "plantilla_privada_sintetica", "990000000000001"
+
+
+def account_document(*fields, waba=FOREIGN_WABA):
+    return {"object": "whatsapp_business_account", "entry": [{"id": waba, "changes": [
+        {"field": field, "value": {"event": "REJECTED", "message_template_name": PRIVATE_TEMPLATE}}
+        for field in fields]}]}
+
+
+def _row_counts():
+    return (db.session.query(WebhookDelivery).count(), db.session.query(MessagingEventLedger).count())
+
+
+def _post_signed(environment, doc, signature=None):
+    raw, good = encoded(doc)
+    return environment.client.post(URL, data=raw, content_type="application/json",
+                                   headers={"X-Hub-Signature-256": signature or good})
+
+
+@pytest.mark.parametrize("field", ACCOUNT_FIELDS)
+def test_account_and_template_notifications_are_acknowledged_with_no_effects(environment, monkeypatch, caplog, field):
+    monkeypatch.setattr(pilot.GraphAuthority, "__call__", lambda *args: pytest.fail("Graph must not be consulted"))
+    monkeypatch.setattr(pilot, "binding_loader", lambda *args: pytest.fail("No binding may be resolved"))
+    before = _row_counts()
+    with caplog.at_level("INFO"):
+        response = _post_signed(environment, account_document(field))
+
+    assert response.status_code == 200 and response.json == {"result": "acknowledged_unprocessed"}
+    assert _row_counts() == before == (0, 0)
+    assert "acknowledged unprocessed events=1 fields=" + field in caplog.text
+    for private in (PRIVATE_TEMPLATE, FOREIGN_WABA, SECRET, TOKEN, "REJECTED"):
+        assert private not in caplog.text and private not in response.data.decode()
+
+
+def test_account_notification_with_bad_signature_is_denied_like_any_other(environment, monkeypatch, caplog):
+    monkeypatch.setattr(pilot.GraphAuthority, "__call__", lambda *args: pytest.fail("Signature must come first"))
+    response = _post_signed(environment, account_document("account_update"), signature="sha256=" + "0" * 64)
+
+    assert response.status_code == 403
+    assert _row_counts() == (0, 0)
+    assert "acknowledged" not in caplog.text
+    assert "Meta TDF incoming POST rejected reason=meta_webhook_signature_invalid" in caplog.text
+
+
+@pytest.mark.parametrize("fields", [("security",), ("phone_number_quality_update",), ("account_update", "messages")])
+def test_unknown_fields_and_mixed_batches_keep_being_rejected(environment, monkeypatch, fields):
+    # Decisión explícita: un lote mixto NO se divide. Aceptar una parte cambiaría
+    # la semántica de entrega; se rechaza entero, igual que antes de este cambio.
+    monkeypatch.setattr(pilot.GraphAuthority, "__call__", lambda *args: pytest.fail("Graph must not be consulted"))
+    response = _post_signed(environment, account_document(*fields))
+
+    assert response.status_code == 403
+    assert response.json["reason_code"] == "tdf_meta_authentication_or_binding_denied"
+    assert _row_counts() == (0, 0)
+
+
+def test_messages_from_another_number_are_still_denied(environment, monkeypatch):
+    monkeypatch.setattr(pilot.GraphAuthority, "__call__", lambda *args: pytest.fail("Graph must not be consulted"))
+    foreign = document()
+    foreign["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"] = "990000000000002"
+    response = _post_signed(environment, foreign)
+
+    # The existing parser normalizes resolver failures before the HTTP adapter.
+    assert response.status_code == 403 and response.json["reason_code"] == "tdf_meta_authentication_or_binding_denied"
+    assert _row_counts() == (0, 0)
+
+
+def test_account_notifications_respect_the_writer_fence_and_the_disabled_pilot(environment):
+    environment.app.config["CUTOVER_WRITER_FENCE_ENABLED"] = True
+    fenced = _post_signed(environment, account_document("account_update"))
+    assert fenced.status_code == 503 and fenced.json["reason_code"] == "tdf_sandbox_writer_fenced"
+
+    environment.app.config.update(CUTOVER_WRITER_FENCE_ENABLED=False, META_TDF_SANDBOX_ENABLED=False)
+    disabled = _post_signed(environment, account_document("account_update"))
+    assert disabled.status_code == 404

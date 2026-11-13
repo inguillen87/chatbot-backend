@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from models import db, MessagingEventLedger, TenantProfile, User, WebhookDelivery
+from services import meta_account_events as account_events
 from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
@@ -436,6 +437,18 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
         raise PilotError("tdf_sandbox_writer_fenced")
     if type(operation_now) is not int or operation_now < 0:
         raise PilotError("tdf_sandbox_clock_invalid")
+    # Account and template notifications always reach the application callback
+    # (Meta does not route them through per-number overrides) and carry no
+    # chat. Once the signature is verified they are acknowledged and nothing
+    # else happens: no tenant is resolved, nothing is stored, nobody is
+    # answered. Any other delivery, mixed batches included, continues below
+    # unchanged.
+    acknowledged = account_events.acknowledged_account_events(
+        raw_body=raw_body, signature=signature, app_secret=cfg["APP_SECRET"])
+    if acknowledged is not None:
+        return {"result": account_events.ACKNOWLEDGED_RESULT,
+                "events": sum(acknowledged.values()),
+                "fields": dict(sorted(acknowledged.items()))}
     verifier = authority or GraphAuthority(cfg, operation_now)
     load = binding_loader(cfg, clock, verifier)
     def resolve(phone, app, waba):
