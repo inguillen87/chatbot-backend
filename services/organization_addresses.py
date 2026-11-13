@@ -281,11 +281,16 @@ def build_addresses(tenant, *, can_manage=False, writes_blocked=False,
             'status': status, 'active': bool(is_active), 'valid_until': valid_until, 'dns_proof': proof,
             'allowed_aliases': list(aliases_for(tenant, config)) if kind == 'platform' else [],
             'scope_note': ('Subdominio de la plataforma. No requiere un TXT del cliente; la publicación y HTTPS deben verificarse antes de activarlo.'
-                if kind == 'platform' else 'Dominio del cliente. Requiere un plan Full, prueba TXT y verificación de publicación y HTTPS.')}
+                if kind == 'platform' else
+                'Dominio heredado del cliente. Conserva compatibilidad con planes Pro y Full; una solicitud nueva requiere Full. Requiere prueba TXT y verificación de publicación y HTTPS.'
+                if source == 'legacy_v1' and row['status'] != 'revoked' else
+                'Dominio del cliente. Requiere un plan Full, prueba TXT y verificación de publicación y HTTPS.')}
         admission = eligible(tenant, kind) if status in {'unconfigured', 'revoked'} else entitled
+        plan_reason = ('pro_plan_required' if kind == 'platform'
+            or (source == 'legacy_v1' and status not in {'unconfigured', 'revoked'}) else 'full_plan_required')
         reason = ('maintenance' if writes_blocked else 'tenant_admin_required' if not can_manage
-            else ('pro_plan_required' if kind == 'platform' else 'full_plan_required') if not admission
-            else 'platform_alias_unavailable' if not policy_admitted else 'ready')
+            else plan_reason if not admission else 'platform_alias_unavailable' if not policy_admitted
+            else 'address_revoke_required' if status == 'verification_expired' else 'ready')
         permitted = reason == 'ready'
         capabilities[kind] = {'eligible': bool(admission), 'can_request': permitted and status in {'unconfigured', 'revoked'},
             'can_verify_dns': permitted and status == 'pending_dns' and kind == 'custom',

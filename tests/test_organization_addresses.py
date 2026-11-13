@@ -121,6 +121,38 @@ class AddressLifecycleTests(unittest.TestCase):
         self.assertEqual(self.descriptor()['canonical_url'], 'https://civic.gob.ar/')
         self.assertIsNone(self.resolve('www.civic.gob.ar'))
 
+    def test_expired_claims_explain_revoke_without_changing_state_or_permissions(self):
+        self.save()
+        self.save('custom', host='civic.gob.ar')
+
+        def assert_expired(at):
+            before = deepcopy(self.tenant().configuracion)
+            before_revision = addresses.revision(self.tenant())
+            before_audits = self.Audit.query.count()
+            payload = addresses.build_addresses(self.tenant(), can_manage=True,
+                config=self.app.config, now=at)
+            for kind in ('platform', 'custom'):
+                with self.subTest(kind=kind, at=at):
+                    self.assertEqual(payload[kind]['status'], 'verification_expired')
+                    self.assertFalse(payload[kind]['active'])
+                    if kind == 'custom':
+                        self.assertEqual(payload[kind]['source'], 'v2')
+                        self.assertEqual(payload[kind]['scope_note'],
+                            'Dominio del cliente. Requiere un plan Full, prueba TXT y verificación de publicación y HTTPS.')
+                    self.assertEqual(payload['capabilities'][kind], {
+                        'eligible': True, 'can_request': False, 'can_verify_dns': False,
+                        'can_revoke': True, 'reason_code': 'address_revoke_required'})
+            self.assertEqual(self.tenant().configuracion, before)
+            self.assertEqual(payload['revision'], before_revision)
+            self.assertEqual(self.Audit.query.count(), before_audits)
+
+        assert_expired(self.now + legacy.CHALLENGE_TTL)
+        proof = self.descriptor()['custom']['dns_proof']['value']
+        self.save('custom', 'verify_dns', reader=lambda _host: [proof])
+        self.activate()
+        self.activate('custom')
+        assert_expired(self.now + 3600)
+
     def test_plan_downgrade_suspends_without_removing_and_revoke_works(self):
         self.save()
         self.activate()
@@ -180,6 +212,42 @@ class AddressLifecycleTests(unittest.TestCase):
         with self.assertRaises(legacy.DomainBindingError):
             self.save('custom', host='replacement.gob.ar')
         self.assertIsNone(self.resolve('civic.gob.ar'))
+
+    def test_legacy_plan_reason_preserves_pro_grandfather_until_revoke(self):
+        full_note = 'Dominio del cliente. Requiere un plan Full, prueba TXT y verificación de publicación y HTTPS.'
+        legacy_note = ('Dominio heredado del cliente. Conserva compatibilidad con planes Pro y Full; '
+            'una solicitud nueva requiere Full. Requiere prueba TXT y verificación de publicación y HTTPS.')
+        self.assertEqual(self.descriptor()['custom']['scope_note'], full_note)
+        legacy.save_domain_binding(self.db.session, self.Tenant, self.User, self.Audit,
+            tenant_id=self.tenant_id, actor_id=self.actor_id, data={'operation': 'request',
+                'expected_revision': legacy.revision(self.tenant(), legacy.read_record(self.tenant())), 'host': 'civic.gob.ar'},
+            authorize=self.authorize, entitlement=self.entitlement, now=self.now)
+        stored = deepcopy(self.tenant().configuracion)
+        self.tenant().plan = 'free'
+        self.db.session.commit()
+        descriptor = self.descriptor()
+        self.assertEqual(descriptor['custom']['source'], 'legacy_v1')
+        self.assertEqual(descriptor['custom']['status'], 'suspended')
+        self.assertEqual(descriptor['custom']['scope_note'], legacy_note)
+        self.assertEqual(descriptor['capabilities']['custom'], {
+            'eligible': False, 'can_request': False, 'can_verify_dns': False,
+            'can_revoke': True, 'reason_code': 'pro_plan_required'})
+        self.assertEqual(self.tenant().configuracion, stored)
+        self.tenant().plan = 'pro'
+        self.db.session.commit()
+        self.assertEqual(self.descriptor()['capabilities']['custom']['reason_code'], 'ready')
+        self.assertTrue(self.descriptor()['capabilities']['custom']['can_verify_dns'])
+        self.assertEqual(self.descriptor()['custom']['scope_note'], legacy_note)
+        self.save('custom', 'revoke')
+        for plan in ('pro', 'free'):
+            with self.subTest(plan=plan):
+                self.tenant().plan = plan
+                self.db.session.commit()
+                descriptor = self.descriptor()
+                self.assertEqual(descriptor['custom']['status'], 'revoked')
+                self.assertEqual(descriptor['custom']['scope_note'], full_note)
+                self.assertEqual(descriptor['capabilities']['custom']['reason_code'], 'full_plan_required')
+                self.assertFalse(descriptor['capabilities']['custom']['can_request'])
 
     def test_cross_slot_and_cross_api_claims_conflict(self):
         self.save()

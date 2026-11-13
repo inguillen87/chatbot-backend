@@ -63,6 +63,16 @@ null. `dns_proof` is null or the existing `{type:"TXT",name,value,expires_at}`
 shape; it is never present for platform bindings. `revision` covers v2 and v1
 state, so a change through either API invalidates a prior v2 request.
 
+For an otherwise authorized and eligible administrator, `verification_expired`
+reports capability `reason_code: address_revoke_required`: request and DNS
+verification remain unavailable, while explicit revocation remains available.
+The expired claim still occupies its slot; reading the descriptor does not
+revoke, renew, or change its revision. A non-revoked `source: legacy_v1` custom
+claim suspended on Free reports `pro_plan_required`, preserving the existing
+Pro policy. Once revoked, requesting a replacement requires Full and reports
+`full_plan_required` on Free or Pro. Maintenance, role and policy restrictions
+retain their precedence over the expiry explanation.
+
 `PUT` accepts exactly:
 
 ```json
