@@ -47,6 +47,7 @@ from services.territorial_evidence import (
 
 class V2OperationalAnalyticsTestConfig(Config):
     TESTING = True
+    DEBUG = False
     ENABLE_DEMO_MODE = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
