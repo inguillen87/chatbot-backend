@@ -1240,7 +1240,8 @@ def test_messages_from_another_number_are_still_denied(environment, monkeypatch)
     foreign["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"] = "990000000000002"
     response = _post_signed(environment, foreign)
 
-    assert response.status_code == 403 and response.json["reason_code"] == "tdf_sandbox_resource_mismatch"
+    # The existing parser normalizes resolver failures before the HTTP adapter.
+    assert response.status_code == 403 and response.json["reason_code"] == "tdf_meta_authentication_or_binding_denied"
     assert _row_counts() == (0, 0)
 
 
