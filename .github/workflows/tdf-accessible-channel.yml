@@ -23,6 +23,7 @@ on:
       - 'services/institutional_assistant_*.py'
       - 'services/meta_tdf_sandbox.py'
       - 'services/tdf_meta_sandbox.py'
+      - 'services/meta_account_events.py'
       - 'services/tdf_meta_contact_identity.py'
       - 'services/tdf_meta_audio.py'
       - 'services/meta_whatsapp_webhook.py'
@@ -117,6 +118,7 @@ on:
       - 'tests/*institutional_assistant*'
       - 'tests/test_institutional_source_navigation.py'
       - 'tests/test_tdf_meta_sandbox.py'
+      - 'tests/test_meta_account_events.py'
       - 'tests/test_tdf_meta_audio.py'
       - 'tests/test_web_audio_multipart.py'
       - 'tests/test_web_audio_live_chat.py'
@@ -651,6 +653,7 @@ jobs:
         run: >-
           python -X utf8 -m pytest -q
           tests/test_tdf_meta_sandbox.py
+          tests/test_meta_account_events.py
           tests/test_tdf_meta_audio.py
           tests/test_meta_whatsapp_direct_foundation.py
           tests/test_openai_tts_bridge.py
