@@ -36,6 +36,7 @@ ROUTES_HASH = sha256(canonical([{'src': '/api/(.*)', 'dest': 'https://api.chatbo
 
 class OrganizationAddressStaleConfigTests(unittest.TestCase):
     evidence = []
+    CONFIGURATION_STORAGE = 'jsonb'
 
     @classmethod
     def setUpClass(cls):
@@ -64,11 +65,17 @@ class OrganizationAddressStaleConfigTests(unittest.TestCase):
                 tables.add(table)
                 pending.extend(key.column.table for key in table.foreign_keys)
             db.metadata.create_all(cls.engine, tables=list(tables))
+            if cls.CONFIGURATION_STORAGE == 'json':
+                # Reproduce the physical types from the original migrations,
+                # rather than assuming create_all matches an upgraded database.
+                with cls.engine.begin() as connection:
+                    connection.execute(text('ALTER TABLE tenant_profile ALTER COLUMN configuracion TYPE json USING configuracion::json'))
+                    connection.execute(text('ALTER TABLE audit_event ALTER COLUMN details TYPE json USING details::json'))
             with cls.engine.connect() as connection:
                 assert connection.execute(text('SELECT ssl FROM pg_stat_ssl WHERE pid=pg_backend_pid()')).scalar_one() is (not CI_SERVICE_MODE)
                 data_type = connection.execute(text("SELECT data_type FROM information_schema.columns "
                     "WHERE table_schema='public' AND table_name='tenant_profile' AND column_name='configuracion'"))
-                assert data_type.scalar_one() == 'jsonb'
+                assert data_type.scalar_one() == cls.CONFIGURATION_STORAGE
 
     @classmethod
     def tearDownClass(cls):
@@ -107,6 +114,34 @@ class OrganizationAddressStaleConfigTests(unittest.TestCase):
     def config(self, tenant_id):
         with self.app.app_context():
             return deepcopy(db.session.get(TenantProfile, tenant_id).configuracion)
+
+    def test_platform_request_commits_claim_and_audit(self):
+        tenant_id = self.tenant()
+        host = f'platform-claim-{tenant_id}.chatboc.ar'
+        with self.app.app_context():
+            tenant = db.session.get(TenantProfile, tenant_id)
+            before = addresses.revision(tenant)
+            result = addresses.save_addresses(db.session, TenantProfile, User, AuditEvent,
+                tenant_id=tenant_id, actor_id=tenant.municipio_id,
+                data={'kind': 'platform', 'operation': 'request', 'host': host,
+                    'expected_revision': before},
+                authorize=can_manage_tenant_control_plane, config=self.app.config, now=self.now)
+            self.assertIs(result['saved'], True)
+            self.assertEqual(result['addresses']['platform']['status'], 'pending_platform')
+            self.assertFalse(result['addresses']['platform']['active'])
+        with self.app.app_context():
+            tenant = db.session.get(TenantProfile, tenant_id)
+            self.assertIs(tenant.configuracion['keep'], True)
+            self.assertEqual(tenant.configuracion[addresses.KEY]['platform']['host'], host)
+            self.assertNotEqual(addresses.revision(tenant), before)
+            audit = AuditEvent.query.filter_by(tenant_id=tenant_id).one()
+            self.assertEqual(audit.event_type, 'organization.address.request')
+            self.assertEqual(audit.details['previous_revision'], before)
+            self.assertEqual(audit.details['revision'], addresses.revision(tenant))
+            self.assertFalse(audit.details['provider_changes_performed'])
+        self.evidence.append({'case': 'v2_platform_request_and_audit',
+            'storage': self.CONFIGURATION_STORAGE, 'protected_status': 'pending_platform',
+            'audit_events': 1, 'provider_changes_performed': False})
 
     def save(self, api, tenant_id, operation):
         with self.app.app_context():
@@ -268,3 +303,9 @@ class OrganizationAddressStaleConfigTests(unittest.TestCase):
                     self.assertEqual(AuditEvent.query.filter_by(tenant_id=target).count(), 0)
                 self.evidence.append({'case': api + '_generic_private_injection',
                     'claims': 0, 'unrelated_write_saved': True, 'audit_events': 0})
+
+
+class OrganizationAddressLegacyJsonConfigTests(OrganizationAddressStaleConfigTests):
+    """Same real-model guard cases on the legacy PostgreSQL JSON columns."""
+    CONFIGURATION_STORAGE = 'json'
+    evidence = []
