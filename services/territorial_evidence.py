@@ -8,6 +8,7 @@ import os
 import re
 import unicodedata
 from typing import Any, Iterable
+from urllib.parse import parse_qs, urlsplit
 
 
 _LATITUDE_KEYS = {"lat", "latitude", "latitud"}
@@ -276,6 +277,97 @@ def _boundary_contains_position(geometry: dict[str, Any], lng: float, lat: float
     return False
 
 
+def _match_legacy_department_feature(
+    features: list[Any], authority: dict[str, Any], payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Single department published with the Mendoza IDE property schema."""
+    if len(features) != 1 or not isinstance(features[0], dict):
+        return None
+    feature = features[0]
+    properties = feature.get("properties")
+    department_code = _scalar_text(authority.get("department_code"))
+    global_id = _scalar_text(authority.get("global_id"))
+    city = _scalar_text(payload.get("city"))
+    if (
+        feature.get("type") != "Feature" or not isinstance(properties, dict)
+        or not department_code or not global_id or not city
+        or _normalized_key(properties.get("departamen")) != _normalized_key(city)
+        or _scalar_text(properties.get("codigo_dep")) != department_code
+        or _scalar_text(properties.get("globalid")) != global_id
+    ):
+        return None
+    geometry = _validated_boundary_geometry(feature.get("geometry"))
+    if geometry is None:
+        return None
+    public_feature = {
+        "type": "Feature", "id": department_code,
+        "properties": {**properties, "name": str(properties["departamen"])},
+        "geometry": geometry,
+    }
+    return geometry, [public_feature]
+
+
+def _match_ign_province_feature(
+    features: list[Any], authority: dict[str, Any], payload: dict[str, Any],
+    boundary_config: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """One complete province from the reviewed IGN ArcGIS source adapter."""
+    if len(features) != 1 or not isinstance(features[0], dict):
+        return None
+    feature = features[0]
+    properties = feature.get("properties")
+    if feature.get("type") != "Feature" or not isinstance(properties, dict):
+        return None
+    province_code = _scalar_text(authority.get("province_code"))
+    object_id = _scalar_text(authority.get("object_id"))
+    state = _scalar_text(payload.get("state"))
+    offset = _finite_float(boundary_config.get("max_allowable_offset_degrees"))
+    precision = boundary_config.get("geometry_precision")
+    if (
+        not province_code or not re.fullmatch(r"[0-9]{2}", province_code)
+        or not object_id or not re.fullmatch(r"[1-9][0-9]*", object_id)
+        or not state or payload.get("jurisdiction_level") != "province"
+        or authority.get("publisher") != "Instituto Geográfico Nacional de la República Argentina"
+        or authority.get("service") != "servicio_fondos/MapServer/0"
+        or _scalar_text(properties.get("IN1")) != province_code
+        or _scalar_text(properties.get("OBJECTID")) != object_id
+        or _scalar_text(feature.get("id")) != object_id
+        or properties.get("Objeto") != "Provincia"
+        or _normalized_key(properties.get("FNA")) != _normalized_key(state)
+        or boundary_config.get("out_sr") != 4326
+        or offset is None or not 0 < offset <= 0.001
+        or isinstance(precision, bool) or not isinstance(precision, int) or not 0 <= precision <= 15
+    ):
+        return None
+    try:
+        source = urlsplit(authority["source_url"])
+        query = parse_qs(source.query, keep_blank_values=True)
+    except (TypeError, ValueError):
+        return None
+    expected_query = {
+        "where": [f"IN1='{province_code}'"],
+        "outFields": ["OBJECTID,Objeto,IN1,FNA"],
+        "returnGeometry": ["true"], "outSR": ["4326"], "f": ["geojson"],
+        "maxAllowableOffset": [str(boundary_config.get("max_allowable_offset_degrees"))],
+        "geometryPrecision": [str(boundary_config.get("geometry_precision"))],
+    }
+    if (
+        source.scheme != "https" or source.netloc != "ide.ign.gob.ar" or source.fragment
+        or source.path != "/geoservicios/rest/services/servicio_fondos/MapServer/0/query"
+        or query != expected_query
+    ):
+        return None
+    geometry = _validated_boundary_geometry(feature.get("geometry"))
+    if geometry is None:
+        return None
+    public_feature = {
+        "type": "Feature", "id": province_code,
+        "properties": {**properties, "name": str(properties["FNA"])},
+        "geometry": geometry,
+    }
+    return geometry, [public_feature]
+
+
 def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     boundary_config = payload.get("boundary")
     if not isinstance(boundary_config, dict):
@@ -307,31 +399,27 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
     if not isinstance(collection, dict):
         return None
     features = collection.get("features")
-    if collection.get("type") != "FeatureCollection" or not isinstance(features, list) or len(features) != 1:
+    if collection.get("type") != "FeatureCollection" or not isinstance(features, list):
         return None
-    feature = features[0]
-    if not isinstance(feature, dict):
+    # A province and a department have different identifiers. Never replace
+    # those schemas with a caller-defined property matcher.
+    if "match" in authority:
         return None
-    properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-    if (
-        _normalized_key(properties.get("departamen")) != _normalized_key(payload.get("city"))
-        or _scalar_text(properties.get("codigo_dep")) != _scalar_text(authority.get("department_code"))
-        or _scalar_text(properties.get("globalid")) != _scalar_text(authority.get("global_id"))
-    ):
+    schema = authority.get("identity_schema", "mendoza.department.v1")
+    if schema == "mendoza.department.v1":
+        resolved = _match_legacy_department_feature(features, authority, payload)
+        truth_boundary = "official_department_boundary_generalized"
+    elif schema == "ign.province.v1":
+        resolved = _match_ign_province_feature(features, authority, payload, boundary_config)
+        truth_boundary = "official_province_boundary_generalized"
+    else:
         return None
-    geometry = _validated_boundary_geometry(feature.get("geometry"))
-    bounds = _boundary_geometry_bounds(geometry or {})
-    if geometry is None or bounds is None:
+    if resolved is None:
         return None
-    public_feature = {
-        "type": "Feature",
-        "id": _scalar_text(authority.get("department_code")) or "official-boundary",
-        "properties": {
-            **properties,
-            "name": _scalar_text(properties.get("departamen")) or _scalar_text(payload.get("city")),
-        },
-        "geometry": geometry,
-    }
+    geometry, public_features = resolved
+    bounds = _boundary_geometry_bounds(geometry)
+    if bounds is None:
+        return None
     public_authority = {
         **authority,
         "source_ref": authority.get("source_url"),
@@ -344,6 +432,7 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
         "geometry": geometry,
         "bounds": bounds,
         "authority": public_authority,
+        "truth_boundary": truth_boundary,
         "feature_collection": {
             "type": "FeatureCollection",
             "metadata": {
@@ -352,7 +441,7 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
                 "source": authority.get("publisher"),
                 "provenance": public_authority,
             },
-            "features": [public_feature],
+            "features": public_features,
         },
     }
 
@@ -414,7 +503,7 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
                     "ref": relative_path.replace(os.sep, "/"),
                 },
                 "truth_boundary": (
-                    "official_department_boundary_generalized"
+                    verified_boundary["truth_boundary"]
                     if verified_boundary
                     else "operational_envelope_not_official_boundary"
                 ),

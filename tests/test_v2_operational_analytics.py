@@ -47,6 +47,7 @@ from services.territorial_evidence import (
 
 class V2OperationalAnalyticsTestConfig(Config):
     TESTING = True
+    DEBUG = False
     ENABLE_DEMO_MODE = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
@@ -906,6 +907,58 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         ):
             self.assertTrue(record.get("address"))
             self.assertNotEqual(record.get("zone"), record.get("address").lower())
+
+    def test_tdf_province_heatmap_keeps_full_containment_and_local_data_viewport(self):
+        self.tenant.slug = "tierra-del-fuego"
+        self.tenant.nombre = "Tierra del Fuego"
+        self.admin.tenant_slug = self.tenant.slug
+        locations = [
+            ("Ushuaia", -54.802, -68.303),
+            ("Río Grande", -53.787, -67.710),
+            ("Tolhuin", -54.510, -67.195),
+            ("Punta Arenas", -53.164, -70.917),
+        ]
+        records = []
+        for label, lat, lng in locations:
+            record = TenantTicket(
+                tenant_id=self.tenant.id, user_id=self.admin.id,
+                categoria="tdf_boundary_probe", descripcion=label,
+                estado="nuevo", origen="web", latitud=lat, longitud=lng,
+            )
+            db.session.add(record)
+            records.append(record)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=tdf_boundary_probe&source=tickets",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["summary"]["ticket_points"], 3)
+        self.assertEqual(
+            {point["id"] for point in payload["points"]},
+            {f"tenant_ticket:{record.id}" for record in records[:3]},
+        )
+        jurisdiction = payload["jurisdiction"]
+        self.assertTrue(jurisdiction["containment_verified"])
+        self.assertEqual(jurisdiction["truth_boundary"], "official_province_boundary_generalized")
+        self.assertEqual(jurisdiction["bounds"]["south"], -90.0)
+        self.assertEqual(jurisdiction["excluded_coordinate_records"], 1)
+        self.assertNotIn("boundary_geometry", jurisdiction)
+        self.assertNotIn("boundary_feature_collection", jurisdiction)
+        boundaries = payload["geo_layers"]["boundaries"]
+        self.assertEqual(len(boundaries["features"]), 1)
+        self.assertEqual(boundaries["features"][0]["id"], "94")
+        self.assertEqual(boundaries["metadata"]["provenance"], jurisdiction["boundary_authority"])
+        viewport = payload["viewport_presets"]
+        self.assertEqual(viewport["default_preset_id"], "fit_operational_bounds")
+        self.assertEqual(viewport["presets"][0]["bounds"], {
+            "south": -54.802, "north": -53.787, "west": -68.303, "east": -67.195,
+        })
+        # The complete province appears once in the HTTP document, not in each
+        # jurisdiction descriptor or viewport, and leaves room for actual cases.
+        self.assertLess(len(response.data), 2_100_000)
 
     def test_operations_heatmap_publishes_only_the_verified_official_boundary(self):
         response = self.client.get(

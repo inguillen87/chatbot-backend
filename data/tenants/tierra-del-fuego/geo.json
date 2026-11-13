@@ -1,0 +1,36 @@
+{
+  "city": "Tierra del Fuego",
+  "state": "Tierra del Fuego, Antártida e Islas del Atlántico Sur",
+  "country": "AR",
+  "jurisdiction_level": "province",
+  "region_hint": "ar",
+  "locale": "es-AR",
+  "bounds": [
+    -74.029854,
+    -90.0,
+    -25.023145,
+    -51.000057
+  ],
+  "boundary": {
+    "file": "official_province_boundary.geojson",
+    "authority": {
+      "kind": "official",
+      "identity_schema": "ign.province.v1",
+      "publisher": "Instituto Geográfico Nacional de la República Argentina",
+      "service": "servicio_fondos/MapServer/0",
+      "source_url": "https://ide.ign.gob.ar/geoservicios/rest/services/servicio_fondos/MapServer/0/query?where=IN1%3D%2794%27&outFields=OBJECTID%2CObjeto%2CIN1%2CFNA&returnGeometry=true&outSR=4326&f=geojson&maxAllowableOffset=0.0005&geometryPrecision=6",
+      "province_code": "94",
+      "object_id": "361",
+      "attribution": "FUENTE: Instituto Geográfico Nacional de la República Argentina",
+      "terms_url": "https://riesgo.ign.gob.ar/pdf/Terminos-y-condiciones-de-uso-IGN.pdf",
+      "retrieved_at": "2026-11-13T04:15:28.456969Z",
+      "source_updated_at": null,
+      "source_update_note": "El servicio no publica fecha de actualización de esta entidad; retrieved_at es la fecha de extracción."
+    },
+    "snapshot_sha256": "83e543b765d0879f1743892fb0267656f83816efaa3ea326dcb1f3a61df8930b",
+    "out_sr": 4326,
+    "geometry_precision": 6,
+    "max_allowable_offset_degrees": 0.0005,
+    "generalization_note": "Respuesta GeoJSON generalizada por el servicio oficial IGN a 0,0005 grados y 6 decimales, conservada sin modificar. Incluye los 1332 componentes de la provincia publicados por ese servicio; no se recortaron a la Isla Grande. Es cartografía de visualización y contención provincial, no una mensura catastral."
+  }
+}
