@@ -102,7 +102,7 @@ class VercelTransport:
 
     def __call__(self, method, path, *, body=None):
         require(method in {'GET', 'POST'} and isinstance(path, str)
-            and re.fullmatch(r'/v(?:4/aliases/[a-z0-9.-]+|13/deployments/dpl_[A-Za-z0-9]+|'
+            and re.fullmatch(r'/v(?:4/aliases/[a-z0-9.-]+|13/deployments/dpl_[A-Za-z0-9]+|9/projects/prj_[A-Za-z0-9]+|'
                 r'(?:9|10)/projects/prj_[A-Za-z0-9]+/domains(?:/[a-z0-9.-]+(?:/verify)?)?)', path),
             'fixed_vercel_operation_required')
         require((method == 'GET' and body is None) or (method == 'POST'

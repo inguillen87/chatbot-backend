@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from sqlalchemy.exc import SQLAlchemyError
 from tests.profile_acceptance_runtime import create_disposable_app
+from tests.organization_address_fixtures import set_fixture_config
 from services.organization_domain_binding import (
     KEY, PUBLIC, CHALLENGE_TTL, VERIFICATION_TTL, DomainBindingError, PlatformObservation,
     activate_verified_binding, build_domain_binding, normalize_host, read_record,
@@ -46,8 +47,8 @@ class DomainLifecycleTests(unittest.TestCase):
         self.context.push()
         db.session.query(AuditEvent).delete()
         for tenant in TenantProfile.query.filter(TenantProfile.slug.in_(['acceptance-a', 'acceptance-b'])).all():
-            tenant.configuracion = {'keep': True}
-            tenant.plan = 'pro'
+            set_fixture_config(db.session, tenant, {'keep': True})
+            tenant.plan = 'full'
             tenant.dominio = None
             tenant.logo_url = '/logos/institution.svg'
             tenant.theme_json = {'primary_color': '#123abc', 'accent_color': '#334455'}
@@ -193,7 +194,7 @@ class DomainLifecycleTests(unittest.TestCase):
         self.db.session.commit()
         self.assertIsNone(self.resolve())
         other.dominio = None
-        other.configuracion = {KEY: {'status': 'active', 'host': 'conversa.gob.ar'}}
+        set_fixture_config(self.db.session, other, {KEY: {'status': 'active', 'host': 'conversa.gob.ar'}})
         self.db.session.commit()
         self.assertIsNone(self.resolve())
 
@@ -208,8 +209,10 @@ class DomainLifecycleTests(unittest.TestCase):
         self.db.session.commit()
         with self.assertRaises(DomainBindingError):
             self.save('request', host='acceptance-b.chatboc.ar')
+        with self.assertRaisesRegex(DomainBindingError, 'domain_platform_requires_v2'):
+            self.save('request', host='acceptance-a.chatboc.ar')
         before = self.descriptor()['revision']
-        self.save('request', host='acceptance-a.chatboc.ar')
+        self.save('request', host='conversa.gob.ar')
         with self.assertRaises(DomainBindingError) as error:
             self.save('request', revision=before)
         self.assertEqual(error.exception.status, 412)
@@ -236,6 +239,7 @@ class DomainLifecycleTests(unittest.TestCase):
     def test_demo_or_capability_flags_do_not_unlock_and_other_features_unchanged(self):
         from services.plan_access import tenant_allows_workspace_branding
         tenant = self.tenant()
+        tenant.plan = 'pro'
         self.assertTrue(self.entitlement(tenant))
         self.assertFalse(tenant_allows_workspace_branding(tenant))
         for plan in ['free', 'demo', None]:
@@ -351,7 +355,7 @@ class DomainLifecycleTests(unittest.TestCase):
         self.pending_platform()
         record = read_record(self.tenant())
         record['status'] = {'active': True}
-        self.tenant().configuracion = {KEY: record}
+        set_fixture_config(self.db.session, self.tenant(), {KEY: record})
         self.db.session.commit()
         self.assertIsNone(self.resolve())
 
@@ -381,7 +385,7 @@ class DomainLifecycleTests(unittest.TestCase):
         self.tenant().is_active = True
         record = read_record(self.tenant())
         record['tenant_slug'] = 'acceptance-b'
-        self.tenant().configuracion = {KEY: record}
+        set_fixture_config(self.db.session, self.tenant(), {KEY: record})
         self.db.session.commit()
         self.assertIsNone(self.resolve())
         with self.assertRaises(DomainBindingError):

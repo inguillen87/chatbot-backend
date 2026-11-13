@@ -499,7 +499,8 @@ def tenant_middleware(app) -> None:
         if is_retirement_request():
             return
         from utils.meta_credential_http import is_meta_credential_admin_request
-        if is_meta_credential_admin_request():
+        from utils.organization_address_http import is_address_operator_request
+        if is_meta_credential_admin_request() or is_address_operator_request():
             # These authenticated platform operations resolve a fixed target
             # internally. Never parse/cache credential JSON as tenant hints.
             return

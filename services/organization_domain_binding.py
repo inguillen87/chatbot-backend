@@ -148,8 +148,12 @@ def _active(record, now):
 def build_domain_binding(tenant, *, can_edit=False, entitled=False, writes_blocked=False, now=None):
     now = _now(now)
     record = read_record(tenant)
+    from services.plan_access import tenant_allows_new_custom_domains
+    # Grandfather an existing Pro binding, never a new/replacement request.
+    new_allowed = tenant_allows_new_custom_domains(tenant)
     reason = ('maintenance' if writes_blocked else 'tenant_admin_required' if not can_edit
-        else 'pro_plan_required' if not entitled else 'ready')
+        else 'pro_plan_required' if not entitled else 'full_plan_required'
+        if record['status'] in {'unconfigured', 'revoked'} and not new_allowed else 'ready')
     active = _active(record, now) and entitled is True and tenant.is_active is True
     status = 'verification_expired' if record['status'] == 'active' and not active else record['status']
     dns = None
@@ -192,37 +196,38 @@ def read_dns_txt(host):
 
 
 def _collisions(session, tenant_model, tenant, host):
-    # Existing JSON has no unique index. Domain writers take a table-level lock;
-    # the public resolver independently rejects collisions, including legacy edits.
-    for other in session.query(tenant_model).populate_existing().all():
-        if other.id == tenant.id:
-            continue
-        try:
-            legacy = normalize_host(other.dominio) if other.dominio else None
-        except DomainBindingError:
-            legacy = None
-        # Legacy routing aliases www/apex. Reserve both here as a collision
-        # boundary only, never as a way to choose the public tenant.
-        legacy_aliases = {host, host[4:] if host.startswith('www.') else 'www.' + host}
-        if legacy in legacy_aliases:
-            raise DomainBindingError('host_in_use', 409, 'Ese dominio ya está asociado a otra organización.')
-        record = read_record(other)
-        if record['host'] == host and record['status'] != 'revoked':
-            raise DomainBindingError('host_in_use', 409, 'Ese dominio ya tiene una solicitud en otra organización.')
+    # One collision namespace for v1, both v2 slots and legacy dominio. Both
+    # writers acquire the same lock before their fresh read, through COMMIT.
+    from services.organization_addresses import assert_available
+    try:
+        assert_available(session, tenant_model, tenant, 'legacy_v1', host)
+    except DomainBindingError as exc:
+        if exc.code == 'address_host_in_use':
+            raise DomainBindingError('host_in_use', 409) from None
+        raise
+
+
+def lock_address_writers(session):
+    """Short shared namespace lock; NEVER perform DNS/provider I/O after this."""
+    if session.get_bind().dialect.name == 'postgresql':
+        session.execute(text("SET LOCAL lock_timeout = '3s'"))
+        session.execute(text("SET LOCAL statement_timeout = '10s'"))
+        session.execute(text('LOCK TABLE tenant_profile IN SHARE ROW EXCLUSIVE MODE'))
 
 
 def _locked_scope(session, tenant_model, user_model, tenant_id, actor_id, authorize):
-    if session.get_bind().dialect.name == 'postgresql':
-        session.execute(text("SET LOCAL lock_timeout = '5s'"))
-        session.execute(text('LOCK TABLE tenant_profile IN SHARE ROW EXCLUSIVE MODE'))
-    tenant = session.query(tenant_model).filter_by(id=tenant_id).populate_existing().with_for_update().one_or_none()
-    actor = session.query(user_model).filter_by(id=actor_id).populate_existing().with_for_update().one_or_none()
-    if tenant is None or actor is None or tenant.is_active is not True or authorize(actor, tenant) is not True:
+    from utils.auth_helpers import is_user_auth_disabled
+    lock_address_writers(session)
+    tenant = session.query(tenant_model).filter_by(id=tenant_id).populate_existing().with_for_update(of=tenant_model).one_or_none()
+    actor = session.query(user_model).filter_by(id=actor_id).populate_existing().with_for_update(of=user_model).one_or_none()
+    if (tenant is None or actor is None or tenant.is_active is not True
+            or is_user_auth_disabled(actor) or authorize(actor, tenant) is not True):
         raise DomainBindingError('domain_forbidden', 403, 'Necesitás permiso de administración en esta organización.')
     return tenant, actor
 
 
-def _persist(session, tenant, actor, audit_model, record, operation, entitlement, now):
+def _persist(session, tenant, actor, audit_model, record, operation, entitlement, now, *, final_validate=None):
+    from services.organization_address_config_guard import address_section_write
     old = read_record(tenant)
     record['version'] = old['version'] + 1
     tenant.configuracion = {**(tenant.configuracion or {}), KEY: record}
@@ -231,18 +236,21 @@ def _persist(session, tenant, actor, audit_model, record, operation, entitlement
         resource_id=str(tenant.id), details={'contract_version': CONTRACT,
             'host': record['host'], 'previous_version': old['version'], 'version': record['version'],
             'provider_changes_performed': False}))
-    session.flush()
+    with address_section_write(session, tenant, KEY, record):
+        session.flush()
     result = {'contract_version': 'organization.domain_save.v1', 'saved': True,
         'domain': build_domain_binding(tenant, can_edit=True, entitled=entitlement(tenant), now=now),
         'provider_changes_performed': False}
     json.dumps(result, allow_nan=False)
+    if final_validate is not None:
+        final_validate()
     session.commit()
     return result
 
 
 def save_domain_binding(session, tenant_model, user_model, audit_model, *, tenant_id,
         actor_id, data, authorize, entitlement, now=None, txt_reader=None):
-    now = _now(now)
+    fixed_now, now = now, _now(now)
     try:
         if (not isinstance(data, dict) or not isinstance(data.get('operation'), str)
                 or data.get('operation') not in {'request', 'verify_dns', 'revoke'}
@@ -251,7 +259,30 @@ def save_domain_binding(session, tenant_model, user_model, audit_model, *, tenan
             raise DomainBindingError('domain_request_invalid')
         if not isinstance(data['expected_revision'], str) or not re.fullmatch(r'[0-9a-f]{64}', data['expected_revision']):
             raise DomainBindingError('domain_revision_required', 428, 'Consultá el estado actual antes de guardar.')
+        dns = None
+        if data['operation'] == 'verify_dns':
+            # Preobserve before taking the writer/table lock. The locked CAS,
+            # actor, plan and proof freshness are checked again below.
+            from utils.auth_helpers import is_user_auth_disabled
+            tenant = session.get(tenant_model, tenant_id, populate_existing=True)
+            actor = session.get(user_model, actor_id, populate_existing=True)
+            if (tenant is None or actor is None or tenant.is_active is not True
+                    or is_user_auth_disabled(actor) or authorize(actor, tenant) is not True):
+                raise DomainBindingError('domain_forbidden', 403)
+            if entitlement(tenant) is not True:
+                raise DomainBindingError('domain_pro_required', 403)
+            snapshot = read_record(tenant)
+            if revision(tenant, snapshot) != data['expected_revision']:
+                raise DomainBindingError('domain_revision_conflict', 412)
+            if snapshot['status'] != 'pending_dns' or not snapshot['requested_at'] <= now < snapshot['challenge_expires_at']:
+                raise DomainBindingError('domain_dns_request_expired', 409)
+            values = (txt_reader or read_dns_txt)(snapshot['host'])
+            validate_dns_values(values)
+            if not any(secrets.compare_digest('chatboc-domain-verification=' + snapshot['challenge'], value) for value in values):
+                raise DomainBindingError('domain_dns_not_verified', 409)
+            dns = (snapshot['host'], _now(fixed_now))
         tenant, actor = _locked_scope(session, tenant_model, user_model, tenant_id, actor_id, authorize)
+        now = _now(fixed_now)
         if data['operation'] != 'revoke' and entitlement(tenant) is not True:
             raise DomainBindingError('domain_pro_required', 403, 'El dominio propio requiere un plan Pro o Full registrado en el servidor.')
         record = read_record(tenant)
@@ -259,23 +290,30 @@ def save_domain_binding(session, tenant_model, user_model, audit_model, *, tenan
             raise DomainBindingError('domain_revision_conflict', 412, 'La solicitud cambió. Actualizá el estado antes de continuar.')
         kind = data['operation']
         if kind == 'request':
+            from services.plan_access import tenant_allows_new_custom_domains
+            from services.organization_addresses import legacy_custom_occupied
+            if not tenant_allows_new_custom_domains(tenant):
+                raise DomainBindingError('domain_full_required', 403, 'Las nuevas solicitudes de dominio propio requieren Full.')
+            if legacy_custom_occupied(tenant):
+                raise DomainBindingError('domain_revoke_required', 409)
             if record['status'] == 'active':
                 raise DomainBindingError('domain_revoke_required', 409, 'Revocá el dominio anterior antes de reemplazarlo.')
             host = _host_for_tenant(data['host'], tenant)
+            if host.endswith('.chatboc.ar'):
+                # New platform hosts belong to the one v2 platform slot. Keep
+                # reading/verifying old v1 platform records without letting a
+                # second new platform claim masquerade as a custom domain.
+                raise DomainBindingError('domain_platform_requires_v2', 409)
             _collisions(session, tenant_model, tenant, host)
             record = {**empty_record(tenant), 'host': host, 'status': 'pending_dns',
                 'challenge': secrets.token_hex(32), 'requested_at': now, 'challenge_expires_at': now + CHALLENGE_TTL}
         elif kind == 'verify_dns':
-            if record['status'] != 'pending_dns' or not record['requested_at'] <= now < record['challenge_expires_at']:
+            if (record['status'] != 'pending_dns' or dns is None or dns[0] != record['host']
+                    or not record['requested_at'] <= dns[1] <= now < record['challenge_expires_at']
+                    or now - dns[1] > 60):
                 raise DomainBindingError('domain_dns_request_expired', 409, 'Solicitá una verificación nueva del dominio.')
             _collisions(session, tenant_model, tenant, record['host'])
-            values = (txt_reader or read_dns_txt)(record['host'])
-            if not isinstance(values, (list, tuple)) or len(values) > 16 or any(not isinstance(v, str) or not v.isascii() or len(v) > 512 for v in values):
-                raise DomainBindingError('domain_dns_unavailable', 503)
-            expected = 'chatboc-domain-verification=' + record['challenge']
-            if not any(secrets.compare_digest(expected, value) for value in values):
-                raise DomainBindingError('domain_dns_not_verified', 409, 'El TXT todavía no coincide. La solicitud sigue pendiente.')
-            record.update(status='pending_platform', dns_verified_at=now, dns_valid_until=now + VERIFICATION_TTL)
+            record.update(status='pending_platform', dns_verified_at=dns[1], dns_valid_until=dns[1] + VERIFICATION_TTL)
         else:
             if record['host'] is None:
                 raise DomainBindingError('domain_not_configured', 409)
@@ -302,28 +340,35 @@ class PlatformObservation:
 
 
 def activate_verified_binding(session, tenant_model, user_model, audit_model, *, tenant_id,
-        actor_id, expected_revision, authorize, entitlement, observation, expected_project_id, now=None):
-    now = _now(now)
+        actor_id, expected_revision, authorize, entitlement, observation, expected_project_id, now=None, clock=None):
+    read_clock = lambda: _now(now if now is not None else clock() if clock is not None else None)
     try:
         tenant, actor = _locked_scope(session, tenant_model, user_model, tenant_id, actor_id, authorize)
+        current_time = read_clock()
         record = read_record(tenant)
         if entitlement(tenant) is not True:
             raise DomainBindingError('domain_pro_required', 403)
         if revision(tenant, record) != expected_revision:
             raise DomainBindingError('domain_revision_conflict', 412)
-        if record['status'] != 'pending_platform' or not record['dns_verified_at'] <= now < record['dns_valid_until']:
+        if record['status'] != 'pending_platform' or not record['dns_verified_at'] <= current_time < record['dns_valid_until']:
             raise DomainBindingError('domain_platform_not_ready', 409)
         if (type(observation) is not PlatformObservation or observation.host != record['host']
                 or not isinstance(expected_project_id, str) or not expected_project_id.startswith('prj_')
                 or observation.frontend_project_id != expected_project_id
-                or type(observation.observed_at) is not int or not 0 <= now - observation.observed_at <= 60
-                or type(observation.valid_until) is not int or not now < observation.valid_until <= now + VERIFICATION_TTL
+                or type(observation.observed_at) is not int or not 0 <= current_time - observation.observed_at <= 60
+                or type(observation.valid_until) is not int or not current_time < observation.valid_until <= current_time + VERIFICATION_TTL
                 or observation.ownership_verified is not True or observation.https_ready is not True
                 or observation.app_routes_ready is not True):
             raise DomainBindingError('domain_platform_not_verified', 409)
         _collisions(session, tenant_model, tenant, record['host'])
-        record.update(status='active', platform_verified_at=now, platform_valid_until=observation.valid_until)
-        return _persist(session, tenant, actor, audit_model, record, 'activate_verified', entitlement, now)
+        record.update(status='active', platform_verified_at=current_time, platform_valid_until=observation.valid_until)
+        def validate_time():
+            at_commit = read_clock()
+            if not (0 <= at_commit - observation.observed_at <= 60
+                    and at_commit < min(record['dns_valid_until'], observation.valid_until)):
+                raise DomainBindingError('domain_platform_not_verified', 409)
+        return _persist(session, tenant, actor, audit_model, record, 'activate_verified', entitlement,
+            current_time, final_validate=validate_time)
     except SQLAlchemyError:
         session.rollback()
         raise DomainBindingError('domain_save_unconfirmed', 503) from None
@@ -349,32 +394,12 @@ def _public_logo(value):
 
 
 def resolve_active_host(session, tenant_model, host, *, entitlement, now=None):
-    now = _now(now)
-    host = normalize_host(host)
-    matches = []
-    tenants = session.query(tenant_model).populate_existing().all()
-    for tenant in tenants:
-        try:
-            record = read_record(tenant)
-        except DomainBindingError:
-            # Malformed registry cannot prove uniqueness, so do not choose a tenant.
-            return None
-        if record['host'] == host and record['status'] != 'revoked':
-            matches.append((tenant, record))
-    if len(matches) != 1:
-        return None
-    tenant, record = matches[0]
-    if tenant.is_active is not True or entitlement(tenant) is not True or not _active(record, now):
-        return None
-    for other in tenants:
-        if other.id == tenant.id:
-            continue
-        try:
-            legacy_aliases = {host, host[4:] if host.startswith('www.') else 'www.' + host}
-            if other.dominio and normalize_host(other.dominio) in legacy_aliases:
-                return None
-        except DomainBindingError:
-            pass
+    from services.organization_addresses import resolve_host
+    return resolve_host(session, tenant_model, host, legacy_entitlement=entitlement, now=now)
+
+
+def public_payload(tenant, host, valid_until):
+    """The existing public v1 contract; accepts no private configuration fields."""
     from services.organization_branding import build_workspace_appearance
     from services.plan_access import tenant_allows_workspace_branding
     appearance = build_workspace_appearance(tenant, entitled=tenant_allows_workspace_branding(tenant))
@@ -391,7 +416,13 @@ def resolve_active_host(session, tenant_model, host, *, entitlement, now=None):
             'logo_url': _public_logo(tenant.logo_url)}, 'brand': brand,
         'paths': {'home': '/', 'login': '/login', 'workspace': '/perfil'},
         'binding': {'status': 'active', 'verified': True,
-            'valid_until': min(record['dns_valid_until'], record['platform_valid_until'])}}
+            'valid_until': valid_until}}
+
+
+def validate_dns_values(values):
+    if (not isinstance(values, (list, tuple)) or len(values) > 16
+            or any(not isinstance(value, str) or not value.isascii() or len(value) > 512 for value in values)):
+        raise DomainBindingError('domain_dns_unavailable', 503)
 
 
 def build_host_readiness(session, tenant_model, *, host, tenant_id, tenant_slug,
