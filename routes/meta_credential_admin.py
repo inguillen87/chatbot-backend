@@ -13,6 +13,7 @@ from cutover_writer_fence import cutover_read_only_view
 from extensions import limiter
 from services import meta_credential_admin_runtime as runtime
 from services import meta_credential_operations as ops
+from services import meta_phone_webhook_inspection as inspection
 from utils.auth_helpers import user_from_token
 from utils.meta_credential_http import MAX_BODY_BYTES, PANEL_ORIGINS, error, response
 from utils.roles import is_authorized_superadmin_user
@@ -117,9 +118,14 @@ def _handle(action):
     try:
         actor = _authenticate()
         _rate_limit(actor, action)
-        body = _body(action)
-        result = (runtime.status(body, actor, current_app.config) if action == "status"
-                  else runtime.run_operation(action, body, actor, current_app.config))
+        body = _body("status" if action == "inspect" else action)
+        if action == "inspect":
+            if body["target"] != "junin-production":
+                raise RequestDenied("meta_operation_request_invalid", 400)
+            result = inspection.inspect(body, actor, current_app.config)
+        else:
+            result = (runtime.status(body, actor, current_app.config) if action == "status"
+                      else runtime.run_operation(action, body, actor, current_app.config))
         return response(result)
     except RequestDenied as exc:
         return error(exc.code, exc.status, writes_performed=False)
@@ -129,12 +135,15 @@ def _handle(action):
         # Only finite application-owned codes cross this boundary. Never
         # serialize provider, SQL, URL, exception text or request values.
         if type(exc).__module__ in {"services.meta_credential_operations", "services.meta_whatsapp_runtime",
-                                   "services.tenant_provider_credentials", "services.global_writer_authority"}:
+                                   "services.tenant_provider_credentials", "services.global_writer_authority",
+                                   "services.meta_phone_webhook_inspection"}:
             candidate = str(exc)
             if re.fullmatch(r"(?:meta|provider_credential|tenant_provider|global_writer)_[a-z0-9_]{1,100}", candidate):
                 code, status_code = candidate, 409
         extra = ({"database_outcome": "unverified", "requires_status_check": True}
                  if action == "apply" else {"writes_performed": False})
+        if action == "inspect":
+            extra.update(inspection_complete=False, write_ready=False, provider_mutations=False, messages_sent=False)
         return error(code, status_code, **extra)
     finally:
         if isinstance(body, dict):
@@ -158,3 +167,9 @@ def apply():
 @cutover_read_only_view
 def status():
     return _handle("status")
+
+
+@meta_credential_admin_bp.post("/inspect-junin-webhook")
+@cutover_read_only_view
+def inspect_junin_webhook():
+    return _handle("inspect")
