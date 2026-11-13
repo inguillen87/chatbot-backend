@@ -31,7 +31,8 @@ def main():
         if identity[:2] != ('vaultcredregression', 'postgres') or not 180000 <= identity[2] < 190000:
             raise RuntimeError('fixed_ci_service_identity_required')
         for module, case, count in ((concurrency, concurrency.OrganizationAddressConcurrencyTests, 4),
-                (stale, stale.OrganizationAddressStaleConfigTests, 3)):
+                (stale, stale.OrganizationAddressStaleConfigTests, 4),
+                (stale, stale.OrganizationAddressLegacyJsonConfigTests, 4)):
             # Never erase a pre-existing database, even in CI. The runner owns
             # only the exact empty database it successfully creates below.
             if control.execute('SELECT 1 FROM pg_database WHERE datname=%s', (database,)).fetchone():
@@ -54,7 +55,7 @@ def main():
                 module.DATABASE_URL = None
                 module.CI_SERVICE_MODE = False
                 control.execute(sql.SQL('DROP DATABASE {} WITH (FORCE)').format(sql.Identifier(database)))
-    summary = {'successful': len(summaries) == 2 and all(row['successful'] for row in summaries),
+    summary = {'successful': len(summaries) == 3 and all(row['successful'] for row in summaries),
         'postgres': '18', 'transport': 'github_actions_loopback_service_without_tls',
         'owned_fixture_databases_removed': True, 'external_network_calls': 0, 'suites': summaries}
     print(json.dumps(summary, sort_keys=True))

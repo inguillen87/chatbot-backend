@@ -9,7 +9,7 @@ ORM boundary and must not be used as an address activation channel.
 from contextlib import contextmanager
 from copy import deepcopy
 
-from sqlalchemy import case, event, func, inspect, literal, or_, select
+from sqlalchemy import case, cast, event, func, inspect, literal, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, object_session
@@ -100,12 +100,16 @@ def install_address_config_guard(tenant_model):
         cleaned = {key: deepcopy(value) for key, value in (candidate or {}).items()
             if key not in preserve}
         if connection.dialect.name == 'postgresql':
+            # The original tenant migration stores JSON, while newly created
+            # schemas use JSONB. Read either physical type as JSONB inside this
+            # same UPDATE; never replace the current-row merge with a snapshot.
+            stored = cast(column, JSONB)
             expression = literal(cleaned, type_=JSONB)
             present = []
             for section in preserve:
-                exists = (func.jsonb_typeof(column) == 'object') & column.has_key(section)
+                exists = (func.jsonb_typeof(stored) == 'object') & stored.has_key(section)
                 present.append(exists)
-                fragment = case((exists, func.jsonb_build_object(literal(section), column.op('->')(section))),
+                fragment = case((exists, func.jsonb_build_object(literal(section), stored.op('->')(section))),
                     else_=literal({}, type_=JSONB))
                 expression = expression.op('||')(fragment)
             # Preserve the legacy null representation when no protected data

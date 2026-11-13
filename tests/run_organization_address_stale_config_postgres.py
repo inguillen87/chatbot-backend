@@ -16,15 +16,21 @@ def main(argv=None):
     from tests.profile_acceptance_runtime import prepare_process
     prepare_process()
     from tests import test_organization_address_stale_config as cases
-    with fresh_cluster(arguments.postgres_bin, arguments.scratch_parent) as url:
-        cases.DATABASE_URL = url
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(cases.OrganizationAddressStaleConfigTests)
-        result = unittest.TextTestRunner(verbosity=2).run(suite)
-        summary = {'successful': result.wasSuccessful() and result.testsRun == 3 and not result.skipped,
-            'tests_run': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
-            'skipped': len(result.skipped), 'postgres': '18', 'transport': 'loopback_tls_verify_full',
-            'actual_models_and_services': True, 'external_network_calls': 0,
-            'cases': cases.OrganizationAddressStaleConfigTests.evidence}
+    summaries = []
+    for case in (cases.OrganizationAddressStaleConfigTests, cases.OrganizationAddressLegacyJsonConfigTests):
+        with fresh_cluster(arguments.postgres_bin, arguments.scratch_parent) as url:
+            cases.DATABASE_URL = url
+            case.evidence = []
+            suite = unittest.defaultTestLoader.loadTestsFromTestCase(case)
+            result = unittest.TextTestRunner(verbosity=2).run(suite)
+            summaries.append({'suite': case.__name__, 'storage': case.CONFIGURATION_STORAGE,
+                'successful': result.wasSuccessful() and result.testsRun == 4 and not result.skipped,
+                'tests_run': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
+                'skipped': len(result.skipped), 'cases': case.evidence})
+    summary = {'successful': len(summaries) == 2 and all(row['successful'] for row in summaries),
+        'tests_run': sum(row['tests_run'] for row in summaries),
+        'postgres': '18', 'transport': 'loopback_tls_verify_full',
+        'actual_models_and_services': True, 'external_network_calls': 0, 'suites': summaries}
     summary['synthetic_cluster_stopped_and_removed'] = True
     print(json.dumps(summary, sort_keys=True))
     return 0 if summary['successful'] else 1
