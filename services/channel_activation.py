@@ -487,7 +487,7 @@ def _identity_auth_status(
             "blocked",
             evidence,
             "clerk_production_keys_missing",
-            "Clerk esta en development/test. Pasar la app Chatboc a produccion, configurar claves pk_live/sk_live, issuer/JWKS productivo y dominio en Cloudflare.",
+            "Clerk esta en development/test. Pasar la app Chatboc a producción, configurar claves pk_live/sk_live, issuer/JWKS productivo y dominio en Cloudflare.",
         )
     if not linked_to_clerk:
         return (
@@ -553,7 +553,7 @@ def _public_intake_security_status() -> tuple[str, list[str], str | None, str | 
             "turnstile_enforcement_pending",
             "Secret del servidor configurado. Comprobar VITE_CLOUDFLARE_TURNSTILE_SITE_KEY en el frontend publicado antes de activar enforcement.",
         )
-    return "ready", evidence, None, "Configuracion del servidor completa. Comprobar la clave del frontend publicado y una verificacion real antes de abrir participacion."
+    return "ready", evidence, None, "Configuración del servidor completa. Comprobar la clave del frontend publicado y una verificación real antes de abrir participación."
 
 
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
@@ -612,20 +612,20 @@ def _mesa_unica_status(
             "action_required",
             evidence,
             "mesa_unica_categories_required",
-            "Preparar las categorias institucionales antes de habilitar la Mesa Unica.",
+            "Preparar las categorías institucionales antes de habilitar la Mesa Única.",
         )
     if not routed_count:
         return (
             "pending",
             evidence,
             "mesa_unica_routing_required",
-            "Las categorias estan preparadas; falta asignar responsables para operar casos reales.",
+            "Las categorías están preparadas; falta asignar responsables para operar casos reales.",
         )
     return (
         "ready",
         evidence,
         None,
-        "Mesa Unica preparada con categorias y responsables enrutados.",
+        "Mesa Única preparada con categorías y responsables enrutados.",
     )
 
 
@@ -652,13 +652,13 @@ def _team_routing_status(
             "pending",
             evidence,
             "team_category_routing_required",
-            "El equipo existe, pero falta asignar categorias operativas a sus responsables.",
+            "El equipo existe, pero falta asignar categorías operativas a sus responsables.",
         )
     return (
         "ready",
         evidence,
         None,
-        "Equipo operativo con categorias y responsables asignados.",
+        "Equipo operativo con categorías y responsables asignados.",
     )
 
 
@@ -674,16 +674,16 @@ def _knowledge_content_status(counts: Mapping[str, int], tenant=None) -> tuple[s
         try:
             state = read_state(tenant)
         except ContentError:
-            return "blocked", [], "knowledge_state_unavailable", "No pudimos validar la version institucional de esta organizacion. Revisar su estado antes de publicar."
+            return "blocked", [], "knowledge_state_unavailable", "No pudimos validar la versión institucional de esta organización. Revisar su estado antes de publicar."
         if state is not None:
             bundle = state["bundle"]
             if not isinstance(bundle.get("nodes"), dict) or not isinstance(bundle.get("sources"), dict):
-                return "blocked", [], "knowledge_state_unavailable", "La estructura de la version institucional no es valida. Revisar su estado antes de publicar."
+                return "blocked", [], "knowledge_state_unavailable", "La estructura de la versión institucional no es valida. Revisar su estado antes de publicar."
             evidence = [f"{len(bundle['nodes'])} contenidos canonicos", f"{len(bundle['sources'])} fuentes documentales"]
             if state["visibility"] == "public":
                 evidence.append(f"Version publicada: {state['revision']}")
-                return "ready", evidence, None, "Menu y respuestas canonicas publicados. Este estado no acredita indexacion RAG ni validacion institucional externa."
-            return "pending", evidence, "knowledge_publication_required", "La version institucional es interna. Revisar y habilitar en el agente para consultas publicas."
+                return "ready", evidence, None, "Menu y respuestas canonicas publicados. Este estado no acredita indexacion RAG ni validación institucional externa."
+            return "pending", evidence, "knowledge_publication_required", "La versión institucional es interna. Revisar y habilitar en el agente para consultas públicas."
     if item_count:
         evidence.append(f"{item_count} contenidos estructurados")
     if committed_imports:
@@ -694,24 +694,24 @@ def _knowledge_content_status(counts: Mapping[str, int], tenant=None) -> tuple[s
             "action_required",
             evidence,
             "knowledge_content_required",
-            "Cargar tramites, servicios o documentos institucionales y revisar su procedencia.",
+            "Cargar trámites, servicios o documentos institucionales y revisar su procedencia.",
         )
     return (
         "pending",
         evidence,
         "knowledge_retrieval_verification_required",
-        "El contenido existe, pero falta un recibo verificable de indexacion y una prueba de recuperacion antes de declararlo listo.",
+        "El contenido existe, pero falta un recibo verificable de indexacion y una prueba de recuperación antes de declararlo listo.",
     )
 
 
 def _survey_status(counts, security_status, security_reason):
     count = max(0, int(counts.get("surveys") or 0))
     if not count:
-        return "action_required", [], "survey_instruments_required", "Crear y revisar los instrumentos de participacion."
-    evidence = [f"{count} encuestas/votaciones registradas", "Existencia de instrumentos; no prueba de participacion operativa"]
+        return "action_required", [], "survey_instruments_required", "Crear y revisar los instrumentos de participación."
+    evidence = [f"{count} encuestas/votaciones registradas", "Existencia de instrumentos; no prueba de participación operativa"]
     if security_status != "ready":
-        return "pending", evidence, security_reason or "survey_public_security_required", "Los instrumentos existen. Completar la proteccion publica antes de comprobar envios y metricas."
-    return "pending", evidence, "survey_public_flow_verification_required", "Comprobar publicacion, consentimiento y elegibilidad aplicables, formulario publicado, unicidad y metricas. No se infiere funcionamiento por cantidad."
+        return "pending", evidence, security_reason or "survey_public_security_required", "Los instrumentos existen. Completar la proteccion publica antes de comprobar envíos y métricas."
+    return "pending", evidence, "survey_public_flow_verification_required", "Comprobar publicación, consentimiento y elegibilidad aplicables, formulario publicado, unicidad y métricas. No se infiere funcionamiento por cantidad."
 
 
 def _institutional_branding_status(
@@ -745,7 +745,7 @@ def _institutional_branding_status(
         domain = build_domain_binding(tenant, entitled=tenant_allows_custom_domains(tenant))
         if domain["status"] != "unconfigured":
             evidence.append("Dominio propio: activo con verificaciones vigentes" if domain["active"] else
-                            "Dominio propio: pendiente de verificacion o activacion")
+                            "Dominio propio: pendiente de verificación o activacion")
     except DomainBindingError:
         evidence.append("Estado del dominio propio no verificable")
 
@@ -780,7 +780,7 @@ def _accessibility_status(
             "action_required",
             ["componentes accesibles disponibles en plataforma"],
             "accessibility_policy_required",
-            "Definir la politica del tenant: lectura, contraste, navegacion por teclado, lenguaje claro y derivacion humana.",
+            "Definir la política del tenant: lectura, contraste, navegación por teclado, lenguaje claro y derivación humana.",
         )
 
     if accessibility.get("enabled") is False:
@@ -788,7 +788,7 @@ def _accessibility_status(
             "blocked",
             ["politica del tenant deshabilitada"],
             "accessibility_disabled",
-            "Habilitar la politica de accesibilidad antes de publicar los canales ciudadanos.",
+            "Habilitar la política de accesibilidad antes de publicar los canales ciudadanos.",
         )
 
     configured_features = accessibility.get("features")
@@ -804,7 +804,7 @@ def _accessibility_status(
             "ready",
             evidence,
             None,
-            "Politica accesible declarada. La validacion con usuarios y dispositivos sigue siendo un gate de publicacion.",
+            "Política accesible declarada. La validación con usuarios y dispositivos sigue siendo un gate de publicación.",
         )
     return (
         "pending",
@@ -820,7 +820,7 @@ def _territorial_status(
     """Only accept the server-owned jurisdiction attestation as territorial readiness."""
 
     if tenant is None:
-        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su jurisdiccion."
+        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su jurisdicción."
 
     status = str(getattr(tenant, "jurisdiction_status", None) or "unverified").strip().lower()
     if status == "not_applicable":
@@ -900,9 +900,9 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
         ),
         _channel(
             "accessibility",
-            "Accesibilidad e inclusion",
+            "Accesibilidad e inclusión",
             accessibility_status,
-            "Politica accesible para web, WhatsApp, formularios y derivacion humana.",
+            "Política accesible para web, WhatsApp, formularios y derivación humana.",
             actions=[_action("open_accessibility", "Configurar accesibilidad", _profile_path("perfil"), primary=True)],
             evidence=accessibility_evidence,
             reason_code=accessibility_reason,
@@ -912,7 +912,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             "territorial_intelligence",
             "Territorio y mapas",
             territory_status,
-            "Jurisdiccion oficial para validar direcciones, zonas, categorias y mapas de calor.",
+            "Jurisdicción oficial para validar direcciones, zonas, categorías y mapas de calor.",
             actions=[_action("open_territory", "Configurar territorio", _profile_path("mapas"), primary=True)],
             evidence=territory_evidence,
             reason_code=territory_reason,
@@ -920,13 +920,13 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
         ),
         _channel(
             "crm",
-            "Mesa Unica y CRM operativo",
+            "Mesa Única y CRM operativo",
             crm_status,
-            "Bandeja de reclamos, pedidos y conversaciones con categorias y responsables verificables.",
+            "Bandeja de reclamos, pedidos y conversaciones con categorías y responsables verificables.",
             actions=[
                 _action(
                     "prepare_service_desk" if crm_reason == "mesa_unica_categories_required" else "open_crm",
-                    "Preparar Mesa Unica" if crm_reason == "mesa_unica_categories_required" else "Abrir reclamos/tickets",
+                    "Preparar Mesa Única" if crm_reason == "mesa_unica_categories_required" else "Abrir reclamos/tickets",
                     _profile_path("categorias") if crm_reason == "mesa_unica_categories_required" else _profile_path("tickets"),
                     primary=True,
                 )
@@ -952,14 +952,14 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             "whatsapp",
             "WhatsApp Business",
             whatsapp_status,
-            "Configuracion y evidencias del canal. Un sandbox o estado heredado no certifica servicio productivo.",
+            "Configuración y evidencias del canal. Un sandbox o estado heredado no certifica servicio productivo.",
             actions=_whatsapp_actions(tenant, cfg, whatsapp_status, whatsapp_reason, access_enabled),
             evidence=whatsapp_evidence,
             reason_code=whatsapp_reason,
             required_plan=None if access_enabled else "full",
-            progress_hint=("Prueba Meta limitada a destinatarios autorizados; no cambia los numeros productivos."
+            progress_hint=("Prueba Meta limitada a destinatarios autorizados; no cambia los números productivos."
                 if whatsapp_reason and whatsapp_reason.startswith("meta_sandbox_") else
-                "Comprobar la disponibilidad actual del proveedor y una conversacion real antes de declarar el canal operativo."),
+                "Comprobar la disponibilidad actual del proveedor y una conversación real antes de declarar el canal operativo."),
         ),
         _channel(
             "widget",
@@ -993,17 +993,17 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
         ),
         _channel(
             "catalog_marketplace",
-            "Catalogo y marketplace",
+            "Catálogo y marketplace",
             catalog_status,
-            "Productos, tramites, promociones y pedidos asistidos por IA desde WhatsApp o web.",
-            actions=[_action("open_catalog", "Cargar catalogo", _profile_path("catalogo"), primary=True)],
+            "Productos, trámites, promociones y pedidos asistidos por IA desde WhatsApp o web.",
+            actions=[_action("open_catalog", "Cargar catálogo", _profile_path("catalogo"), primary=True)],
             evidence=[f"{counts['catalog_items']} items"] if counts["catalog_items"] else [],
         ),
         _channel(
             "knowledge_content",
             "Conocimiento institucional",
             knowledge_status,
-            "Menu y respuestas canonicas con fuentes y version publicada. La indexacion RAG es una capacidad independiente.",
+            "Menu y respuestas canonicas con fuentes y versión publicada. La indexacion RAG es una capacidad independiente.",
             actions=[_action("open_knowledge", "Gestionar contenidos", "/implementacion", primary=True)],
             evidence=knowledge_evidence,
             reason_code=knowledge_reason,
@@ -1023,7 +1023,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             "team_routing",
             "Equipo y responsables",
             team_status,
-            "Operadores, permisos y categorias para que reclamos, pedidos y chats no queden sin responsable.",
+            "Operadores, permisos y categorías para que reclamos, pedidos y chats no queden sin responsable.",
             actions=[_action("open_team", "Configurar equipo", _profile_path("empleados"), primary=True)],
             evidence=team_evidence,
             reason_code=team_reason,
@@ -1031,19 +1031,19 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
         ),
         _channel(
             "live_chat",
-            "Atencion humana",
+            "Atención humana",
             live_status,
-            "Horario, cola offline y derivacion a operadores para tickets sensibles.",
+            "Horario, cola offline y derivación a operadores para tickets sensibles.",
             actions=[_action("configure_live_chat", "Configurar horario", _tenant_path(tenant, "/integracion"), primary=True)],
             evidence=live_evidence,
             reason_code=None if live_status == "ready" else "schedule_required",
         ),
         _channel(
             "analytics_surveys",
-            "Encuestas y analitica",
+            "Encuestas y analítica",
             analytics_status,
             "Encuestas, votaciones, reportes y mapas de calor para decisiones operativas.",
-            actions=[_action("open_analytics", "Abrir analitica", _profile_path("analytics"), primary=True)],
+            actions=[_action("open_analytics", "Abrir analítica", _profile_path("analytics"), primary=True)],
             evidence=analytics_evidence,
             reason_code=analytics_reason,
             progress_hint=analytics_hint,
@@ -1086,7 +1086,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
             "attention": attention_count,
             "progress": progress,
             "primary_next_action": (first_actionable or {}).get("actions", [{}])[0],
-            "health_label": "Configuracion completa; falta validar operacion" if ready_count == len(channels) else "Configuracion en progreso",
+            "health_label": "Configuración completa; falta validar operación" if ready_count == len(channels) else "Configuración en progreso",
             "progress_scope": "configuration_checklist",
             "production_ready": False,
         },
