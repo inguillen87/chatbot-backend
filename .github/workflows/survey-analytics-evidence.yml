@@ -84,6 +84,8 @@ name: Survey and organization evidence
       - tests/native_admin_membership_postgres.py
       - tests/test_territorial_boundary_packaging.py
       - tests/test_tdf_province_boundary.py
+      - tests/test_territorial_boundary_cache.py
+      - tests/test_territorial_initial_view.py
       - services/territorial_evidence.py
       - data/municipios/junin/geo.json
       - data/municipios/junin/official_department_boundary.geojson
@@ -286,7 +288,7 @@ jobs:
           python -m tests.ticket_workflow_postgres -v 2>&1 | tee .qa-artifacts/ticket-workflow/postgres.log
           python -m pytest tests/test_ticket_state_sync.py tests/test_ticket_notifications.py tests/test_ticket_tenant_scope_chat_access.py tests/test_legacy_ticket_tenant_scope.py tests/test_ticket_workflow_metadata_contract.py tests/test_crm_detail_category_rbac.py -q 2>&1 | tee .qa-artifacts/ticket-workflow/regression.log
       - name: Official territorial boundary packaging
-        run: python -m pytest tests/test_territorial_boundary_packaging.py tests/test_tdf_province_boundary.py -q
+        run: python -m pytest tests/test_territorial_boundary_packaging.py tests/test_tdf_province_boundary.py tests/test_territorial_boundary_cache.py tests/test_territorial_initial_view.py -q
       - name: Tenant-bound category authority and assignment policy
         shell: bash
         run: |

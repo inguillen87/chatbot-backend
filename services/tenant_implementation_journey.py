@@ -28,8 +28,8 @@ _STAGES: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "channels",
-        "label": "Canales de atencion",
-        "description": "Conectar WhatsApp, widget, plantillas y derivacion humana con estado verificable.",
+        "label": "Canales de atención",
+        "description": "Conectar WhatsApp, widget, plantillas y derivación humana con estado verificable.",
         "source_ids": ("whatsapp", "widget", "templates", "live_chat"),
     },
     {
@@ -41,13 +41,13 @@ _STAGES: tuple[dict[str, Any], ...] = (
     {
         "id": "team",
         "label": "Equipo y responsables",
-        "description": "Asignar operadores, categorias y responsables para que ningun caso quede sin atender.",
+        "description": "Asignar operadores, categorías y responsables para que ningún caso quede sin atender.",
         "source_ids": ("team_routing",),
     },
     {
         "id": "validation_release",
-        "label": "Validacion y salida",
-        "description": "Completar identidad, accesibilidad, territorio, proteccion publica y participacion antes del canario.",
+        "label": "Validación y salida",
+        "description": "Completar identidad, accesibilidad, territorio, proteccion publica y participación antes del canario.",
         "source_ids": (
             "crm",
             "identity_auth",
