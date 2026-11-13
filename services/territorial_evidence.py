@@ -276,6 +276,111 @@ def _boundary_contains_position(geometry: dict[str, Any], lng: float, lat: float
     return False
 
 
+_MAX_DECLARED_BOUNDARY_FEATURES = 12
+
+
+def _match_legacy_department_feature(
+    features: list[Any], authority: dict[str, Any], payload: dict[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Single department published with the Mendoza IDE property schema."""
+
+    if len(features) != 1 or not isinstance(features[0], dict):
+        return None
+    feature = features[0]
+    properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+    if (
+        _normalized_key(properties.get("departamen")) != _normalized_key(payload.get("city"))
+        or _scalar_text(properties.get("codigo_dep")) != _scalar_text(authority.get("department_code"))
+        or _scalar_text(properties.get("globalid")) != _scalar_text(authority.get("global_id"))
+    ):
+        return None
+    geometry = _validated_boundary_geometry(feature.get("geometry"))
+    if geometry is None:
+        return None
+    public_feature = {
+        "type": "Feature",
+        "id": _scalar_text(authority.get("department_code")) or "official-boundary",
+        "properties": {
+            **properties,
+            "name": _scalar_text(properties.get("departamen")) or _scalar_text(payload.get("city")),
+        },
+        "geometry": geometry,
+    }
+    return geometry, [public_feature]
+
+
+def _match_declared_boundary_features(
+    features: list[Any], match_spec: Any
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Official entities identified by properties declared in the tenant config.
+
+    ``match`` is ``{"name_property": str, "features": [{"id": str, "properties":
+    {property: value}}]}``. Every declared entity must appear exactly once in
+    the snapshot and the snapshot may contain nothing else, so a file cannot
+    widen the jurisdiction beyond what the configuration names. The containment
+    geometry is the set of the official polygons, unmodified.
+    """
+
+    if not isinstance(match_spec, dict):
+        return None
+    declared = match_spec.get("features")
+    name_property = _scalar_text(match_spec.get("name_property"))
+    if (
+        not name_property
+        or not isinstance(declared, list)
+        or not 1 <= len(declared) <= _MAX_DECLARED_BOUNDARY_FEATURES
+        or len(features) != len(declared)
+    ):
+        return None
+    expected: list[tuple[str, dict[str, str]]] = []
+    for entry in declared:
+        if not isinstance(entry, dict) or not isinstance(entry.get("properties"), dict):
+            return None
+        entity_id = _scalar_text(entry.get("id"))
+        pairs = {
+            str(key): _scalar_text(value) or ""
+            for key, value in entry["properties"].items()
+            if isinstance(key, str) and key
+        }
+        if not entity_id or not pairs or any(not value for value in pairs.values()):
+            return None
+        expected.append((entity_id, pairs))
+    if len({entity_id for entity_id, _ in expected}) != len(expected):
+        return None
+
+    polygons: list[Any] = []
+    public_features: list[dict[str, Any]] = []
+    pending = list(expected)
+    for feature in features:
+        if not isinstance(feature, dict) or not isinstance(feature.get("properties"), dict):
+            return None
+        properties = feature["properties"]
+        matches = [
+            candidate
+            for candidate in pending
+            if all(_scalar_text(properties.get(key)) == value for key, value in candidate[1].items())
+        ]
+        if len(matches) != 1:
+            return None
+        pending.remove(matches[0])
+        geometry = _validated_boundary_geometry(feature.get("geometry"))
+        name = _scalar_text(properties.get(name_property))
+        if geometry is None or not name:
+            return None
+        polygons.extend([geometry["coordinates"]] if geometry["type"] == "Polygon" else geometry["coordinates"])
+        public_features.append(
+            {
+                "type": "Feature",
+                "id": matches[0][0],
+                "properties": {**properties, "name": name},
+                "geometry": geometry,
+            }
+        )
+    if pending or not polygons:
+        return None
+    return {"type": "MultiPolygon", "coordinates": polygons}, public_features
+
+
 def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     boundary_config = payload.get("boundary")
     if not isinstance(boundary_config, dict):
@@ -307,31 +412,19 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
     if not isinstance(collection, dict):
         return None
     features = collection.get("features")
-    if collection.get("type") != "FeatureCollection" or not isinstance(features, list) or len(features) != 1:
+    if collection.get("type") != "FeatureCollection" or not isinstance(features, list):
         return None
-    feature = features[0]
-    if not isinstance(feature, dict):
+    match_spec = authority.get("match")
+    if match_spec is not None:
+        resolved = _match_declared_boundary_features(features, match_spec)
+    else:
+        resolved = _match_legacy_department_feature(features, authority, payload)
+    if resolved is None:
         return None
-    properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-    if (
-        _normalized_key(properties.get("departamen")) != _normalized_key(payload.get("city"))
-        or _scalar_text(properties.get("codigo_dep")) != _scalar_text(authority.get("department_code"))
-        or _scalar_text(properties.get("globalid")) != _scalar_text(authority.get("global_id"))
-    ):
+    geometry, public_features = resolved
+    bounds = _boundary_geometry_bounds(geometry)
+    if bounds is None:
         return None
-    geometry = _validated_boundary_geometry(feature.get("geometry"))
-    bounds = _boundary_geometry_bounds(geometry or {})
-    if geometry is None or bounds is None:
-        return None
-    public_feature = {
-        "type": "Feature",
-        "id": _scalar_text(authority.get("department_code")) or "official-boundary",
-        "properties": {
-            **properties,
-            "name": _scalar_text(properties.get("departamen")) or _scalar_text(payload.get("city")),
-        },
-        "geometry": geometry,
-    }
     public_authority = {
         **authority,
         "source_ref": authority.get("source_url"),
@@ -352,7 +445,7 @@ def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[s
                 "source": authority.get("publisher"),
                 "provenance": public_authority,
             },
-            "features": [public_feature],
+            "features": public_features,
         },
     }
 
