@@ -285,12 +285,12 @@ def _analytics_modes(tenant: TenantProfile, current_user: User) -> dict[str, Any
     return {
         "statistics": {
             "label": "Estadisticas",
-            "description": "Tablero operativo simple para administracion diaria.",
+            "description": "Tablero operativo simple para administración diaria.",
             "enabled": _capability_enabled(capabilities, "statistics", default=True),
         },
         "advanced_analytics": {
-            "label": "Analitica IA",
-            "description": "Investigacion, segmentos, resumen ejecutivo y exportaciones.",
+            "label": "Analítica IA",
+            "description": "Investigación, segmentos, resumen ejecutivo y exportaciones.",
             "enabled": advanced_enabled,
             "access": _feature_access(access, "analytics_dashboard"),
         },
@@ -611,7 +611,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
         {
             "id": "surveys",
             "label": "Encuestas y sondeos",
-            "description": "Participacion, votaciones, comentarios y resultados en vivo.",
+            "description": "Participación, votaciones, comentarios y resultados en vivo.",
             "route": "/admin/encuestas",
             "enabled": surveys_enabled,
             "access": surveys_access,
@@ -620,7 +620,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
         {
             "id": "people",
             "label": "Personas y accesos",
-            "description": "Empleados, roles, permisos y asignacion por categoria.",
+            "description": "Empleados, roles, permisos y asignación por categoría.",
             "route": "/empleados",
             "enabled": people_enabled,
             "priority": 4,
@@ -628,7 +628,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
         {
             "id": "maps",
             "label": "Mapas de calor",
-            "description": "Zonas, categorias y demanda georreferenciada.",
+            "description": "Zonas, categorías y demanda georreferenciada.",
             "route": "/perfil?tab=estadisticas&view=mapas",
             "enabled": maps_enabled,
             "access": maps_access,
@@ -636,8 +636,8 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
         },
         {
             "id": "advanced_analytics",
-            "label": "Analitica IA",
-            "description": "Segmentos, resumen ejecutivo, investigacion y exportaciones.",
+            "label": "Analítica IA",
+            "description": "Segmentos, resumen ejecutivo, investigación y exportaciones.",
             "route": "/analytics?mode=advanced",
             "enabled": bool((analytics_modes.get("advanced_analytics") or {}).get("enabled")),
             "access": analytics_access,
@@ -659,7 +659,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             {
                 "id": "implementation",
                 "label": "Implementacion",
-                "description": "Marca, accesibilidad, territorio, canales y controles de salida a produccion.",
+                "description": "Marca, accesibilidad, territorio, canales y controles de salida a producción.",
                 "route": "/implementacion",
                 "enabled": _capability_enabled(capabilities, "implementation", default=True),
                 "priority": 8,
@@ -801,15 +801,15 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
                 "id": "pending_cases",
                 "label": "Hay casos pendientes por resolver",
                 "description": f"{counts['pending']} casos siguen abiertos en la ventana seleccionada.",
-                "action": {"label": "Ver operacion", "route": "/perfil?tab=tickets"},
+                "action": {"label": "Ver operación", "route": "/perfil?tab=tickets"},
             }
         )
     if top_category and top_category_count:
         priorities.append(
             {
                 "id": "top_pending_category",
-                "label": f"{top_category} requiere atencion",
-                "description": f"{top_category_count} casos pendientes comparten esta categoria.",
+                "label": f"{top_category} requiere atención",
+                "description": f"{top_category_count} casos pendientes comparten esta categoría.",
                 "action": {"label": "Ver mapa", "route": "/perfil?tab=estadisticas"},
             }
         )
@@ -818,7 +818,7 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
             {
                 "id": "survey_comments_review",
                 "label": "Hay comentarios de encuestas para revisar",
-                "description": f"{surveys['comments_pending_review']} comentarios tienen revision o reportes.",
+                "description": f"{surveys['comments_pending_review']} comentarios tienen revisión o reportes.",
                 "action": {"label": "Abrir encuestas", "route": "/admin/encuestas"},
             }
         )
@@ -827,7 +827,7 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
         "contract_version": "backoffice.summary.v1",
         "tenant_slug": tenant.slug,
         "window": normalized_window,
-        "title": f"Resumen de los ultimos {normalized_window}",
+        "title": f"Resumen de los últimos {normalized_window}",
         "cards": cards,
         "priorities": priorities,
         "ai_summary_available": bool((analytics_modes.get("advanced_analytics") or {}).get("enabled")),
@@ -863,7 +863,7 @@ def backoffice_navigation(current_user: User):
             {
                 "ok": False,
                 "reason_code": "tenant_forbidden",
-                "message": "No tenes permisos para este tenant.",
+                "message": "No tenés permisos para este tenant.",
             },
             status=403,
             request_id=request_id,
@@ -894,7 +894,7 @@ def backoffice_summary(current_user: User):
             {
                 "ok": False,
                 "reason_code": "tenant_forbidden",
-                "message": "No tenes permisos para este tenant.",
+                "message": "No tenés permisos para este tenant.",
             },
             status=403,
             request_id=request_id,
@@ -963,7 +963,7 @@ def _authorized_tenant_or_response(
             {
                 "ok": False,
                 "reason_code": "tenant_forbidden",
-                "message": "No tenes permisos para este tenant.",
+                "message": "No tenés permisos para este tenant.",
             },
             status=403,
             request_id=request_id,
@@ -1000,7 +1000,7 @@ def _operator_role_error(current_user: User, request_id: str):
         {
             "ok": False,
             "reason_code": "backoffice_operator_required",
-            "message": "Esta operacion requiere un rol de backoffice.",
+            "message": "Esta operación requiere un rol de backoffice.",
         },
         status=403,
         request_id=request_id,
@@ -1635,8 +1635,8 @@ def _contacts_summary_payload(tenant: TenantProfile, actor: User, request_id: st
             "channels": _segment_counts(all_channels),
             "sources": _segment_counts(all_sources),
             "has_phone": [
-                {"id": "yes", "label": "Con telefono", "count": sum(1 for contact in contacts if contact.get("phone"))},
-                {"id": "no", "label": "Sin telefono", "count": sum(1 for contact in contacts if not contact.get("phone"))},
+                {"id": "yes", "label": "Con teléfono", "count": sum(1 for contact in contacts if contact.get("phone"))},
+                {"id": "no", "label": "Sin teléfono", "count": sum(1 for contact in contacts if not contact.get("phone"))},
             ],
             "has_email": [
                 {"id": "yes", "label": "Con email", "count": sum(1 for contact in contacts if contact.get("email"))},
@@ -1703,7 +1703,7 @@ def _team_coverage_payload(tenant: TenantProfile, actor: User, request_id: str) 
             {
                 "id": f"assign_category_{category.lower().replace(' ', '_')}",
                 "label": f"Asignar responsable para {category}",
-                "description": "Hay casos abiertos en esta categoria sin cobertura visible.",
+                "description": "Hay casos abiertos en esta categoría sin cobertura visible.",
                 "query": {"category": category, "assigned": "none"},
             }
         )
@@ -1956,13 +1956,13 @@ def _executive_summary_payload(tenant: TenantProfile, current_user: User, reques
     if orders["summary"]["pending_revenue"]:
         opportunities.append({"id": "pending_revenue", "label": "Ingresos pendientes de confirmar", "value": orders["summary"]["pending_revenue"]})
     if contacts["summary"]["with_phone"]:
-        opportunities.append({"id": "phone_followup", "label": "Contactos con telefono para seguimiento", "value": contacts["summary"]["with_phone"]})
+        opportunities.append({"id": "phone_followup", "label": "Contactos con teléfono para seguimiento", "value": contacts["summary"]["with_phone"]})
 
     recommended_actions = [
         {"id": "open_inbox", "label": "Atender bandeja priorizada", "endpoint": "/api/v2/backoffice/operations/inbox-summary"},
     ]
     if team["categories_without_owner"]:
-        recommended_actions.append({"id": "assign_coverage", "label": "Asignar categorias sin responsable", "endpoint": "/api/v2/backoffice/team/coverage-summary"})
+        recommended_actions.append({"id": "assign_coverage", "label": "Asignar categorías sin responsable", "endpoint": "/api/v2/backoffice/team/coverage-summary"})
     if contacts["summary"]["missing_minimum_data"]:
         recommended_actions.append({"id": "complete_contacts", "label": "Completar datos de contactos", "endpoint": "/api/v2/backoffice/contacts/summary"})
 
@@ -2068,13 +2068,13 @@ def backoffice_v2_export(current_user: User):
     export_format = _normalize_slug(body.get("format") or "csv")
     if resource not in {"tickets", "orders", "contacts", "team"}:
         return _json(
-            {"ok": False, "reason_code": "invalid_resource", "message": "Resource invalido para exportacion."},
+            {"ok": False, "reason_code": "invalid_resource", "message": "Resource inválido para exportación."},
             status=400,
             request_id=request_id,
         )
     if export_format not in {"pdf", "csv", "xlsx"}:
         return _json(
-            {"ok": False, "reason_code": "invalid_format", "message": "Formato invalido para exportacion."},
+            {"ok": False, "reason_code": "invalid_format", "message": "Formato inválido para exportación."},
             status=400,
             request_id=request_id,
         )

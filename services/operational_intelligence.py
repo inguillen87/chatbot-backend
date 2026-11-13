@@ -2206,7 +2206,7 @@ def _commerce_metrics(
             {
                 "id": f"assisted_order:{record_id}",
                 "record_id": record_id,
-                "title": "Pedido asistido requiere revision",
+                "title": "Pedido asistido requiere revisión",
                 "label": f"Pedido asistido #{record_id}",
                 "priority": priority,
                 "reason_code": "assisted_order_review",
@@ -2952,7 +2952,7 @@ def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
         },
         {
             "id": "update_location",
-            "label": "Actualizar ubicacion",
+            "label": "Actualizar ubicación",
             "type": "api",
             "method": source_config["location_method"],
             "endpoint": source_config["location_endpoint"],
@@ -3210,8 +3210,8 @@ def _heatmap_quality_contract(
         "max_points": max_points,
         "can_render_heatmap": bool(visible_points),
         "empty_state_action": {
-            "label": "Capturar ubicacion en WhatsApp",
-            "description": "Pedir ubicacion o geocodificar direcciones mejora el mapa, los hotspots y la asignacion por zona.",
+            "label": "Capturar ubicación en WhatsApp",
+            "description": "Pedir ubicación o geocodificar direcciones mejora el mapa, los hotspots y la asignación por zona.",
             "endpoint": "/api/v2/analytics/operations/heatmap",
             "ui_hint": "open_geocoding_queue",
         },
@@ -3480,7 +3480,7 @@ def _heatmap_viewport_presets(
         presets.append(
             {
                 "id": "tenant_region_empty",
-                "label": "Region sin coordenadas",
+                "label": "Región sin coordenadas",
                 "mode": "frontend_default_region",
                 "default": True,
                 "reason_code": quality.get("reason_code") or "no_points",
@@ -3757,7 +3757,7 @@ def _heatmap_geocoding_guidance(
             },
             {
                 "id": "request_whatsapp_location",
-                "label": "Pedir ubicacion por WhatsApp",
+                "label": "Pedir ubicación por WhatsApp",
                 "enabled": True,
                 "ui_hint": "open_template_or_live_chat",
                 "href": _crm_tickets_href(focus="open_template_or_live_chat"),
@@ -4925,7 +4925,7 @@ def _build_alerts(
     commerce_available = (commerce_metrics or {}).get("available", True) is not False
 
     if ticket_summary.get("overdue", 0) > 0:
-        alerts.append({"severity": "high", "reason_code": "tickets_overdue", "message": "Hay tickets o reclamos vencidos que requieren accion."})
+        alerts.append({"severity": "high", "reason_code": "tickets_overdue", "message": "Hay tickets o reclamos vencidos que requieren acción."})
     if ticket_summary.get("unassigned", 0) > 0:
         alerts.append({"severity": "medium", "reason_code": "tickets_unassigned", "message": "Hay tickets abiertos sin responsable asignado."})
     if (
@@ -4937,12 +4937,12 @@ def _build_alerts(
     if survey_available and survey_summary.get("votaciones_live", 0) > 0 and survey_summary.get("responses", 0) == 0:
         alerts.append({"severity": "medium", "reason_code": "live_vote_without_responses", "message": "Hay votaciones activas sin respuestas recientes."})
     if chat_available and chat_summary.get("handoff_rate", 0) >= 30:
-        alerts.append({"severity": "medium", "reason_code": "high_handoff_rate", "message": "La tasa de derivacion humana esta alta; revisar intents y respuestas."})
+        alerts.append({"severity": "medium", "reason_code": "high_handoff_rate", "message": "La tasa de derivación humana esta alta; revisar intents y respuestas."})
     if commerce_available and int(commerce_summary.get("orders_needing_review") or 0) > 0:
         alerts.append({
             "severity": "medium",
             "reason_code": "assisted_orders_need_review",
-            "message": "Hay pedidos asistidos desde WhatsApp o marketplace esperando revision operativa.",
+            "message": "Hay pedidos asistidos desde WhatsApp o marketplace esperando revisión operativa.",
         })
     hotspot = (heatmap.get("hotspots") or [None])[0]
     if hotspot and hotspot.get("count", 0) >= 5:
@@ -5251,7 +5251,7 @@ def _build_ai_operational_brief(
         focus_items.append(
             {
                 "id": "survey_responses",
-                "label": "Participacion en encuestas",
+                "label": "Participación en encuestas",
                 "value": int(summary.get("survey_responses") or 0),
                 "priority": "medium",
                 "ui_hint": "open_survey_monitor",
@@ -5380,7 +5380,7 @@ def _ai_ops_ticket_items(tenant: TenantProfile, ticket_records: list[dict[str, A
                 "source": "ticket",
                 "source_model": source,
                 "record_id": record_id,
-                "title": "Reclamo requiere revision humana",
+                "title": "Reclamo requiere revisión humana",
                 "priority": priority,
                 "reason_codes": reason_codes,
                 "recommended_action": _ai_ops_recommended_action(
@@ -5474,7 +5474,7 @@ def _ai_ops_order_items(tenant: TenantProfile, start_date: datetime, end_date: d
                 "source": "order",
                 "source_model": "pedido_conversacional",
                 "record_id": order.id,
-                "title": "Pedido asistido requiere revision",
+                "title": "Pedido asistido requiere revisión",
                 "priority": priority,
                 "reason_codes": reason_codes,
                 "recommended_action": _ai_ops_recommended_action(
@@ -5534,7 +5534,7 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
                 "source": "survey",
                 "source_model": "enc_encuesta",
                 "record_id": record_id,
-                "title": "Encuesta o votacion en monitoreo",
+                "title": "Encuesta o votación en monitoreo",
                 "priority": priority,
                 "reason_codes": reason_codes,
                 "recommended_action": _ai_ops_recommended_action(
