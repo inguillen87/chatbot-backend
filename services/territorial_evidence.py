@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import threading
 import unicodedata
 from typing import Any, Iterable
 from urllib.parse import parse_qs, urlsplit
@@ -153,6 +154,29 @@ def _jurisdiction_bounds(value: Any) -> dict[str, float] | None:
     }
 
 
+def _initial_view_bounds(value: Any, jurisdiction_bounds: dict[str, float]) -> dict[str, float] | None:
+    """Optional first camera framing, valid only inside the jurisdiction envelope.
+
+    A province can span far beyond where its people live (Tierra del Fuego
+    reaches the South Pole). Without activity to frame, the map needs a declared
+    starting view. It is presentation, not territory.
+    """
+
+    if not isinstance(value, dict):
+        return None
+    bounds = _jurisdiction_bounds(value.get("bounds"))
+    if bounds is None:
+        return None
+    if not (
+        jurisdiction_bounds["west"] <= bounds["west"]
+        and bounds["east"] <= jurisdiction_bounds["east"]
+        and jurisdiction_bounds["south"] <= bounds["south"]
+        and bounds["north"] <= jurisdiction_bounds["north"]
+    ):
+        return None
+    return bounds
+
+
 def _safe_config_segment(value: Any) -> str | None:
     normalized = str(value or "").strip().lower()
     if not normalized or not re.fullmatch(r"[a-z0-9_-]+", normalized):
@@ -266,14 +290,72 @@ def _polygon_contains_position(polygon: list[list[list[float]]], lng: float, lat
     return not any(_ring_contains_position(hole, lng, lat) for hole in polygon[1:])
 
 
+_BOUNDARY_EDGE_TOLERANCE = 1e-10
+_BOUNDARY_CACHE_LIMIT = 8
+# Verified snapshots are immutable inputs: the key binds the configuration that
+# was validated, the declared SHA-256 and the file identity on disk. Any change
+# to one of them is a different key, so a geometry is never reused for another
+# snapshot. Cached values are shared read-only objects; callers must not mutate.
+_VERIFIED_BOUNDARY_CACHE: dict[tuple[Any, ...], dict[str, Any] | None] = {}
+# id(geometry) -> (geometry, per-polygon envelopes). The geometry reference is
+# kept so an unrelated object reusing the same id can never match.
+_BOUNDARY_ENVELOPES: dict[int, tuple[dict[str, Any], list[tuple[float, float, float, float] | None]]] = {}
+_BOUNDARY_CACHE_LOCK = threading.RLock()
+_CACHE_MISS: Any = object()
+
+
+def _polygon_envelope(polygon: Any) -> tuple[float, float, float, float] | None:
+    outer = polygon[0] if isinstance(polygon, list) and polygon else None
+    if not isinstance(outer, list) or not outer:
+        return None
+    lngs = [position[0] for position in outer]
+    lats = [position[1] for position in outer]
+    return (min(lngs), min(lats), max(lngs), max(lats))
+
+
+def _index_boundary_geometry(geometry: dict[str, Any]) -> None:
+    polygons = geometry.get("coordinates") if geometry.get("type") == "MultiPolygon" else None
+    if isinstance(polygons, list):
+        _BOUNDARY_ENVELOPES[id(geometry)] = (geometry, [_polygon_envelope(polygon) for polygon in polygons])
+
+
+def _forget_boundary_geometry(boundary: dict[str, Any] | None) -> None:
+    geometry = (boundary or {}).get("geometry")
+    if isinstance(geometry, dict):
+        indexed = _BOUNDARY_ENVELOPES.get(id(geometry))
+        if indexed is not None and indexed[0] is geometry:
+            del _BOUNDARY_ENVELOPES[id(geometry)]
+
+
+def clear_verified_boundary_cache() -> None:
+    """Drop every cached snapshot and its envelopes (tests and operators)."""
+
+    with _BOUNDARY_CACHE_LOCK:
+        _VERIFIED_BOUNDARY_CACHE.clear()
+        _BOUNDARY_ENVELOPES.clear()
+
+
 def _boundary_contains_position(geometry: dict[str, Any], lng: float, lat: float) -> bool:
     if geometry.get("type") == "Polygon":
         return _polygon_contains_position(geometry.get("coordinates") or [], lng, lat)
     if geometry.get("type") == "MultiPolygon":
-        return any(
-            _polygon_contains_position(polygon, lng, lat)
-            for polygon in geometry.get("coordinates") or []
-        )
+        polygons = geometry.get("coordinates") or []
+        indexed = _BOUNDARY_ENVELOPES.get(id(geometry))
+        if indexed is None or indexed[0] is not geometry or len(indexed[1]) != len(polygons):
+            return any(_polygon_contains_position(polygon, lng, lat) for polygon in polygons)
+        # The envelope only discards components that cannot contain the point;
+        # the same tolerance as the on-edge test keeps boundary points inside.
+        for polygon, envelope in zip(polygons, indexed[1]):
+            if envelope is not None and (
+                lng < envelope[0] - _BOUNDARY_EDGE_TOLERANCE
+                or lng > envelope[2] + _BOUNDARY_EDGE_TOLERANCE
+                or lat < envelope[1] - _BOUNDARY_EDGE_TOLERANCE
+                or lat > envelope[3] + _BOUNDARY_EDGE_TOLERANCE
+            ):
+                continue
+            if _polygon_contains_position(polygon, lng, lat):
+                return True
+        return False
     return False
 
 
@@ -368,7 +450,57 @@ def _match_ign_province_feature(
     return geometry, [public_feature]
 
 
+def _verified_boundary_cache_key(config_path: str, payload: dict[str, Any]) -> tuple[Any, ...] | None:
+    boundary_config = payload.get("boundary")
+    filename = _scalar_text(boundary_config.get("file")) if isinstance(boundary_config, dict) else None
+    if not filename or os.path.basename(filename) != filename:
+        return None
+    boundary_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), filename)
+    try:
+        stat = os.stat(boundary_path)
+        config_digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        ).hexdigest()
+    except (OSError, TypeError, ValueError):
+        return None
+    declared = _scalar_text(boundary_config.get("snapshot_sha256")) or ""
+    return (boundary_path, declared.lower(), stat.st_size, stat.st_mtime_ns, stat.st_ino, config_digest)
+
+
 def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Verified boundary for this exact configuration and snapshot, cached.
+
+    Reading, hashing and validating a provincial snapshot costs a few hundred
+    milliseconds, and it used to happen on every request.
+    """
+
+    key = _verified_boundary_cache_key(config_path, payload)
+    if key is None:
+        return _read_verified_boundary(config_path, payload)
+    cached = _VERIFIED_BOUNDARY_CACHE.get(key, _CACHE_MISS)
+    if cached is not _CACHE_MISS:
+        return cached
+    # One loader at a time: concurrent cold requests for the same snapshot wait
+    # and reuse the single verified object instead of each indexing its own
+    # copy. Lookup, insertion and eviction happen under the same lock, so an
+    # entry and its envelopes are always added and removed together.
+    with _BOUNDARY_CACHE_LOCK:
+        cached = _VERIFIED_BOUNDARY_CACHE.get(key, _CACHE_MISS)
+        if cached is not _CACHE_MISS:
+            return cached
+        boundary = _read_verified_boundary(config_path, payload)
+        # Only verified results are remembered: a rejected file is re-read, so
+        # a corrected snapshot is picked up without restarting.
+        if boundary is not None:
+            while len(_VERIFIED_BOUNDARY_CACHE) >= _BOUNDARY_CACHE_LIMIT:
+                _forget_boundary_geometry(_VERIFIED_BOUNDARY_CACHE.pop(next(iter(_VERIFIED_BOUNDARY_CACHE))))
+            if isinstance(boundary.get("geometry"), dict):
+                _index_boundary_geometry(boundary["geometry"])
+            _VERIFIED_BOUNDARY_CACHE[key] = boundary
+        return boundary
+
+
+def _read_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     boundary_config = payload.get("boundary")
     if not isinstance(boundary_config, dict):
         return None
@@ -482,6 +614,7 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
                 continue
             verified_boundary = _load_verified_boundary(config_path, payload)
             effective_bounds = (verified_boundary or {}).get("bounds") or bounds
+            initial_view = _initial_view_bounds(payload.get("initial_view"), effective_bounds)
             return {
                 "contract_version": "operations.tenant_jurisdiction.v1",
                 "state": "configured",
@@ -492,6 +625,9 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
                 "locale": _scalar_text(payload.get("locale")),
                 "region_hint": _scalar_text(payload.get("region_hint")),
                 "bounds": effective_bounds,
+                # Camera hint only: it never widens, narrows or replaces the
+                # jurisdiction used for containment.
+                "initial_view_bounds": initial_view,
                 "containment_method": "point_in_polygon" if verified_boundary else "operational_envelope",
                 "containment_verified": bool(verified_boundary),
                 "boundary_authority": (verified_boundary or {}).get("authority"),

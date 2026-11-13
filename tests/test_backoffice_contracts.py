@@ -381,7 +381,7 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["contract_version"] == "backoffice.summary.v1"
-    assert payload["title"] == "Resumen de los ultimos 7d"
+    assert payload["title"] == "Resumen de los últimos 7d"
     cards = {item["id"]: item for item in payload["cards"]}
     assert cards["pending_cases"]["value"] == 1
     assert cards["resolved_cases"]["value"] == 1
