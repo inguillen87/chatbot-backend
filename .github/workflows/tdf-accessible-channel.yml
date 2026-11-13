@@ -31,9 +31,11 @@ on:
       - 'services/whatsapp_provider_policy.py'
       - 'services/meta_credential_operations.py'
       - 'services/meta_credential_admin_runtime.py'
+      - 'services/meta_phone_webhook_inspection.py'
       - 'routes/meta_credential_admin.py'
       - 'utils/meta_credential_http.py'
       - 'tests/test_meta_credential_admin.py'
+      - 'tests/test_meta_phone_webhook_inspection.py'
       - 'scripts/manage_meta_whatsapp_credentials.py'
       - 'tests/test_meta_whatsapp_welcome.py'
       - 'tests/test_meta_whatsapp_welcome_isolated.py'
@@ -408,6 +410,7 @@ jobs:
               'tests/test_meta_outbox_canary_scope.py',
               'tests/test_meta_credential_operations.py',
               'tests/test_meta_credential_admin.py',
+              'tests/test_meta_phone_webhook_inspection.py',
               'tests/test_whatsapp_webhook_twilio_scoping.py',
               'tests/test_municipal_conversation_uow.py',
               'tests/test_whatsapp_conversation_domain_writers.py',
@@ -429,6 +432,7 @@ jobs:
               'services/meta_whatsapp_welcome.py', 'services/whatsapp_provider_policy.py',
               'services/meta_credential_operations.py', 'scripts/manage_meta_whatsapp_credentials.py',
               'services/meta_credential_admin_runtime.py', 'routes/meta_credential_admin.py',
+              'services/meta_phone_webhook_inspection.py',
               'utils/meta_credential_http.py', 'middleware/tenant_context.py',
               'services/common_utils.py',
               'services/municipal_conversation_uow.py', 'services/municipio_responder.py',

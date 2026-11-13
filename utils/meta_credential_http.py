@@ -7,7 +7,8 @@ import os
 from flask import current_app, has_request_context, jsonify, request
 
 PREFIX = "/api/internal/meta-credentials"
-ENDPOINTS = frozenset({"meta_credential_admin.plan", "meta_credential_admin.apply", "meta_credential_admin.status"})
+ENDPOINTS = frozenset({"meta_credential_admin.plan", "meta_credential_admin.apply", "meta_credential_admin.status",
+                       "meta_credential_admin.inspect_junin_webhook"})
 MAX_BODY_BYTES = 16_384
 PANEL_ORIGINS = frozenset({"https://chatboc.ar", "https://www.chatboc.ar"})
 
