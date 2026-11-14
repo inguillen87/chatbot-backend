@@ -215,11 +215,13 @@ def test_long_text_and_own_contact_survive_existing_authenticated_crm_history_dt
 @pytest.mark.parametrize("declared_marketing", [True, False])
 def test_foreign_namesake_and_existing_customer_preferences_do_not_create_new_identity_or_consent(business_environment, declared_marketing):
     env = business_environment
-    own = Contact(tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
+    own = Contact(id="00000000-0000-4000-8000-000000000101",
+                  tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
                   name="Previously declared customer", type="customer",
                   preferences={"marketing_opt_in": declared_marketing, "lead_temperature": "hot", "lead_score": 85,
                                "last_intent": "previously-declared", "custom": "retained"})
-    foreign = Contact(tenant_id=env.other.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
+    foreign = Contact(id="00000000-0000-4000-8000-000000000102",
+                      tenant_id=env.other.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
                       name="Foreign synthetic private contact", email="foreign-synthetic@example.invalid", type="customer")
     db.session.add_all([own, foreign])
     db.session.commit()
@@ -245,9 +247,11 @@ def test_foreign_namesake_and_existing_customer_preferences_do_not_create_new_id
 
 def test_existing_contact_without_evidence_becomes_unknown_without_inventing_stored_facts_or_changing_unprocessed_legacy(business_environment):
     env = business_environment
-    own = Contact(tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
+    own = Contact(id="00000000-0000-4000-8000-000000000103",
+                  tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
                   name="Existing synthetic contact", type="unknown", preferences={"custom": "retained"})
-    legacy = Contact(tenant_id=env.tenant.id, phone="+12025550144", whatsapp_id="+12025550144",
+    legacy = Contact(id="00000000-0000-4000-8000-000000000104",
+                     tenant_id=env.tenant.id, phone="+12025550144", whatsapp_id="+12025550144",
                      name="Unprocessed synthetic legacy contact", type="unknown", preferences={})
     db.session.add_all([own, legacy])
     db.session.commit()
@@ -444,7 +448,8 @@ def test_context_cannot_reference_another_tenant_or_contact_interaction(business
     env = business_environment
     first, _, _ = _send(env, "consulta propia", "before-forged-reference")
     owner = env.other if foreign_tenant else env.tenant
-    contact = Contact(tenant_id=owner.id, phone="+12025550144", whatsapp_id="+12025550144",
+    contact = Contact(id="00000000-0000-4000-8000-000000000105",
+                      tenant_id=owner.id, phone="+12025550144", whatsapp_id="+12025550144",
                       name="Other synthetic contact", type="unknown")
     db.session.add(contact)
     db.session.flush()
@@ -538,7 +543,8 @@ def test_persisted_event_without_finalized_reply_requires_reconciliation_instead
     turn = _native_turn(turn_id)
     assert turn.status == "received"
     inbound_id, chat_id = turn.id, turn.chat_session_id
-    contact = Contact(tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
+    contact = Contact(id="00000000-0000-4000-8000-000000000106",
+                      tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
                       name="Contacto WhatsApp", type="unknown",
                       preferences={"native_business_evidence_contract": EVIDENCE_CONTRACT})
     db.session.add(contact)
@@ -573,7 +579,8 @@ def test_persisted_event_without_finalized_reply_requires_reconciliation_instead
 ], ids=["too-large-positive", "too-large-negative", "explicit-zero", "finite-integer", "finite-fractional"])
 def test_stored_score_projection_handles_extreme_integers_without_dropping_the_crm_dto_or_rewriting_evidence(business_environment, stored_score, expected_score):
     env = business_environment
-    existing = Contact(tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
+    existing = Contact(id="00000000-0000-4000-8000-000000000107",
+                       tenant_id=env.tenant.id, phone="+" + CONTACT, whatsapp_id="+" + CONTACT,
                        name="Existing synthetic score evidence", type="unknown",
                        preferences={"lead_score": stored_score})
     db.session.add(existing)
