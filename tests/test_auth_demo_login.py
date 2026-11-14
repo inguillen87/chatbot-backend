@@ -266,7 +266,21 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(payload.get('sector'), 'gobierno')
 
 
+    def _active_tenants_for_fallback(self):
+        # The empty-registry fallback serves an existing active organization. Create them here
+        # instead of relying on startup seeding (ENABLE_RUNTIME_TENANT_INIT), which the isolated
+        # CI runtime disables.
+        for tipo in ('municipio', 'pyme'):
+            owner = User(name=f'Owner {tipo}', email=f'owner-{tipo}@example.invalid', rol='admin', tipo_chat=tipo)
+            owner.set_password('synthetic-owner-password')
+            db.session.add(owner)
+            db.session.flush()
+            db.session.add(TenantProfile(slug=f'fallback-{tipo}', nombre=f'Fallback {tipo}', tipo=tipo, is_active=True,
+                municipio_id=owner.id if tipo == 'municipio' else None, pyme_id=owner.id if tipo == 'pyme' else None))
+        db.session.commit()
+
     def test_demo_login_works_when_demo_registry_is_empty(self):
+        self._active_tenants_for_fallback()
         original = self.app.config.get('DEMO_RUBROS')
         self.app.config['DEMO_RUBROS'] = []
         try:
@@ -307,6 +321,7 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(calls["count"], 1)
 
     def test_demo_catalog_exposes_fallback_entries_when_registry_empty(self):
+        self._active_tenants_for_fallback()
         original = self.app.config.get('DEMO_RUBROS')
         self.app.config['DEMO_RUBROS'] = []
         try:

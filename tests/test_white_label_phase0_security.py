@@ -353,9 +353,16 @@ class WhiteLabelPhaseZeroSecurityTests(unittest.TestCase):
         owner, tenant = self._tenant("config-owner")
         headers = self._headers(owner, tenant)
 
-        admin_response = self.client.put(
+        # The name changes only through the institutional profile; the refusal is reached
+        # after authorization, so it also shows the owner got through.
+        rename_response = self.client.put(
             f"/api/admin/tenants/{tenant.slug}/config",
             json={"tenant": {"nombre": "Updated owner tenant"}},
+            headers=headers,
+        )
+        admin_response = self.client.put(
+            f"/api/admin/tenants/{tenant.slug}/config",
+            json={"tenant": {"dispatch_email": "owner-dispatch@example.invalid"}},
             headers=headers,
         )
         widget_response = self.client.put(
@@ -364,10 +371,13 @@ class WhiteLabelPhaseZeroSecurityTests(unittest.TestCase):
             headers=headers,
         )
 
+        self.assertEqual(rename_response.status_code, 409, rename_response.get_json())
+        self.assertEqual(rename_response.get_json()["reason_code"], "organization_name_requires_profile_update")
         self.assertEqual(admin_response.status_code, 200, admin_response.get_json())
         self.assertEqual(widget_response.status_code, 200, widget_response.get_json())
         db.session.refresh(tenant)
-        self.assertEqual(tenant.nombre, "Updated owner tenant")
+        self.assertEqual(tenant.nombre, "Tenant config-owner")
+        self.assertEqual(tenant.dispatch_email, "owner-dispatch@example.invalid")
         self.assertEqual(tenant.widget_settings.welcome_title, "Welcome owner")
 
     def test_whatsapp_inventory_requires_full_tenant_admin(self):
@@ -429,18 +439,27 @@ class WhiteLabelPhaseZeroSecurityTests(unittest.TestCase):
         db.session.add(super_admin)
         db.session.commit()
 
-        response = self.client.put(
+        headers = {
+            "Authorization": f"Bearer {self._token(super_admin)}",
+            "X-Tenant": tenant.slug,
+        }
+        rename = self.client.put(
             f"/api/admin/tenants/{tenant.slug}/config",
             json={"tenant": {"nombre": "Managed by platform"}},
-            headers={
-                "Authorization": f"Bearer {self._token(super_admin)}",
-                "X-Tenant": tenant.slug,
-            },
+            headers=headers,
+        )
+        response = self.client.put(
+            f"/api/admin/tenants/{tenant.slug}/config",
+            json={"tenant": {"dispatch_email": "platform-dispatch@example.invalid"}},
+            headers=headers,
         )
 
+        self.assertEqual(rename.status_code, 409, rename.get_json())
+        self.assertEqual(rename.get_json()["reason_code"], "organization_name_requires_profile_update")
         self.assertEqual(response.status_code, 200, response.get_json())
         db.session.refresh(tenant)
-        self.assertEqual(tenant.nombre, "Managed by platform")
+        self.assertEqual(tenant.nombre, "Tenant superadmin-target")
+        self.assertEqual(tenant.dispatch_email, "platform-dispatch@example.invalid")
 
     def test_legacy_catalog_import_is_tenant_scoped(self):
         owner_a, tenant_a = self._tenant("catalog-import-a", plan="full")
