@@ -4116,6 +4116,16 @@ def admin_login():
     if not email or not password:
         return jsonify({"error": "Credenciales requeridas"}), 400
 
+    raw_scope = data.get('tenant_slug')
+    requested_scope = None
+    if raw_scope is not None:
+        if not isinstance(raw_scope, str) or not raw_scope.strip() or len(raw_scope) > 128:
+            return jsonify({
+                "error": "La dirección de acceso no es válida.",
+                "reason_code": "invalid_login_scope",
+            }), 400
+        requested_scope = raw_scope.strip().lower()
+
     user = _user_query().filter_by(email=email.strip().lower()).first()
 
     if not user:
@@ -4172,6 +4182,21 @@ def admin_login():
     else:
         # Fallback to the tenant_slug attached to the user if no owned tenant is found.
         tenant_slug = getattr(user, "tenant_slug", None)
+
+    # A scoped access (own domain or /t/<slug>/login) is exclusive to that organization:
+    # an account from another organization never receives a token there, not even one the
+    # client would later discard. Checked after the password so it reveals nothing to strangers.
+    if requested_scope is not None and (
+        not isinstance(tenant_slug, str) or tenant_slug.strip().lower() != requested_scope
+    ):
+        current_app.logger.warning(
+            "[admin_login] Organization scope rejected user_id=%s",
+            user.id,
+        )
+        return jsonify({
+            "error": "Esta cuenta no tiene acceso a esta organización.",
+            "reason_code": "organization_mismatch",
+        }), 403
 
     current_app.logger.debug("[ADMIN_LOGIN_DEBUG] user=%s tenant=%s fallback_tenant_slug=%s final_slug=%s", user.id, getattr(owned_tenant, "slug", None), getattr(user, "tenant_slug", None), tenant_slug)
 
