@@ -192,6 +192,11 @@ jobs:
           git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/checkout.txt
           sha256sum bootstrap_wsgi.py gunicorn.conf.py Dockerfile.vercel tests/test_production_whatsapp_webhook_bootstrap.py tests/test_bootstrap_wsgi.py tests/test_bootstrap_receipt.py tests/test_production_login_bootstrap.py tests/test_gunicorn_capacity.py > .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/source-sha256.txt
           python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import pytest; raise SystemExit(pytest.main(["tests/test_production_whatsapp_webhook_bootstrap.py", "tests/test_bootstrap_wsgi.py", "tests/test_bootstrap_receipt.py", "tests/test_production_login_bootstrap.py", "tests/test_gunicorn_capacity.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/tests.log
+      - name: Clerk panel session takes its chat type from the organization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_clerk_session_chat_type.py", "-q", "-p", "no:cacheprovider"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/clerk-session-chat-type.log
       - name: Employee scope revocation and legacy compatibility
         shell: bash
         run: |
