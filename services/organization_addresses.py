@@ -92,6 +92,70 @@ def build_operator_ui():
     return deepcopy(_OPERATOR_UI)
 
 
+# Separate, additive contract: organization.address_operator_ui.v1 keeps its exact keys.
+# Each blocking reason is a fixed server code (never provider data) with what it means and
+# the one action the operator can take. Unknown reasons are never echoed.
+_OPERATOR_GUIDANCE = {
+    'contract_version': 'organization.address_operator_guidance.v1',
+    'labels': {
+        'blocked_title': 'Activación bloqueada',
+        'next_action': 'Qué hacer',
+        'pending_until': 'La solicitud vence',
+        'expired_since': 'La solicitud venció',
+        'active_until': 'Vigente hasta',
+    },
+    'messages': {
+        'pending_window': 'La solicitud tiene un plazo fijo. Si vence antes de activar la vinculación, hay que revocarla y volver a pedirla.',
+        'expired_action': 'Revocá la solicitud vencida y volvé a pedir la dirección para iniciar un plazo nuevo. Hasta entonces la dirección no se publica.',
+        'active_expiry': 'La vinculación activa deja de publicarse al vencer su vigencia. Todavía no hay renovación: después hay que revocarla, pedirla de nuevo y verificarla otra vez, y la dirección no se publica mientras tanto.',
+    },
+    'blocking': {
+        'provider_routes_unavailable': {
+            'message': 'El proveedor no informa las rutas de esta publicación. Sin esa evidencia el servidor no puede comparar la huella revisada y no activa la vinculación.',
+            'action': 'Conservá la solicitud. No cargues una huella calculada fuera del proveedor: escalá el caso a la operación de la plataforma para definir una evidencia verificable.'},
+        'reviewed_route_setup_required': {
+            'message': 'La huella de rutas no coincide con la publicación actual en Producción.',
+            'action': 'Copiá la huella de la publicación revisada que está en Producción y prepará la revisión de nuevo.'},
+        'same_origin_backend_proxy_required': {
+            'message': 'La publicación no envía las consultas de la aplicación al servidor de la plataforma.',
+            'action': 'Revisá la configuración de rutas del frontend; la activación no continúa sin ese desvío.'},
+        'exact_production_target_required': {
+            'message': 'La publicación indicada no es la vigente en Producción, todavía no está lista o no corresponde a la revisión del frontend.',
+            'action': 'Actualizá el identificador y la revisión con la publicación vigente en Producción y prepará la revisión de nuevo.'},
+        'exact_frontend_deployment_required': {
+            'message': 'La publicación indicada no está lista o no corresponde a la revisión del frontend.',
+            'action': 'Revisá el identificador y la revisión del frontend y prepará la revisión de nuevo.'},
+        'provider_ownership_pending': {
+            'message': 'El proveedor todavía no confirma la dirección en el proyecto del frontend.',
+            'action': 'Esperá la confirmación del proveedor, actualizá el estado y reintentá.'},
+        'exact_project_domain_required': {
+            'message': 'La dirección no está asignada al proyecto del frontend o tiene una redirección.',
+            'action': 'Revisá la asignación de la dirección en el proyecto del frontend y reintentá.'},
+        'exact_customer_alias_required': {
+            'message': 'La dirección todavía no apunta a la publicación indicada.',
+            'action': 'Esperá a que la dirección apunte a la publicación vigente y reintentá.'},
+        'public_dns_required': {
+            'message': 'La dirección no resuelve a una red pública.',
+            'action': 'Revisá el DNS de la dirección y reintentá cuando resuelva públicamente.'},
+        'public_https_unavailable': {
+            'message': 'No se pudo comprobar la dirección por HTTPS.',
+            'action': 'Comprobá que la dirección responda por HTTPS con un certificado válido y reintentá.'},
+        'exact_https_readiness_required': {
+            'message': 'La dirección respondió por HTTPS sin la confirmación esperada.',
+            'action': 'Comprobá que la dirección sirva la publicación vigente y reintentá.'},
+        'exact_pending_runtime_required': {
+            'message': 'La dirección respondió, pero no confirmó la solicitud pendiente de esta organización.',
+            'action': 'Actualizá el estado. Si la solicitud cambió o venció, prepará una revisión nueva.'},
+        'fresh_platform_observation_required': {
+            'message': 'La comprobación tardó más de lo permitido.',
+            'action': 'Reintentá la preparación de la revisión.'},
+        'address_binding_expired': {
+            'message': 'La solicitud venció durante la comprobación.',
+            'action': 'Revocá la solicitud, volvé a pedir la dirección y prepará una revisión nueva.'},
+    },
+}
+BLOCKING_REASONS = frozenset(_OPERATOR_GUIDANCE['blocking'])
+
 def _require(value, code, status=400):
     if not value:
         raise DomainBindingError(code, status)
@@ -333,8 +397,15 @@ def build_addresses(tenant, *, can_manage=False, writes_blocked=False,
         valid_until = None
         if is_active:
             valid_until = row['platform_valid_until'] if kind == 'platform' else min(row['dns_valid_until'], row['platform_valid_until'])
+        # Deadline of a request still waiting for verification (also once it has lapsed), so the
+        # operator sees the window before it closes instead of discovering an expired request.
+        pending_until = None
+        if row and row['status'] in {'pending_dns', 'pending_platform'}:
+            pending_until = (row['challenge_expires_at'] if row['status'] == 'pending_dns'
+                else pending_deadline(kind, row, source))
         result[kind] = {'kind': kind, 'source': source, 'host': row['host'] if row else None,
-            'status': status, 'active': bool(is_active), 'valid_until': valid_until, 'dns_proof': proof,
+            'status': status, 'active': bool(is_active), 'valid_until': valid_until,
+            'pending_until': pending_until, 'dns_proof': proof,
             'allowed_aliases': list(aliases_for(tenant, config)) if kind == 'platform' else [],
             'scope_note': ('Subdominio de la plataforma. No requiere un TXT del cliente; la publicación y HTTPS deben verificarse antes de activarlo.'
                 if kind == 'platform' else
@@ -361,7 +432,7 @@ def build_addresses(tenant, *, can_manage=False, writes_blocked=False,
         activation_plan_endpoint=f'/api/admin/tenants/{tenant.slug}/addresses/activation-plan',
         activation_endpoint=f'/api/admin/tenants/{tenant.slug}/addresses/activate',
         provider_changes_performed=False, auth_e2e_verified=False,
-        operator_ui=build_operator_ui())
+        operator_ui=build_operator_ui(), operator_guidance=deepcopy(_OPERATOR_GUIDANCE))
     return result
 
 

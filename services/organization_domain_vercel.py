@@ -251,6 +251,10 @@ class VercelDomainAdapter:
             and (row.get('gitSource') or {}).get('sha') == plan.frontend_source,
             'exact_frontend_deployment_required')
         routes = row.get('routes')
+        # The provider may omit the route table (the API documents it as nullable). That is
+        # missing evidence, not a mismatch: fail closed with its own reason so the operator is
+        # not told to fix a digest that cannot be compared. Never derived from vercel.json.
+        require(routes is not None, 'provider_routes_unavailable')
         require(isinstance(routes, list) and 1 <= len(routes) <= 256
             and sha256(canonical(routes)).hexdigest() == plan.routes_sha256,
             'reviewed_route_setup_required')
