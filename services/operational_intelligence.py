@@ -840,7 +840,7 @@ def _heatmap_map_layers(
             },
             {
                 "id": "hotspots",
-                "label": "Zonas criticas",
+                "label": "Zonas críticas",
                 "source": "geo_layers.hotspots",
                 "type": "symbol",
                 "weight_field": "operational_score",
@@ -3679,7 +3679,7 @@ def _heatmap_hotspot_actions_contract(
         "playbook": [
             {
                 "id": "triage_high_density_zone",
-                "label": "Priorizar zona de mayor concentracion",
+                "label": "Priorizar zona de mayor concentración",
                 "trigger": "hotspots_present",
                 "enabled": bool(hotspots),
                 "steps": ["filter_top_cell", "inspect_records", "assign_owner_or_followup", "monitor_realtime_updates"],
@@ -4955,7 +4955,7 @@ def _build_alerts(
     if survey_available and survey_summary.get("votaciones_live", 0) > 0 and survey_summary.get("responses", 0) == 0:
         alerts.append({"severity": "medium", "reason_code": "live_vote_without_responses", "message": "Hay votaciones activas sin respuestas recientes."})
     if chat_available and chat_summary.get("handoff_rate", 0) >= 30:
-        alerts.append({"severity": "medium", "reason_code": "high_handoff_rate", "message": "La tasa de derivación humana esta alta; revisar intents y respuestas."})
+        alerts.append({"severity": "medium", "reason_code": "high_handoff_rate", "message": "La tasa de derivación humana está alta; revisar intents y respuestas."})
     if commerce_available and int(commerce_summary.get("orders_needing_review") or 0) > 0:
         alerts.append({
             "severity": "medium",
@@ -4964,7 +4964,7 @@ def _build_alerts(
         })
     hotspot = (heatmap.get("hotspots") or [None])[0]
     if hotspot and hotspot.get("count", 0) >= 5:
-        alerts.append({"severity": "medium", "reason_code": "heatmap_hotspot", "message": "Se detecto una zona con alta concentracion de actividad.", "cell_id": hotspot.get("id")})
+        alerts.append({"severity": "medium", "reason_code": "heatmap_hotspot", "message": "Se detectó una zona con alta concentración de actividad.", "cell_id": hotspot.get("id")})
 
     return alerts
 
@@ -5160,7 +5160,7 @@ def _build_next_best_actions(
             _action(
                 action_id="review_high_handoff_rate",
                 title="Reducir derivaciones innecesarias",
-                description="La tasa de handoff esta alta. Revisar intents, respuestas y formularios de captura.",
+                description="La tasa de handoff está alta. Revisar intents, respuestas y formularios de captura.",
                 priority="medium",
                 reason_code="high_handoff_rate",
                 endpoint="/api/v2/analytics/operations/dashboard",
