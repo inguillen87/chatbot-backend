@@ -998,6 +998,23 @@ def upsert_user_from_clerk(
     return user
 
 
+def _validated_tenant_slug(tenant_slug: object) -> str:
+    slug = str(tenant_slug or "").strip().lower() if isinstance(tenant_slug, str) or tenant_slug is None else ""
+    if not slug:
+        raise ClerkAuthError(
+            "tenant_slug es obligatorio para ingresar al portal",
+            reason_code="tenant_slug_required",
+            status_code=400,
+        )
+    if len(slug) > 80 or re.fullmatch(r"[a-z0-9_-]+", slug) is None:
+        raise ClerkAuthError(
+            "tenant_slug no es valido",
+            reason_code="tenant_slug_invalid",
+            status_code=400,
+        )
+    return slug
+
+
 def tenant_for_user(user: User) -> Optional[TenantProfile]:
     if getattr(user, "tenant_id", None):
         tenant = TenantProfile.query.get(user.tenant_id)
@@ -1056,22 +1073,23 @@ def resolve_clerk_session_tenant(
 
     intent = normalize_clerk_auth_intent(auth_intent)
     if intent == CLERK_INTENT_TENANT_OWNER:
-        return require_active_tenant(tenant_for_user(user))
+        owned = tenant_for_user(user)
+        if tenant_slug is not None:
+            # A scoped panel access (own domain or /t/<slug>/login) is exclusive to that
+            # organization: an account from another one, or one still without an organization,
+            # never receives a session there and cannot start onboarding from it.
+            scope = _validated_tenant_slug(tenant_slug)
+            owned_slug = str(getattr(owned, "slug", "") or "").strip().lower()
+            if owned is None or owned_slug != scope:
+                raise ClerkAuthError(
+                    "Esta cuenta no tiene acceso a esta organización.",
+                    reason_code="organization_mismatch",
+                    status_code=403,
+                )
+        return require_active_tenant(owned)
 
     _require_portal_end_user_identity(user)
-    slug = str(tenant_slug or "").strip().lower()
-    if not slug:
-        raise ClerkAuthError(
-            "tenant_slug es obligatorio para ingresar al portal",
-            reason_code="tenant_slug_required",
-            status_code=400,
-        )
-    if len(slug) > 80 or re.fullmatch(r"[a-z0-9_-]+", slug) is None:
-        raise ClerkAuthError(
-            "tenant_slug no es valido",
-            reason_code="tenant_slug_invalid",
-            status_code=400,
-        )
+    slug = _validated_tenant_slug(tenant_slug)
 
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if tenant is None:
