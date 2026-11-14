@@ -498,15 +498,74 @@ def _outbound_worker_providers(tenant_id: int) -> tuple[str, ...]:
     return providers
 
 
+def _stage_meta_contact_interaction(turn):
+    """Stage the supported Meta municipal inbound CRM entry in its owned unit."""
+    from copy import deepcopy
+    from services.crm_intelligence import (
+        emit_crm_contact_update, record_contact_interaction, resolve_or_create_contact,
+    )
+    from services.whatsapp_conversation_uow import (
+        ConversationUnitOfWork, ConversationUnitOfWorkError,
+    )
+
+    unit = turn.unit_of_work
+    if not isinstance(unit, ConversationUnitOfWork):
+        raise ConversationUnitOfWorkError("meta_inbound_crm_owner_required")
+    try:
+        unit.require_turn(turn)
+        tenant = turn.tenant_profile
+        kind = unit.claim.message_kind
+        if (unit.claim.provider != "meta" or kind not in {"text", "location"}
+                or tenant.tipo != "municipio" or tenant.municipio_id != turn.owner_user.id):
+            unit.fail("meta_inbound_crm_scope_invalid")
+        recipient = unit.contact_identity
+        writer_scope = {
+            "unit_of_work": unit,
+            "conversation_turn_id": unit.claim.turn_id,
+        }
+        # Recheck after the response handlers and immediately before the writers.
+        # No legacy profile or owner PII is adopted as the current recipient.
+        unit.require_turn(turn)
+        contact = resolve_or_create_contact(
+            tenant, phone=recipient, whatsapp_id=recipient,
+            name=None, legacy_user=None, contact_type="neighbor",
+            source="whatsapp_inbound", **writer_scope,
+        )
+        payload = record_contact_interaction(
+            tenant=tenant, contact=contact,
+            message_body=turn.message_body if kind == "text" else "",
+            channel="whatsapp", direction="inbound", source="whatsapp_webhook",
+            metadata={
+                "event_type": "whatsapp_inbound",
+                "message_sid": unit.claim.provider_message_sid,
+                "source_event_id": unit.claim.provider_message_sid,
+                "provider": "meta",
+            },
+            content_type=kind, emit=False, **writer_scope,
+        )
+        unit.require_turn(turn)
+        realtime_tenant = SimpleNamespace(id=tenant.id, slug=tenant.slug)
+        realtime_payload = deepcopy(payload)
+        unit.defer_after_commit("crm_contact_update",
+            lambda tenant=realtime_tenant, payload=realtime_payload:
+                emit_crm_contact_update(tenant, payload))
+    except Exception as exc:
+        unit.fail("meta_inbound_crm_write_failed", exc)
+
+
 def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProcessingResult:
     """Run the supported municipal text slice and stage its native reply."""
     from models import ChatSessionContext, User
     from services.meta_whatsapp_conversation_sink import MetaConversationSink
     from services.meta_whatsapp_outbox import _canonical, _runtime
     from services.meta_whatsapp_runtime import MetaRuntimeError
+    from services.constants import CONTEXTO_MUNICIPIO
     from services.municipio_responder import try_execute_municipal_meta_claim_draft
-    from services.meta_whatsapp_survey import try_execute_meta_survey
+    from services.meta_whatsapp_survey import (
+        STATE_KEY as SURVEY_NAVIGATION_KEY, try_execute_meta_survey,
+    )
     from services.meta_whatsapp_welcome import try_execute_meta_welcome
+    from services.whatsapp_survey_conversation import WHATSAPP_SURVEY_FLOW_STATE_KEY
     from services.whatsapp_conversation_contract import ConversationMode, ConversationTurn
     from services.whatsapp_conversation_turn import execute_municipal_meta_text_followup
     from services.whatsapp_conversation_uow import (
@@ -569,13 +628,28 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
                     source_event_id=claim.provider_message_sid, durable_claim=claim,
                     mode=ConversationMode(False, False), unit_of_work=unit,
                 )
+                unit.require_turn(turn)
+                context_data = context.context_data
+                municipal = (context_data.get(CONTEXTO_MUNICIPIO)
+                             if isinstance(context_data, dict) else None)
+                survey_active_before = (isinstance(municipal, dict)
+                    and (SURVEY_NAVIGATION_KEY in municipal
+                         or WHATSAPP_SURVEY_FLOW_STATE_KEY in municipal))
                 sink = MetaConversationSink(unit)
-                if (not try_execute_meta_welcome(turn, sink)
-                        and not try_execute_meta_survey(turn, sink)
-                        and not try_execute_municipal_meta_claim_draft(turn, sink)):
-                    if kind != "text":
-                        unit.fail("meta_inbound_worker_kind_unsupported")
-                    execute_municipal_meta_text_followup(turn, sink)
+                handled_survey = False
+                if not try_execute_meta_welcome(turn, sink):
+                    handled_survey = try_execute_meta_survey(turn, sink)
+                    if (not handled_survey
+                            and not try_execute_municipal_meta_claim_draft(turn, sink)):
+                        if kind != "text":
+                            unit.fail("meta_inbound_worker_kind_unsupported")
+                        execute_municipal_meta_text_followup(turn, sink)
+                unit.require_turn(turn)
+                # Survey answers/consent and greetings during a preserved survey
+                # stay out of the new phone-linked CRM history, even if the
+                # handler clears its final navigation/flow state on this turn.
+                if not handled_survey and not survey_active_before:
+                    _stage_meta_contact_interaction(turn)
                 committed = unit.commit_reply(sink.bundle(), runtime=runtime)
             return result("completed", outbound_count=len(committed.receipt.outbound_attempt_ids))
         except ConversationCommitUncertain:

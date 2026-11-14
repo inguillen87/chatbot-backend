@@ -29,7 +29,7 @@ from services.outbox_execution_budget import (
 )
 
 CONTRACT = "chatboc.meta_phone_webhook_inspection.v1"
-INMOVAR_PHONE = "+18564858583"
+INMOVAR_PHONE = "+18564858589"
 _CONFIG_FIELDS = ("application", "whatsapp_business_account", "phone_number")
 _PUBLIC_CALLBACKS = frozenset(target.callback for target in ops.TARGETS.values())
 _DISCOVERY_FIELDS = "id,display_phone_number,webhook_configuration"
