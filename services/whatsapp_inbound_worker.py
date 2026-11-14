@@ -554,7 +554,7 @@ def _stage_meta_contact_interaction(turn):
 
 
 def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProcessingResult:
-    """Run the supported municipal text slice and stage its native reply."""
+    """Run the supported native slices and stage their replies in one unit."""
     from models import ChatSessionContext, User
     from services.meta_whatsapp_conversation_sink import MetaConversationSink
     from services.meta_whatsapp_outbox import _canonical, _runtime
@@ -565,6 +565,7 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
         STATE_KEY as SURVEY_NAVIGATION_KEY, try_execute_meta_survey,
     )
     from services.meta_whatsapp_welcome import try_execute_meta_welcome
+    from services.meta_whatsapp_pyme_text import execute_pyme_meta_text_turn
     from services.whatsapp_survey_conversation import WHATSAPP_SURVEY_FLOW_STATE_KEY
     from services.whatsapp_conversation_contract import ConversationMode, ConversationTurn
     from services.whatsapp_conversation_turn import execute_municipal_meta_text_followup
@@ -629,27 +630,30 @@ def _process_meta_whatsapp_inbound_claim(claim: InboundTurnClaim) -> InboundProc
                     mode=ConversationMode(False, False), unit_of_work=unit,
                 )
                 unit.require_turn(turn)
-                context_data = context.context_data
-                municipal = (context_data.get(CONTEXTO_MUNICIPIO)
-                             if isinstance(context_data, dict) else None)
-                survey_active_before = (isinstance(municipal, dict)
-                    and (SURVEY_NAVIGATION_KEY in municipal
-                         or WHATSAPP_SURVEY_FLOW_STATE_KEY in municipal))
                 sink = MetaConversationSink(unit)
-                handled_survey = False
-                if not try_execute_meta_welcome(turn, sink):
-                    handled_survey = try_execute_meta_survey(turn, sink)
-                    if (not handled_survey
-                            and not try_execute_municipal_meta_claim_draft(turn, sink)):
-                        if kind != "text":
-                            unit.fail("meta_inbound_worker_kind_unsupported")
-                        execute_municipal_meta_text_followup(turn, sink)
-                unit.require_turn(turn)
-                # Survey answers/consent and greetings during a preserved survey
-                # stay out of the new phone-linked CRM history, even if the
-                # handler clears its final navigation/flow state on this turn.
-                if not handled_survey and not survey_active_before:
-                    _stage_meta_contact_interaction(turn)
+                if tenant.tipo == "pyme":
+                    execute_pyme_meta_text_turn(turn, sink)
+                else:
+                    context_data = context.context_data
+                    municipal = (context_data.get(CONTEXTO_MUNICIPIO)
+                                 if isinstance(context_data, dict) else None)
+                    survey_active_before = (isinstance(municipal, dict)
+                        and (SURVEY_NAVIGATION_KEY in municipal
+                             or WHATSAPP_SURVEY_FLOW_STATE_KEY in municipal))
+                    handled_survey = False
+                    if not try_execute_meta_welcome(turn, sink):
+                        handled_survey = try_execute_meta_survey(turn, sink)
+                        if (not handled_survey
+                                and not try_execute_municipal_meta_claim_draft(turn, sink)):
+                            if kind != "text":
+                                unit.fail("meta_inbound_worker_kind_unsupported")
+                            execute_municipal_meta_text_followup(turn, sink)
+                    unit.require_turn(turn)
+                    # Survey answers/consent and greetings during a preserved survey
+                    # stay out of the new phone-linked CRM history, even if the
+                    # handler clears its final navigation/flow state on this turn.
+                    if not handled_survey and not survey_active_before:
+                        _stage_meta_contact_interaction(turn)
                 committed = unit.commit_reply(sink.bundle(), runtime=runtime)
             return result("completed", outbound_count=len(committed.receipt.outbound_attempt_ids))
         except ConversationCommitUncertain:

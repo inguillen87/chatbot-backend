@@ -35,6 +35,57 @@ TIMES = ('requested_at', 'request_expires_at', 'challenge_expires_at',
 REQUEST_TTL = legacy.CHALLENGE_TTL
 DomainBindingError = legacy.DomainBindingError
 
+_OPERATOR_UI = {
+    'contract_version': 'organization.address_operator_ui.v1',
+    'labels': {
+        'title': 'Publicación de la dirección',
+        'description': 'Revisá las referencias de la publicación actual antes de confirmar la vinculación.',
+        'kind': 'Tipo de dirección',
+        'platform': 'Subdominio de la plataforma',
+        'custom': 'Dominio propio',
+        'advanced_title': 'Referencias de la publicación',
+        'advanced_description': 'Usá las referencias ya revisadas de la publicación actual en Producción. El servidor vuelve a comprobarlas antes de activar la vinculación.',
+        'deployment': 'Identificador de la publicación',
+        'source': 'Revisión del frontend',
+        'routes': 'Huella de las rutas publicadas',
+        'reviewed_version': 'Versión revisada',
+        'refresh': 'Actualizar estado',
+        'plan': 'Preparar revisión',
+        'review_title': 'Revisar la vinculación',
+        'tenant': 'Organización',
+        'host': 'Dirección',
+        'revision': 'Revisión de la dirección',
+        'digest': 'Huella de la revisión',
+        'observed': 'Observada el',
+        'expires': 'Válida hasta',
+        'backend_source': 'Revisión del backend',
+        'confirm_title': 'Confirmar la activación',
+        'confirm_description': 'Confirmá la activación de esta vinculación existente. El servidor vuelve a validar la revisión y la evidencia de publicación; esta acción no cambia DNS ni configura al proveedor.',
+        'confirm': 'Activar vinculación',
+        'cancel': 'Cancelar',
+        'loading': 'Actualizando estado',
+        'planning': 'Preparando revisión',
+        'activating': 'Confirmando activación',
+        'active': 'Vinculación activa',
+        'plan_ready': 'Revisión preparada',
+    },
+    'messages': {
+        'not_ready': 'La solicitud necesita completar sus verificaciones antes de preparar la publicación.',
+        'descriptor_error': 'No se pudo consultar el estado de la dirección. Actualizá el estado antes de continuar.',
+        'plan_error': 'No se pudo preparar la revisión. Conservá las referencias y actualizá el estado antes de continuar.',
+        'activation_error': 'El servidor no confirmó la activación. Actualizá el estado y revisá el resultado antes de continuar.',
+        'uncertain': 'No se pudo confirmar el resultado de la activación. Actualizá el estado antes de volver a intentarlo.',
+        'expired': 'La revisión venció. Actualizá el estado y prepará una revisión nueva antes de confirmar.',
+        'input_invalid': 'Revisá los identificadores y huellas de la publicación antes de preparar la revisión.',
+        'descriptor_changed': 'El estado de la dirección cambió. Actualizalo y revisá nuevamente la vinculación antes de confirmar.',
+        'platform_admin_required': 'La publicación requiere autorización vigente de administración de la plataforma.',
+        'operator_runtime_unavailable': 'La verificación de publicación no está disponible. Conservá la solicitud y consultá el estado antes de continuar.',
+        'maintenance': 'La activación está temporalmente en modo consulta. Conservá las referencias y revisá el estado más adelante.',
+        'not_pending': 'Esta dirección no está pendiente de publicación. Actualizá su estado antes de continuar.',
+        'success': 'El servidor confirmó la vinculación activa.',
+    },
+}
+
 
 def _require(value, code, status=400):
     if not value:
@@ -304,7 +355,8 @@ def build_addresses(tenant, *, can_manage=False, writes_blocked=False,
         save_endpoint=f'/api/admin/tenants/{tenant.slug}/addresses',
         activation_plan_endpoint=f'/api/admin/tenants/{tenant.slug}/addresses/activation-plan',
         activation_endpoint=f'/api/admin/tenants/{tenant.slug}/addresses/activate',
-        provider_changes_performed=False, auth_e2e_verified=False)
+        provider_changes_performed=False, auth_e2e_verified=False,
+        operator_ui=deepcopy(_OPERATOR_UI))
     return result
 
 

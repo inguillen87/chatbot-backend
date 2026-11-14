@@ -7,6 +7,7 @@ from copy import deepcopy
 import json
 import os
 import unittest
+import unicodedata
 from unittest.mock import patch
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -345,6 +346,75 @@ class AddressLifecycleTests(unittest.TestCase):
         self.assertEqual(owner.post(self.endpoint + '/activate', json={}).status_code, 403)
         self.assertEqual(self.login('acceptance-b').get(self.endpoint).status_code, 403)
         self.assertIn(self.app.test_client().get(self.endpoint).status_code, (401, 403))
+
+    def test_operator_copy_is_versioned_generic_and_read_only_on_real_owner_get(self):
+        owner = self.login()
+        before = deepcopy(self.tenant().configuracion)
+        revision = self.descriptor()['revision']
+        audit_count = self.Audit.query.count()
+        result = owner.get(self.endpoint)
+        self.assertEqual(result.status_code, 200, result.json)
+        ui = result.json['operator_ui']
+        self.assertEqual(set(ui), {'contract_version', 'labels', 'messages'})
+        self.assertEqual(ui['contract_version'], 'organization.address_operator_ui.v1')
+        self.assertEqual(set(ui['labels']), {
+            'title', 'description', 'kind', 'platform', 'custom', 'advanced_title',
+            'advanced_description', 'deployment', 'source', 'routes', 'reviewed_version',
+            'refresh', 'plan', 'review_title', 'tenant', 'host', 'revision', 'digest',
+            'observed', 'expires', 'backend_source', 'confirm_title', 'confirm_description',
+            'confirm', 'cancel', 'loading', 'planning', 'activating', 'active', 'plan_ready',
+        })
+        self.assertEqual(set(ui['messages']), {
+            'not_ready', 'descriptor_error', 'plan_error', 'activation_error', 'uncertain',
+            'expired', 'input_invalid', 'descriptor_changed', 'platform_admin_required',
+            'operator_runtime_unavailable', 'maintenance', 'not_pending', 'success',
+        })
+        for section in ('labels', 'messages'):
+            for key, value in ui[section].items():
+                with self.subTest(section=section, key=key):
+                    self.assertIsInstance(value, str)
+                    self.assertTrue(1 <= len(value) <= 1000)
+                    self.assertFalse(any(unicodedata.category(char).startswith('C') for char in value))
+                    self.assertNotIn(self.tenant().slug, value)
+                    for private in ('northside.chatboc.ar', 'civic.gob.ar', 'dpl_', 'Bearer ', 'synthetic-runtime-provider-token-only'):
+                        self.assertNotIn(private, value)
+        self.assertEqual(result.json['revision'], revision)
+        self.assertEqual(self.tenant().configuracion, before)
+        self.assertEqual(self.Audit.query.count(), audit_count)
+        self.assertIn('no-store', result.headers['Cache-Control'])
+
+    def test_operator_copy_is_detached_and_cannot_change_activation_capabilities(self):
+        before = deepcopy(self.tenant().configuracion)
+        revision = self.descriptor()['revision']
+        audit_count = self.Audit.query.count()
+        baseline = self.descriptor()
+        expected_ui = deepcopy(baseline['operator_ui'])
+        baseline['operator_ui']['labels']['title'] = 'Synthetic mutated client copy'
+        baseline['operator_ui']['messages']['success'] = 'Synthetic mutated result'
+        cases = (
+            ({'is_operator': False, 'runtime_available': True}, 'platform_admin_required', False),
+            ({'is_operator': True, 'runtime_available': False}, 'operator_runtime_unavailable', False),
+            ({'is_operator': True, 'runtime_available': True, 'writes_blocked': True}, 'maintenance', False),
+            ({'is_operator': True, 'runtime_available': True}, 'ready', True),
+        )
+        for options, reason, permitted in cases:
+            with self.subTest(reason=reason):
+                current = addresses.build_addresses(self.tenant(), can_manage=True,
+                    config=self.app.config, now=self.now, **options)
+                self.assertEqual(current['operator_ui'], expected_ui)
+                self.assertIsNot(current['operator_ui'], baseline['operator_ui'])
+                capability = current['capabilities']['activation']
+                self.assertEqual(capability['reason_code'], reason)
+                self.assertIs(capability['can_plan'], permitted)
+                self.assertIs(capability['can_activate'], permitted)
+                self.assertEqual(current['revision'], revision)
+                self.assertFalse(current['provider_changes_performed'])
+                self.assertFalse(current['auth_e2e_verified'])
+                self.assertEqual(current['save_endpoint'], '/api/admin/tenants/acceptance-a/addresses')
+                self.assertEqual(current['activation_plan_endpoint'], '/api/admin/tenants/acceptance-a/addresses/activation-plan')
+                self.assertEqual(current['activation_endpoint'], '/api/admin/tenants/acceptance-a/addresses/activate')
+        self.assertEqual(self.tenant().configuracion, before)
+        self.assertEqual(self.Audit.query.count(), audit_count)
 
     def test_failure_rolls_back_private_state_and_audit(self):
         with patch.object(type(self.db.session()), 'commit', side_effect=SQLAlchemyError('synthetic-private')):

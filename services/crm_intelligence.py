@@ -530,6 +530,124 @@ def record_contact_interaction(
     return payload
 
 
+def record_meta_business_interaction(*, unit_of_work, conversation_turn_id):
+    """Record one source-bound text event, without classifying its author or text.
+
+    Tenant, recipient, input and replay keys come from the owned claim. This
+    private native entry does not alter the legacy classifier/writer contract.
+    """
+    from types import SimpleNamespace
+    from models import ChatSessionContext
+    from services.whatsapp_conversation_uow import ConversationUnitOfWork, ConversationUnitOfWorkError
+
+    unit = unit_of_work
+    if not isinstance(unit, ConversationUnitOfWork):
+        raise ConversationUnitOfWorkError("meta_pyme_crm_owner_required")
+    try:
+        session = unit.session
+        unit.require_writer_scope(session=session, tenant_id=unit.claim.tenant_id,
+            turn_id=conversation_turn_id)
+        tenant = session.get(TenantProfile, unit.claim.tenant_id)
+        context = session.get(ChatSessionContext, unit.claim.chat_session_id)
+        owner = session.get(User, context.user_id) if context is not None else None
+        if (tenant is None or tenant.tipo != "pyme" or owner is None
+                or tenant.pyme_id != owner.id or owner.tipo_chat != "pyme"
+                or unit.claim.provider != "meta" or unit.claim.message_kind != "text"):
+            unit.fail("meta_pyme_crm_scope_invalid")
+        body = unit.claim.payload["input"]["text"]
+        if not isinstance(body, str) or not 0 < len(body) <= 4096:
+            unit.fail("meta_pyme_crm_input_invalid")
+        try:
+            body.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            unit.fail("meta_pyme_crm_text_unrepresentable")
+        if chr(0) in body:
+            unit.fail("meta_pyme_crm_text_unrepresentable")
+        effect_key = f"whatsapp:{tenant.id}:{unit.claim.turn_id}:crm.native_business_inbound"
+        unit.require_writer_scope(session=session, tenant_id=tenant.id,
+            turn_id=conversation_turn_id, effect_key=effect_key)
+        recipient = unit.contact_identity
+        with session.no_autoflush:
+            # The durable claim is the normal serialization/fencing authority.
+            # This lookup also makes a repeated entry in that unit idempotent;
+            # it does not add a global SQL uniqueness or cross-provider claim.
+            events = (session.query(InteractionEvent).filter(
+                InteractionEvent.tenant_id == tenant.id,
+                InteractionEvent.channel == "whatsapp",
+                InteractionEvent.direction == "inbound",
+                InteractionEvent.metadata_payload["provider"].as_string() == "meta",
+                InteractionEvent.metadata_payload["durable_turn_id"].as_string() == unit.claim.turn_id,
+                InteractionEvent.metadata_payload["idempotency_key"].as_string() == effect_key,
+            ).order_by(InteractionEvent.id).limit(2).all())
+            if len(events) > 1:
+                unit.fail("meta_pyme_crm_event_ambiguous")
+            if events:
+                contact = _uow_recipient_contact(unit, tenant.id, recipient)
+                event = events[0]
+                if (contact is None or event.contact_id != contact.id
+                        or event.content_type != "text" or event.content != body
+                        or (event.metadata_payload or {}).get("source_event_id") != unit.claim.provider_message_sid):
+                    unit.fail("meta_pyme_crm_event_scope_invalid")
+                return {"interaction_event_id": event.id, "contact_id": contact.id,
+                    "payload": serialize_crm_contact(contact), "created": False}
+
+        contact = resolve_or_create_contact(tenant, phone=recipient, whatsapp_id=recipient,
+            name=None, legacy_user=None, contact_type="unknown", source="whatsapp_inbound",
+            unit_of_work=unit, conversation_turn_id=conversation_turn_id)
+        prefs = dict(contact.preferences) if isinstance(contact.preferences, dict) else {}
+        # This writer applied the evidence contract; not historical origin,
+        # human scoring, consent, or account authority. Preserve stored facts.
+        prefs["native_business_evidence_contract"] = "crm.meta_native_business_evidence.v1"
+        prefs.update(last_channel="whatsapp", last_source="whatsapp_webhook",
+            last_message_excerpt=clean_text(body, 180), last_interaction_direction="inbound")
+        contact.preferences = prefs
+        flag_modified(contact, "preferences")
+        event = InteractionEvent(tenant_id=tenant.id, contact_id=contact.id,
+            channel="whatsapp", direction="inbound", content_type="text", content=body,
+            media_url=None, metadata_payload={
+                "event_type": "whatsapp_inbound", "source": "whatsapp_webhook", "provider": "meta",
+                "message_sid": unit.claim.provider_message_sid,
+                "source_event_id": unit.claim.provider_message_sid,
+                "durable_turn_id": unit.claim.turn_id, "idempotency_key": effect_key,
+                "native_business_contract": "pyme.meta_native_text.v1",
+            })
+        session.add(event)
+        unit.flush()
+        if type(event.id) is not int or event.id <= 0:
+            unit.fail("meta_pyme_crm_event_id_invalid")
+        payload = serialize_crm_contact(contact)
+        realtime_tenant = SimpleNamespace(id=tenant.id, slug=tenant.slug)
+        realtime_payload = deepcopy(payload)
+        unit.defer_after_commit("crm_contact_update",
+            lambda tenant=realtime_tenant, payload=realtime_payload:
+                emit_crm_contact_update(tenant, payload))
+        return {"interaction_event_id": event.id, "contact_id": contact.id,
+            "payload": payload, "created": True}
+    except Exception as exc:
+        unit.fail("meta_pyme_crm_write_failed", cause=exc)
+
+
+def _native_evidence_score(value):
+    """Project existing finite evidence only; never calculate a score from text."""
+    import math
+    if value is None or type(value) is bool or not isinstance(value, (int, float, str)):
+        return None
+    if isinstance(value, str):
+        if not value.strip():
+            return None
+        try:
+            number = float(value)
+        except (ValueError, OverflowError):
+            return None
+        if not math.isfinite(number):
+            return None
+        return int(number) if number.is_integer() else number
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
+
+
 def serialize_crm_contact(
     contact: Contact,
     *,
@@ -546,6 +664,16 @@ def serialize_crm_contact(
     name_is_sensitive = contains_crm_sensitive_content(raw_name)
     serialized_raw_name = redact_crm_sensitive_text(raw_name)
     name = display_contact_name(raw_name, phone=phone, email=real_email)
+    # Only contacts processed under the new unit-owned evidence contract
+    # project absence as unknown. This does not certify historical origin.
+    native_unknown = prefs.get("native_business_evidence_contract") == "crm.meta_native_business_evidence.v1"
+    marketing = (prefs.get("marketing_opt_in") if type(prefs.get("marketing_opt_in")) is bool
+                 else None) if native_unknown else bool(prefs.get("marketing_opt_in"))
+    stored_temperature = prefs.get("lead_temperature")
+    lead_temperature = ((stored_temperature if isinstance(stored_temperature, str) and stored_temperature.strip()
+                         else None) if native_unknown else (stored_temperature or "cold"))
+    lead_score = (_native_evidence_score(prefs.get("lead_score")) if native_unknown
+                  else int(prefs.get("lead_score") or 0))
     summary = prefs.get("last_summary") or (snapshot.summary_text if snapshot else None)
     intent = prefs.get("last_intent") or (snapshot.last_intent if snapshot else None)
     actions = (snapshot.suggested_actions if snapshot else None) or prefs.get("suggested_actions") or []
@@ -576,8 +704,8 @@ def serialize_crm_contact(
         "channel": prefs.get("last_channel") or prefs.get("preferred_channel") or prefs.get("channel"),
         "origen": prefs.get("last_source") or prefs.get("source"),
         "source": prefs.get("last_source") or prefs.get("source"),
-        "acepta_marketing": bool(prefs.get("marketing_opt_in")),
-        "marketing": bool(prefs.get("marketing_opt_in")),
+        "acepta_marketing": marketing,
+        "marketing": marketing,
         "tags": safe_tags(contact.tags),
         "etiquetas": safe_tags(contact.tags),
         "created_at": contact.created_at.isoformat() if getattr(contact, "created_at", None) else None,
@@ -590,8 +718,8 @@ def serialize_crm_contact(
         "conversation_summary": redact_crm_sensitive_text(summary),
         "motivo": redact_crm_sensitive_text(prefs.get("last_reason") or intent),
         "last_intent": redact_crm_sensitive_text(intent),
-        "lead_temperature": prefs.get("lead_temperature") or "cold",
-        "lead_score": int(prefs.get("lead_score") or 0),
+        "lead_temperature": lead_temperature,
+        "lead_score": lead_score,
         "conversation_status": prefs.get("conversation_status"),
         "suggested_actions": redact_crm_sensitive_value(actions) if isinstance(actions, list) else [],
         "interaction_count": interaction_count,
