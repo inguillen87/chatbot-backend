@@ -1079,6 +1079,12 @@ def resolve_clerk_session_tenant(
             # organization: an account from another one, or one still without an organization,
             # never receives a session there and cannot start onboarding from it.
             scope = _validated_tenant_slug(tenant_slug)
+            # Every membership reference must agree (same resolver as the native panel login):
+            # tenant_for_user returns the first matching reference and would accept
+            # contradictory or orphan associations.
+            from utils.tenant_admin_access import resolve_consistent_user_tenant
+
+            owned = resolve_consistent_user_tenant(user)
             owned_slug = str(getattr(owned, "slug", "") or "").strip().lower()
             if owned is None or owned_slug != scope:
                 raise ClerkAuthError(

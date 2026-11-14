@@ -87,6 +87,29 @@ def test_account_without_organization_cannot_onboard_from_a_scoped_access(client
         _expect("organization_mismatch", 403, user=user, auth_intent="tenant_owner", tenant_slug="scope-tdf")
 
 
+def test_unresolvable_account_is_rejected_even_when_one_reference_names_the_scope(client):
+    # tenant_for_user returns the first matching reference; the strong resolver requires
+    # every reference (membership, slug, legacy owner) to agree on one organization.
+    from utils.tenant_admin_access import resolve_consistent_user_tenant
+
+    with client.application.app_context():
+        tdf = _tenant("scope-tdf")
+        other = _tenant("scope-other", tipo="pyme")
+        cases = {
+            "contradictory": dict(tenant_id=tdf.id, tenant_slug=other.slug),
+            "legacy-conflict": dict(tenant_id=tdf.id, tenant_slug=tdf.slug, pyme_id=other.pyme_id),
+            "orphan-membership": dict(tenant_id=tdf.id + other.id + 1000, tenant_slug=tdf.slug),
+        }
+        for label, fields in cases.items():
+            user = _member(f"user_scope_{label.replace('-', '_')}", f"{label}@scope.test", None)
+            for field, value in fields.items():
+                setattr(user, field, value)
+            user.rol = "admin"
+            db.session.flush()
+            assert resolve_consistent_user_tenant(user) is None, label
+            _expect("organization_mismatch", 403, user=user, auth_intent="tenant_owner", tenant_slug="scope-tdf")
+
+
 def test_unknown_organization_is_rejected_like_a_foreign_one(client):
     with client.application.app_context():
         tdf = _tenant("scope-tdf")
