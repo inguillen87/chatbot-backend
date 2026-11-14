@@ -1104,6 +1104,22 @@ def _portal_chat_type(tenant: Optional[TenantProfile]) -> str:
     return "municipio" if normalized == "municipio" else "pyme"
 
 
+def _session_chat_type(user: User, tenant: Optional[TenantProfile], *, portal_session: bool) -> Optional[str]:
+    """Chat type of the session: the organization's type decides, not a stale user column.
+
+    A panel account keeps the ``tipo_chat`` it was created with even after it is linked to
+    another kind of organization (for example a government account first created as
+    ``pyme``). Analytics and private routes derive their scope from this claim, so it must
+    follow the organization the session was issued for. Without an organization (platform
+    accounts, onboarding) the stored value is kept.
+    """
+    if portal_session:
+        return _portal_chat_type(tenant)
+    if tenant is not None and getattr(tenant, "tipo", None):
+        return normalize_tenant_type(tenant.tipo, default="pyme")
+    return user.tipo_chat
+
+
 def _issue_clerk_chatboc_token(
     user: User,
     tenant: Optional[TenantProfile],
@@ -1122,7 +1138,7 @@ def _issue_clerk_chatboc_token(
     if portal_session:
         _require_portal_end_user_identity(user)
     effective_role = ROLE_CLIENTE if portal_session else user.rol
-    effective_chat_type = _portal_chat_type(tenant) if portal_session else user.tipo_chat
+    effective_chat_type = _session_chat_type(user, tenant, portal_session=portal_session)
 
     return generar_token(
         user.id,
@@ -1201,7 +1217,7 @@ def build_chatboc_session_payload(
     )
     identity = _session_identity_payload(user)
     effective_role = ROLE_CLIENTE if portal_session else user.rol
-    effective_chat_type = _portal_chat_type(tenant) if portal_session else user.tipo_chat
+    effective_chat_type = _session_chat_type(user, tenant, portal_session=portal_session)
     retirement = None
     if token:
         from services.auth_session_lifecycle import descriptor_for_token
