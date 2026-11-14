@@ -19,6 +19,34 @@ class AdminLoginOrganizationScopeTests(unittest.TestCase):
         from tests.profile_acceptance_runtime import create_disposable_app
         cls.temp = tempfile.TemporaryDirectory(prefix='chatboc-admin-login-scope-')
         cls.app, cls.accounts, cls.password = create_disposable_app(cls.temp.name)
+        cls._add_unresolvable_accounts()
+
+    @classmethod
+    def _add_unresolvable_accounts(cls):
+        # Accounts the strong resolver rejects (resolve_consistent_user_tenant -> None) but
+        # whose stored tenant_slug equals a scope: contradictory and orphan associations.
+        from database import db
+        from models import TenantProfile, User
+        with cls.app.app_context():
+            tenant_a = TenantProfile.query.filter_by(slug='acceptance-a').one()
+            tenant_b = TenantProfile.query.filter_by(slug='acceptance-b').one()
+            rows = {
+                # Membership points to B, slug claims A.
+                'contradictory': dict(tenant_id=tenant_b.id, tenant_slug='acceptance-a', municipio_id=None),
+                # Slug claims A, legacy owner reference points to B's owner.
+                'legacy-conflict': dict(tenant_id=None, tenant_slug='acceptance-a', municipio_id=tenant_b.municipio_id),
+                # Slug names an organization that does not exist.
+                'orphan': dict(tenant_id=None, tenant_slug='organizacion-borrada', municipio_id=None),
+            }
+            for label, fields in rows.items():
+                user = User(name=label, email=label + '@example.invalid', rol='admin', tipo_chat='municipio', **fields)
+                user.set_password(cls.password)
+                db.session.add(user); db.session.flush()
+                cls.accounts[label] = {'id': user.id, 'email': user.email}
+            db.session.commit()
+            from utils.tenant_admin_access import resolve_consistent_user_tenant
+            for label in rows:
+                assert resolve_consistent_user_tenant(db.session.get(User, cls.accounts[label]['id'])) is None, label
 
     @classmethod
     def tearDownClass(cls):
@@ -53,6 +81,11 @@ class AdminLoginOrganizationScopeTests(unittest.TestCase):
     def test_account_of_another_organization_never_receives_a_token(self):
         self.assert_denied_without_token(self.login('acceptance-b', 'acceptance-a'), 403, 'organization_mismatch')
         self.assert_denied_without_token(self.login('second', 'acceptance-b'), 403, 'organization_mismatch')
+
+    def test_unresolvable_account_never_enters_through_its_stored_slug(self):
+        for account, scope in (('contradictory', 'acceptance-a'), ('legacy-conflict', 'acceptance-a'), ('orphan', 'organizacion-borrada')):
+            with self.subTest(account=account):
+                self.assert_denied_without_token(self.login(account, scope), 403, 'organization_mismatch')
 
     def test_unknown_organization_is_denied_like_a_foreign_one(self):
         self.assert_denied_without_token(self.login('acceptance-a', 'organizacion-inexistente'), 403, 'organization_mismatch')

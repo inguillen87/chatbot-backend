@@ -4186,8 +4186,11 @@ def admin_login():
     # A scoped access (own domain or /t/<slug>/login) is exclusive to that organization:
     # an account from another organization never receives a token there, not even one the
     # client would later discard. Checked after the password so it reveals nothing to strangers.
+    # Only the strong resolver counts here: the tenant_slug fallback above can name an
+    # organization the account does not consistently belong to (contradictory or orphan).
+    owned_slug = getattr(owned_tenant, "slug", None) if owned_tenant is not None else None
     if requested_scope is not None and (
-        not isinstance(tenant_slug, str) or tenant_slug.strip().lower() != requested_scope
+        not isinstance(owned_slug, str) or owned_slug.strip().lower() != requested_scope
     ):
         current_app.logger.warning(
             "[admin_login] Organization scope rejected user_id=%s",
