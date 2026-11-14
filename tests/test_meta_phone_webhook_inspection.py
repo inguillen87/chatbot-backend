@@ -241,6 +241,53 @@ def test_invalid_local_binding_fails_before_any_graph_get(installed, case):
     assert_safe(result)
 
 
+@pytest.mark.parametrize("case", ["authorized_and_decoy", "wrong_only"])
+def test_inmovar_scope_uses_independent_authorized_literal_and_ignores_8583(installed, case):
+    # These phone literals intentionally do not read inspection.INMOVAR_PHONE.
+    # The inventory and discovery must independently represent the approved scope.
+    decoy_id = "900000000000002"
+    def alter(url, payload, result):
+        if url.endswith(JUNIN.waba_id + "/phone_numbers"):
+            rows = [{"id": INMOVAR_ID, "display_phone_number": "+18564858589"},
+                    {"id": decoy_id, "display_phone_number": "+18564858583"}]
+            if case == "wrong_only":
+                rows = [{"id": INMOVAR_ID, "display_phone_number": "+18564858583"}]
+            payload["data"] = [payload["data"][0], *rows]
+            return response(payload)
+        if url.endswith("/" + INMOVAR_ID):
+            payload["display_phone_number"] = "+18564858589"
+            return response(payload)
+        return result
+    installed.alter = alter
+    before = snapshot()
+    result = post(installed.http, ACTION)
+    assert result.status_code == 200, result.json
+    item = next(row for row in result.json["resources"] if row["resource"] == "inmovar")
+    assert item["phone_number"] == "+18564858589"
+    if case == "authorized_and_decoy":
+        assert item["phone_number_id"] == INMOVAR_ID
+        assert item["configuration"]["state"] == "candidate_shape"
+        assert "meta_inspection_inmovar_not_unique" not in result.json["blockers"]
+        assert sum(url.endswith("/" + INMOVAR_ID) for _, url, _ in installed.calls) == 1
+        assert len(installed.calls) == 9
+    else:
+        assert item["phone_number_id"] is None
+        assert item["configuration"]["state"] == "not_requested"
+        assert "meta_inspection_inmovar_not_unique" in result.json["blockers"]
+        assert not any(url.endswith("/" + INMOVAR_ID) for _, url, _ in installed.calls)
+        assert len(installed.calls) == 8
+    assert not any(url.endswith("/" + decoy_id) or url.endswith("/messages") for _, url, _ in installed.calls)
+    assert all(method == "GET" for method, _, _ in installed.calls)
+    assert result.json["writes_performed"] is False
+    assert result.json["provider_mutations"] is False
+    assert result.json["messages_sent"] is False
+    assert installed.http.lease["enters"] == 0
+    assert snapshot() == before
+    for key in ("META_WHATSAPP_CALLBACK_ENABLED", "META_WHATSAPP_INBOUND_WORKER_ENABLED", "META_WHATSAPP_OUTBOUND_ENABLED"):
+        assert installed.http.app.config[key] is False
+    assert_safe(result)
+
+
 @pytest.mark.parametrize("case", ["missing", "duplicate"])
 def test_inmovar_requires_unique_inventory_match_without_guessing(installed, case):
     def alter(url, payload, result):

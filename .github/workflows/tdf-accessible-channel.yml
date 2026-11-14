@@ -28,6 +28,8 @@ on:
       - 'services/meta_whatsapp_webhook.py'
       - 'services/meta_whatsapp_runtime.py'
       - 'services/meta_whatsapp_welcome.py'
+      - 'services/meta_whatsapp_pyme_text.py'
+      - 'tests/test_meta_whatsapp_pyme_text.py'
       - 'services/whatsapp_provider_policy.py'
       - 'services/meta_credential_operations.py'
       - 'services/meta_credential_admin_runtime.py'
@@ -399,6 +401,7 @@ jobs:
               'tests/test_meta_raw_batch_admission.py',
               'tests/test_meta_whatsapp_callback.py',
               'tests/test_meta_whatsapp_crm_acceptance.py',
+              'tests/test_meta_whatsapp_pyme_text.py',
               'tests/test_meta_whatsapp_inbound_execution_fence.py',
               'tests/test_meta_whatsapp_inbound_worker.py',
               'tests/test_meta_whatsapp_outbound_hold.py',
@@ -429,6 +432,7 @@ jobs:
               'services/meta_whatsapp_conversation_sink.py', 'services/meta_whatsapp_credentials.py',
               'services/meta_whatsapp_media.py', 'services/meta_whatsapp_outbox.py',
               'services/meta_whatsapp_runtime.py', 'services/meta_whatsapp_webhook.py',
+              'services/meta_whatsapp_pyme_text.py',
               'services/meta_whatsapp_welcome.py', 'services/whatsapp_provider_policy.py',
               'services/meta_credential_operations.py', 'scripts/manage_meta_whatsapp_credentials.py',
               'services/meta_credential_admin_runtime.py', 'routes/meta_credential_admin.py',
