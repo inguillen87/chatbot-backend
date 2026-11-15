@@ -159,8 +159,10 @@ def execute_pyme_meta_text_turn(turn, sink):
         raise ConversationUnitOfWorkError("meta_pyme_owner_required")
     unit.require_turn(turn)
     tenant = turn.tenant_profile
+    # The tenant's type and owner binding remain authoritative when the
+    # owner's legacy chat type has not followed a tenant conversion.
     if (tenant.tipo != "pyme" or tenant.pyme_id != turn.owner_user.id
-            or turn.owner_user.tipo_chat != "pyme" or unit.claim.provider != "meta"):
+            or unit.claim.provider != "meta"):
         unit.fail("meta_pyme_scope_invalid")
     if unit.claim.message_kind != "text":
         unit.fail("meta_pyme_kind_unsupported")

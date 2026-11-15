@@ -87,6 +87,11 @@ _OPERATOR_UI = {
 }
 
 
+def build_operator_ui():
+    """Detached presentation only; no address state, provider access or authority."""
+    return deepcopy(_OPERATOR_UI)
+
+
 def _require(value, code, status=400):
     if not value:
         raise DomainBindingError(code, status)
@@ -356,7 +361,7 @@ def build_addresses(tenant, *, can_manage=False, writes_blocked=False,
         activation_plan_endpoint=f'/api/admin/tenants/{tenant.slug}/addresses/activation-plan',
         activation_endpoint=f'/api/admin/tenants/{tenant.slug}/addresses/activate',
         provider_changes_performed=False, auth_e2e_verified=False,
-        operator_ui=deepcopy(_OPERATOR_UI))
+        operator_ui=build_operator_ui())
     return result
 
 

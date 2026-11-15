@@ -284,7 +284,7 @@ def _analytics_modes(tenant: TenantProfile, current_user: User) -> dict[str, Any
     ) and advanced_allowed
     return {
         "statistics": {
-            "label": "Estadisticas",
+            "label": "Estadísticas",
             "description": "Tablero operativo simple para administración diaria.",
             "enabled": _capability_enabled(capabilities, "statistics", default=True),
         },
@@ -658,7 +658,7 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
         modules.append(
             {
                 "id": "implementation",
-                "label": "Implementacion",
+                "label": "Implementación",
                 "description": "Marca, accesibilidad, territorio, canales y controles de salida a producción.",
                 "route": "/implementacion",
                 "enabled": _capability_enabled(capabilities, "implementation", default=True),
@@ -1210,7 +1210,7 @@ def _ticket_recommended_action(ticket: Any, sla_status: str) -> dict[str, Any] |
         return {"id": "assign_owner", "label": "Asignar responsable", "reason": "El caso esta abierto y no tiene responsable."}
     if sla_status in {"risk", "overdue"}:
         return {"id": "review_sla", "label": "Revisar SLA", "reason": "El caso esta vencido o por vencer."}
-    return {"id": "continue_case", "label": "Dar proximo paso", "reason": "El caso sigue abierto."}
+    return {"id": "continue_case", "label": "Dar próximo paso", "reason": "El caso sigue abierto."}
 
 
 def _ticket_item(

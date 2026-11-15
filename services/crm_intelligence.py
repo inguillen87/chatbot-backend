@@ -550,8 +550,10 @@ def record_meta_business_interaction(*, unit_of_work, conversation_turn_id):
         tenant = session.get(TenantProfile, unit.claim.tenant_id)
         context = session.get(ChatSessionContext, unit.claim.chat_session_id)
         owner = session.get(User, context.user_id) if context is not None else None
+        # The claimed tenant owns the business type; the user's legacy chat
+        # type may be unset or outdated while this owner binding stays valid.
         if (tenant is None or tenant.tipo != "pyme" or owner is None
-                or tenant.pyme_id != owner.id or owner.tipo_chat != "pyme"
+                or tenant.pyme_id != owner.id
                 or unit.claim.provider != "meta" or unit.claim.message_kind != "text"):
             unit.fail("meta_pyme_crm_scope_invalid")
         body = unit.claim.payload["input"]["text"]

@@ -7,7 +7,7 @@ from copy import deepcopy
 
 import pytest
 
-from models import ChatSessionContext, MunicipioTicket, TenantConfig, WhatsAppOutboundAttempt, db
+from models import ChatSessionContext, MunicipioTicket, TenantConfig, User, WhatsAppOutboundAttempt, db
 from models_memory import Contact, ContactSnapshot, InteractionEvent
 from services import crm_intelligence as crm
 from services import whatsapp_inbound_worker as worker
@@ -113,6 +113,54 @@ def _assert_raw_event(env, turn, body):
     for forbidden in ("raw_payload", "access_token", "media_url", "intent", "lead_score"):
         assert forbidden not in event.metadata_payload
     return contact, event
+
+
+@pytest.mark.parametrize("legacy_type", ["municipio", None], ids=["outdated", "unset"])
+def test_business_crm_uses_tenant_authority_when_owner_legacy_type_is_stale(business_environment, legacy_type):
+    env = business_environment
+    env.owner.tipo_chat = legacy_type
+    db.session.commit()
+
+    turn, replies, _ = _send(env, "consulta del tenant empresarial", "stale-owner-type")
+
+    assert replies == [ACK]
+    contact, event = _assert_raw_event(env, turn, "consulta del tenant empresarial")
+    assert contact.type == "unknown"
+    assert _state(turn)["inquiry_event_ids"] == [event.id]
+    assert Contact.query.count() == InteractionEvent.query.count() == 1
+    assert InteractionEvent.query.filter_by(tenant_id=env.other.id).count() == 0
+    assert db.session.get(User, env.owner.id).tipo_chat == legacy_type
+
+
+@pytest.mark.parametrize("partition", ["context_owner", "context_tenant", "business_owner"])
+def test_stale_owner_type_does_not_allow_a_foreign_business_partition(business_environment, partition):
+    env = business_environment
+    env.owner.tipo_chat = "municipio"
+    db.session.commit()
+    turn_id = _post(env, body="consulta de alcance inválido", message_id="wamid.pyme/wrong-partition+=")
+    turn = _native_turn(turn_id)
+    chat_id, inbound_id = turn.chat_session_id, turn.id
+    context = db.session.get(ChatSessionContext, chat_id)
+    before = deepcopy(context.context_data)
+    if partition == "context_owner":
+        context.user_id = env.other_owner.id
+    elif partition == "context_tenant":
+        context.tenant_id = env.other.id
+    else:
+        # An ownership change must invalidate the previous owner's session.
+        env.tenant.pyme_id = env.other_owner.id
+    db.session.commit()
+
+    report = worker.process_whatsapp_inbound_stream(tenant_id=env.tenant.id, limit=1)
+
+    assert report["completed"] == 0 and report["results"], report
+    assert report["results"][0]["error_code"] in {
+        "conversation_uow_identity_scope_mismatch", "conversation_uow_context_partition_mismatch",
+    }, report
+    assert _native_turn(turn_id).status != "completed"
+    assert Contact.query.count() == InteractionEvent.query.count() == ContactSnapshot.query.count() == 0
+    assert WhatsAppOutboundAttempt.query.filter_by(inbound_turn_id=inbound_id).count() == 0
+    assert db.session.get(ChatSessionContext, chat_id).context_data == before
 
 
 def test_signed_business_greeting_uses_own_whatsapp_config_before_shared_and_records_without_classification(business_environment):
