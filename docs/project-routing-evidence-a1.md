@@ -15,9 +15,12 @@ dominios ni credenciales. Las únicas consultas externas fueron documentación p
 `DomainPlan.routes_sha256` por un hash de reglas del proyecto.
 
 La evidencia que falta en una capa no queda cubierta por otra. Si el GET del
-deployment devuelve `routes: null`, el resultado sigue siendo
-`reviewed_route_setup_required`, aunque las reglas LIVE coincidan y el nonce
-responda correctamente. A1 permite identificar y revisar la capa mutable; por sí
+deployment devuelve `routes: null`, el resultado sigue siendo un bloqueo, aunque
+las reglas LIVE coincidan y el nonce responda correctamente: en `1e23c54ef` el
+motivo es `reviewed_route_setup_required`; con el incremento local `2392aa09`
+(rama `local/address-continuity-ux`) es `provider_routes_unavailable`, el mismo
+cierre con motivo explícito, y la discrepancia real conserva
+`reviewed_route_setup_required`. A1 permite identificar y revisar la capa mutable; por sí
 solo no resuelve ese bloqueo actual.
 
 Tampoco basta un commit correcto para demostrar todas las rutas compiladas ni un
@@ -198,6 +201,19 @@ permanecen sin cambios. Para resolver el `null` de rutas del deployment haría f
 otra propuesta revisada: una procedencia verificable que enlace artefacto de build,
 configuración compilada, deployment y source exactos. El archivo fuente
 `vercel.json`, aislado de esa cadena, no basta para reemplazar la guarda actual.
+
+## Revisión de integración (Claude, 15/11)
+
+- Los dos GET propuestos (`/v1/projects/{projectId}/routes` y
+  `/v1/projects/{projectId}/routes/versions`) figuran en el subconjunto del OpenAPI
+  oficial entregado con este documento.
+- Si se integra con `2392aa09`, cada motivo nuevo de A1 (por ejemplo, versión LIVE
+  ambigua, captura inconsistente o vacío no acreditado) debería ser un código fijo
+  agregado a `BLOCKING_REASONS` y a `operator_guidance.blocking`, con su mensaje y
+  su acción, para que el panel del operador lo muestre sin exponer datos del
+  proveedor. Los códigos no listados siguen sin salir del servidor.
+- Sin cambios de producto en este commit: sólo la aclaración del motivo de bloqueo
+  y esta nota.
 
 ## Fuentes
 
