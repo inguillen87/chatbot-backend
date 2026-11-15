@@ -74,8 +74,19 @@ def _authorized_attachment_resource(attachment, reference):
 
 def read_authorized_attachment_bytes(reference, mime_type, *, max_bytes=15 * 1024 * 1024, attachment=None):
     """Bounded bytes for existing processors, with fresh exact auth after I/O."""
+    from services.private_attachment_storage import authorized_private_attachment_tenant
+
+    def authorize(tenant):
+        return (authorized_private_attachment_tenant(tenant)
+                and _authorized_attachment_resource(attachment, str(reference or '').strip()))
+
+    return _read_attachment_bytes(reference, mime_type, max_bytes=max_bytes, authorize=authorize)
+
+
+def _read_attachment_bytes(reference, mime_type, *, max_bytes, authorize):
+    """Shared bounded storage transport; callers supply explicit authority."""
     from services.private_attachment_storage import (
-        private_attachment_storage, authorized_private_attachment_tenant, MAX_PRIVATE_ATTACHMENT_BYTES,
+        private_attachment_storage, MAX_PRIVATE_ATTACHMENT_BYTES,
     )
     from services.r2_service import R2ObjectStorageUnavailableError
     if type(max_bytes) is not int or not 0 < max_bytes <= MAX_PRIVATE_ATTACHMENT_BYTES:
@@ -98,10 +109,10 @@ def read_authorized_attachment_bytes(reference, mime_type, *, max_bytes=15 * 102
         key = storage.object_key_from_url(private_ref)
         tenant = storage.tenant_for_key(key)
         if (not tenant or (expected is not None and expected['tenant_slug'] != tenant)
-            or not authorized_private_attachment_tenant(tenant) or not _authorized_attachment_resource(attachment, original)):
+            or not authorize(tenant)):
             raise R2ObjectStorageUnavailableError('private_attachment_access_required')
         data = storage.read_verified_bytes(key, mime_type=mime_type, max_bytes=max_bytes, expected=expected)
-        if not authorized_private_attachment_tenant(tenant) or not _authorized_attachment_resource(attachment, original):
+        if not authorize(tenant):
             raise R2ObjectStorageUnavailableError('private_attachment_access_required')
         return data
     except R2ObjectStorageUnavailableError:

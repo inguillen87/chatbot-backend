@@ -14,13 +14,11 @@ logger = logging.getLogger(__name__)
 
 class InterpretacionService:
 
-    def interpretar_archivo(self, archivo_adjunto) -> Dict[str, Any]:
+    def interpretar_archivo(self, archivo_adjunto, *, byte_reader=None, before_provider=None) -> Dict[str, Any]:
         """Interpreta un archivo adjunto y extrae texto si es posible.
 
-        Actualmente solo se soporta la transcripción de archivos de audio. Para
-        otros tipos de archivos se devuelve un resultado vacío para no
-        introducir lógica basada en palabras clave en Python, tal como indica
-        la arquitectura del proyecto.
+        El worker proporciona su lector autorizado; las llamadas HTTP conservan
+        las verificaciones de sesión y recurso del lector habitual.
         """
         resultado = {"datos_estructurados": None, "texto_extraido": None}
         if not archivo_adjunto or not getattr(archivo_adjunto, "mime", None):
@@ -31,10 +29,15 @@ class InterpretacionService:
             from services.audio_transcription_service import transcribe_audio_bytes
             from services.attachment_delivery import read_authorized_attachment_bytes
             try:
-                data = read_authorized_attachment_bytes(archivo_adjunto.url, mime, attachment=archivo_adjunto)
+                reader = byte_reader or read_authorized_attachment_bytes
+                data = reader(archivo_adjunto.url, mime, attachment=archivo_adjunto)
+                if before_provider is not None:
+                    before_provider()
                 texto = transcribe_audio_bytes(data, mime)
                 if texto:
                     resultado["texto_extraido"] = texto
+                else:
+                    resultado["error"] = "No fue posible transcribir el audio."
             except Exception as exc:
                 logger.error(
                     "Error transcribiendo audio adjunto (error_type=%s)",
@@ -42,7 +45,11 @@ class InterpretacionService:
                 )
                 resultado["error"] = "Ocurrió un error al procesar el audio."
         elif any(keyword in mime for keyword in ("pdf", "excel", "spreadsheet", "msword", "word", "text/", "csv")):
-            doc_result = document_processing_service.process_document_by_id(archivo_adjunto.id)
+            if byte_reader is None:
+                doc_result = document_processing_service.process_document_by_id(archivo_adjunto.id)
+            else:
+                doc_result = document_processing_service.process_document_by_id(
+                    archivo_adjunto.id, byte_reader=byte_reader, before_provider=before_provider)
             if doc_result.get("success"):
                 resultado["texto_extraido"] = doc_result.get("texto_extraido")
                 resultado["datos_estructurados"] = doc_result.get("datos_estructurados")

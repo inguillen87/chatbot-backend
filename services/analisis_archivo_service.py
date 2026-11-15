@@ -90,7 +90,7 @@ class AnalisisArchivoService:
         db.session.commit()
 
 @celery_app.task(name="analisis_archivo.tarea_analizar_contenido_archivo")
-def tarea_analizar_contenido_archivo(archivo_adjunto_id: int):
+def tarea_analizar_contenido_archivo(archivo_adjunto_id: int, access_grant: str | None = None):
     """
     Celery task to analyze the content of a file asynchronously.
     """
@@ -101,23 +101,31 @@ def tarea_analizar_contenido_archivo(archivo_adjunto_id: int):
             "provider_attempts": 0,
         }
 
-    from models import ArchivoAdjunto, db
+    from models import db
+    from services.attachment_analysis_access import BackgroundAttachmentAccess
     from services.interpretacion_service import interpretacion_service
 
     logger.info(f"Iniciando tarea de análisis para ArchivoAdjunto ID: {archivo_adjunto_id}")
     service = AnalisisArchivoService()
     analisis = None
     try:
+        access = BackgroundAttachmentAccess(archivo_adjunto_id, access_grant)
+        archivo_adjunto = access.require()
         # Create an initial record to track that processing has started
         analisis = service.crear_analisis_inicial(archivo_adjunto_id)
 
-        # Fetch the file object
-        archivo_adjunto = db.session.get(ArchivoAdjunto, archivo_adjunto_id)
-        if not archivo_adjunto:
-            raise ValueError(f"No se encontró el ArchivoAdjunto con ID {archivo_adjunto_id}")
-
         # Delegate to the interpretation service
-        resultado_interpretacion = interpretacion_service.interpretar_archivo(archivo_adjunto)
+        resultado_interpretacion = interpretacion_service.interpretar_archivo(
+            archivo_adjunto, byte_reader=access.read_bytes, before_provider=access.before_provider)
+        # Processing may overlap retirement, scope changes or writer fencing.
+        access.require()
+        if _analysis_writer_fence_enabled():
+            return {**background_writer_fence_report("file_content_analysis"),
+                    "processed": 0}
+        if resultado_interpretacion.get("error"):
+            service.actualizar_analisis_con_error(
+                analisis.id, "No fue posible analizar el archivo.")
+            return {"processed": 0, "reason_code": "attachment_analysis_failed"}
 
         # Update the analysis record with the result
         service.actualizar_analisis_completado(
@@ -126,15 +134,17 @@ def tarea_analizar_contenido_archivo(archivo_adjunto_id: int):
             texto_extraido=resultado_interpretacion.get("texto_extraido")
         )
         logger.info(f"Análisis completado exitosamente para ArchivoAdjunto ID: {archivo_adjunto_id}")
+        return {"processed": 1}
 
     except Exception as e:
-        error_message = f"Error en la tarea de análisis para el archivo {archivo_adjunto_id}: {e}"
-        logger.error(error_message, exc_info=True)
-        if analisis:
-            # If the analysis record was created, update it with the error
-            service.actualizar_analisis_con_error(analisis.id, error_message)
-        # If analisis object was not even created, there's nothing to update.
-        # The error is logged, which is the best we can do.
+        # Neither broker grants nor provider/storage details belong in logs or UI.
+        logger.error("File analysis failed (attachment_id=%s, error_type=%s)",
+                     archivo_adjunto_id, type(e).__name__)
+        db.session.rollback()
+        if analisis and not _analysis_writer_fence_enabled():
+            service.actualizar_analisis_con_error(
+                analisis.id, "No fue posible analizar el archivo.")
+        return {"processed": 0, "reason_code": "attachment_analysis_failed"}
 
 
 def enqueue_file_content_analysis(archivo_adjunto_id: int):
@@ -142,4 +152,9 @@ def enqueue_file_content_analysis(archivo_adjunto_id: int):
 
     if _analysis_writer_fence_enabled():
         return False
-    return tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)
+    from services.attachment_analysis_access import create_attachment_analysis_grant
+    grant = create_attachment_analysis_grant(archivo_adjunto_id)
+    return tarea_analizar_contenido_archivo.apply_async(
+        args=(archivo_adjunto_id, grant),
+        argsrepr=f"({archivo_adjunto_id}, '<attachment-analysis-grant>')",
+    )

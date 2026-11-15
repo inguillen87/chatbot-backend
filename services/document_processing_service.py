@@ -51,6 +51,8 @@ class DocumentProcessingService:
         file_content: bytes,
         mime_type: str,
         filename: str | None = None,
+        *,
+        before_provider=None,
     ) -> Dict[str, Any]:
         """Extract plain text and structured information from a document."""
 
@@ -89,6 +91,9 @@ class DocumentProcessingService:
         if not text_content and not table_records:
             return {"success": False, "error": "No se pudo extraer información del documento."}
 
+        # Parsing can be expensive; queued access may retire while it runs.
+        if before_provider is not None:
+            before_provider()
         structured = self._build_structured_response(text_content, table_records, filename)
 
         return {
@@ -98,7 +103,7 @@ class DocumentProcessingService:
             "metadata": metadata,
         }
 
-    def process_document_by_id(self, archivo_id: int) -> Dict[str, Any]:
+    def process_document_by_id(self, archivo_id: int, *, byte_reader=None, before_provider=None) -> Dict[str, Any]:
         """Helper that fetches the ``ArchivoAdjunto`` bytes and processes them."""
 
         archivo = db.session.get(ArchivoAdjunto, archivo_id)
@@ -107,12 +112,15 @@ class DocumentProcessingService:
             return {"success": False, "error": "Archivo no encontrado."}
 
         try:
-            file_bytes = self._download_file_bytes(archivo)
+            file_bytes = (self._download_file_bytes(archivo) if byte_reader is None else
+                          byte_reader(archivo.url, archivo.mime or 'application/octet-stream',
+                                      attachment=archivo))
         except Exception as exc:  # pragma: no cover - network/path errors are hard to simulate consistently
             logger.error("Unable to download attachment error_type=%s", type(exc).__name__)
             return {"success": False, "error": "No se pudo descargar el archivo para analizarlo."}
 
-        return self.process_document(file_bytes, archivo.mime or "", archivo.nombre_original or archivo.filename)
+        return self.process_document(file_bytes, archivo.mime or "", archivo.nombre_original or archivo.filename,
+                                     before_provider=before_provider)
 
     # ------------------------------------------------------------------
     # Extraction helpers
