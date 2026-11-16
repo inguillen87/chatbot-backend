@@ -47,7 +47,7 @@ _STAGES: tuple[dict[str, Any], ...] = (
     {
         "id": "validation_release",
         "label": "Validación y salida",
-        "description": "Completar identidad, accesibilidad, territorio, proteccion publica y participación antes del canario.",
+        "description": "Completar identidad, accesibilidad, territorio, protección pública y participación antes del canario.",
         "source_ids": (
             "crm",
             "identity_auth",

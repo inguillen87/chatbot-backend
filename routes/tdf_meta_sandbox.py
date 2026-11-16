@@ -2,6 +2,7 @@
 from flask import Blueprint, current_app, jsonify, request
 from models import db
 from services import tdf_meta_sandbox as pilot
+from services.meta_account_events import ACKNOWLEDGED_FIELDS, ACKNOWLEDGED_RESULT
 from services.meta_whatsapp_cloud import MetaContractError
 from services.meta_whatsapp_webhook import MAX_BODY_BYTES, verify_challenge
 from services.tenant_provider_credentials import ProviderCredentialError
@@ -77,6 +78,14 @@ def callback():
         if len(raw) > MAX_BODY_BYTES:
             raise pilot.PilotError("tdf_meta_body_too_large", 413)
         result = pilot.process(raw, request.headers.get("X-Hub-Signature-256", ""))
+        if isinstance(result, dict) and result.get("result") == ACKNOWLEDGED_RESULT:
+            # Fixed codes only: field names come from the closed list, never
+            # from the payload; no WABA, template name or text is logged.
+            fields = sorted(name for name in result.get("fields", {}) if name in ACKNOWLEDGED_FIELDS)
+            current_app.logger.info(
+                "Meta account/template webhook acknowledged unprocessed events=%d fields=%s",
+                int(result.get("events", 0)), ",".join(fields))
+            return jsonify(result=ACKNOWLEDGED_RESULT), 200
         # Acknowledges persisted receipts, never implies real delivery.
         return jsonify(result), 200
     except pilot.PilotError as exc:

@@ -416,6 +416,65 @@ class AddressLifecycleTests(unittest.TestCase):
         self.assertEqual(self.tenant().configuracion, before)
         self.assertEqual(self.Audit.query.count(), audit_count)
 
+    def test_operator_ui_bootstrap_recovers_without_reading_address_state_or_provider(self):
+        owner = self.login()
+        endpoint = self.endpoint + '/operator-ui'
+        before = deepcopy(self.tenant().configuracion)
+        audit_count = self.Audit.query.count()
+        with patch.object(addresses, 'build_addresses', side_effect=addresses.DomainBindingError('address_storage_invalid', 409)):
+            failed = owner.get(self.endpoint)
+        self.assertEqual(failed.status_code, 409, failed.json)
+        with patch.object(addresses, 'build_addresses', side_effect=AssertionError('no address descriptor read')), \
+                patch.object(addresses, 'read_store', side_effect=AssertionError('no address storage read')), \
+                patch('services.organization_address_runtime.runtime_available', side_effect=AssertionError('no provider runtime read')), \
+                patch('services.organization_address_runtime.run_operation', side_effect=AssertionError('no provider operation')):
+            result = owner.get(endpoint)
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertEqual(result.json, addresses.build_operator_ui())
+        self.assertEqual(set(result.json), {'contract_version', 'labels', 'messages'})
+        self.assertEqual(result.json['contract_version'], 'organization.address_operator_ui.v1')
+        self.assertIn('no-store', result.headers['Cache-Control'])
+        self.assertEqual(self.tenant().configuracion, before)
+        self.assertEqual(self.Audit.query.count(), audit_count)
+        presentation = addresses.build_operator_ui()
+        presentation['labels']['title'] = 'Synthetic client mutation'
+        self.assertEqual(owner.get(endpoint).json, addresses.build_operator_ui())
+        self.assertNotEqual(owner.get(endpoint).json, presentation)
+
+    def test_operator_ui_bootstrap_keeps_owner_authorization_and_tenant_isolation(self):
+        endpoint = self.endpoint + '/operator-ui'
+        for account in ('acceptance-b', 'viewer'):
+            with self.subTest(account=account):
+                response = self.login(account).get(endpoint)
+                self.assertEqual(response.status_code, 403, response.json)
+                self.assertEqual(response.json['reason_code'], 'address_forbidden')
+                self.assertNotIn('labels', response.json)
+        self.assertIn(self.app.test_client().get(endpoint).status_code, (401, 403))
+        missing = self.login().get('/api/admin/tenants/missing-synthetic/addresses/operator-ui')
+        self.assertEqual(missing.status_code, 404, missing.json)
+        self.assertNotIn('labels', missing.json)
+
+    def test_operator_ui_bootstrap_is_get_only_and_available_under_writer_fence(self):
+        owner = self.login()
+        endpoint = self.endpoint + '/operator-ui'
+        origin = {'Origin': 'https://www.chatboc.ar'}
+        with patch.dict(self.app.config, {'CUTOVER_WRITER_FENCE_ENABLED': True}):
+            result = owner.get(endpoint)
+        self.assertEqual(result.status_code, 200, result.json)
+        self.assertNotIn('capabilities', result.json)
+        self.assertEqual(owner.get(endpoint + '?tenant=another').status_code, 400)
+        self.assertEqual(owner.get(endpoint, headers={'Origin': 'https://foreign.example.invalid'}).status_code, 403)
+        for method in ('POST', 'PUT'):
+            with self.subTest(method=method):
+                self.assertEqual(owner.open(endpoint, method=method, json={}, headers=origin).status_code, 405)
+                denied = owner.options(endpoint, headers={**origin, 'Access-Control-Request-Method': method})
+                self.assertEqual(denied.status_code, 403)
+        preflight = owner.options(endpoint, headers={**origin, 'Access-Control-Request-Method': 'GET'})
+        self.assertEqual(preflight.status_code, 204)
+        # The app's shared CORS response lists common methods; the route and
+        # its preflight guard above still deny both write methods explicitly.
+        self.assertIn('GET', preflight.headers['Access-Control-Allow-Methods'].split(', '))
+
     def test_failure_rolls_back_private_state_and_audit(self):
         with patch.object(type(self.db.session()), 'commit', side_effect=SQLAlchemyError('synthetic-private')):
             with self.assertRaisesRegex(legacy.DomainBindingError, 'address_save_unconfirmed'):

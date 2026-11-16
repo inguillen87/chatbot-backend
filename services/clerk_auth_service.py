@@ -998,6 +998,23 @@ def upsert_user_from_clerk(
     return user
 
 
+def _validated_tenant_slug(tenant_slug: object) -> str:
+    slug = str(tenant_slug or "").strip().lower() if isinstance(tenant_slug, str) or tenant_slug is None else ""
+    if not slug:
+        raise ClerkAuthError(
+            "tenant_slug es obligatorio para ingresar al portal",
+            reason_code="tenant_slug_required",
+            status_code=400,
+        )
+    if len(slug) > 80 or re.fullmatch(r"[a-z0-9_-]+", slug) is None:
+        raise ClerkAuthError(
+            "tenant_slug no es valido",
+            reason_code="tenant_slug_invalid",
+            status_code=400,
+        )
+    return slug
+
+
 def tenant_for_user(user: User) -> Optional[TenantProfile]:
     if getattr(user, "tenant_id", None):
         tenant = TenantProfile.query.get(user.tenant_id)
@@ -1056,22 +1073,29 @@ def resolve_clerk_session_tenant(
 
     intent = normalize_clerk_auth_intent(auth_intent)
     if intent == CLERK_INTENT_TENANT_OWNER:
-        return require_active_tenant(tenant_for_user(user))
+        owned = tenant_for_user(user)
+        if tenant_slug is not None:
+            # A scoped panel access (own domain or /t/<slug>/login) is exclusive to that
+            # organization: an account from another one, or one still without an organization,
+            # never receives a session there and cannot start onboarding from it.
+            scope = _validated_tenant_slug(tenant_slug)
+            # Every membership reference must agree (same resolver as the native panel login):
+            # tenant_for_user returns the first matching reference and would accept
+            # contradictory or orphan associations.
+            from utils.tenant_admin_access import resolve_consistent_user_tenant
+
+            owned = resolve_consistent_user_tenant(user)
+            owned_slug = str(getattr(owned, "slug", "") or "").strip().lower()
+            if owned is None or owned_slug != scope:
+                raise ClerkAuthError(
+                    "Esta cuenta no tiene acceso a esta organización.",
+                    reason_code="organization_mismatch",
+                    status_code=403,
+                )
+        return require_active_tenant(owned)
 
     _require_portal_end_user_identity(user)
-    slug = str(tenant_slug or "").strip().lower()
-    if not slug:
-        raise ClerkAuthError(
-            "tenant_slug es obligatorio para ingresar al portal",
-            reason_code="tenant_slug_required",
-            status_code=400,
-        )
-    if len(slug) > 80 or re.fullmatch(r"[a-z0-9_-]+", slug) is None:
-        raise ClerkAuthError(
-            "tenant_slug no es valido",
-            reason_code="tenant_slug_invalid",
-            status_code=400,
-        )
+    slug = _validated_tenant_slug(tenant_slug)
 
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if tenant is None:
@@ -1104,6 +1128,22 @@ def _portal_chat_type(tenant: Optional[TenantProfile]) -> str:
     return "municipio" if normalized == "municipio" else "pyme"
 
 
+def _session_chat_type(user: User, tenant: Optional[TenantProfile], *, portal_session: bool) -> Optional[str]:
+    """Chat type of the session: the organization's type decides, not a stale user column.
+
+    A panel account keeps the ``tipo_chat`` it was created with even after it is linked to
+    another kind of organization (for example a government account first created as
+    ``pyme``). Analytics and private routes derive their scope from this claim, so it must
+    follow the organization the session was issued for. Without an organization (platform
+    accounts, onboarding) the stored value is kept.
+    """
+    if portal_session:
+        return _portal_chat_type(tenant)
+    if tenant is not None and getattr(tenant, "tipo", None):
+        return normalize_tenant_type(tenant.tipo, default="pyme")
+    return user.tipo_chat
+
+
 def _issue_clerk_chatboc_token(
     user: User,
     tenant: Optional[TenantProfile],
@@ -1122,7 +1162,7 @@ def _issue_clerk_chatboc_token(
     if portal_session:
         _require_portal_end_user_identity(user)
     effective_role = ROLE_CLIENTE if portal_session else user.rol
-    effective_chat_type = _portal_chat_type(tenant) if portal_session else user.tipo_chat
+    effective_chat_type = _session_chat_type(user, tenant, portal_session=portal_session)
 
     return generar_token(
         user.id,
@@ -1201,7 +1241,7 @@ def build_chatboc_session_payload(
     )
     identity = _session_identity_payload(user)
     effective_role = ROLE_CLIENTE if portal_session else user.rol
-    effective_chat_type = _portal_chat_type(tenant) if portal_session else user.tipo_chat
+    effective_chat_type = _session_chat_type(user, tenant, portal_session=portal_session)
     retirement = None
     if token:
         from services.auth_session_lifecycle import descriptor_for_token

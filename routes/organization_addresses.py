@@ -56,13 +56,14 @@ def boundary():
     if origin is not None and origin not in _origins():
         return _error('address_origin_forbidden', 403)
     if request.method == 'OPTIONS':
-        method = 'POST' if is_address_operator_request() else 'PUT'
-        if origin not in _origins() or request.headers.get('Access-Control-Request-Method') not in {'GET', method}:
+        methods = ('GET',) if request.endpoint == 'organization_addresses.operator_ui' else (
+            'GET', 'POST' if is_address_operator_request() else 'PUT')
+        if origin not in _origins() or request.headers.get('Access-Control-Request-Method') not in methods:
             return _error('address_origin_forbidden', 403)
         result = _response({}, 204)
         result.headers['Access-Control-Allow-Origin'] = origin
         result.headers['Access-Control-Allow-Credentials'] = 'true'
-        result.headers['Access-Control-Allow-Methods'] = 'GET, ' + method
+        result.headers['Access-Control-Allow-Methods'] = ', '.join(methods)
         result.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         return result
     if request.method in {'POST', 'PUT'}:
@@ -118,6 +119,19 @@ def _is_operator(user):
         and claims.get('auth_provider') == 'clerk' and claims.get('session_kind') == 'clerk'
         and claims.get('auth_audience') in {'tenant_owner', 'panel'}
         and claims.get('auth_intent', 'tenant_owner') == 'tenant_owner' and not claims.get('impersonated_by'))
+
+
+@organization_addresses_bp.get('/api/admin/tenants/<slug>/addresses/operator-ui')
+@token_requerido
+@auth_sin_escrituras_implicitas
+def operator_ui(current_user, slug):
+    """Recover server-owned presentation independently of address state reads."""
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None:
+        return _error('address_not_found', 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return _error('address_forbidden', 403)
+    return _response(service.build_operator_ui())
 
 
 @organization_addresses_bp.route('/api/admin/tenants/<slug>/addresses', methods=['GET', 'PUT'])
