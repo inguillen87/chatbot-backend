@@ -15,6 +15,7 @@ def init_celery(app: Flask):
     celery_config = app.config.get('CELERY_CONFIG', {})
     required_imports = (
         'services.tasks',
+        'services.analisis_archivo_service',
         'services.whatsapp_inbound_worker',
         'services.domain_effect_worker',
         'services.survey_response_effect_worker',

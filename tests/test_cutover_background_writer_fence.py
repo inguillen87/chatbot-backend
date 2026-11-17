@@ -880,7 +880,7 @@ def test_generic_enqueue_helpers_do_not_touch_broker_while_fenced():
         patch.object(tasks.dispatch_survey_response_effects_task, "delay") as survey,
         patch.object(
             analisis_archivo_service.tarea_analizar_contenido_archivo,
-            "delay",
+            "apply_async",
         ) as analysis,
     ):
         assert tasks.enqueue_campaign_email(opaque=True) is False

@@ -12,6 +12,7 @@ def test_celery_registers_authoritative_database_workers():
     assert celery.conf.imports == (
         "custom.tasks",
         "services.tasks",
+        "services.analisis_archivo_service",
         "services.whatsapp_inbound_worker",
         "services.domain_effect_worker",
         "services.survey_response_effect_worker",

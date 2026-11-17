@@ -3,6 +3,7 @@ name: Durable sessions and private attachments
   pull_request:
     paths:
       - app.py
+      - celery_utils.py
       - bootstrap_wsgi.py
       - gunicorn.conf.py
       - Dockerfile.vercel
@@ -51,6 +52,7 @@ name: Durable sessions and private attachments
       - services/gcs_service.py
       - services/media_cache_policy.py
       - services/audio_transcription_service.py
+      - services/analisis_archivo_service.py
       - services/document_processing_service.py
       - services/interpretacion_service.py
       - services/email_service.py
@@ -70,6 +72,9 @@ name: Durable sessions and private attachments
       - tests/*attachment*.py
       - tests/*institutional_assistant*.py
       - tests/test_r2_service.py
+      - tests/test_celery_worker_imports.py
+      - tests/test_interpretacion_audio.py
+      - tests/test_document_processing_service.py
       - tests/test_runtime_readiness.py
       - tests/test_admin_tenant_verification.py
       - tests/test_employee_scope_revocation.py
@@ -151,12 +156,13 @@ jobs:
           python -m tests.auth_session_lifecycle_http 2>&1 | tee .qa-artifacts/auth-private-storage/session-http.log
           python -m tests.institutional_assistant_source_http 2>&1 | tee .qa-artifacts/auth-private-storage/source-http.log
           python -m tests.test_private_attachment_storage_http 2>&1 | tee .qa-artifacts/auth-private-storage/attachment-http.log
+          python -m tests.private_attachment_analysis_http 2>&1 | tee .qa-artifacts/auth-private-storage/attachment-analysis-http.log
           python -m tests.crm_template_integrity_http 2>&1 | tee .qa-artifacts/auth-private-storage/crm-template-http.log
       - name: Private storage, direct upload and retired Render authority regressions
         shell: bash
         run: |
           set -euo pipefail
-          python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_r2_service.py", "tests/test_direct_chat_attachment_upload.py", "tests/test_render_authority_retired.py", "tests/test_auth_session_postgres_runner.py", "-q"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/storage-regression.log
+          python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_r2_service.py", "tests/test_direct_chat_attachment_upload.py", "tests/test_render_authority_retired.py", "tests/test_auth_session_postgres_runner.py", "tests/test_celery_worker_imports.py", "tests/test_interpretacion_audio.py", "tests/test_document_processing_service.py", "-q"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/storage-regression.log
       - name: HTTP writer admission and WSGI response leases
         shell: bash
         run: |
