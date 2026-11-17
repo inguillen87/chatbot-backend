@@ -42,6 +42,7 @@ name: WhatsApp draft transactions
       - tests/organization_address_fixtures.py
       - tests/test_organization_addresses.py
       - tests/test_organization_address_runtime.py
+      - tests/test_organization_address_continuity.py
       - tests/test_organization_address_vercel.py
       - tests/test_organization_address_concurrency.py
       - tests/test_organization_address_stale_config.py
@@ -196,7 +197,7 @@ jobs:
           import pytest; raise SystemExit(pytest.main(['-q',
           'tests/test_organization_domain_binding.py', 'tests/test_organization_domain_vercel.py',
           'tests/test_organization_addresses.py', 'tests/test_organization_address_runtime.py',
-          'tests/test_organization_address_vercel.py']))"
+          'tests/test_organization_address_vercel.py', 'tests/test_organization_address_continuity.py']))"
       - name: Verify address collisions and stale JSON writers on the existing PostgreSQL18 service
         run: python -m tests.run_organization_address_ci_postgres
       - name: Verify actual mapped profile eager joins lock only owner and actor

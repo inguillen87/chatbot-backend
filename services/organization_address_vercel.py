@@ -36,7 +36,7 @@ _EXPLICIT_ERRORS = frozenset({
     'existing_frontend_project_required', 'reviewed_source_and_routes_required',
     'exact_production_target_required', 'provider_response_shape_invalid',
     'exact_project_domain_required', 'provider_ownership_pending',
-    'exact_frontend_deployment_required', 'reviewed_route_setup_required',
+    'exact_frontend_deployment_required', 'provider_routes_unavailable', 'reviewed_route_setup_required',
     'same_origin_backend_proxy_required', 'exact_customer_alias_required',
     'exact_pending_runtime_required', 'fresh_platform_observation_required',
     'public_dns_required', 'readiness_request_invalid', 'exact_https_readiness_required',

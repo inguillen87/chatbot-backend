@@ -33,10 +33,11 @@ def _response(payload, status=200):
     return result
 
 
-def _error(code, status, *, uncertain=False):
+def _error(code, status, *, uncertain=False, blocking_reason=None):
     return _response({'contract_version': 'organization.addresses_error.v2', 'reason_code': code,
         'retryable': False, **({'requires_status_check': True, 'database_outcome': 'unverified'}
-            if uncertain else {'writes_performed': False})}, status)
+            if uncertain else {'writes_performed': False}),
+        **({'blocking_reason': blocking_reason} if blocking_reason in service.BLOCKING_REASONS else {})}, status)
 
 
 def _origins():
@@ -180,7 +181,8 @@ def _operator(action, slug):
         return _error('address_' + suffix if re.fullmatch(r'[a-z_]{1,80}', suffix)
             else 'address_authentication_required', exc.status)
     except service.DomainBindingError as exc:
-        return _error(exc.code, exc.status, uncertain=exc.code == 'address_save_unconfirmed')
+        return _error(exc.code, exc.status, uncertain=exc.code == 'address_save_unconfirmed',
+            blocking_reason=getattr(exc, 'blocking_reason', None))
     except Exception:
         return _error('address_runtime_unavailable', 503, uncertain=action == 'activate')
     finally:

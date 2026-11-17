@@ -59,7 +59,9 @@ Slot `source` is `null`, `v2`, or `legacy_v1`. Slot `status` is `unconfigured`,
 `pending_dns`, `pending_platform`, `active`, `revoked`, `verification_expired`, or
 `suspended`. `active` is true only for an eligible, active tenant and current
 provider/DNS evidence. `valid_until` is a Unix integer for active slots, otherwise
-null. `dns_proof` is null or the existing `{type:"TXT",name,value,expires_at}`
+null. `pending_until` is the Unix deadline of a `pending_dns` (TXT challenge) or
+`pending_platform` (platform request or verified DNS evidence) record, kept after
+it lapses so the UI can show when it expired; otherwise null. `dns_proof` is null or the existing `{type:"TXT",name,value,expires_at}`
 shape; it is never present for platform bindings. `revision` covers v2 and v1
 state, so a change through either API invalidates a prior v2 request.
 
@@ -111,6 +113,22 @@ The activation readback pins the fixed existing frontend project, current
 Production target, exact host alias, READY deployment, source SHA, reviewed route
 digest, same-origin API proxy, verified public HTTPS, fresh nonce and exact backend
 revision. A caller-supplied observation cannot activate a record.
+
+A failed observation returns `409 address_provider_verification_failed` with no
+write. When the failing check is one the operator can act on, the error also
+carries `blocking_reason`, a fixed server code from the allowlist in
+`operator_guidance.blocking`; any other reason is omitted, never echoed. If the
+provider omits the deployment route table (the API allows `routes: null`), the
+reason is `provider_routes_unavailable`: missing evidence fails closed, and no
+digest computed outside the provider (for example from `vercel.json`) can
+substitute it. A route table that does not match the reviewed digest remains
+`reviewed_route_setup_required`.
+
+The descriptor also returns `operator_guidance`
+(`organization.address_operator_guidance.v1`): `labels`, `messages`
+(`pending_window`, `expired_action`, `active_expiry`) and `blocking`, a map from
+each allowlisted reason to `{message, action}`. It is additive:
+`operator_ui` (`organization.address_operator_ui.v1`) keeps its exact keys.
 
 ## Public compatibility and concurrency
 

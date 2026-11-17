@@ -145,8 +145,12 @@ def run_operation(action, slug, body, actor, config, *, engine=None, adapter=Non
             return result
     except addresses.DomainBindingError:
         raise
-    except ProvisioningError:
-        raise addresses.DomainBindingError('address_provider_verification_failed', 409) from None
+    except ProvisioningError as exc:
+        error = addresses.DomainBindingError('address_provider_verification_failed', 409)
+        # Only a fixed, allowlisted reason leaves this boundary; provider data never does.
+        reason = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else None
+        error.blocking_reason = reason if reason in addresses.BLOCKING_REASONS else None
+        raise error from None
     except SQLAlchemyError:
         raise addresses.DomainBindingError('address_save_unconfirmed' if action == 'activate'
             else 'address_runtime_unavailable', 503) from None
