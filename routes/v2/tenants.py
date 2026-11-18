@@ -14,6 +14,7 @@ from sqlalchemy import func
 from models import TenantProfile
 from services.plan_access import integration_access_payload
 from services.public_tenant_config import sanitize_public_tenant_config
+from services.tenant_resolver import tenant_by_exact_widget_token
 from utils.roles import normalize_tenant_slug, is_generic_tenant_slug
 
 v2_tenants_bp = Blueprint("v2_tenants", __name__, url_prefix="/api/v2/tenants")
@@ -36,15 +37,10 @@ def _find_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
 
 
 def _find_tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
-    token = (token or "").strip()
-    if not token:
-        return None
-    try:
-        return TenantProfile.query.filter(
-            TenantProfile.configuracion["widget_tokens"].astext.contains(token)
-        ).first()
-    except Exception:
-        return None
+    # Same lookup as the public resolver: exact token, active tenants only and
+    # no tenant when the token is ambiguous. A substring search would let
+    # ``demo`` select whichever tenant owns ``demo-production``.
+    return tenant_by_exact_widget_token(token)
 
 
 def _token_from_request() -> Optional[str]:

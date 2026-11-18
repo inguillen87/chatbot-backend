@@ -59,6 +59,9 @@ name: WhatsApp draft transactions
       - tests/test_public_tenant_catalog_alias.py
       - tests/test_pwa_public_catalog.py
       - tests/test_ticket_crm_public_tenant_security.py
+      - tests/test_v2_widget_token_resolution.py
+      - routes/v2/tenants.py
+      - services/tenant_resolver.py
       - tests/test_organization_domain_binding.py
       - tests/test_organization_domain_vercel.py
       - services/organization_branding_ui.py
@@ -206,7 +209,7 @@ jobs:
           python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
           import pytest; raise SystemExit(pytest.main(['-q',
           'tests/test_public_tenant_catalog_alias.py', 'tests/test_pwa_public_catalog.py',
-          'tests/test_ticket_crm_public_tenant_security.py']))"
+          'tests/test_ticket_crm_public_tenant_security.py', 'tests/test_v2_widget_token_resolution.py']))"
       - name: Verify address collisions and stale JSON writers on the existing PostgreSQL18 service
         run: python -m tests.run_organization_address_ci_postgres
       - name: Verify actual mapped profile eager joins lock only owner and actor
