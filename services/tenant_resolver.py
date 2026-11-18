@@ -328,6 +328,12 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
     return matches[0] if matches else None
 
 
+def tenant_by_exact_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
+    """Read-only public lookup: exact token, active tenants only, ambiguity refused."""
+
+    return _tenant_by_widget_token(token)
+
+
 def _should_register_widget_token(tenant: Optional[TenantProfile], token: Optional[str], preferred_slug: Optional[str]) -> bool:
     if _tenant_resolution_mutations_fenced():
         return False
