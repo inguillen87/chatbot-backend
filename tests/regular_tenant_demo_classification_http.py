@@ -557,13 +557,17 @@ class RegularTenantChatTests(unittest.TestCase):
                     self.assertEqual(stored[CONTEXTO_MUNICIPIO][key], expected)
             self.assertNotIn('institutional_knowledge', stored)
 
-    def test_empty_institutional_selection_keeps_unknown_answer_and_published_choices(self):
+    def test_empty_institutional_selection_keeps_the_current_topic_and_its_published_choices(self):
+        # TDF feedback (#2854): a follow-up the corpus does not cover must not
+        # drop the person back to the start menu. The canonical topic and its
+        # published options remain; free answers are still never generated.
         from services.logic import responder_chatboc
         from services.constants import CONTEXTO_MUNICIPIO
         from services.institutional_assistant import UI
         published, _ = self.published_knowledge_for_public_chat()
         revision = published['revision']
-        self.context({'institutional_knowledge': {'revision': revision, 'node_id': 'requirements'},
+        self.context({'institutional_knowledge': {'revision': revision, 'node_id': 'requirements',
+            'reply_node_id': 'requirements', 'reply_choices': {'9': 'start'}},
             CONTEXTO_MUNICIPIO: {}})
         with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
              patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': []}) as selector, \
@@ -576,20 +580,27 @@ class RegularTenantChatTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_json())
         payload = response.get_json()
         self.assertEqual(payload['fuente'], 'institutional_knowledge_unknown_question')
-        self.assertEqual(payload['message_body'], UI['unknown'])
+        self.assertEqual(payload['message_body'], UI['unknown_in_topic'].format(title='Requisitos'))
         self.assertNotIn('Unfunded generic answer fixture', str(payload))
         self.assertEqual(payload['ux_context']['tenant_slug'], 'acceptance-a')
         self.assertEqual(payload['ux_context']['owner_user_id'], self.accounts['acceptance-a']['id'])
         self.assertTrue(payload['ux_context']['trusted_owner'])
         self.assertEqual(payload['context_revision'], revision)
         self.assertEqual([(b['texto'], b['action_id']) for b in payload['botones']], [
-            ('🪪 Certificados: CUD y CMO', 'knowledge:' + revision[:16] + ':requirements')])
+            ('Volver', 'knowledge:' + revision[:16] + ':start')])
         self.assertNotIn('knowledge_nodes', payload)
         self.assertNotIn('private-fixture-original', str(payload))
         selector.assert_called_once(); direct.assert_not_called()
+        request = __import__('json').loads(selector.call_args.args[1])
+        self.assertEqual(request['current_node'], 'requirements')
+        self.assertEqual(request['current_topic'], {'id': 'requirements', 'title': 'Requisitos'})
         stored = self.stored()[1]
         self.assertEqual(stored[CONTEXTO_MUNICIPIO], {})
-        self.assertEqual(stored['institutional_knowledge']['node_id'], 'start')
+        self.assertEqual(stored['institutional_knowledge']['node_id'], 'requirements')
+        # Continuity comes from the canonical node only; the person's text is
+        # not copied into the session context (the WhatsApp ledger keeps it).
+        self.assertNotIn('question', stored['institutional_knowledge'])
+        self.assertNotIn('Río Grande', str(stored['institutional_knowledge']))
 
     def test_invalid_knowledge_action_never_falls_through_to_complaint(self):
         from services.logic import responder_chatboc
