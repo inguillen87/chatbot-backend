@@ -14,7 +14,7 @@ CONTRACT = 'chatboc.institutional_assistant.v1'
 BUNDLE_CONTRACT = 'chatboc.institutional_guide.composed.v1'
 MAX_BYTES = 1_000_000
 MAX_QUESTION_CHARS = 1800
-SELECTOR_RETRY_WINDOW_SECONDS = 8
+SELECTOR_RETRY_WINDOW_SECONDS = 3
 _ID = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,119}$')
 _HASH = re.compile(r'^[a-f0-9]{64}$')
 _STAMP = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$')
@@ -308,8 +308,9 @@ def _command_text(question):
 
 _MENU_COMMAND = re.compile(
     r'(?:(?:quiero|quisiera|necesito|podes|puedo|por favor) )*(?:'
-    r'(?:volver|ir|regresar)(?: (?:al|a el|a))? (?:menu(?: (?:inicial|principal|de inicio))?|inicio|principio)'
-    r'|(?:ver |mostrar |mostrame |muestrame |abrir )?(?:el )?menu(?: (?:inicial|principal|de inicio))?'
+    r'(?:volver|ir|regresar)(?: (?:al|a el|a))? (?:menu(?: (?:inicial|principal|de inicio|de temas))?|inicio|principio)'
+    r'|(?:ver |mostrar |mostrame |mostrarme |muestrame |abrir )?(?:el )?menu(?: (?:inicial|principal|de inicio|de temas))?'
+    r'|(?:(?:ver|volver a|ir a|mostrar|mostrame|mostrarme) )?todos los temas'
     r'|inicio|empezar de nuevo|volver a empezar|comenzar de nuevo|empezar otra vez'
     r')(?: por favor)?')
 
@@ -318,25 +319,34 @@ def is_menu_command(question):
 
     Like is_source_navigation, this is an explicit UI command, not topic
     interpretation: a bare "volver" stays a question because nodes may offer a
-    one-level "Volver" option.
+    one-level "Volver" option. Anything asked as a question ("¿Puedo empezar
+    de nuevo?") is a question about the procedure, not a navigation command.
     """
+    if not isinstance(question, str) or '?' in question or '¿' in question:
+        return False
     return _MENU_COMMAND.fullmatch(_command_text(question)) is not None
 
 def advertised_choice(bundle, question, node_ids):
-    """Target of an option whose displayed label was typed verbatim.
+    """Target of an option whose displayed label or code was typed verbatim.
 
-    Only options advertised on the given nodes are considered, compared after
-    removing case, accents, emoji and punctuation. An ambiguous label is not a
-    choice; it stays a question for the selector.
+    Only options advertised on the given nodes are considered: the label, the
+    code shown beside it, or both ("1 Requisitos"), compared after removing
+    case, accents, emoji and punctuation. An ambiguous text is not a choice; it
+    stays a question for the selector.
     """
     typed = _command_text(question)
     if not typed:
         return None
+    raw = question.strip()
     targets = set()
     for node_id in node_ids:
         node = bundle['nodes'].get(node_id)
         for action in (node or {}).get('actions', []):
-            if _command_text(action.get('label', '')) == typed:
+            label = _command_text(action.get('label', ''))
+            # The code must be typed exactly as shown (no emoji or keycap
+            # look-alikes, which stay with the reply-code parser and selector).
+            shown = re.fullmatch(re.escape(action.get('code', '')) + r'[.)]?(?:\s+(.+))?', raw)
+            if typed == label or shown and (shown.group(1) is None or _command_text(shown.group(1)) == label):
                 targets.add(action['target'])
     return targets.pop() if len(targets) == 1 else None
 

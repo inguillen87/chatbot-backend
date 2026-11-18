@@ -1253,3 +1253,136 @@ def test_account_notifications_respect_the_writer_fence_and_the_disabled_pilot(e
     environment.app.config.update(CUTOVER_WRITER_FENCE_ENABLED=False, META_TDF_SANDBOX_ENABLED=False)
     disabled = _post_signed(environment, account_document("account_update"))
     assert disabled.status_code == 404
+
+
+def test_topic_continuity_uncovered_question_and_typed_menu_return_e2e(environment, monkeypatch):
+    revision = environment.state["revision"]
+    sent = []
+
+    def post(url, **kwargs):
+        sent.append(deepcopy(kwargs["json"]))
+        return accepted_post(url, **kwargs)
+
+    def send_text(mid, text):
+        doc = document(mid=mid, content={"type": "text", "text": {"body": text}})
+        assert process(doc, post=post)["accepted"] == 1
+        ledger = db.session.query(MessagingEventLedger).order_by(MessagingEventLedger.id.desc()).first()
+        return sent_body(sent[-1]), ledger
+
+    def forbid_selector(*args, **kwargs):
+        pytest.fail("Explicit menu and numeric navigation must not call the selector")
+
+    # 1. "menu" y después elegir un tema con su código numérico.
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado", forbid_selector)
+    menu_body, menu_ledger = send_text("wamid.e2emenu", "menu")
+    assert "Elegí una consulta." in menu_body and "1. Requisitos" in menu_body
+    assert menu_ledger.metadata_json["knowledge_context"]["institutional_knowledge"] == {
+        "revision": revision,
+        "node_id": "start",
+        "reply_node_id": "start",
+        "reply_choices": {"1": "requirements"},
+    }
+
+    topic_body, topic_ledger = send_text("wamid.e2etopic", "1")
+    assert "Respuesta institucional de prueba." in topic_body and "9. Volver" in topic_body
+    expected_topic_context = {
+        "revision": revision,
+        "node_id": "requirements",
+        "reply_node_id": "requirements",
+        "reply_choices": {"9": "start"},
+    }
+    assert topic_ledger.metadata_json["knowledge_context"]["institutional_knowledge"] == expected_topic_context
+
+    # 2. Pregunta libre dentro del tema con el selector simulado devolviendo {"node_ids": []}.
+    selector_requests = []
+
+    def empty_selector(instructions, request):
+        selector_requests.append(json.loads(request))
+        return {"node_ids": []}
+
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado", empty_selector)
+    question_text = "¿Atienden los sábados en Ushuaia?"
+    uncovered_body, uncovered_ledger = send_text("wamid.e2euncovered1", question_text)
+    assert len(selector_requests) == 1
+    assert selector_requests[0]["current_node"] == "requirements"
+    assert selector_requests[0]["current_topic"] == {"id": "requirements", "title": "Requisitos"}
+    assert "Seguís en «Requisitos»" in uncovered_body
+    assert "9. Volver" in uncovered_body
+    assert uncovered_body.count("Escribí MENÚ") == 1
+    assert len(re.findall(r"escrib[íi]\s+«?men[úu]»?", uncovered_body, flags=re.IGNORECASE)) == 1
+    uncovered_context = uncovered_ledger.metadata_json["knowledge_context"]
+    assert uncovered_context["institutional_knowledge"] == expected_topic_context
+    serialized_context = json.dumps(uncovered_context, ensure_ascii=False)
+    assert question_text not in serialized_context
+    assert "sábados" not in serialized_context and "Ushuaia" not in serialized_context
+
+    # 3. "volver al menu inicial" escrito vuelve al menú de inicio sin llamar al selector.
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado", forbid_selector)
+    returned_body, returned_ledger = send_text("wamid.e2etypedreturn", "volver al menu inicial")
+    assert "Elegí una consulta." in returned_body and "1. Requisitos" in returned_body
+    assert returned_ledger.metadata_json["knowledge_context"]["institutional_knowledge"] == {
+        "revision": revision,
+        "node_id": "start",
+        "reply_node_id": "start",
+        "reply_choices": {"1": "requirements"},
+    }
+
+    # 4. Un código numérico mostrado en el paso 2 sigue funcionando.
+    send_text("wamid.e2etopicagain", "1")
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado", empty_selector)
+    uncovered_body_2, uncovered_ledger_2 = send_text("wamid.e2euncovered2", "¿Y en Tolhuin?")
+    assert "Seguís en «Requisitos»" in uncovered_body_2 and "9. Volver" in uncovered_body_2
+    assert uncovered_ledger_2.metadata_json["knowledge_context"]["institutional_knowledge"] == expected_topic_context
+    assert "Tolhuin" not in json.dumps(uncovered_ledger_2.metadata_json["knowledge_context"], ensure_ascii=False)
+
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado", forbid_selector)
+    numeric_back_body, numeric_back_ledger = send_text("wamid.e2enumericafteruncovered", "9")
+    assert "Elegí una consulta." in numeric_back_body and "1. Requisitos" in numeric_back_body
+    assert numeric_back_ledger.metadata_json["knowledge_context"]["institutional_knowledge"] == {
+        "revision": revision,
+        "node_id": "start",
+        "reply_node_id": "start",
+        "reply_choices": {"1": "requirements"},
+    }
+
+
+def test_uncovered_topic_keeps_its_sources_and_natural_source_requests_use_the_pilot_catalogue(environment, monkeypatch):
+    # Second review (#2854): FUENTES still lists the topic's public references
+    # after an uncovered question in that topic, and natural-language source
+    # requests never use the general catalogue in this channel.
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    sent = []
+
+    def post(url, **kw):
+        sent.append(deepcopy(kw["json"])); return accepted_post()
+
+    def send(mid, text):
+        assert process(document(mid=mid, content={"type": "text", "text": {"body": text}}), post=post)["accepted"] == 1
+        return sent_body(sent[-1])
+
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado", lambda *a: {"node_ids": []})
+    send("wamid.srcmenu", "menu")
+    assert "Respuesta institucional de prueba" in send("wamid.srctopic", "1")
+    assert "Seguís en «Requisitos»" in send("wamid.srcuncovered", "¿Y si soy de Ushuaia?")
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado",
+                        lambda *a: pytest.fail("Source requests must not call the selector"))
+    for index, request in enumerate(("FUENTES", "Ver las fuentes.", "¿Dónde puedo ver los documentos que respaldan esta información?")):
+        body = send("wamid.srcrequest" + str(index), request)
+        assert "Documento de prueba" in body and "páginas 2" in body, request
+        assert "https://example.org/public-document.pdf" in body
+        for private in ("INTERNAL PROVENANCE", "INTERNAL REVISION", "drive.google.com", "documento de uso interno"):
+            assert private not in body
+
+
+def test_operational_command_in_the_pilot_answers_without_failing_the_delivery(environment, monkeypatch):
+    monkeypatch.setattr("services.llm_utils.llamar_llm_para_json_estructurado",
+                        lambda *a: pytest.fail("An operational command must not call the selector"))
+    sent = []
+
+    def post(url, **kw):
+        sent.append(deepcopy(kw["json"])); return accepted_post()
+
+    result = process(document(mid="wamid.claim", content={"type": "text", "text": {"body": "iniciar un reclamo"}}), post=post)
+    assert result["accepted"] == 1
+    assert "no corresponde al menú de esta prueba" in sent_body(sent[-1])
+    assert "Escribí MENÚ" in sent_body(sent[-1])

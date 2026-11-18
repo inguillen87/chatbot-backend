@@ -16,6 +16,7 @@ import re
 import socket
 import time
 import subprocess
+import unicodedata
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -56,6 +57,7 @@ def fixture(*, counts=(4, 4, 3), text_length=30, label_length=18,
     content = definitions("services/institutional_assistant_content.py", {
         "deepcopy": deepcopy, "datetime": FixedDatetime, "timezone": timezone,
         "hashlib": hashlib, "ipaddress": ipaddress, "json": json, "re": re, "time": time,
+        "unicodedata": unicodedata,
         "urlsplit": urlsplit, "secure_filename": lambda name: "synthetic-document",
     })
     raw = {
@@ -152,6 +154,7 @@ def fixture(*, counts=(4, 4, 3), text_length=30, label_length=18,
         "re": re, "TENANT_ID": 46, "TENANT_SLUG": "tierra-del-fuego", "read_state": read_state,
         **{name: value for name, value in presentation.items() if callable(value)},
         "maybe_handle_institutional_question": assistant["maybe_handle_institutional_question"],
+        "is_source_navigation": content["is_source_navigation"],
         "cloud": SimpleNamespace(**{name: cloud[name] for name in ("MetaContractError", "text_payload", "list_payload")}),
     }, {"PilotError", "_answer", "_reply_payload", "_compose_menu_answer", "_knowledge_revision_current"})
     return SimpleNamespace(pilot=pilot, presentation=presentation, assistant=assistant, bundle=bundle,
