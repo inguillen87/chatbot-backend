@@ -395,6 +395,14 @@ class DomainLifecycleTests(unittest.TestCase):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'vercel.json').read_text())
         self.assertIs(manifest['git']['deploymentEnabled']['feat/whitelabel-domain-lifecycle-20261010'], False)
 
+    def test_only_main_creates_automatic_vercel_deployments(self):
+        # Production is published from main (CLI, staged and promoted); no
+        # other branch creates a Git deployment that occupies the build queue.
+        enabled = json.loads((Path(__file__).resolve().parents[1] / 'vercel.json').read_text())['git']['deploymentEnabled']
+        self.assertIs(enabled['**'], False)
+        self.assertIs(enabled['main'], True)
+        self.assertEqual([branch for branch, value in enabled.items() if value is True], ['main'])
+
     def readiness_query(self, **changes):
         row = {'host': 'conversa.gob.ar', 'tenant_id': self.tenant_id,
             'tenant_slug': 'acceptance-a', 'revision': self.descriptor()['revision'], 'nonce': 'c' * 64}
