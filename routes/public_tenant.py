@@ -1,3 +1,4 @@
+import hmac
 from datetime import datetime, timezone
 from io import BytesIO
 import copy
@@ -577,6 +578,22 @@ def _resolve_catalog_owner(tenant: TenantProfile):
     return None
 
 
+def _tenant_for_owner_embed_token(
+    identities: list[TenantProfile], token: object
+) -> TenantProfile | None:
+    """Return the single strongly identified tenant whose owner embed token is ``token``."""
+
+    if len({int(tenant.id) for tenant in identities}) != 1:
+        return None
+    tenant = identities[0]
+    owner = getattr(tenant, "pyme", None) or getattr(tenant, "municipio", None)
+    owner_token = str(getattr(owner, "token", None) or "").strip()
+    candidate = str(token or "").strip()
+    if not owner_token or not candidate:
+        return None
+    return tenant if hmac.compare_digest(owner_token.encode(), candidate.encode()) else None
+
+
 def _resolve_public_widget_tenant() -> TenantProfile | None:
     """Resolve the tenant for embedded widget/commerce endpoints."""
 
@@ -652,7 +669,13 @@ def _resolve_public_widget_tenant() -> TenantProfile | None:
                 register_widget_token=False,
             )
         except TenantResolutionError:
-            return None
+            resolved_token = None
+        if resolved_token is None:
+            # The public widget-config publishes the owner's embed token as the
+            # canonical widget token when no widget token is registered. It only
+            # corroborates a concrete slug/referrer of that same tenant; it never
+            # selects a tenant by itself, so this cannot widen resolution.
+            resolved_token = _tenant_for_owner_embed_token(resolved_identities, widget_token)
         if resolved_token is None:
             return None
         resolved_identities.append(resolved_token)

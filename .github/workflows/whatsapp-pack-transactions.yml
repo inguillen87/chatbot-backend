@@ -56,6 +56,9 @@ name: WhatsApp draft transactions
       - tests/test_browser_realtime_http_acceptance.py
       - tests/test_browser_realtime_postgres.py
       - routes/public_tenant.py
+      - tests/test_public_tenant_catalog_alias.py
+      - tests/test_pwa_public_catalog.py
+      - tests/test_ticket_crm_public_tenant_security.py
       - tests/test_organization_domain_binding.py
       - tests/test_organization_domain_vercel.py
       - services/organization_branding_ui.py
@@ -198,6 +201,12 @@ jobs:
           'tests/test_organization_domain_binding.py', 'tests/test_organization_domain_vercel.py',
           'tests/test_organization_addresses.py', 'tests/test_organization_address_runtime.py',
           'tests/test_organization_address_vercel.py', 'tests/test_organization_address_continuity.py']))"
+      - name: Verify public widget tenant identity (slug, referrer and embed token corroboration)
+        run: >-
+          python -X utf8 -c "from tests.profile_acceptance_runtime import prepare_process; prepare_process();
+          import pytest; raise SystemExit(pytest.main(['-q',
+          'tests/test_public_tenant_catalog_alias.py', 'tests/test_pwa_public_catalog.py',
+          'tests/test_ticket_crm_public_tenant_security.py']))"
       - name: Verify address collisions and stale JSON writers on the existing PostgreSQL18 service
         run: python -m tests.run_organization_address_ci_postgres
       - name: Verify actual mapped profile eager joins lock only owner and actor
