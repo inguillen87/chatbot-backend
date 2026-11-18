@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import re
+import time
 import unicodedata
 from urllib.parse import urlsplit
 from werkzeug.utils import secure_filename
@@ -229,10 +230,14 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
         bundle['approval_status'] = _text(raw['approval_status'], 120)
     # An import must support any allowed question without exceeding the same
     # selector budget checked at read time. Evidence bytes do not enter it.
-    # The reservation includes the continuity context of a follow-up: the
-    # current topic with the longest identifier and title.
-    topics = [key for key in bundle['nodes'] if key != bundle['start']] or list(bundle['nodes'])
-    largest_id = max(topics, key=lambda key: len(key.encode()) + len(bundle['nodes'][key]['title'].encode()))
+    # The reservation covers the largest node-dependent part of a request: the
+    # current node and, for a follow-up, its topic (id and escaped title).
+    def node_cost(key):
+        part = {'current_node': key}
+        if key != bundle['start']:
+            part['current_topic'] = {'id': key, 'title': bundle['nodes'][key]['title']}
+        return len(json.dumps(part, ensure_ascii=False).encode())
+    largest_id = max(bundle['nodes'], key=node_cost)
     _require(len(_selection_request(bundle, '\U0010ffff' * MAX_QUESTION_CHARS, largest_id).encode()) <= 120000,
              'knowledge_context_too_large')
     return bundle
@@ -350,17 +355,17 @@ def select_nodes(bundle, question, current_node, selector):
     request = _selection_request(bundle, question, current_node)
     _require(len(request.encode()) <= 120000, 'knowledge_context_too_large')
     result, failure = None, None
-    # One retry for a fast transient interpreter failure (no result at all).
-    # A returned selection, even an empty or invalid one, is never retried, and
-    # a slow failure such as a provider timeout is not repeated.
+    # A missing result (an exception, or None, which the default interpreter
+    # also returns for unparseable output) is retried once when it came back
+    # fast. A slow failure such as a provider timeout is not repeated, and a
+    # returned selection, even an empty or invalid one, is never retried.
     for attempt in range(2):
-        started = datetime.now(timezone.utc)
+        started = time.monotonic()
         try:
-            result, failure = selector(SELECTOR_INSTRUCTIONS, request), None
+            result = selector(SELECTOR_INSTRUCTIONS, request)
         except Exception as error:
             result, failure = None, error
-        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-        if result is not None or attempt or elapsed > SELECTOR_RETRY_WINDOW_SECONDS:
+        if result is not None or attempt or time.monotonic() - started > SELECTOR_RETRY_WINDOW_SECONDS:
             break
     if result is None:
         raise ContentError('knowledge_interpretation_unavailable', 503) from failure

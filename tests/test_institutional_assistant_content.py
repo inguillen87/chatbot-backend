@@ -1,6 +1,5 @@
 from copy import deepcopy
 import unittest
-from datetime import datetime, timedelta, timezone
 import json
 from unittest.mock import patch
 from services.institutional_assistant_content import normalize_bundle, select_nodes, overview, materialize_node, ContentError
@@ -323,11 +322,15 @@ class SelectorCapacityTests(unittest.TestCase):
             select_nodes(bundle, 'consulta', 'start', selector)
         self.assertEqual(failure.exception.code, 'knowledge_selection_invalid')
         self.assertEqual(len(calls), 1)
+        # The first failure stays the cause when the retry returns nothing.
+        first = RuntimeError('first')
+        selector, calls = scripted(first, None)
+        with self.assertRaises(ContentError) as failure:
+            select_nodes(bundle, 'consulta', 'start', selector)
+        self.assertIs(failure.exception.__cause__, first)
         # A slow failure (for example a provider timeout) is not repeated.
-        base = datetime(2026, 11, 18, 20, 0, tzinfo=timezone.utc)
         selector, calls = scripted(None, {'node_ids': ['requirements']})
-        with patch('services.institutional_assistant_content.datetime') as clock:
-            clock.now.side_effect = [base, base + timedelta(seconds=9)]
+        with patch('time.monotonic', side_effect=[100.0, 109.0]):
             with self.assertRaises(ContentError):
                 select_nodes(bundle, 'consulta', 'start', selector)
         self.assertEqual(len(calls), 1)
@@ -356,3 +359,55 @@ class SelectorCapacityTests(unittest.TestCase):
         self.assertEqual(failure.exception.code, 'knowledge_context_too_large')
         accepted = normalize_bundle(corpus(extra - 1), 701, 'qa-knowledge')
         self.assertEqual(select_nodes(accepted, question, 'topic', lambda *args: {'node_ids': ['topic']})[0]['id'], 'topic')
+
+    def test_import_budget_uses_the_exact_size_of_each_node_context(self):
+        # Shapes where a naive estimate under-reserves: a long identifier with a
+        # short title, a short identifier with a long escaped title, and a long
+        # start identifier. At the exact acceptance boundary, every node must
+        # still be answerable with the longest allowed question.
+        question = '\U0010ffff' * 1800
+        def corpus(shape, fillers, pad):
+            data = sample()
+            if shape == 'long-start':
+                start = 's' * 120
+                data['nodes'][start] = dict(data['nodes'].pop('start'), id=start)
+                data['node_evidence'][start] = data['node_evidence'].pop('start')
+                data['nodes']['requirements']['actions'][0]['target'] = start
+                data['start'] = start
+            special = {
+                'long-id': {'n' * 120: 'x', 'b': 'y' * 200},
+                'escaped-title': {'m' * 60: 'x' * 60, 'b': '"' * 100},
+                'long-start': {'b': 'y'},
+            }[shape]
+            nodes = {key: (title, 'x') for key, title in special.items()}
+            nodes['pad'] = ('p', 'x' * pad)
+            nodes.update({'filler-' + str(i): ('f', 'x' * 11000) for i in range(fillers)})
+            for index, (name, (node_title, text)) in enumerate(nodes.items()):
+                data['nodes'][name] = {'id': name, 'title': node_title, 'text': text, 'actions': []}
+                data['node_evidence'][name] = [{'source_id': 'a', 'page': 1}]
+                data['nodes'][data['start']]['actions'].append({'code': 'k' + str(index), 'label': 'N', 'target': name})
+            return data
+        def accepted(shape, fillers, pad):
+            try:
+                return normalize_bundle(corpus(shape, fillers, pad), 701, 'qa-knowledge')
+            except ContentError as error:
+                self.assertEqual(error.code, 'knowledge_context_too_large')
+                return None
+        for shape in ('long-id', 'escaped-title', 'long-start'):
+            with self.subTest(shape=shape):
+                fillers = 0
+                while accepted(shape, fillers + 1, 1) is not None:
+                    fillers += 1
+                low, high = 1, 12000
+                self.assertIsNotNone(accepted(shape, fillers, low))
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if accepted(shape, fillers, middle) is None:
+                        high = middle - 1
+                    else:
+                        low = middle
+                bundle = accepted(shape, fillers, low)
+                sizes = [len(_selection_request(bundle, question, node).encode()) for node in bundle['nodes']]
+                self.assertLessEqual(max(sizes), 120000)
+                if low < 12000:
+                    self.assertGreater(max(sizes), 120000 - 8)

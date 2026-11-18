@@ -361,7 +361,7 @@ class ExistingResponderCases:
             self.assertEqual((request['current_node'],request['current_topic']),('requirements',{'id':'requirements','title':'Requisitos'}))
             self.assertEqual(result['fuente'],'institutional_knowledge_unknown_question')
             self.assertEqual(result['message_body'],UI['unknown_in_topic'].format(title='Requisitos'))
-            self.assertIn('Seguís en «Requisitos»',result['message_body']);self.assertIn('«menú»',result['message_body'])
+            self.assertIn('Seguís en «Requisitos»',result['message_body'])
             self.assertEqual([(b['texto'],b['action_id'],b['reply_code']) for b in result['botones']],
                 [('Volver','knowledge:'+state['revision'][:16]+':start','9')])
             self.assertNotIn('knowledge_nodes',result)
@@ -371,6 +371,52 @@ class ExistingResponderCases:
             with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('numbered reply must not call the model')):
                 back=maybe_handle_institutional_question('9',owner,session)
             self.assertIn('Elegí una consulta.',back['message_body'])
+
+    def test_start_menu_label_typed_inside_a_topic_is_interpreted_with_that_topic(self):
+        import json
+        from services.institutional_assistant import maybe_handle_institutional_question
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            session=SimpleNamespace(tenant_id=tenant.id,context_data={'institutional_knowledge':{
+                'revision':state['revision'],'node_id':'requirements','reply_node_id':'requirements','reply_choices':{'9':'start'}}})
+            # "Requisitos" is a start-menu option, but it is not on screen here.
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value={'node_ids':['requirements']}) as selector:
+                result=maybe_handle_institutional_question('Requisitos',owner,session)
+            selector.assert_called_once()
+            request=json.loads(selector.call_args.args[1])
+            self.assertEqual((request['question'],request['current_topic']['id']),('Requisitos','requirements'))
+            self.assertIn('Respuesta institucional de prueba.',result['message_body'])
+
+    def test_uncovered_question_in_a_leaf_or_after_several_nodes(self):
+        from copy import deepcopy
+        from services.institutional_assistant import UI, maybe_handle_institutional_question
+        from tests.test_institutional_assistant_content import sample
+        with self.app.app_context():
+            client=self.login();state=self.seed(client)
+            bundle=sample(self.accounts['acceptance-a']['tenant_id'],'acceptance-a')
+            bundle['nodes']['leaf']={'id':'leaf','title':'Hoja sin opciones','text':'Respuesta de hoja.','actions':[]}
+            bundle['node_evidence']['leaf']=[{'source_id':'a','page':2}]
+            bundle['nodes']['start']['actions'].append({'code':'2','label':'Hoja','target':'leaf'})
+            imported=self.put(client,'import',state['revision'],bundle);self.assertEqual(imported.status_code,200,imported.get_json())
+            state=self.put(client,'publish',imported.get_json()['revision']).get_json()
+            from database import db
+            from models import TenantProfile,User
+            tenant=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+            owner=db.session.get(User,tenant.municipio_id or tenant.pyme_id)
+            leaf={'revision':state['revision'],'node_id':'leaf','reply_node_id':'leaf','reply_choices':{}}
+            session=SimpleNamespace(tenant_id=tenant.id,context_data={'institutional_knowledge':dict(leaf)})
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value={'node_ids':[]}):
+                result=maybe_handle_institutional_question('¿Y en Tolhuin?',owner,session)
+            self.assertEqual(result['message_body'],UI['unknown_in_topic_no_options'].format(title='Hoja sin opciones'))
+            self.assertEqual((result['botones'],result['message_type']),([],'text'))
+            self.assertEqual(session.context_data['institutional_knowledge'],leaf)
+            # After a multi-node answer there is no single topic to keep.
+            several={'revision':state['revision'],'node_id':'leaf','reply_node_id':None,'reply_choices':{}}
+            session=SimpleNamespace(tenant_id=tenant.id,context_data={'institutional_knowledge':deepcopy(several)})
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value={'node_ids':[]}):
+                result=maybe_handle_institutional_question('¿Y en Tolhuin?',owner,session)
+            self.assertEqual(result['message_body'],UI['unknown'])
+            self.assertEqual(session.context_data['institutional_knowledge']['node_id'],'start')
 
     def test_fast_transient_interpreter_failure_is_retried_once(self):
         from services.institutional_assistant import UI, maybe_handle_institutional_question

@@ -22,8 +22,9 @@ UI = {
     'options_page': 'Opciones: grupo {current} de {total}',
     'unknown': 'Esta información no está incluida en las fuentes disponibles. Podés elegir otro tema.',
     'unknown_in_topic': ('Esta información no está incluida en las fuentes disponibles. '
-                         'Seguís en «{title}»: podés elegir una de estas opciones o escribir «menú» '
-                         'para ver todos los temas.'),
+                         'Seguís en «{title}»: podés elegir una de estas opciones o escribir otra consulta.'),
+    'unknown_in_topic_no_options': ('Esta información no está incluida en las fuentes disponibles. '
+                                    'Seguís en «{title}»: podés escribir otra consulta sobre este tema.'),
     'source_navigation': 'Podés consultar el catálogo de documentos en Documentos y fuentes.',
     'error': 'No se pudo completar la consulta. Volvé a intentarlo o elegí un tema.',
     'retry': 'Volver a consultar', 'import': 'Incorporar conocimiento',
@@ -150,14 +151,14 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     called = question is not None
     navigation = called and is_source_navigation(question)
     # Explicit UI commands typed instead of pressed: the complete label of an
-    # option displayed on this node, the bounded menu vocabulary, or the complete
-    # label of a start-menu topic. The node's own option keeps its published
-    # target. Anything else, including partial labels, goes to the selector.
+    # option displayed on this node (the start menu's topics when it is the
+    # start node), then the bounded menu vocabulary. The node's own option keeps
+    # its published target. Anything else, including partial labels and labels
+    # not on screen, goes to the selector with the current topic.
     chosen = None
     if called and not navigation:
         chosen = (advertised_choice(bundle, question, [node_id])
-                  or (bundle['start'] if is_menu_command(question) else None)
-                  or advertised_choice(bundle, question, [bundle['start']]))
+                  or (bundle['start'] if is_menu_command(question) else None))
     if navigation:
         nodes = []
     elif chosen is not None:
@@ -386,11 +387,12 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
     if unknown_question:
         # A published corpus remains the authority for informational questions.
         # Empty selection must not ask another model to invent a free-form answer.
-        # Inside a topic that offers options, re-read that canonical node so the
-        # person keeps its choices (for example another locality); otherwise
-        # re-read the start menu. Same revision, no selection.
+        # Inside a single displayed topic, re-read that canonical node so the
+        # person keeps it and its choices (for example another locality);
+        # otherwise re-read the start menu. Same revision, no selection.
         topic = state['bundle']['nodes'].get(command['node_id'])
-        keep_topic = command['node_id'] != state['bundle']['start'] and bool(topic and topic['actions'])
+        keep_topic = (topic is not None and command['node_id'] != state['bundle']['start']
+                      and previous.get('reply_node_id') == command['node_id'])
         try:
             result = answer(tenant, {'revision': state['revision'],
                 'node_id': command['node_id'] if keep_topic else state['bundle']['start']}, public=True)
@@ -417,7 +419,10 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
     buttons = [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target'],
         **({'reply_code': c['code']} if c['code'] in reply_choices else {})} for c in choices]
     if unknown_question:
-        return {'message_body': UI['unknown_in_topic'].format(title=unknown_title) if unknown_title else UI['unknown'],
+        notice = UI['unknown']
+        if unknown_title:
+            notice = UI['unknown_in_topic' if buttons else 'unknown_in_topic_no_options'].format(title=unknown_title)
+        return {'message_body': notice,
             'botones': buttons,
             'message_type': 'interactive_buttons' if buttons else 'text',
             'fuente': 'institutional_knowledge_unknown_question',

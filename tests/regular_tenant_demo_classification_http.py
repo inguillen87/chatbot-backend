@@ -566,7 +566,8 @@ class RegularTenantChatTests(unittest.TestCase):
         from services.institutional_assistant import UI
         published, _ = self.published_knowledge_for_public_chat()
         revision = published['revision']
-        self.context({'institutional_knowledge': {'revision': revision, 'node_id': 'requirements'},
+        self.context({'institutional_knowledge': {'revision': revision, 'node_id': 'requirements',
+            'reply_node_id': 'requirements', 'reply_choices': {'9': 'start'}},
             CONTEXTO_MUNICIPIO: {}})
         with patch('routes.chat.responder_chatboc', wraps=responder_chatboc), \
              patch('services.llm_utils.llamar_llm_para_json_estructurado', return_value={'node_ids': []}) as selector, \

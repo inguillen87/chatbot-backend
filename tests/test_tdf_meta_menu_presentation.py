@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import re
 import socket
+import time
 import subprocess
 from types import SimpleNamespace
 import unittest
@@ -54,7 +55,7 @@ def fixture(*, counts=(4, 4, 3), text_length=30, label_length=18,
             visibility="public", review_status="reviewed", links=False):
     content = definitions("services/institutional_assistant_content.py", {
         "deepcopy": deepcopy, "datetime": FixedDatetime, "timezone": timezone,
-        "hashlib": hashlib, "ipaddress": ipaddress, "json": json, "re": re,
+        "hashlib": hashlib, "ipaddress": ipaddress, "json": json, "re": re, "time": time,
         "urlsplit": urlsplit, "secure_filename": lambda name: "synthetic-document",
     })
     raw = {
