@@ -1250,3 +1250,68 @@ def test_widget_user_register_links_municipio_anon_history_cart_and_follower(cli
     history = history_resp.get_json()
     assert history["cart"]["items_count"] == 1
     assert "claim" in {entry["kind"] for entry in history["items"]}
+
+
+def _seed_owner_token_tenant(slug, token):
+    owner = User(email=f"owner-{slug}@test.com", name=f"Owner {slug}", rol="admin", tipo_chat="municipio")
+    owner.set_password("pass")
+    owner.token = token
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(slug=slug, nombre=f"Tenant {slug}", tipo="municipio", plan="full",
+                           municipio_id=owner.id, vertical="gobierno")
+    db.session.add(tenant)
+    db.session.commit()
+    return tenant
+
+
+def test_public_widget_owner_embed_token_corroborates_same_tenant(client):
+    # widget-config publishes the owner's embed token when no widget token is
+    # registered; the widget sends it next to the tenant's own slug.
+    tenant = _seed_owner_token_tenant("owner-embed-a", "owner-embed-token-a")
+    query = {"tenant_slug": tenant.slug, "tenant": tenant.slug, "widget_token": "owner-embed-token-a"}
+    headers = {
+        "X-Tenant-Slug": tenant.slug,
+        "X-Widget-Token": "owner-embed-token-a",
+        "Referer": f"https://www.chatboc.ar/t/{tenant.slug}",
+        "X-Chat-Session-Id": "chat_owner_embed",
+        "X-Anon-Id": "anon_owner_embed",
+    }
+
+    commerce = client.get("/api/public/widget-commerce-session", query_string=query, headers=headers)
+    history = client.get("/api/public/widget-user/tenant-history", query_string=query, headers=headers)
+
+    assert commerce.status_code == 200, commerce.get_json()
+    assert commerce.get_json()["tenant"]["slug"] == tenant.slug
+    assert history.status_code == 200, history.get_json()
+    assert history.get_json()["tenant_slug"] == tenant.slug
+    db.session.refresh(tenant)
+    # Corroboration is read-only: the owner token is never registered as a widget token.
+    assert "owner-embed-token-a" not in str(tenant.configuracion or "")
+
+
+def test_public_widget_owner_embed_token_of_other_tenant_fails_closed(client):
+    tenant_a = _seed_owner_token_tenant("owner-embed-conflict-a", "owner-embed-token-ca")
+    _seed_owner_token_tenant("owner-embed-conflict-b", "owner-embed-token-cb")
+
+    for path in ("/api/public/widget-commerce-session", "/api/public/widget-user/tenant-history"):
+        response = client.get(
+            path,
+            query_string={"tenant_slug": tenant_a.slug, "widget_token": "owner-embed-token-cb"},
+            headers={"X-Chat-Session-Id": "chat_owner_conflict", "X-Anon-Id": "anon_owner_conflict"},
+        )
+        assert response.status_code == 404, (path, response.get_json())
+        assert response.get_json()["reason_code"] == "tenant_resolution_failed"
+
+
+def test_public_widget_owner_embed_token_alone_does_not_select_tenant(client):
+    _seed_owner_token_tenant("owner-embed-alone", "owner-embed-token-alone")
+
+    response = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"widget_token": "owner-embed-token-alone"},
+        headers={"X-Chat-Session-Id": "chat_owner_alone", "X-Anon-Id": "anon_owner_alone"},
+    )
+
+    assert response.status_code == 404, response.get_json()
+    assert response.get_json()["reason_code"] == "tenant_resolution_failed"
