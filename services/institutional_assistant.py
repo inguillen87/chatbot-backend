@@ -281,6 +281,8 @@ def _institutional_reply_code(text):
     # remain the authority for the current tenant, node and revision.
     if len(value) in (2, 3) and value[0] in '0123456789' and value[1:] in ('\u20e3', '\ufe0f\u20e3'):
         return value[0]
+    if value == '\U0001f51f':  # keycap ten, offered by numbered menus of ten options
+        return '10'
     return None
 
 
@@ -426,6 +428,7 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
             'botones': buttons,
             'message_type': 'interactive_buttons' if buttons else 'text',
             'fuente': 'institutional_knowledge_unknown_question',
+            'knowledge_tenant': {'id': tenant.id, 'slug': tenant.slug},
             'context_revision': state['revision']}
     from services.institutional_assistant_audio import audio_reading_capability
     capability = audio_reading_capability()

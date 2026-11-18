@@ -411,3 +411,24 @@ class SelectorCapacityTests(unittest.TestCase):
                 self.assertLessEqual(max(sizes), 120000)
                 if low < 12000:
                     self.assertGreater(max(sizes), 120000 - 8)
+
+    # Second review (#2854, Antigravity): questions are never navigation
+    # commands, the "Todos los temas" button text is, and the code shown
+    # beside an option is part of what the person sees.
+    def test_questions_are_not_menu_commands_and_visible_codes_are_choices(self):
+        for text in ('¿Puedo empezar de nuevo?', '¿Necesito volver a empezar?', 'Puedo volver al menú?',
+                     '¿Volver al menú inicial?'):
+            with self.subTest(text=text):
+                self.assertFalse(is_menu_command(text))
+        for text in ('Todos los temas', 'ver todos los temas', 'Volver a todos los temas', 'mostrarme el menú',
+                     'menú de temas', 'Podés mostrarme el menú'):
+            with self.subTest(text=text):
+                self.assertTrue(is_menu_command(text))
+        bundle = normalize_bundle(sample(), 701, 'qa-knowledge')
+        for typed in ('1', ' 1. ', '1 Requisitos', '1. requisitos'):
+            with self.subTest(typed=typed):
+                self.assertEqual(advertised_choice(bundle, typed, ['start']), 'requirements')
+        for typed in ('2', '9', '1 Requisitos de CUD'):
+            with self.subTest(typed=typed):
+                self.assertIsNone(advertised_choice(bundle, typed, ['start']))
+        self.assertEqual(advertised_choice(bundle, '9', ['requirements']), 'start')

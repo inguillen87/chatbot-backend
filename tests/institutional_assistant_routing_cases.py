@@ -79,6 +79,26 @@ class ExistingResponderCases:
                         self.assertEqual(session.context_data['institutional_knowledge']['node_id'],'start')
             self.assertEqual(AuditEvent.query.count(),audit_before)
 
+    def test_keycap_ten_is_the_tenth_displayed_choice(self):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        from tests.test_institutional_assistant_content import sample
+        from models import TenantProfile,User
+        with self.app.app_context():
+            client=self.login()
+            bundle=sample(self.accounts['acceptance-a']['tenant_id'],'acceptance-a')
+            bundle['nodes']['start']['actions'][0]['code']='10'
+            state=self.put(client,'import',None,bundle).get_json()
+            state=self.put(client,'publish',state['revision']).get_json()
+            db=self.app.extensions['sqlalchemy'].session
+            tenant=db.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+            owner=db.get(User,tenant.municipio_id or tenant.pyme_id)
+            session=SimpleNamespace(tenant_id=tenant.id,context_data={})
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('keycap ten must not call the model')):
+                maybe_handle_institutional_question('menu',owner,session)
+                response=maybe_handle_institutional_question('\U0001f51f',owner,session)
+            self.assertIn('Respuesta institucional de prueba.',response['message_body'])
+            self.assertEqual(session.context_data['institutional_knowledge']['node_id'],'requirements')
+
     def test_keycap_zero_is_a_choice_only_when_it_was_advertised(self):
         from services.institutional_assistant import maybe_handle_institutional_question
         from tests.test_institutional_assistant_content import sample
@@ -328,6 +348,11 @@ class ExistingResponderCases:
                 self.assertEqual(session.context_data['institutional_knowledge'],topic['institutional_knowledge'])
                 back=maybe_handle_institutional_question('Volver.',owner,session)
                 self.assertIn('Elegí una consulta.',back['message_body'])
+                # The code shown beside an option, typed with its label, is that option.
+                again=maybe_handle_institutional_question('1 Requisitos',owner,session)
+                self.assertIn('Respuesta institucional de prueba.',again['message_body'])
+                back=maybe_handle_institutional_question('Volver.',owner,session)
+                self.assertIn('Elegí una consulta.',back['message_body'])
                 self.assertEqual(session.context_data['institutional_knowledge'],start)
             selector.assert_not_called()
 
@@ -365,6 +390,8 @@ class ExistingResponderCases:
             self.assertEqual([(b['texto'],b['action_id'],b['reply_code']) for b in result['botones']],
                 [('Volver','knowledge:'+state['revision'][:16]+':start','9')])
             self.assertNotIn('knowledge_nodes',result)
+            # The tenant travels with the notice so the web chat can scope it.
+            self.assertEqual(result['knowledge_tenant'],{'id':tenant.id,'slug':tenant.slug})
             # The person's words are not copied into the persisted context.
             self.assertEqual(session.context_data['institutional_knowledge'],topic)
             self.assertNotIn('Ushuaia',json.dumps(session.context_data,ensure_ascii=False))

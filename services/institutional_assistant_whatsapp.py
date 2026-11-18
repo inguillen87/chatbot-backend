@@ -67,6 +67,15 @@ def present_answer_parts(result, context, *, tenant_id, tenant_slug):
     value = clear_source_scope(context)
     nodes, revision = result.get('knowledge_nodes'), result.get('context_revision')
     tenant = {'id': tenant_id, 'slug': tenant_slug}
+    # An uncovered question that kept the person in the same single topic keeps
+    # that topic's reference scope, so FUENTES still lists its public sources.
+    scope, current = context.get(SOURCE_SCOPE), context.get('institutional_knowledge')
+    if (result.get('fuente') == 'institutional_knowledge_unknown_question'
+            and isinstance(scope, dict) and isinstance(current, dict)
+            and scope.get('tenant') == tenant and scope.get('revision') == revision
+            and current.get('revision') == revision and isinstance(current.get('node_id'), str)
+            and scope.get('node_ids') == [current['node_id']] == [current.get('reply_node_id')]):
+        value[SOURCE_SCOPE] = deepcopy(scope)
     if (not isinstance(nodes, list) or not 1 <= len(nodes) <= 3
             or result.get('knowledge_tenant') != tenant
             or not isinstance(revision, str) or not _REVISION.fullmatch(revision)):

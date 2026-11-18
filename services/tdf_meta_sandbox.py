@@ -27,6 +27,7 @@ from services import meta_account_events as account_events
 from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
+from services.institutional_assistant_content import is_source_navigation
 from services.institutional_assistant_whatsapp import (
     clear_source_scope, present_answer_parts, short_label, sources_answer, sources_page,
 )
@@ -336,12 +337,21 @@ def _answer(event, context, *, audio_text=None):
         # The pilot has no operational dispatch, ticket creation or flow submit.
         return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", clear_source_scope(context), None, ())
     page = sources_page(question)
+    if page is None and isinstance(question, str) and is_source_navigation(question):
+        # Natural-language requests for the references use the pilot's own
+        # public-only catalogue of the last orientation, like FUENTES.
+        page = 1
     if page is not None:
         body, next_context, revision = sources_answer(tenant, context, page)
         return body + "\n\nEscribí MENÚ para volver a los temas.", next_context, revision, ()
     if isinstance(question, str) and question.strip().casefold() in {"hola", "buenas", "buen día", "buen dia"}:
         question = "menu"
     result = maybe_handle_institutional_question(question, owner, session)
+    if result is None:
+        # An operational command (for example "iniciar un reclamo") belongs to
+        # flows this pilot does not run; answer instead of failing the delivery.
+        return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.",
+                clear_source_scope(context), None, ())
     if not isinstance(result, dict) or not result.get("message_body"):
         raise PilotError("tdf_sandbox_knowledge_unavailable")
     parts, session.context_data = present_answer_parts(result, session.context_data,
