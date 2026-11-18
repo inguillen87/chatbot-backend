@@ -279,6 +279,9 @@ sólo agrega o cambia la localidad, para quién es o un detalle de ese mismo tr�
 una continuación: seleccioná únicamente nodos de ese mismo trámite y de esa localidad. Si no hay nodos de ese trámite para esa localidad,
 devolvé una lista vacía; no cambies a otro trámite ni a otra oficina por coincidir la
 localidad. Si la pregunta nombra otro tema, seleccioná ese tema.
+Ambigüedad: si la pregunta puede referirse a más de un trámite y nada (ni el tema
+en curso) permite saber a cuál, seleccioná un único nodo cuyas acciones ofrezcan elegir
+entre esos trámites (por ejemplo el tema en curso o un menú), en lugar de elegir uno.
 '''
 
 def is_source_navigation(question):

@@ -288,6 +288,8 @@ class SelectorCapacityTests(unittest.TestCase):
         self.assertEqual(seen[0]['current_topic'], {'id': 'requirements', 'title': 'Requisitos'})
         self.assertEqual(set(seen[1]), {'question', 'current_node', 'knowledge'})
         self.assertIn('current_topic', SELECTOR_INSTRUCTIONS)
+        # An ambiguous procedure is resolved by offering the choice, never by guessing one.
+        self.assertIn('ofrezcan elegir\nentre esos trámites', SELECTOR_INSTRUCTIONS)
         self.assertIn('no cambies a otro trámite ni a otra oficina por coincidir la\nlocalidad', SELECTOR_INSTRUCTIONS)
 
     def test_selector_is_retried_once_only_after_a_fast_failure_without_result(self):
