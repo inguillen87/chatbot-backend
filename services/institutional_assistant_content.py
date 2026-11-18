@@ -13,6 +13,7 @@ CONTRACT = 'chatboc.institutional_assistant.v1'
 BUNDLE_CONTRACT = 'chatboc.institutional_guide.composed.v1'
 MAX_BYTES = 1_000_000
 MAX_QUESTION_CHARS = 1800
+SELECTOR_RETRY_WINDOW_SECONDS = 8
 _ID = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,119}$')
 _HASH = re.compile(r'^[a-f0-9]{64}$')
 _STAMP = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$')
@@ -228,7 +229,10 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
         bundle['approval_status'] = _text(raw['approval_status'], 120)
     # An import must support any allowed question without exceeding the same
     # selector budget checked at read time. Evidence bytes do not enter it.
-    largest_id = max(nodes, key=len)
+    # The reservation includes the continuity context of a follow-up: the
+    # current topic with the longest identifier and title.
+    topics = [key for key in bundle['nodes'] if key != bundle['start']] or list(bundle['nodes'])
+    largest_id = max(topics, key=lambda key: len(key.encode()) + len(bundle['nodes'][key]['title'].encode()))
     _require(len(_selection_request(bundle, '\U0010ffff' * MAX_QUESTION_CHARS, largest_id).encode()) <= 120000,
              'knowledge_context_too_large')
     return bundle
@@ -265,6 +269,11 @@ Una orientación o contacto pertinente alcanza para seleccionar un nodo; la
 lista vacía corresponde a preguntas sin ningún nodo pertinente en las fuentes.
 No infieras diagnósticos ni incapacidad por la manera de escribir. No ejecutes herramientas.
 La respuesta se construirá con los textos canónicos y fuentes, no con redacción libre.
+Continuidad: current_topic, cuando existe, es el tema en curso. Si la pregunta nueva
+sólo agrega o cambia la localidad, para quién es o un detalle de ese mismo trámite, es
+una continuación: seleccioná únicamente nodos de ese mismo trámite y de esa localidad. Si no hay nodos de ese trámite para esa localidad,
+devolvé una lista vacía; no cambies a otro trámite ni a otra oficina por coincidir la
+localidad. Si la pregunta nombra otro tema, seleccioná ese tema.
 '''
 
 def is_source_navigation(question):
@@ -284,21 +293,77 @@ def is_source_navigation(question):
         r'|(?:quiero |quisiera |necesito )?(?:ver|consultar|leer|listar|abrir) '
         r'|(?:mostrame|muestrame|mostrar|listame) )(' + target + r')', value) is not None
 
+def _command_text(question):
+    """Casefolded, accent-free words of a short UI command; symbols and emoji are dropped."""
+    if not isinstance(question, str) or len(question) > MAX_QUESTION_CHARS:
+        return ''
+    value = unicodedata.normalize('NFD', question.casefold())
+    value = ''.join(c for c in value if not unicodedata.combining(c))
+    return ' '.join(re.sub(r'[^\w\s]', ' ', value).replace('_', ' ').split())
+
+_MENU_COMMAND = re.compile(
+    r'(?:(?:quiero|quisiera|necesito|podes|puedo|por favor) )*(?:'
+    r'(?:volver|ir|regresar)(?: (?:al|a el|a))? (?:menu(?: (?:inicial|principal|de inicio))?|inicio|principio)'
+    r'|(?:ver |mostrar |mostrame |muestrame |abrir )?(?:el )?menu(?: (?:inicial|principal|de inicio))?'
+    r'|inicio|empezar de nuevo|volver a empezar|comenzar de nuevo|empezar otra vez'
+    r')(?: por favor)?')
+
+def is_menu_command(question):
+    """Bounded vocabulary for returning to the start menu by text (web and WhatsApp).
+
+    Like is_source_navigation, this is an explicit UI command, not topic
+    interpretation: a bare "volver" stays a question because nodes may offer a
+    one-level "Volver" option.
+    """
+    return _MENU_COMMAND.fullmatch(_command_text(question)) is not None
+
+def advertised_choice(bundle, question, node_ids):
+    """Target of an option whose displayed label was typed verbatim.
+
+    Only options advertised on the given nodes are considered, compared after
+    removing case, accents, emoji and punctuation. An ambiguous label is not a
+    choice; it stays a question for the selector.
+    """
+    typed = _command_text(question)
+    if not typed:
+        return None
+    targets = set()
+    for node_id in node_ids:
+        node = bundle['nodes'].get(node_id)
+        for action in (node or {}).get('actions', []):
+            if _command_text(action.get('label', '')) == typed:
+                targets.add(action['target'])
+    return targets.pop() if len(targets) == 1 else None
+
 def _selection_request(bundle, question, current_node):
     candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text'],
                    'actions': deepcopy(n['actions'])} for n in bundle['nodes'].values()]
-    return json.dumps({'question': question, 'current_node': current_node, 'knowledge': candidates}, ensure_ascii=False)
+    request = {'question': question, 'current_node': current_node, 'knowledge': candidates}
+    if bundle.get('start') not in (None, current_node):
+        topic = bundle['nodes'][current_node]
+        request['current_topic'] = {'id': topic['id'], 'title': topic['title']}
+    return json.dumps(request, ensure_ascii=False)
 
 def select_nodes(bundle, question, current_node, selector):
     question = _text(question, MAX_QUESTION_CHARS)
     _require(current_node in bundle['nodes'])
     request = _selection_request(bundle, question, current_node)
     _require(len(request.encode()) <= 120000, 'knowledge_context_too_large')
-    try:
-        result = selector(SELECTOR_INSTRUCTIONS, request)
-    except Exception as error:
-        raise ContentError('knowledge_interpretation_unavailable', 503) from error
-    if result is None: raise ContentError('knowledge_interpretation_unavailable', 503)
+    result, failure = None, None
+    # One retry for a fast transient interpreter failure (no result at all).
+    # A returned selection, even an empty or invalid one, is never retried, and
+    # a slow failure such as a provider timeout is not repeated.
+    for attempt in range(2):
+        started = datetime.now(timezone.utc)
+        try:
+            result, failure = selector(SELECTOR_INSTRUCTIONS, request), None
+        except Exception as error:
+            result, failure = None, error
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+        if result is not None or attempt or elapsed > SELECTOR_RETRY_WINDOW_SECONDS:
+            break
+    if result is None:
+        raise ContentError('knowledge_interpretation_unavailable', 503) from failure
     _require(isinstance(result, dict) and set(result) == {'node_ids'}, 'knowledge_selection_invalid')
     ids = result['node_ids']
     _require(isinstance(ids, list) and len(ids) <= 3 and all(isinstance(k, str) for k in ids))

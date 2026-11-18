@@ -10,7 +10,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
     ContentError, CONTRACT, MAX_QUESTION_CHARS, normalize_bundle, overview, digest, select_nodes, materialize_node,
-    is_source_navigation,
+    is_source_navigation, is_menu_command, advertised_choice,
 )
 KEY, CHANNEL = 'institutional_assistant', 'knowledge'
 UI = {
@@ -21,6 +21,9 @@ UI = {
     'more_options': 'Más opciones', 'previous_options': 'Opciones anteriores',
     'options_page': 'Opciones: grupo {current} de {total}',
     'unknown': 'Esta información no está incluida en las fuentes disponibles. Podés elegir otro tema.',
+    'unknown_in_topic': ('Esta información no está incluida en las fuentes disponibles. '
+                         'Seguís en «{title}»: podés elegir una de estas opciones o escribir «menú» '
+                         'para ver todos los temas.'),
     'source_navigation': 'Podés consultar el catálogo de documentos en Documentos y fuentes.',
     'error': 'No se pudo completar la consulta. Volvé a intentarlo o elegí un tema.',
     'retry': 'Volver a consultar', 'import': 'Incorporar conocimiento',
@@ -146,8 +149,19 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     question = command.get('question')
     called = question is not None
     navigation = called and is_source_navigation(question)
+    # Explicit UI commands typed instead of pressed: the complete label of an
+    # option displayed on this node, the bounded menu vocabulary, or the complete
+    # label of a start-menu topic. The node's own option keeps its published
+    # target. Anything else, including partial labels, goes to the selector.
+    chosen = None
+    if called and not navigation:
+        chosen = (advertised_choice(bundle, question, [node_id])
+                  or (bundle['start'] if is_menu_command(question) else None)
+                  or advertised_choice(bundle, question, [bundle['start']]))
     if navigation:
         nodes = []
+    elif chosen is not None:
+        nodes = [deepcopy(bundle['nodes'][chosen])]
     elif called:
         if selector is None:
             from services.llm_utils import llamar_llm_para_json_estructurado
@@ -170,7 +184,7 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     result = {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
         'revision': state['revision'], 'nodes': [materialize_node(n, public=public) for n in nodes],
         'text': UI['unknown'] if not nodes else '\n\n'.join(n['text'] for n in nodes),
-        'selection_performed': called and not navigation, 'business_writes_performed': False}
+        'selection_performed': called and not navigation and chosen is None, 'business_writes_performed': False}
     if navigation:
         result.update(result_type='source_navigation', text=UI['source_navigation'],
                       sources=overview(latest['bundle'], public=public)['sources'])
@@ -368,16 +382,23 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
             'context_revision': result['revision']}
     nodes = result['nodes']
     unknown_question = not nodes and command.get('question') is not None
+    unknown_title = None
     if unknown_question:
         # A published corpus remains the authority for informational questions.
         # Empty selection must not ask another model to invent a free-form answer.
-        # Re-read the canonical start menu with the same revision, without selection.
+        # Inside a topic that offers options, re-read that canonical node so the
+        # person keeps its choices (for example another locality); otherwise
+        # re-read the start menu. Same revision, no selection.
+        topic = state['bundle']['nodes'].get(command['node_id'])
+        keep_topic = command['node_id'] != state['bundle']['start'] and bool(topic and topic['actions'])
         try:
             result = answer(tenant, {'revision': state['revision'],
-                'node_id': state['bundle']['start']}, public=True)
+                'node_id': command['node_id'] if keep_topic else state['bundle']['start']}, public=True)
         except ContentError:
             return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_unavailable'}
         nodes = result['nodes']
+        if keep_topic:
+            unknown_title = topic['title']
     citations, choices, links = [], [], []
     for node in nodes:
         links.extend(node.get('links', []))
@@ -396,7 +417,8 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
     buttons = [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target'],
         **({'reply_code': c['code']} if c['code'] in reply_choices else {})} for c in choices]
     if unknown_question:
-        return {'message_body': UI['unknown'], 'botones': buttons,
+        return {'message_body': UI['unknown_in_topic'].format(title=unknown_title) if unknown_title else UI['unknown'],
+            'botones': buttons,
             'message_type': 'interactive_buttons' if buttons else 'text',
             'fuente': 'institutional_knowledge_unknown_question',
             'context_revision': state['revision']}

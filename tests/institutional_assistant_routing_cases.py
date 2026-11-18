@@ -304,6 +304,90 @@ class ExistingResponderCases:
             selector.assert_not_called()
             operational.assert_called_once();self.assertEqual(result['fuente'],'operational')
 
+    # TDF feedback (#2854): typed navigation, typed menu topics and continuity.
+    def test_typed_menu_commands_and_typed_option_labels_navigate_without_the_model(self):
+        from copy import deepcopy
+        from services.institutional_assistant import maybe_handle_institutional_question
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            start={'revision':state['revision'],'node_id':'start','reply_node_id':'start','reply_choices':{'1':'requirements'}}
+            topic={'institutional_knowledge':{'revision':state['revision'],'node_id':'requirements','reply_node_id':'requirements','reply_choices':{'9':'start'}}}
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('typed navigation must not call the model')) as selector,\
+                 patch('services.municipio_responder.responder_municipio',side_effect=AssertionError('typed navigation must stay in the corpus')):
+                for text in ('volver al menú inicial','Volver al menu principal','¡Ir al menú!','empezar de nuevo'):
+                    with self.subTest(text=text):
+                        session=SimpleNamespace(tenant_id=tenant.id,context_data=deepcopy(topic))
+                        result=maybe_handle_institutional_question(text,owner,session)
+                        self.assertEqual(result['fuente'],'institutional_knowledge')
+                        self.assertIn('Elegí una consulta.',result['message_body'])
+                        self.assertEqual([(b['texto'],b['reply_code']) for b in result['botones']],[('Requisitos','1')])
+                        self.assertEqual(session.context_data['institutional_knowledge'],start)
+                session=SimpleNamespace(tenant_id=tenant.id,context_data={})
+                topic_result=maybe_handle_institutional_question('requisitos',owner,session)
+                self.assertIn('Respuesta institucional de prueba.',topic_result['message_body'])
+                self.assertEqual(session.context_data['institutional_knowledge'],topic['institutional_knowledge'])
+                back=maybe_handle_institutional_question('Volver.',owner,session)
+                self.assertIn('Elegí una consulta.',back['message_body'])
+                self.assertEqual(session.context_data['institutional_knowledge'],start)
+            selector.assert_not_called()
+
+    def test_web_answer_resolves_typed_navigation_with_the_same_canonical_nodes(self):
+        client=self.login();state=self.seed(client)
+        body={'revision':state['revision'],'node_id':'requirements'}
+        canonical_start=client.post(self.url()+'/answer',json={**body,'node_id':'start'}).get_json()['nodes']
+        canonical_topic=client.post(self.url()+'/answer',json=body).get_json()['nodes']
+        with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('typed navigation must not call the model')) as model:
+            home=client.post(self.url()+'/answer',json={**body,'question':'Volver al menú inicial'})
+            typed=client.post(self.url()+'/answer',json={**body,'node_id':'start','question':'REQUISITOS'})
+        model.assert_not_called()
+        for response,expected in ((home,canonical_start),(typed,canonical_topic)):
+            self.assertEqual(response.status_code,200,response.get_json())
+            payload=response.get_json()
+            self.assertEqual(payload['nodes'],expected)
+            self.assertFalse(payload['selection_performed']);self.assertFalse(payload['business_writes_performed'])
+            self.assertNotIn('result_type',payload)
+
+    def test_uncovered_follow_up_keeps_the_topic_its_options_and_numbered_replies(self):
+        import json
+        from services.institutional_assistant import UI, maybe_handle_institutional_question
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            topic={'revision':state['revision'],'node_id':'requirements','reply_node_id':'requirements','reply_choices':{'9':'start'}}
+            session=SimpleNamespace(tenant_id=tenant.id,context_data={'institutional_knowledge':dict(topic)})
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value={'node_ids':[]}) as selector,\
+                 patch('services.municipio_responder.responder_municipio',side_effect=AssertionError('an uncovered question must not get a free answer')):
+                result=maybe_handle_institutional_question('¿Y si soy de Ushuaia?',owner,session)
+            request=json.loads(selector.call_args.args[1])
+            self.assertEqual((request['current_node'],request['current_topic']),('requirements',{'id':'requirements','title':'Requisitos'}))
+            self.assertEqual(result['fuente'],'institutional_knowledge_unknown_question')
+            self.assertEqual(result['message_body'],UI['unknown_in_topic'].format(title='Requisitos'))
+            self.assertIn('Seguís en «Requisitos»',result['message_body']);self.assertIn('«menú»',result['message_body'])
+            self.assertEqual([(b['texto'],b['action_id'],b['reply_code']) for b in result['botones']],
+                [('Volver','knowledge:'+state['revision'][:16]+':start','9')])
+            self.assertNotIn('knowledge_nodes',result)
+            # The person's words are not copied into the persisted context.
+            self.assertEqual(session.context_data['institutional_knowledge'],topic)
+            self.assertNotIn('Ushuaia',json.dumps(session.context_data,ensure_ascii=False))
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=AssertionError('numbered reply must not call the model')):
+                back=maybe_handle_institutional_question('9',owner,session)
+            self.assertIn('Elegí una consulta.',back['message_body'])
+
+    def test_fast_transient_interpreter_failure_is_retried_once(self):
+        from services.institutional_assistant import UI, maybe_handle_institutional_question
+        with self.app.app_context():
+            tenant,owner,state=self.prepare_published_owner()
+            session=SimpleNamespace(tenant_id=tenant.id,context_data={})
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=[None,{'node_ids':['requirements']}]) as selector:
+                result=maybe_handle_institutional_question('¿Qué hace falta para el trámite?',owner,session)
+            self.assertEqual(selector.call_count,2)
+            self.assertEqual(selector.call_args_list[0],selector.call_args_list[1])
+            self.assertEqual(result['fuente'],'institutional_knowledge')
+            self.assertIn('Respuesta institucional de prueba.',result['message_body'])
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',return_value=None) as selector:
+                failed=maybe_handle_institutional_question('¿Qué hace falta para el trámite?',owner,session)
+            self.assertEqual(selector.call_count,2)
+            self.assertEqual((failed['fuente'],failed['message_body']),('institutional_knowledge_unavailable',UI['error']))
+
     def test_operational_context_and_explicit_action_do_not_call_knowledge_model(self):
         from services.constants import CONTEXTO_MUNICIPIO
         from services.institutional_assistant import maybe_handle_institutional_question

@@ -1,6 +1,12 @@
 from copy import deepcopy
 import unittest
+from datetime import datetime, timedelta, timezone
+import json
+from unittest.mock import patch
 from services.institutional_assistant_content import normalize_bundle, select_nodes, overview, materialize_node, ContentError
+from services.institutional_assistant_content import (
+    SELECTOR_INSTRUCTIONS, _selection_request, advertised_choice, is_menu_command,
+)
 
 def sample(tenant_id=701, slug='qa-knowledge'):
     return {'contract_version':'chatboc.institutional_guide.composed.v1','version':'1.0','tenant':{'id':tenant_id,'slug':slug},'start':'start',
@@ -233,3 +239,120 @@ class SelectorCapacityTests(unittest.TestCase):
         normalized=normalize_bundle(data,701,'qa-knowledge')
         result=select_nodes(normalized,'\U0010ffff'*1800,'requirements',lambda *args:{'node_ids':['requirements']})
         self.assertEqual(result[0]['id'],'requirements')
+
+    # TDF feedback (#2854): typed navigation, typed menu topics, topic continuity
+    # and a transient interpreter failure.
+    def test_typed_menu_commands_are_a_bounded_navigation_vocabulary(self):
+        for text in ('volver al menú inicial', 'Volver al menu principal', 'ir al menú', 'volver al inicio',
+                     'menú inicial', 'Empezar de nuevo', 'MENU', 'quiero volver al menú',
+                     '¡Volver al menú inicial!', '⌂ Volver al menú', 'ver el menú', 'menú por favor'):
+            with self.subTest(text=text):
+                self.assertTrue(is_menu_command(text))
+        # A bare "volver" can be a node's own one-level option; questions,
+        # negations and other menus stay with the selector.
+        for text in ('volver', 'volver al menú anterior', 'no quiero volver al menú', 'menú de trámites',
+                     '¿Cuál es el menú del comedor?', 'inicio de trámite', 'volver a RUPE',
+                     '¿cómo vuelvo al menú?', '', '   ', None, 'menú ' * 400):
+            with self.subTest(text=str(text)[:30]):
+                self.assertFalse(is_menu_command(text))
+
+    def test_a_typed_complete_option_label_resolves_only_against_the_displayed_options(self):
+        data = sample()
+        data['nodes']['start']['actions'][0]['label'] = '🔌 Electrodependencia'
+        bundle = normalize_bundle(data, 701, 'qa-knowledge')
+        for typed in ('Electrodependencia', 'electrodependencia.', '🔌 ELECTRODEPENDENCIA', ' electrodependéncia '):
+            with self.subTest(typed=typed):
+                self.assertEqual(advertised_choice(bundle, typed, ['start']), 'requirements')
+        for typed in ('electro', '🔌', '¿Qué es electrodependencia?', 'Electrodependencia en Ushuaia', '', None):
+            with self.subTest(typed=str(typed)):
+                self.assertIsNone(advertised_choice(bundle, typed, ['start']))
+        # Only options advertised on the given nodes count.
+        self.assertIsNone(advertised_choice(bundle, 'Electrodependencia', ['requirements']))
+        self.assertEqual(advertised_choice(bundle, 'volver', ['requirements']), 'start')
+        # The same label leading to different targets is not a choice.
+        data = sample()
+        data['nodes']['requirements']['actions'][0]['label'] = 'Requisitos'
+        bundle = normalize_bundle(data, 701, 'qa-knowledge')
+        self.assertIsNone(advertised_choice(bundle, 'requisitos', ['start', 'requirements']))
+        self.assertEqual(advertised_choice(bundle, 'requisitos', ['requirements']), 'start')
+
+    def test_follow_up_request_carries_the_current_topic_and_no_conversation_text(self):
+        bundle = normalize_bundle(sample(), 701, 'qa-knowledge')
+        seen = []
+        def selector(instructions, request):
+            self.assertEqual(instructions, SELECTOR_INSTRUCTIONS)
+            seen.append(json.loads(request))
+            return {'node_ids': []}
+        self.assertEqual(select_nodes(bundle, '¿Y en Ushuaia?', 'requirements', selector), [])
+        self.assertEqual(select_nodes(bundle, '¿Y en Ushuaia?', 'start', selector), [])
+        self.assertEqual(set(seen[0]), {'question', 'current_node', 'knowledge', 'current_topic'})
+        self.assertEqual(seen[0]['current_topic'], {'id': 'requirements', 'title': 'Requisitos'})
+        self.assertEqual(set(seen[1]), {'question', 'current_node', 'knowledge'})
+        self.assertIn('current_topic', SELECTOR_INSTRUCTIONS)
+        self.assertIn('no cambies a otro trámite ni a otra oficina por coincidir la\nlocalidad', SELECTOR_INSTRUCTIONS)
+
+    def test_selector_is_retried_once_only_after_a_fast_failure_without_result(self):
+        bundle = normalize_bundle(sample(), 701, 'qa-knowledge')
+        def scripted(*outcomes):
+            calls = []
+            def selector(*args):
+                calls.append(args)
+                outcome = outcomes[len(calls) - 1]
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            return selector, calls
+        selector, calls = scripted(RuntimeError('transient'), {'node_ids': ['requirements']})
+        self.assertEqual(select_nodes(bundle, 'consulta', 'start', selector)[0]['id'], 'requirements')
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], calls[1])
+        selector, calls = scripted(None, {'node_ids': []})
+        self.assertEqual(select_nodes(bundle, 'consulta', 'start', selector), [])
+        self.assertEqual(len(calls), 2)
+        selector, calls = scripted(None, RuntimeError('still down'))
+        with self.assertRaises(ContentError) as failure:
+            select_nodes(bundle, 'consulta', 'start', selector)
+        self.assertEqual((failure.exception.code, failure.exception.status), ('knowledge_interpretation_unavailable', 503))
+        self.assertEqual(len(calls), 2)
+        # A returned selection is an answer: empty or invalid, it is never repeated.
+        selector, calls = scripted({'node_ids': []})
+        self.assertEqual(select_nodes(bundle, 'consulta', 'start', selector), [])
+        self.assertEqual(len(calls), 1)
+        selector, calls = scripted({'node_ids': ['invented']})
+        with self.assertRaises(ContentError) as failure:
+            select_nodes(bundle, 'consulta', 'start', selector)
+        self.assertEqual(failure.exception.code, 'knowledge_selection_invalid')
+        self.assertEqual(len(calls), 1)
+        # A slow failure (for example a provider timeout) is not repeated.
+        base = datetime(2026, 11, 18, 20, 0, tzinfo=timezone.utc)
+        selector, calls = scripted(None, {'node_ids': ['requirements']})
+        with patch('services.institutional_assistant_content.datetime') as clock:
+            clock.now.side_effect = [base, base + timedelta(seconds=9)]
+            with self.assertRaises(ContentError):
+                select_nodes(bundle, 'consulta', 'start', selector)
+        self.assertEqual(len(calls), 1)
+
+    def test_import_reserves_space_for_a_follow_up_inside_the_longest_topic(self):
+        def corpus(extra):
+            data = sample()
+            for index in range(10):
+                key = 'filler-' + str(index)
+                data['nodes'][key] = {'id': key, 'title': key, 'text': 'x' * 11000, 'actions': []}
+                data['node_evidence'][key] = [{'source_id': 'a', 'page': 1}]
+                data['nodes']['start']['actions'].append({'code': 'f' + str(index), 'label': key, 'target': key})
+            data['nodes']['topic'] = {'id': 'topic', 'title': 'T' * 250, 'text': 'x' * (1 + extra), 'actions': []}
+            data['node_evidence']['topic'] = [{'source_id': 'a', 'page': 1}]
+            data['nodes']['start']['actions'].append({'code': 't', 'label': 'Tema', 'target': 'topic'})
+            return data
+        question = '\U0010ffff' * 1800
+        small = normalize_bundle(corpus(0), 701, 'qa-knowledge')
+        follow_up = len(_selection_request(small, question, 'topic').encode())
+        from_start = len(_selection_request(small, question, 'start').encode())
+        self.assertGreater(follow_up - from_start, 250)
+        extra = 120000 - follow_up + 1
+        self.assertLessEqual(from_start + extra, 120000)
+        with self.assertRaises(ContentError) as failure:
+            normalize_bundle(corpus(extra), 701, 'qa-knowledge')
+        self.assertEqual(failure.exception.code, 'knowledge_context_too_large')
+        accepted = normalize_bundle(corpus(extra - 1), 701, 'qa-knowledge')
+        self.assertEqual(select_nodes(accepted, question, 'topic', lambda *args: {'node_ids': ['topic']})[0]['id'], 'topic')
