@@ -402,6 +402,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         )
 
     def test_v2_demo_session_returns_workspace_contract(self):
+        self.app.config["DEMO_MAX_MESSAGES_PER_SESSION"] = 5
         self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = (
             "https://chatboc-r2-preview.vercel.app"
         )
@@ -427,6 +428,18 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((payload.get("tenant") or {}).get("sector"), "empresas")
         self.assertEqual(payload.get("request_id"), "demo-contract-1")
         self.assertEqual(resp.headers.get("X-Request-Id"), "demo-contract-1")
+        self.assertEqual(
+            payload.get("trial_policy"),
+            {
+                "contract_version": "demo.trial_policy.v1",
+                "scope": "anonymous_or_sandbox_demo",
+                "max_messages": 5,
+            },
+        )
+        self.assertEqual(
+            payload.get("trial_usage"),
+            {"channel": "chat", "limit": 5, "used": 0, "remaining": 5},
+        )
         self.assertEqual(workspace.get("title"), tenant.nombre)
         self.assertIsInstance(workspace.get("quick_replies"), list)
         self.assertTrue(all(isinstance(item, dict) and item.get("label") for item in workspace.get("quick_replies")))
@@ -550,6 +563,15 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertNotIn("https://www.chatboc.ar/e/", decoded_sandbox_surveys)
         self.assertEqual((payload.get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
         self.assertEqual(((payload.get("chat_seed") or {}).get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
+
+        self.app.config["DEMO_MAX_MESSAGES_PER_SESSION"] = 0
+        unlimited_resp = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "empresas", "tenant_slug": tenant.slug},
+        )
+        self.assertEqual(unlimited_resp.status_code, 200)
+        self.assertNotIn("trial_policy", unlimited_resp.get_json())
+        self.assertNotIn("trial_usage", unlimited_resp.get_json())
 
     def test_public_whatsapp_sandbox_launcher_requires_no_auth_and_exposes_trial_contract(self):
         preview_frontend = "https://chatboc-r2-preview.vercel.app"
