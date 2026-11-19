@@ -278,10 +278,15 @@ Continuidad: current_topic, cuando existe, es el tema en curso. Si la pregunta n
 sólo agrega o cambia la localidad, para quién es o un detalle de ese mismo trámite, es
 una continuación: seleccioná únicamente nodos de ese mismo trámite y de esa localidad. Si no hay nodos de ese trámite para esa localidad,
 devolvé una lista vacía; no cambies a otro trámite ni a otra oficina por coincidir la
-localidad. Si la pregunta nombra otro tema, seleccioná ese tema.
+localidad.
+Cambio de tema: el tema en curso sólo cuenta cuando la pregunta trata de ese mismo
+trámite. Si la pregunta nombra un trámite, documento o beneficio que los nodos del
+tema en curso no tratan, es un tema nuevo: dejá de lado el tema en curso y seleccioná
+los nodos de ese tema nuevo.
 Ambigüedad: si la pregunta puede referirse a más de un trámite y nada (ni el tema
 en curso) permite saber a cuál, seleccioná un único nodo cuyas acciones ofrezcan elegir
-entre esos trámites (por ejemplo el tema en curso o un menú), en lugar de elegir uno.
+entre esos trámites, en lugar de elegir uno: el menú que los reúne, o el tema en curso
+sólo si sus propias acciones los ofrecen.
 '''
 
 def is_source_navigation(question):
