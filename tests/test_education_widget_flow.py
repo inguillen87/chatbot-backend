@@ -88,7 +88,7 @@ class EducationWidgetFlowTest(unittest.TestCase):
         )
 
         self.assertEqual(response.get("fuente"), "education_widget_case_prompt")
-        self.assertIn("tramite", response.get("message_body", "").lower())
+        self.assertIn("trámite", response.get("message_body", "").lower())
         pending = self.session_context.context_data.get("education_pending_case")
         self.assertIsInstance(pending, dict)
         self.assertEqual(pending.get("intent"), "tramites_secretaria")
@@ -125,7 +125,7 @@ class EducationWidgetFlowTest(unittest.TestCase):
                 "inclusive": True,
             },
         )
-        self.assertIn("Opcion 1", response.get("audio_text", ""))
+        self.assertIn("Opción 1", response.get("audio_text", ""))
         self.assertNotIn("anon-edu", response.get("tts_cache_text", ""))
 
     def test_pending_school_case_detail_requires_confirmation_before_ticket(self):

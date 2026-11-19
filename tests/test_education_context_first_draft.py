@@ -428,3 +428,13 @@ class EducationContextFirstHttpTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_menu_label_typed_back_is_recognised_with_or_without_accents():
+    from services.education_case_draft import _menu_echo_key
+
+    shown = "Hablar con secretaría"
+    for typed in ("Hablar con secretaria", "hablar con secretaría", "  HABLAR   con SECRETARIA "):
+        assert _menu_echo_key(typed) == _menu_echo_key(shown)
+    # Real detail stays detail.
+    assert _menu_echo_key("Necesito hablar con secretaría por una autorización.") != _menu_echo_key(shown)
