@@ -15,7 +15,7 @@ environment snapshot can be a plain mapping, an ``env`` mapping, or an
 as a raw value (it is measured but never emitted) or, preferably, as redacted
 metadata such as ``{"configured": true, "utf8_bytes": 48}``.
 
-The runtime snapshot must bind the four captured responses to the approved
+The runtime snapshot must bind all captured cron responses to the approved
 ``deployment_id``, ``runtime_revision`` and immutable Vercel host.  A fifth
 snapshot from ``vercel inspect --json`` proves that this host is the approved,
 READY Production deployment and that its built artifact contains the exact
@@ -55,6 +55,9 @@ FLAG_BY_PATH = {
     ),
     "/api/internal/cron/weekly-analytics-report": (
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED"
+    ),
+    "/api/internal/cron/meta-credential-renewal": (
+        "VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED"
     ),
 }
 REQUIRED_FLAGS = tuple(sorted(set(FLAG_BY_PATH.values())))

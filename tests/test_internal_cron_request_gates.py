@@ -24,11 +24,13 @@ CRONS = (
     ('whatsapp-payload-retention', 'whatsapp_payload_retention', 'vercel_maintenance_crons_disabled'),
     ('survey-privacy-retention', 'survey_privacy_retention', 'vercel_maintenance_crons_disabled'),
     ('weekly-analytics-report', 'weekly_analytics_report', 'vercel_weekly_analytics_cron_disabled'),
+    ('meta-credential-renewal', 'meta_credential_renewal', 'vercel_meta_credential_renewal_cron_disabled'),
 )
 SECRET = 'synthetic-cron-gate-test-only-' + ('x' * 32)
 WORKER_MODULES = frozenset({
     'services.outbox_reconciliation', 'services.whatsapp_inbound_worker',
     'services.survey_privacy', 'services.weekly_analytics_reports',
+    'services.meta_credential_renewal',
 })
 
 
@@ -77,6 +79,7 @@ class InternalCronRequestGatesTest(unittest.TestCase):
             VERCEL_OUTBOX_CRON_ENABLED = False
             VERCEL_MAINTENANCE_CRONS_ENABLED = False
             VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED = False
+            VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED = False
             PUBLIC_CATALOG_DEFAULT_TENANT = None
             CRON_SECRET = SECRET
 
@@ -132,7 +135,7 @@ class InternalCronRequestGatesTest(unittest.TestCase):
         self.activation_gates = [self.stack.enter_context(patch.object(
             cron_routes, name, wraps=getattr(cron_routes, name))) for name in (
                 '_outbox_cron_is_enabled', '_maintenance_crons_are_enabled',
-                '_weekly_analytics_cron_is_enabled')]
+                '_weekly_analytics_cron_is_enabled', '_meta_credential_renewal_cron_is_enabled')]
         self.sql_attempts = []
 
         def reject_sql(*args):
@@ -187,6 +190,10 @@ class InternalCronRequestGatesTest(unittest.TestCase):
             with self.subTest(cron=slug):
                 self.assert_unauthorized(self.request_cron(slug))
                 self.assert_no_generic_resolution()
+
+    def test_meta_credential_renewal_post_uses_cron_auth_without_generic_io(self):
+        self.assert_unauthorized(self.request_cron('meta-credential-renewal', method='POST'))
+        self.assert_no_generic_resolution()
 
     def test_valid_cron_secret_reaches_disabled_gate_without_generic_io(self):
         for slug, _, reason in CRONS:

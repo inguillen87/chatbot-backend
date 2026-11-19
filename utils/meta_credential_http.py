@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from flask import current_app, has_request_context, jsonify, request
 
@@ -11,6 +13,18 @@ ENDPOINTS = frozenset({"meta_credential_admin.plan", "meta_credential_admin.appl
                        "meta_credential_admin.inspect_junin_webhook"})
 MAX_BODY_BYTES = 16_384
 PANEL_ORIGINS = frozenset({"https://chatboc.ar", "https://www.chatboc.ar"})
+_renewing_credential = ContextVar("renewing_meta_credential", default=False)
+
+
+@contextmanager
+def private_renewal_logs():
+    """Protect SQL parameters and provider diagnostics, including outside HTTP."""
+    _install_log_redaction()
+    marker = _renewing_credential.set(True)
+    try:
+        yield
+    finally:
+        _renewing_credential.reset(marker)
 
 
 def is_meta_credential_admin_request(req=None):
@@ -50,7 +64,7 @@ def _install_log_redaction():
 
     def factory(*args, **kwargs):
         record = previous(*args, **kwargs)
-        if _sensitive_path():
+        if _renewing_credential.get() or _sensitive_path():
             # Covers third-party HTTP/SQL DEBUG and exception records too.
             # Keep request diagnostics outside this path unchanged. Never
             # disable logging process-wide on concurrent Vercel requests.

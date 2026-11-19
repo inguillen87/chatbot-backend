@@ -153,6 +153,8 @@ def run_operation(action, body, actor, config, *, engine=None, graph_get=None, c
 
 
 def status(body, actor, config, *, engine=None, clock=None):
+    from services.meta_credential_renewal import RENEWAL_KEY, renewal_status
+
     engine = db.engine if engine is None else engine
     clock = (lambda: int(time.time())) if clock is None else clock
     target = ops.TARGETS[body["target"]]
@@ -163,6 +165,7 @@ def status(body, actor, config, *, engine=None, clock=None):
         # Return only metadata. inspect_state below may read encrypted config
         # internally to verify the binding, but never decrypts/returns a token.
         rows = session.execute(select(ProviderConnection.id, ProviderConnection.status,
+            ProviderConnection.config[RENEWAL_KEY].label("renewal"),
             ProviderConnection.config[PRIVATE_CONFIG_KEY]["revision"].as_integer().label("revision"),
             ProviderConnection.config[PRIVATE_CONFIG_KEY]["expires_at"].as_integer().label("expires_at"))
             .where(ProviderConnection.tenant_id == target.tenant_id, ProviderConnection.provider == "meta",
@@ -211,6 +214,7 @@ def status(body, actor, config, *, engine=None, clock=None):
         "sender_id": sender_ids[0] if len(sender_ids) == 1 else None,
         "connection_status": row["status"] if row else "absent" if not rows else "ambiguous",
         "expires_at": expiry, "expired": bool(type(expiry) is int and expiry <= clock()),
+        "renewal": renewal_status(target, config, expiry, row["renewal"] if row else None, clock()),
         "last_operation": ({"event_type": event["event_type"], "revision": event["revision"],
                             "plan_sha256": event["plan_sha256"], "created_at": event["created_at"].isoformat()}
                            if event else None), "writes_performed": False}

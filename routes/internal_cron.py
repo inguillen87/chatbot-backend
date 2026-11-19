@@ -53,6 +53,10 @@ def _weekly_analytics_cron_is_enabled() -> bool:
     return current_app.config.get("VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED") is True
 
 
+def _meta_credential_renewal_cron_is_enabled() -> bool:
+    return current_app.config.get("VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED") is True
+
+
 def _json_no_store(payload: dict, status_code: int):
     response = jsonify(payload)
     response.status_code = status_code
@@ -582,6 +586,41 @@ def weekly_analytics_report():
             503,
         )
     return _json_no_store(payload, 200 if report["ok"] else 503)
+
+
+@internal_cron_bp.route("/meta-credential-renewal", methods=["GET", "POST"])
+@cutover_writer_view
+def meta_credential_renewal():
+    if not _has_valid_cron_authorization():
+        return _json_no_store(
+            {"contract_version": "internal.cron.authorization.v1", "status": "unauthorized"},
+            401,
+        )
+    if not _meta_credential_renewal_cron_is_enabled():
+        return _json_no_store(
+            {
+                "contract_version": "internal.cron.activation.v1",
+                "executed": False,
+                "reason_code": "vercel_meta_credential_renewal_cron_disabled",
+                "status": "disabled",
+            },
+            503,
+        )
+    # Flask implicitly registers HEAD for GET. It must never renew credentials.
+    if request.method == "HEAD":
+        return _json_no_store({}, 204)
+
+    try:
+        from services.meta_credential_renewal import run_renewal
+
+        targets = [
+            {key: row[key] for key in ("target", "state", "reason")}
+            for row in run_renewal(current_app.config)
+        ]
+    except Exception:
+        current_app.logger.error("meta_credential_renewal_cron_unavailable")
+        return _json_no_store({"status": "unavailable"}, 503)
+    return _json_no_store({"targets": targets}, 200)
 
 
 __all__ = ["internal_cron_bp"]

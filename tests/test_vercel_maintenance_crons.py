@@ -59,9 +59,85 @@ def _fake_module(module_name: str, function_name: str, result: dict):
 def test_maintenance_cutover_flag_defaults_fail_closed():
     assert Config.VERCEL_MAINTENANCE_CRONS_ENABLED is False
     assert Config.VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED is False
+    assert Config.VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED is False
     env_example = (REPOSITORY_ROOT / ".env.example").read_text("utf-8").splitlines()
     assert "VERCEL_MAINTENANCE_CRONS_ENABLED=false" in env_example
     assert "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED=false" in env_example
+    assert "VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED=false" in env_example
+
+
+META_RENEWAL_PATH = "/api/internal/cron/meta-credential-renewal"
+META_RENEWAL_MODULE = "services.meta_credential_renewal"
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong"])
+def test_meta_credential_renewal_requires_cron_secret(method, authorization):
+    app = _app()
+    app.config["VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED"] = True
+    headers = {} if authorization is None else {"Authorization": authorization}
+    with patch.dict(sys.modules, {META_RENEWAL_MODULE: None}):
+        response = app.test_client().open(META_RENEWAL_PATH, method=method, headers=headers)
+    assert response.status_code == 401
+    assert response.get_json()["status"] == "unauthorized"
+    assert response.headers["Cache-Control"] == "no-store"
+
+
+@pytest.mark.parametrize("flag", [False, "true"])
+def test_meta_credential_renewal_requires_independent_boolean_flag(flag):
+    app = _app(enabled=True, weekly_enabled=True)
+    app.config["VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED"] = flag
+    with patch.dict(sys.modules, {META_RENEWAL_MODULE: None}):
+        response = _authorized_get(app, META_RENEWAL_PATH)
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "contract_version": "internal.cron.activation.v1",
+        "executed": False,
+        "reason_code": "vercel_meta_credential_renewal_cron_disabled",
+        "status": "disabled",
+    }
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_meta_credential_renewal_returns_only_public_target_summary(method, caplog):
+    app = _app(enabled=False)
+    app.config["VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED"] = True
+    sample = "synthetic-secret-for-renewal-test"
+    summary = {"target": "synthetic", "state": "ok", "reason": None}
+    module = ModuleType(META_RENEWAL_MODULE)
+    module.run_renewal = Mock(return_value=[{**summary, "internal": sample}])
+    with patch.dict(sys.modules, {META_RENEWAL_MODULE: module}):
+        response = app.test_client().open(
+            META_RENEWAL_PATH, method=method, headers={"Authorization": f"Bearer {CRON_SECRET}"}
+        )
+    module.run_renewal.assert_called_once_with(app.config)
+    assert response.status_code == 200
+    assert response.get_json() == {"targets": [summary]}
+    assert response.headers["Cache-Control"] == "no-store"
+    assert sample not in caplog.text
+
+
+def test_meta_credential_renewal_unexpected_error_is_redacted(caplog):
+    app = _app()
+    app.config["VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED"] = True
+    sample = "synthetic-secret-in-transport-error"
+    module = ModuleType(META_RENEWAL_MODULE)
+    module.run_renewal = Mock(side_effect=RuntimeError(sample))
+    with patch.dict(sys.modules, {META_RENEWAL_MODULE: module}):
+        response = _authorized_get(app, META_RENEWAL_PATH)
+    assert response.status_code == 503
+    assert response.get_json() == {"status": "unavailable"}
+    assert sample not in caplog.text
+
+
+def test_meta_credential_renewal_head_does_not_run_the_job():
+    app = _app()
+    app.config["VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED"] = True
+    with patch.dict(sys.modules, {META_RENEWAL_MODULE: None}):
+        response = app.test_client().head(
+            META_RENEWAL_PATH, headers={"Authorization": f"Bearer {CRON_SECRET}"}
+        )
+    assert response.status_code == 204
 
 
 @pytest.mark.parametrize(("path", "service_module"), JOBS)

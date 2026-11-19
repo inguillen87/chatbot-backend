@@ -29,6 +29,10 @@ EXPECTED_CRONS = [
         "path": "/api/internal/cron/weekly-analytics-report",
         "schedule": "0 0 * * 0",
     },
+    {
+        "path": "/api/internal/cron/meta-credential-renewal",
+        "schedule": "23 4 * * *",
+    },
 ]
 DEPLOYMENT_ID = "dpl_HWoecwQtVvuxNwr3x5nddSatF4zj"
 RUNTIME_REVISION = "21e77ca02be9ab0f0875b65622b898b16885f087"
@@ -65,6 +69,7 @@ def _environment(**overrides):
         "VERCEL_OUTBOX_CRON_ENABLED": "false",
         "VERCEL_MAINTENANCE_CRONS_ENABLED": "false",
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED": "false",
+        "VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED": "false",
         "CRON_SECRET": {"configured": False, "utf8_bytes": 0},
     }
     values.update(overrides)
@@ -162,8 +167,8 @@ def test_exact_registry_with_explicitly_disabled_flags_is_certified_inert():
     assert report["status"] == "ready"
     assert report["registry"] == {
         "status": "exact",
-        "expected_count": 4,
-        "observed_count": 4,
+        "expected_count": 5,
+        "observed_count": 5,
         "exact": True,
         "scheduler_enabled": True,
         "owner_host_match": True,
