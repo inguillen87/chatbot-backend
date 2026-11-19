@@ -8,10 +8,22 @@ from __future__ import annotations
 from copy import deepcopy
 import math
 import time
+import unicodedata
 import uuid
 from typing import Any
 
 from services.education_contracts import build_education_pending_case, education_prompt_for_intent
+
+
+def _menu_echo_key(value: Any) -> str:
+    """Key that recognises a menu label typed back with or without accents.
+
+    The menu shows «Hablar con secretaría»; a person who types
+    «hablar con secretaria» is choosing that option, not giving detail.
+    """
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    plain = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return " ".join(plain.casefold().split())
 
 
 def education_case_scope(*, tenant: Any, owner: Any, actor: Any, anon_id: str | None,
@@ -168,18 +180,20 @@ def advance_education_case_draft(*, context_data: dict[str, Any], scope: dict[st
             context_data["education_pending_case"] = case
             return case, False, _payload(case, tenant=tenant, prefix=prefix)
 
-    ignored = {"", "__init__", action.casefold(), str(intent or "").casefold(),
-               str(case.get("label") or "").casefold(), "confirmar caso", "editar detalle", "cancelar", "enviar detalle"}
+    ignored = {_menu_echo_key(value) for value in (
+        "", "__init__", action, intent, case.get("label"),
+        "confirmar caso", "editar detalle", "cancelar", "enviar detalle",
+    )}
     if action and str(message_body or "").strip().isdigit():
         ignored.add(str(message_body).strip())
     if selected_option:
-        ignored.update(str(selected_option.get(key) or "").strip().casefold() for key in ("label", "texto"))
+        ignored.update(_menu_echo_key(selected_option.get(key)) for key in ("label", "texto"))
     values = [message_body, additional_text]
     media = uploaded_file_info if isinstance(uploaded_file_info, dict) else {}
     values.extend([media.get("caption"), media.get("transcribed_text")])
     new_details = []
     for value in values:
-        if isinstance(value, str) and value.strip().casefold() not in ignored:
+        if isinstance(value, str) and _menu_echo_key(value) not in ignored:
             text = value.strip()
             if text not in new_details:
                 new_details.append(text)
