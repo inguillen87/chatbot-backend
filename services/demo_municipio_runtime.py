@@ -13,6 +13,7 @@ from services.demo_surveys import (
     build_demo_survey_chat_menu,
     resolve_demo_public_frontend_base_url,
 )
+from services.demo_tenant_scope import is_server_demo_tenant
 from services.tenant_ticket_scope import (
     municipio_ticket_belongs_to_tenant,
     resolve_unique_tenant_for_owner,
@@ -24,6 +25,15 @@ from services.ticket_utils import build_claim_tracking_url
 
 DEMO_MUNICIPIO_SOURCE = "demo_municipio_runtime"
 DEMO_MUNICIPIO_CHANNEL = "web_demo_widget"
+
+_USER_FACING_LABELS = {
+    "Alumbrado publico": "Alumbrado público",
+    "Atencion personalizada": "Atención personalizada",
+    "Herramientas publicas": "Herramientas públicas",
+    "Participacion ciudadana": "Participación ciudadana",
+    "Tramites publicados": "Trámites publicados",
+    "Transito y senalizacion": "Tránsito y señalización",
+}
 
 
 class DemoMunicipioTenantScopeError(RuntimeError):
@@ -43,7 +53,23 @@ def _compact(text: str, *, max_len: int = 240) -> str:
     return value[: max_len - 1].rstrip() + "..."
 
 
-def _tenant_for_owner(owner_user: User | None) -> TenantProfile | None:
+def _user_facing_label(value: Any) -> str:
+    text = str(value or "")
+    return _USER_FACING_LABELS.get(text, text)
+
+
+def _tenant_for_owner(
+    owner_user: User | None,
+    verified_demo_tenant: TenantProfile | None = None,
+) -> TenantProfile | None:
+    if verified_demo_tenant is not None:
+        if (
+            is_server_demo_tenant(verified_demo_tenant)
+            and bool(getattr(verified_demo_tenant, "is_active", True))
+            and getattr(verified_demo_tenant, "municipio_id", None) is not None
+        ):
+            return verified_demo_tenant
+        return None
     if not owner_user:
         return None
     try:
@@ -248,8 +274,8 @@ def _append_comment(ticket: MunicipioTicket, *, text: str, anon_id: str | None, 
         pieces.append(f"Adjunto {media.get('kind')}: {media.get('label') or media.get('id') or 'archivo'}")
     if location:
         location_label = location.get("address") or f"{location.get('lat')}, {location.get('lng')}"
-        pieces.append(f"Ubicacion: {location_label}")
-    comment_text = " | ".join(piece for piece in pieces if piece) or "Actualizacion recibida desde demo"
+        pieces.append(f"Ubicación: {location_label}")
+    comment_text = " | ".join(piece for piece in pieces if piece) or "Actualización recibida desde demo"
     db.session.add(
         TicketComentario(
             municipio_ticket_id=ticket.id,
@@ -272,8 +298,9 @@ def _upsert_ticket(
     attachment_info: dict[str, Any] | None,
     location: dict[str, Any] | None,
     demo_session_payload: dict[str, Any] | None,
+    verified_demo_tenant: TenantProfile | None,
 ) -> tuple[MunicipioTicket, bool, dict[str, Any], dict[str, Any] | None]:
-    tenant = _tenant_for_owner(owner_user)
+    tenant = _tenant_for_owner(owner_user, verified_demo_tenant)
     if tenant is None or getattr(tenant, "municipio_id", None) is None:
         raise DemoMunicipioTenantScopeError("municipio_tenant_scope_unavailable")
     runtime = _context_runtime(chat_db_context)
@@ -299,7 +326,7 @@ def _upsert_ticket(
             canal_ingreso=DEMO_MUNICIPIO_CHANNEL,
             anon_id=anon_id,
             municipio_id=tenant.municipio_id,
-            user_id=getattr(owner_user, "id", None),
+            user_id=tenant.municipio_id,
             tenant_id=getattr(tenant, "id", None),
         )
         db.session.add(ticket)
@@ -392,9 +419,9 @@ def _ticket_payload(ticket: MunicipioTicket, details: dict[str, Any]) -> dict[st
 
 def _response_for_info(question: str) -> dict[str, Any]:
     message = (
-        "Para licencia de conducir puedo guiar el tramite sin sacarte de la conversacion: "
-        "tipo de licencia, documentacion, turno disponible y seguimiento. "
-        "Si queres, decime si es primera vez o renovacion y lo dejamos como caso trazable."
+        "Para licencia de conducir puedo guiar el trámite sin sacarte de la conversación: "
+        "tipo de licencia, documentación, turno disponible y seguimiento. "
+        "Si querés, decime si es primera vez o renovación y lo dejamos como caso trazable."
     )
     return {
         "message_body": message,
@@ -403,19 +430,19 @@ def _response_for_info(question: str) -> dict[str, Any]:
         "accion_backend": "demo_info_tramite",
         "actions": [
             {
-                "label": "Guia de tramite",
+                "label": "Guía de trámite",
                 "status": "ready",
                 "detail": "Orienta al vecino y puede convertir la consulta en caso si faltan datos.",
                 "creates": "information_case",
                 "fields": [
-                    {"label": "Tramite", "value": "Licencia de conducir"},
-                    {"label": "Siguiente dato", "value": "primera vez o renovacion"},
+                    {"label": "Trámite", "value": "Licencia de conducir"},
+                    {"label": "Siguiente dato", "value": "primera vez o renovación"},
                 ],
             }
         ],
         "botones": [
             {"texto": "Primera vez", "action_id": "licencia_primera_vez"},
-            {"texto": "Renovacion", "action_id": "licencia_renovacion"},
+            {"texto": "Renovación", "action_id": "licencia_renovacion"},
             {"texto": "Hablar con una persona", "action_id": "human_handoff"},
         ],
     }
@@ -424,13 +451,14 @@ def _response_for_info(question: str) -> dict[str, Any]:
 def _response_for_status(
     chat_db_context: ChatSessionContext | None,
     owner_user: User | None,
+    verified_demo_tenant: TenantProfile | None = None,
 ) -> dict[str, Any]:
     runtime = _context_runtime(chat_db_context)
-    ticket = _last_ticket(runtime, _tenant_for_owner(owner_user))
+    ticket = _last_ticket(runtime, _tenant_for_owner(owner_user, verified_demo_tenant))
     if not ticket:
-        message = "Todavia no tengo un ticket creado en esta demo. Enviame el reclamo, foto o ubicacion y lo creo para seguimiento."
+        message = "Todavía no tengo un ticket creado en esta demo. Enviame el reclamo, foto o ubicación y lo creo para seguimiento."
         return {"message_body": message, "respuesta": message, "fuente": DEMO_MUNICIPIO_SOURCE, "actions": []}
-    message = f"El reclamo demo #{ticket.nro_ticket} esta en estado {ticket.estado}. PIN de consulta: {ticket.consulta_pin}."
+    message = f"El reclamo demo #{ticket.nro_ticket} está en estado {ticket.estado}. PIN de consulta: {ticket.consulta_pin}."
     details = _details(ticket)
     tracking_action = _public_tracking_action(ticket)
     next_actions = [tracking_action] if tracking_action else []
@@ -445,7 +473,7 @@ def _response_for_status(
             {
                 "label": "Estado consultado",
                 "status": ticket.estado,
-                "detail": "Devuelve codigo, PIN y proximo paso del reclamo.",
+                "detail": "Devuelve código, PIN y próximo paso del reclamo.",
                 "creates": "status_event",
                 "fields": [
                     {"label": "Ticket", "value": ticket.nro_ticket},
@@ -459,7 +487,7 @@ def _response_for_status(
 def _response_for_handoff() -> dict[str, Any]:
     message = (
         "Puedo dejar este caso listo para que un operador lo tome por WhatsApp, llamada o videollamada. "
-        "Para la llamada realtime el backend debe usar la integracion server-side, sin exponer claves en frontend."
+        "Para la llamada realtime el backend debe usar la integración server-side, sin exponer claves en frontend."
     )
     return {
         "message_body": message,
@@ -468,7 +496,7 @@ def _response_for_handoff() -> dict[str, Any]:
         "accion_backend": "demo_handoff_humano",
         "actions": [
             {
-                "label": "Derivacion humana preparada",
+                "label": "Derivación humana preparada",
                 "status": "ready",
                 "detail": "El panel conserva contexto, adjuntos y canal pedido.",
                 "creates": "handoff_request",
@@ -476,7 +504,7 @@ def _response_for_handoff() -> dict[str, Any]:
             }
         ],
         "botones": [
-            {"texto": "Dejar telefono", "action_id": "open_demo_form"},
+            {"texto": "Dejar teléfono", "action_id": "open_demo_form"},
             {"texto": "Seguir por chat", "action_id": "continue_chat"},
         ],
     }
@@ -488,8 +516,9 @@ def _response_for_survey(
     chat_session_id: str | None = None,
     demo_session_payload: dict[str, Any] | None = None,
     action_id: str | None = None,
+    verified_demo_tenant: TenantProfile | None = None,
 ) -> dict[str, Any]:
-    tenant = _tenant_for_owner(owner_user)
+    tenant = _tenant_for_owner(owner_user, verified_demo_tenant)
     tenant_slug = (
         (demo_session_payload or {}).get("tenant_slug")
         or (demo_session_payload or {}).get("tenant")
@@ -573,17 +602,17 @@ def _response_for_tool_lookup(question: str, chat_db_context: ChatSessionContext
     locations = summary.get("locations") if isinstance(summary.get("locations"), list) else []
     if wants_location and locations:
         first = locations[0]
-        label = first.get("label") or "Ubicacion"
-        address = first.get("address") or "Direccion publicada"
+        label = first.get("label") or "Ubicación"
+        address = first.get("address") or "Dirección publicada"
         maps_url = first.get("maps_url")
         lines.append(f"{label}: {address}.")
         cards.append(
             {
-                "label": "Ubicacion",
+                "label": "Ubicación",
                 "status": "ready",
                 "detail": address,
                 "creates": "tool_result",
-                "fields": [{"label": "Direccion", "value": address}],
+                "fields": [{"label": "Dirección", "value": address}],
                 "metadata": {"maps_url": maps_url, "kind": "location"},
             }
         )
@@ -591,7 +620,7 @@ def _response_for_tool_lookup(question: str, chat_db_context: ChatSessionContext
     contact = summary.get("contact") if isinstance(summary.get("contact"), dict) else {}
     if wants_contact and contact:
         fields = []
-        for key, label in (("phone", "Telefono"), ("whatsapp", "WhatsApp"), ("email", "Email"), ("website", "Web")):
+        for key, label in (("phone", "Teléfono"), ("whatsapp", "WhatsApp"), ("email", "Email"), ("website", "Web")):
             if contact.get(key):
                 fields.append({"label": label, "value": contact.get(key)})
         if fields:
@@ -643,10 +672,10 @@ def _response_for_tool_lookup(question: str, chat_db_context: ChatSessionContext
     resources = summary.get("resources") if isinstance(summary.get("resources"), list) else []
     if wants_catalog and resources:
         resource = resources[0]
-        lines.append(f"Catalogo/recurso: {resource.get('label')}.")
+        lines.append(f"Catálogo/recurso: {resource.get('label')}.")
         cards.append(
             {
-                "label": "Catalogo",
+                "label": "Catálogo",
                 "status": "ready",
                 "detail": resource.get("description") or resource.get("label"),
                 "creates": "tool_result",
@@ -678,25 +707,26 @@ def _response_for_ticket(ticket: MunicipioTicket, created: bool, details: dict[s
     media_labels = [item.get("kind") for item in details.get("media") or [] if isinstance(item, dict) and item.get("kind")]
     next_hint = []
     if not has_location:
-        next_hint.append("ubicacion")
+        next_hint.append("ubicación")
     if not media_labels:
         next_hint.append("foto, audio o archivo")
     if next_hint:
         extra = " Ahora puedo sumar " + " y ".join(next_hint) + " para completar evidencia."
     else:
-        extra = " Ya quedo con ubicacion y evidencia para que el equipo lo opere."
+        extra = " Ya quedó con ubicación y evidencia para que el equipo lo opere."
 
-    verb = "cree" if created else "actualice"
+    verb = "creé" if created else "actualicé"
+    category_label = _user_facing_label(ticket.categoria)
     message = (
-        f"Listo: {verb} el reclamo demo de {ticket.categoria}. "
+        f"Listo: {verb} el reclamo demo de {category_label}. "
         f"Ticket #{ticket.nro_ticket}, PIN {ticket.consulta_pin}.{extra}"
     )
     fields = [
-        {"label": "Categoria", "value": ticket.categoria or "Reclamo ciudadano"},
+        {"label": "Categoría", "value": category_label or "Reclamo ciudadano"},
         {"label": "Estado", "value": ticket.estado},
     ]
     if has_location:
-        fields.append({"label": "Ubicacion", "value": ticket.direccion or f"{ticket.latitud}, {ticket.longitud}"})
+        fields.append({"label": "Ubicación", "value": ticket.direccion or f"{ticket.latitud}, {ticket.longitud}"})
     if media_labels:
         fields.append({"label": "Evidencia", "value": ", ".join(sorted(set(media_labels)))})
     priority = details.get("priority")
@@ -721,7 +751,7 @@ def _response_for_ticket(ticket: MunicipioTicket, created: bool, details: dict[s
             {
                 "label": "Reclamo creado" if created else "Reclamo actualizado",
                 "status": "ready" if has_location or media_labels else "needs_evidence",
-                "detail": "Ticket con categoria, evidencia, ubicacion opcional y seguimiento por codigo.",
+                "detail": "Ticket con categoría, evidencia, ubicación opcional y seguimiento por código.",
                 "creates": "ticket",
                 "fields": fields,
                 "metadata": {"traceable_target": "ticket", "ticket_id": ticket.id},
@@ -733,7 +763,7 @@ def _response_for_ticket(ticket: MunicipioTicket, created: bool, details: dict[s
             "received": sorted(set(media_labels + (["location"] if has_location else []) + ["text"])),
         },
         "botones": [
-            {"texto": "Enviar ubicacion", "action_id": "share_location"},
+            {"texto": "Enviar ubicación", "action_id": "share_location"},
             {"texto": "Adjuntar foto", "action_id": "attach_image"},
             {"texto": "Consultar estado", "action_id": "consultar_estado"},
             {"texto": "Hablar con una persona", "action_id": "human_handoff"},
@@ -752,6 +782,7 @@ def handle_demo_municipio_message(
     anon_id: str | None = None,
     chat_session_id: str | None = None,
     demo_session_payload: dict[str, Any] | None = None,
+    verified_demo_tenant: TenantProfile | None = None,
 ) -> dict[str, Any] | None:
     """Handle public municipality demo turns with real, traceable backend state."""
 
@@ -763,7 +794,7 @@ def handle_demo_municipio_message(
     if kind == "info":
         return _response_for_info(question)
     if kind == "status_lookup":
-        return _response_for_status(chat_db_context, owner_user)
+        return _response_for_status(chat_db_context, owner_user, verified_demo_tenant)
     if kind == "tool_lookup":
         return _response_for_tool_lookup(question, chat_db_context)
     if kind == "human_handoff":
@@ -774,6 +805,7 @@ def handle_demo_municipio_message(
             chat_session_id=chat_session_id,
             demo_session_payload=demo_session_payload,
             action_id=action_id,
+            verified_demo_tenant=verified_demo_tenant,
         )
     if kind != "claim":
         return None
@@ -789,9 +821,10 @@ def handle_demo_municipio_message(
             attachment_info=attachment_info,
             location=location,
             demo_session_payload=demo_session_payload,
+            verified_demo_tenant=verified_demo_tenant,
         )
     except DemoMunicipioTenantScopeError:
-        message = "No pude validar la organizacion de esta demo. Volve a iniciar la sesion."
+        message = "No pude validar la organización de esta demo. Volvé a iniciar la sesión."
         return {
             "message_body": message,
             "respuesta": message,
