@@ -30,6 +30,12 @@ from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
 from services.organization_type_presentation import organization_type_descriptor
+from services.tenant_purge import (
+    TenantPurgeError,
+    new_purge_state,
+    purge_tenant,
+    tenant_account_filters,
+)
 from services.user_service import assign_whatsapp_numbers
 from services.native_admin_membership import (
     NativeAdminMembershipError, list_native_admin_memberships,
@@ -904,28 +910,9 @@ def _slug_conflicts(desired_slug: str, tenant_id: int | None = None) -> bool:
 
 
 def _tenant_related_users(tenant: TenantProfile) -> list[User]:
-    owner_ids = [
-        owner_id
-        for owner_id in (tenant.municipio_id, tenant.pyme_id)
-        if owner_id is not None
-    ]
-    filters = [
-        User.tenant_id == tenant.id,
-        User.tenant_slug == tenant.slug,
-    ]
-    if owner_ids:
-        filters.extend(
-            [
-                User.id.in_(owner_ids),
-                User.empresa_id.in_(owner_ids),
-            ]
-        )
-    if tenant.tipo == "pyme":
-        filters.append(User.pyme_id == tenant.id)
-    elif tenant.tipo == "municipio":
-        filters.append(User.municipio_id == tenant.id)
-
-    return User.query.filter(or_(*filters)).all()
+    # ``pyme_id`` / ``municipio_id`` hold the owner *user* id.  Comparing them
+    # with the tenant id reached the accounts of an unrelated organisation.
+    return User.query.filter(or_(*tenant_account_filters(User, tenant))).all()
 
 
 def _deactivate_tenant_and_revoke_sessions(tenant: TenantProfile) -> int:
@@ -1094,44 +1081,6 @@ def _serialize_twilio_number(number: TwilioNumber) -> dict:
         "tenant_nombre": tenant.nombre if tenant else None,
     }
 
-
-def _delete_rows_by_column(table, column_name: str, ids: list[int]) -> int:
-    if not ids or column_name not in table.c:
-        return 0
-    result = db.session.execute(table.delete().where(table.c[column_name].in_(ids)))
-    return result.rowcount or 0
-
-
-def _purge_tenant_records(tenant: TenantProfile) -> dict:
-    tenant_id = tenant.id
-    deleted = {"tenant_id": tenant_id, "tables": {}}
-    for table in db.metadata.sorted_tables:
-        if table.name == TenantProfile.__tablename__:
-            continue
-        table_deleted = 0
-        if "tenant_id" in table.c:
-            table_deleted += _delete_rows_by_column(table, "tenant_id", [tenant_id])
-        if "municipio_id" in table.c:
-            table_deleted += _delete_rows_by_column(table, "municipio_id", [tenant_id])
-        if "pyme_id" in table.c:
-            table_deleted += _delete_rows_by_column(table, "pyme_id", [tenant_id])
-        if table_deleted:
-            deleted["tables"][table.name] = table_deleted
-    return deleted
-
-
-def _purge_users(user_ids: list[int]) -> dict:
-    deleted = {"users": len(user_ids), "tables": {}}
-    if not user_ids:
-        return deleted
-    for table in db.metadata.sorted_tables:
-        if table.name == User.__tablename__:
-            continue
-        if "user_id" not in table.c:
-            continue
-        deleted["tables"][table.name] = _delete_rows_by_column(table, "user_id", user_ids)
-    User.query.filter(User.id.in_(user_ids)).delete(synchronize_session=False)
-    return deleted
 
 @super_admin_bp.route('/tenants', methods=['GET'])
 @cutover_writer_view
@@ -1591,67 +1540,93 @@ def delete_tenant_soft(current_user, slug):
 @token_requerido
 @super_admin_required
 def delete_tenant_hard(current_user, slug):
-    """Hard delete a tenant and its records."""
-    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    """Hard delete one tenant; ``dry_run`` reports the same purge and rolls it back."""
     data = request.get_json(silent=True) or {}
-    confirm = data.get("confirm")
-    purge_users = data.get("purge_users", True)
+    if not isinstance(data, dict):
+        data = {}
+    dry_run = data.get("dry_run") is True
+    purge_users = data.get("purge_users", True) is not False
 
-    if not confirm:
+    if data.get("confirm") is not True and not dry_run:
         return jsonify({"error": "Confirmación requerida (confirm=true)"}), 400
 
-    owner_ids = {tenant.municipio_id, tenant.pyme_id}
-    owner_ids.discard(None)
-    user_ids = set(
-        u.id
-        for u in User.query.filter(
-            (User.tenant_id == tenant.id)
-            | (User.tenant_slug == tenant.slug)
-            | (User.municipio_id == tenant.id)
-            | (User.pyme_id == tenant.id)
+    tenant = (
+        TenantProfile.query.filter_by(slug=slug).with_for_update().first_or_404()
+    )
+    if tenant.is_active and not dry_run:
+        # A live tenant is deactivated first; the purge is the second step.
+        return jsonify({
+            "error": "Desactivá el tenant antes de eliminarlo definitivamente",
+            "reason_code": "tenant_purge_requires_inactive_tenant",
+        }), 409
+
+    protected_user_ids = {current_user.id}
+    protected_user_ids.update(
+        user.id
+        for user in User.query.filter(
+            func.lower(User.rol).in_(["super_admin", "superadmin"])
         ).all()
     )
-    user_ids.update(owner_ids)
-
-    purge_summary = _purge_tenant_records(tenant)
-    user_summary = {}
-    if purge_users and user_ids:
-        user_summary = _purge_users(sorted(user_ids))
-    else:
-        User.query.filter(User.id.in_(user_ids)).update(
-            {"tenant_id": None, "tenant_slug": None},
-            synchronize_session=False,
-        )
-        User.query.filter(User.municipio_id == tenant.id).update(
-            {"municipio_id": None},
-            synchronize_session=False,
-        )
-        User.query.filter(User.pyme_id == tenant.id).update(
-            {"pyme_id": None},
-            synchronize_session=False,
-        )
-
-    db.session.delete(tenant)
-    _log_admin_action(
-        current_user.id,
-        "purge_tenant",
-        slug,
-        {"purge_users": purge_users, "user_ids": sorted(user_ids)},
+    purge_state = new_purge_state(
+        db.session, db.metadata, TenantProfile.__table__, User.__table__
     )
     try:
+        summary = purge_tenant(
+            db.session,
+            db.metadata,
+            TenantProfile.__table__,
+            User.__table__,
+            tenant,
+            purge_users=purge_users,
+            protected_user_ids=protected_user_ids,
+            purge_state=purge_state,
+        )
+        if dry_run:
+            db.session.rollback()
+            return jsonify({**summary, "dry_run": True, "committed": False})
+        _log_admin_action(
+            current_user.id,
+            "purge_tenant",
+            slug,
+            {
+                "purge_users": purge_users,
+                "user_ids": summary["user_ids"],
+                "deleted": summary["deleted"],
+                "detached": summary["detached"],
+            },
+        )
         db.session.commit()
+    except TenantPurgeError as exc:
+        db.session.rollback()
+        return jsonify({
+            "error": "La eliminación se canceló para no afectar a otra organización",
+            "reason_code": exc.code,
+            "committed": False,
+        }), 409
     except Exception as exc:
         db.session.rollback()
-        current_app.logger.exception("SA:purge_tenant failed for %s", slug)
-        return jsonify({"error": "No se pudo eliminar el tenant", "details": str(exc)}), 500
-    return jsonify(
-        {
-            "message": "Tenant eliminado definitivamente",
-            "tenant_id": tenant.id,
-            "purge": purge_summary,
-            "users": user_summary,
+        # Identifiers only: the table in hand and, when the database names
+        # them, the blocking table and constraint.  Never a row or a value.
+        diagnostics = getattr(getattr(exc, "orig", None), "diag", None)
+        failure = {
+            "error_type": type(exc).__name__,
+            "failed_table": purge_state.current_table,
+            "blocking_table": getattr(diagnostics, "table_name", None),
+            "blocking_constraint": getattr(diagnostics, "constraint_name", None),
         }
-    )
+        current_app.logger.warning("SA:purge_tenant failed slug=%s %s", slug, failure)
+        return jsonify({
+            "error": "No se pudo eliminar el tenant",
+            "reason_code": "tenant_purge_failed",
+            "committed": False,
+            **failure,
+        }), 500
+    return jsonify({
+        **summary,
+        "message": "Tenant eliminado definitivamente",
+        "dry_run": False,
+        "committed": True,
+    })
 
 @super_admin_bp.route('/tenants/<string:slug>/activate', methods=['POST'])
 @token_requerido
