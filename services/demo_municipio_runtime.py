@@ -26,13 +26,37 @@ from services.ticket_utils import build_claim_tracking_url
 DEMO_MUNICIPIO_SOURCE = "demo_municipio_runtime"
 DEMO_MUNICIPIO_CHANNEL = "web_demo_widget"
 
-_USER_FACING_LABELS = {
-    "Alumbrado publico": "Alumbrado público",
-    "Atencion personalizada": "Atención personalizada",
-    "Herramientas publicas": "Herramientas públicas",
-    "Participacion ciudadana": "Participación ciudadana",
-    "Tramites publicados": "Trámites publicados",
-    "Transito y senalizacion": "Tránsito y señalización",
+_DEMO_CATEGORY_LABELS = {
+    "reclamo_ciudadano": "Reclamo ciudadano",
+    "tramites_publicados": "Trámites publicados",
+    "participacion_ciudadana": "Participación ciudadana",
+    "licencias_conducir": "Licencias de conducir",
+    "herramientas_publicas": "Herramientas públicas",
+    "atencion_personalizada": "Atención personalizada",
+    "baches_calzada": "Baches y calzada",
+    "alumbrado_publico": "Alumbrado público",
+    "recoleccion_residuos": "Recolección de residuos",
+    "transito_senalizacion": "Tránsito y señalización",
+    "espacios_verdes": "Espacios verdes",
+    "evidencia_ciudadana": "Evidencia ciudadana",
+}
+
+_LEGACY_CATEGORY_KEYS = {
+    "alumbrado publico": "alumbrado_publico",
+    "atencion personalizada": "atencion_personalizada",
+    "herramientas publicas": "herramientas_publicas",
+    "higiene urbana": "recoleccion_residuos",
+    "participacion ciudadana": "participacion_ciudadana",
+    "tramites publicados": "tramites_publicados",
+    "transito y senalizacion": "transito_senalizacion",
+}
+
+_TICKET_STATUS_LABELS = {
+    "pendiente_datos": "Pendiente de datos",
+    "nuevo": "Nuevo",
+    "en_proceso": "En proceso",
+    "resuelto": "Resuelto",
+    "cerrado": "Cerrado",
 }
 
 
@@ -53,9 +77,38 @@ def _compact(text: str, *, max_len: int = 240) -> str:
     return value[: max_len - 1].rstrip() + "..."
 
 
-def _user_facing_label(value: Any) -> str:
-    text = str(value or "")
-    return _USER_FACING_LABELS.get(text, text)
+def _category_key(value: Any) -> str:
+    text = str(value or "").strip()
+    if text in _DEMO_CATEGORY_LABELS:
+        return text
+    folded = _fold(text)
+    for key, label in _DEMO_CATEGORY_LABELS.items():
+        if folded == _fold(label):
+            return key
+    return _LEGACY_CATEGORY_KEYS.get(folded, re.sub(r"[^a-z0-9]+", "_", folded).strip("_"))
+
+
+def _category_label(key: Any) -> str:
+    category_key = _category_key(key)
+    return _DEMO_CATEGORY_LABELS.get(category_key, str(key or "").strip())
+
+
+def _demo_intent(
+    kind: str,
+    category_key: str | None = None,
+    *,
+    priority: str | None = None,
+) -> dict[str, Any]:
+    intent: dict[str, Any] = {"kind": kind, "category_key": category_key}
+    intent["category_label"] = _category_label(category_key) if category_key else None
+    if priority:
+        intent["priority"] = priority
+    return intent
+
+
+def _ticket_status_label(value: Any) -> str:
+    text = str(value or "").strip()
+    return _TICKET_STATUS_LABELS.get(text, text.replace("_", " ").capitalize())
 
 
 def _tenant_for_owner(
@@ -174,54 +227,59 @@ def _classify_demo_intent(
         return None
 
     if action in {"crear_reclamo", "iniciar_reclamo", "crear_ticket", "iniciar_reclamo_con_ubicacion"}:
-        return {"kind": "claim", "category": "Reclamo ciudadano", "priority": "Media"}
+        return _demo_intent("claim", "reclamo_ciudadano", priority="Media")
 
     if "estado" in action or "consultar_estado" in action or "consultar estado" in text:
-        return {"kind": "status_lookup", "category": None}
+        return _demo_intent("status_lookup")
 
     if action in {"consultar_tramite", "info_tramite", "tramite", "tramites"}:
-        return {"kind": "info", "category": "Tramites publicados"}
+        return _demo_intent("info", "tramites_publicados")
 
     if action == "mostrar_menu_encuestas" or action.startswith("mostrar_menu_encuestas::"):
-        return {"kind": "survey", "category": "Participacion ciudadana"}
+        return _demo_intent("survey", "participacion_ciudadana")
 
     if any(token in text for token in ("licencia", "registro", "carnet", "turno")):
-        return {"kind": "info", "category": "Licencias de conducir"}
+        return _demo_intent("info", "licencias_conducir")
 
     claim_terms = (
         "bache", "baches", "pozo", "pozos", "pavimento", "calle rota", "asfalto",
         "alumbrado", "luminaria", "reclamo", "ticket", "caso", "semaforo",
+        "basura", "residuos", "recoleccion", "contenedor", "limpieza",
+        "arbol", "rama", "poda", "plaza", "parque", "espacio verde",
     )
     tool_terms = (
         "ubicacion", "direccion", "mapa", "maps", "telefono", "whatsapp", "contacto",
         "horario", "horarios", "catalogo", "lista de precios", "precios", "web",
     )
     if ("tool_" in action or any(token in text for token in tool_terms)) and not any(token in text for token in claim_terms):
-        return {"kind": "tool_lookup", "category": "Herramientas publicas"}
+        return _demo_intent("tool_lookup", "herramientas_publicas")
 
     if action in {"derivar_humano", "human_handoff", "hablar_con_una_persona"} or any(token in text for token in ("videollamada", "video llamada", "llamada", "call", "operador", "persona")):
-        return {"kind": "human_handoff", "category": "Atencion personalizada"}
+        return _demo_intent("human_handoff", "atencion_personalizada")
 
     if any(token in text for token in ("encuesta", "votacion", "votar", "sondeo")):
-        return {"kind": "survey", "category": "Participacion ciudadana"}
+        return _demo_intent("survey", "participacion_ciudadana")
 
     if any(token in text for token in ("bache", "baches", "pozo", "pozos", "pavimento", "calle rota", "asfalto")):
-        return {"kind": "claim", "category": "Baches y calzada", "priority": "Alta"}
+        return _demo_intent("claim", "baches_calzada", priority="Alta")
 
     if any(token in text for token in ("alumbrado", "luminaria", "luz", "poste", "farola")) or "💡" in question:
-        return {"kind": "claim", "category": "Alumbrado publico", "priority": "Media"}
+        return _demo_intent("claim", "alumbrado_publico", priority="Media")
 
     if any(token in text for token in ("basura", "residuos", "recoleccion", "contenedor", "limpieza")):
-        return {"kind": "claim", "category": "Higiene urbana", "priority": "Media"}
+        return _demo_intent("claim", "recoleccion_residuos", priority="Media")
+
+    if any(token in text for token in ("arbol", "rama", "poda", "plaza", "parque", "espacio verde")):
+        return _demo_intent("claim", "espacios_verdes", priority="Media")
 
     if any(token in text for token in ("semaforo", "transito", "senal", "señal")):
-        return {"kind": "claim", "category": "Transito y senalizacion", "priority": "Alta"}
+        return _demo_intent("claim", "transito_senalizacion", priority="Alta")
 
     if any(token in text for token in ("reclamo", "ticket", "caso", "crear_ticket", "crear ticket")) or "crear_ticket" in action:
-        return {"kind": "claim", "category": "Reclamo ciudadano", "priority": "Media"}
+        return _demo_intent("claim", "reclamo_ciudadano", priority="Media")
 
     if media or has_location:
-        return {"kind": "claim", "category": "Evidencia ciudadana", "priority": "Media"}
+        return _demo_intent("claim", "evidencia_ciudadana", priority="Media")
 
     return None
 
@@ -306,7 +364,8 @@ def _upsert_ticket(
     runtime = _context_runtime(chat_db_context)
     media = _media_data(attachment_info)
     loc = _location_data(location)
-    category = str(intent.get("category") or "Reclamo ciudadano")
+    category_key = _category_key(intent.get("category_key") or "reclamo_ciudadano")
+    category_label = _category_label(category_key)
     priority = str(intent.get("priority") or "Media")
 
     ticket = _last_ticket(runtime, tenant)
@@ -314,14 +373,18 @@ def _upsert_ticket(
         ticket
         and (media or loc)
         and ticket.categoria
-        and _fold(ticket.categoria) in {_fold(category), "reclamo ciudadano", "evidencia ciudadana"}
+        and (
+            category_key in {"reclamo_ciudadano", "evidencia_ciudadana"}
+            or _category_key(ticket.categoria)
+            in {category_key, "reclamo_ciudadano", "evidencia_ciudadana"}
+        )
     )
     created = False
     if not should_update_last:
         ticket = MunicipioTicket(
             pregunta=_compact(question or "Reclamo iniciado desde demo"),
-            asunto=f"Demo reclamo - {category}",
-            categoria=category,
+            asunto=f"Reclamo de {category_label}",
+            categoria=category_label,
             estado="nuevo" if loc or media else "pendiente_datos",
             canal_ingreso=DEMO_MUNICIPIO_CHANNEL,
             anon_id=anon_id,
@@ -335,7 +398,9 @@ def _upsert_ticket(
 
     if question:
         ticket.pregunta = _compact(question or ticket.pregunta)
-    ticket.categoria = category if category != "Evidencia ciudadana" or not ticket.categoria else ticket.categoria
+    if category_key != "evidencia_ciudadana" or not ticket.categoria:
+        ticket.categoria = category_label
+        ticket.asunto = f"Reclamo de {category_label}"
     if loc:
         ticket.direccion = loc.get("address") or ticket.direccion
         ticket.latitud = loc.get("lat", ticket.latitud)
@@ -351,6 +416,7 @@ def _upsert_ticket(
     details["chat_session_id"] = chat_session_id
     details["demo_session_payload"] = demo_session_payload or {}
     details["priority"] = priority
+    details["category_key"] = _category_key(ticket.categoria)
     details.setdefault("media", [])
     if media:
         details["media"].append(media)
@@ -404,7 +470,9 @@ def _ticket_payload(ticket: MunicipioTicket, details: dict[str, Any]) -> dict[st
         "nro_ticket": ticket.nro_ticket,
         "consulta_pin": ticket.consulta_pin,
         "status": ticket.estado,
+        "status_label": _ticket_status_label(ticket.estado),
         "category": ticket.categoria,
+        "category_key": details.get("category_key") or _category_key(ticket.categoria),
         "address": ticket.direccion,
         "lat": ticket.latitud,
         "lng": ticket.longitud,
@@ -458,7 +526,12 @@ def _response_for_status(
     if not ticket:
         message = "Todavía no tengo un ticket creado en esta demo. Enviame el reclamo, foto o ubicación y lo creo para seguimiento."
         return {"message_body": message, "respuesta": message, "fuente": DEMO_MUNICIPIO_SOURCE, "actions": []}
-    message = f"El reclamo demo #{ticket.nro_ticket} está en estado {ticket.estado}. PIN de consulta: {ticket.consulta_pin}."
+    category_label = _category_label(ticket.categoria)
+    status_label = _ticket_status_label(ticket.estado)
+    message = (
+        f"El reclamo demo de {category_label} #{ticket.nro_ticket} tiene estado «{status_label}». "
+        f"PIN de consulta: {ticket.consulta_pin}."
+    )
     details = _details(ticket)
     tracking_action = _public_tracking_action(ticket)
     next_actions = [tracking_action] if tracking_action else []
@@ -477,6 +550,8 @@ def _response_for_status(
                 "creates": "status_event",
                 "fields": [
                     {"label": "Ticket", "value": ticket.nro_ticket},
+                    {"label": "Categoría", "value": category_label},
+                    {"label": "Estado", "value": status_label},
                     {"label": "PIN", "value": ticket.consulta_pin},
                 ],
             }
@@ -707,23 +782,23 @@ def _response_for_ticket(ticket: MunicipioTicket, created: bool, details: dict[s
     media_labels = [item.get("kind") for item in details.get("media") or [] if isinstance(item, dict) and item.get("kind")]
     next_hint = []
     if not has_location:
-        next_hint.append("ubicación")
+        next_hint.append("la ubicación")
     if not media_labels:
-        next_hint.append("foto, audio o archivo")
+        next_hint.append("una foto, un audio o un archivo")
     if next_hint:
-        extra = " Ahora puedo sumar " + " y ".join(next_hint) + " para completar evidencia."
+        extra = " Para completar la evidencia, enviame " + " y ".join(next_hint) + "."
     else:
         extra = " Ya quedó con ubicación y evidencia para que el equipo lo opere."
 
     verb = "creé" if created else "actualicé"
-    category_label = _user_facing_label(ticket.categoria)
+    category_label = _category_label(ticket.categoria)
     message = (
         f"Listo: {verb} el reclamo demo de {category_label}. "
         f"Ticket #{ticket.nro_ticket}, PIN {ticket.consulta_pin}.{extra}"
     )
     fields = [
         {"label": "Categoría", "value": category_label or "Reclamo ciudadano"},
-        {"label": "Estado", "value": ticket.estado},
+        {"label": "Estado", "value": _ticket_status_label(ticket.estado)},
     ]
     if has_location:
         fields.append({"label": "Ubicación", "value": ticket.direccion or f"{ticket.latitud}, {ticket.longitud}"})
