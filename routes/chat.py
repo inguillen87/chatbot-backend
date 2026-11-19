@@ -54,6 +54,7 @@ from services.common_utils import validar_email, validar_telefono, formatear_tel
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_municipio_runtime import handle_demo_municipio_message
+from services.demo_tenant_scope import is_server_demo_tenant
 from services.demo_surveys import (
     build_demo_survey_chat_menu,
     resolve_demo_public_frontend_base_url,
@@ -4277,6 +4278,11 @@ def _procesar_chat(
         demo_session_payload = decode_demo_session_token(demo_session_token) if demo_session_token else {}
         if not isinstance(demo_session_payload, dict):
             demo_session_payload = {}
+        if not demo_session_payload and isinstance(contexto_chat, dict):
+            persisted_demo_token = contexto_chat.get("demo_session_id")
+            persisted_demo_payload = decode_demo_session_token(persisted_demo_token)
+            if isinstance(persisted_demo_payload, dict):
+                demo_session_payload = persisted_demo_payload
         has_chat_session_marker = bool(request.headers.get("X-Chat-Session-Id"))
         has_demo_context_marker = bool(
             request_payload.get("demo_mode")
@@ -5229,6 +5235,34 @@ def _procesar_chat(
             and current_app.config.get("DEMO_MUNICIPIO_RUNTIME_ENABLED", True)
         ):
             try:
+                registered_demo_selection = bool(
+                    isinstance(contexto_chat, dict)
+                    and contexto_chat.get("demo_key")
+                    and contexto_chat.get("demo_owner_user_id")
+                    and any(
+                        option.get("key") == contexto_chat.get("demo_key")
+                        and option.get("owner_user_id") == contexto_chat.get("demo_owner_user_id")
+                        for option in _load_demo_rubros()
+                    )
+                )
+                verified_demo_tenant = tenant_for_demo
+                if verified_demo_tenant is None and registered_demo_selection:
+                    verified_demo_tenant = _resolve_demo_tenant_for_chat(
+                        str(
+                            contexto_chat.get("demo_resolved_tenant_slug")
+                            or contexto_chat.get("demo_key")
+                            or ""
+                        ),
+                        str(contexto_chat.get("demo_sector") or "gobierno"),
+                    )
+                has_server_verified_demo_session = bool(
+                    demo_session_payload or registered_demo_selection
+                )
+                if (
+                    not has_server_verified_demo_session
+                    or not is_server_demo_tenant(verified_demo_tenant)
+                ):
+                    verified_demo_tenant = None
                 demo_runtime_result = handle_demo_municipio_message(
                     question=pregunta,
                     action_id=action_id,
@@ -5239,6 +5273,7 @@ def _procesar_chat(
                     anon_id=anon_id,
                     chat_session_id=chat_session_id_header,
                     demo_session_payload=demo_session_payload if isinstance(demo_session_payload, dict) else {},
+                    verified_demo_tenant=verified_demo_tenant,
                 )
             except Exception as demo_runtime_exc:
                 current_app.logger.warning(

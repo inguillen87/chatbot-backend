@@ -36,6 +36,11 @@ from services.tenant_purge import (
     purge_tenant,
     tenant_account_filters,
 )
+from services.demo_tenant_scope import (
+    DemoTenantScopeRepairError,
+    build_demo_tenant_scope_diagnostic,
+    repair_demo_tenant_scope,
+)
 from services.user_service import assign_whatsapp_numbers
 from services.native_admin_membership import (
     NativeAdminMembershipError, list_native_admin_memberships,
@@ -2146,6 +2151,60 @@ def catalog_quality_queue(current_user):
         "avg_confidence": avg_conf,
         "items": items,
     })
+
+
+@super_admin_bp.route('/tenants/<string:tenant_slug>/demo-scope-diagnostic', methods=['GET'])
+@token_requerido
+@super_admin_required
+def demo_scope_diagnostic(current_user, tenant_slug):  # noqa: ARG001
+    tenant = TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == str(tenant_slug or "").strip().lower()
+    ).first()
+    if tenant is None:
+        return jsonify({"reason_code": "tenant_not_found"}), 404
+    return jsonify(build_demo_tenant_scope_diagnostic(tenant)), 200
+
+
+@super_admin_bp.route('/tenants/<string:tenant_slug>/demo-scope-repair', methods=['POST'])
+@token_requerido
+@super_admin_required
+def demo_scope_repair(current_user, tenant_slug):
+    tenant = TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == str(tenant_slug or "").strip().lower()
+    ).with_for_update().first()
+    if tenant is None:
+        return jsonify({"reason_code": "tenant_not_found"}), 404
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"reason_code": "invalid_json_payload"}), 400
+    dry_run = payload.get("dry_run", True)
+    if not isinstance(dry_run, bool):
+        return jsonify({"reason_code": "dry_run_must_be_boolean"}), 400
+
+    try:
+        result = repair_demo_tenant_scope(
+            tenant,
+            owner_user_id=payload.get("owner_user_id"),
+            dry_run=dry_run,
+        )
+    except DemoTenantScopeRepairError as exc:
+        db.session.rollback()
+        return jsonify({"reason_code": exc.reason_code}), exc.status_code
+
+    if not dry_run:
+        _log_admin_action(
+            current_user.id,
+            "repair_demo_tenant_scope",
+            tenant.slug,
+            {
+                "tenant_id": tenant.id,
+                "owner_user_id": result["selected_owner_user_id"],
+                "change_count": result["change_count"],
+            },
+        )
+        db.session.commit()
+    return jsonify(result), 200
 
 @super_admin_bp.route('/leads/interactions', methods=['GET'])
 @token_requerido
