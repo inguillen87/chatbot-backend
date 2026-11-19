@@ -2008,7 +2008,8 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(captured_session_ids, [])
         self.assertEqual(MunicipioTicket.query.count(), 1)
         ticket = MunicipioTicket.query.first()
-        self.assertEqual(ticket.categoria, "Alumbrado publico")
+        self.assertEqual(ticket.categoria, "Alumbrado público")
+        self.assertEqual(ticket.asunto, "Reclamo de Alumbrado público")
         self.assertEqual(ticket.canal_ingreso, "web_demo_widget")
 
     def test_demo_municipio_runtime_creates_claim_for_baches_not_parking(self):
@@ -2146,7 +2147,8 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("image", ((payload.get("media_understanding") or {}).get("received") or []))
         ticket = MunicipioTicket.query.first()
         self.assertIsNotNone(ticket)
-        self.assertEqual(ticket.categoria, "Alumbrado publico")
+        self.assertEqual(ticket.categoria, "Alumbrado público")
+        self.assertEqual(ticket.asunto, "Reclamo de Alumbrado público")
         self.assertEqual(ticket.foto_url_directa, image_url)
 
     def test_ask_invalid_demo_session_returns_json_error(self):

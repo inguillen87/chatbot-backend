@@ -33,6 +33,12 @@ def _private_config() -> dict:
             "accountSid": "camel-case-account-sid",
             "publicLabel": "Public provider label",
         },
+        "bot_settings": {
+            "name": "Asistente interno",
+            "system_prompt": "private-assistant-instructions",
+            "fallback_behavior": "handoff",
+        },
+        "assistant": {"systemPrompt": "nested-private-instructions", "label": "Public assistant label"},
     }
 
 
@@ -76,8 +82,13 @@ def _assert_public_config(config: dict) -> None:
         "nested-refresh-token",
         "camel-case-api-key",
         "camel-case-account-sid",
+        "private-assistant-instructions",
+        "nested-private-instructions",
     ):
         assert private_value not in serialized
+
+    assert "bot_settings" not in config
+    assert config["assistant"] == {"label": "Public assistant label"}
 
     assert config["channels"]["whatsapp"]["phone"] == "+5491112345678"
     assert config["copy"]["welcome"] == "Public welcome"
