@@ -66,7 +66,14 @@ def schema():
     def _enforce_foreign_keys(connection, _record):
         connection.execute("PRAGMA foreign_keys=ON")
 
-    metadata.create_all(engine)
+    # Declared by the models, never migrated into this database.
+    never_migrated = Table(
+        "never_migrated", metadata,
+        Column("id", Integer, primary_key=True),
+        Column("tenant_id", Integer, ForeignKey("tenant_profile.id"), nullable=False),
+        Column("user_id", Integer, ForeignKey("user.id"), nullable=True),
+    )
+    metadata.create_all(engine, tables=[t for t in metadata.sorted_tables if t is not never_migrated])
     session = Session(engine)
     yield type("Schema", (), dict(
         metadata=metadata, users=users, tenants=tenants, orders=orders,
@@ -151,6 +158,8 @@ def test_purge_scopes_by_owner_user_and_never_by_tenant_number(schema):
         "tenant_profile": 1, "ticket": 1, "user": 2,
     }
     assert summary["detached"] == {"ticket.assigned_to": 1}
+    # A declared table this database lacks is reported, not fatal.
+    assert list(summary["skipped_unreadable_tables"]) == ["never_migrated"]
 
 
 def test_rolling_back_the_same_purge_is_an_exact_preview(schema):
