@@ -83,7 +83,12 @@ def run(environment, monkeypatch):
 
     @contextmanager
     def lease(config):
-        yield SimpleNamespace(revalidate=lambda cfg: state.lease_decision)
+        try:
+            yield SimpleNamespace(revalidate=lambda cfg: state.lease_decision)
+        except Exception:
+            # The background authority connection sanitizes exceptions that
+            # escape its context, unlike the request-owned middleware lease.
+            raise RuntimeError("authority_connection_unavailable") from None
 
     monkeypatch.setattr(renewal, "global_writer_authority_lease", lease)
     state.renew = lambda target=TARGET.name: renewal.renew_target(target,
@@ -288,7 +293,7 @@ def test_concurrent_replacement_wins_on_positive_or_negative_provider_result(run
             revision=old["revision"] + int(during == "revision"), token=OLD_TOKEN))
     run.graph.once = replace
     run.graph.debug["is_valid"] = not invalid_proof
-    run.renew()
+    assert run.renew()["reason"] == "credential_changed"
     cfg = connection_config()
     assert cfg[PRIVATE_CONFIG_KEY] == expected
     assert "meta_credential_renewal" not in cfg and AuditEvent.query.count() == 0

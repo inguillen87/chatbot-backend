@@ -113,50 +113,60 @@ def _renew(target, config, engine, graph_get, clock):
         failure = exc.code
 
     with global_writer_authority_lease(config) as lease:
-        _check_writer(config, lease.revalidate(config), epoch)
-        with _transaction(engine, read_only=False) as session:
-            if engine.dialect.name == "postgresql":
-                # Take the ordinary UPDATE table lock before any row locks,
-                # in the same order as a manual apply's stronger table lock.
-                session.execute(text("LOCK TABLE public.provider_connection IN ROW EXCLUSIVE MODE"))
-            connection = _binding(session, target, lock=True)
-            prior = connection.config
-            # Compare the observed revision and expiry, as well as the nonce
-            # and last outcome for simultaneous checks of a provider-capped token.
-            if prior[PRIVATE_CONFIG_KEY] != envelope or prior.get(RENEWAL_KEY) != saved:
-                raise _SkipWrite("due", "credential_changed")
-            now = clock()
-            _check_time(now, old_expiry, proof)
-            replacement = dict(prior)
-            if failure:
-                replacement[RENEWAL_KEY] = {**status, "state": "failed", "reason": failure,
-                                             "next_check_after": None}
-                event = "provider_credential.meta_renewal_failed"
-            else:
-                expiry = proof.observed_at + LOCAL_EXPIRY_SECONDS
-                if provider_expiry is not None:
-                    expiry = min(expiry, provider_expiry)
-                replacement[PRIVATE_CONFIG_KEY] = vault.seal_token(
-                    connection=connection, tenant_id=target.tenant_id, access_token=credential.access_token,
-                    revision=credential.revision, expires_at=expiry, now=now, app_config=config)
-                replacement[RENEWAL_KEY] = renewal_status(
-                    target, config, expiry, {"last_revalidated_at": proof.observed_at}, now)
-                event = "provider_credential.meta_revalidated"
-
-            changed = session.execute(update(ProviderConnection).where(
-                ProviderConnection.id == connection.id, ProviderConnection.config == prior)
-                .values(config=replacement).returning(ProviderConnection.id)
-                .execution_options(synchronize_session=False)).scalar_one_or_none()
-            if changed is None:
-                raise _SkipWrite("due", "credential_changed")
-            result = replacement[RENEWAL_KEY]
-            session.add(AuditEvent(tenant_id=target.tenant_id, actor_user_id=None,
-                event_type=event, resource_type="provider_connection", resource_id=str(connection.id),
-                details={"revision": credential.revision, "reason": result["reason"],
-                         "expires_at": replacement[PRIVATE_CONFIG_KEY]["expires_at"]}))
-            session.flush()
+        try:
             _check_writer(config, lease.revalidate(config), epoch)
-            _check_time(clock(), old_expiry, proof)
+            with _transaction(engine, read_only=False) as session:
+                if engine.dialect.name == "postgresql":
+                    # Take the ordinary UPDATE table lock before any row locks,
+                    # in the same order as a manual apply's stronger table lock.
+                    session.execute(text("LOCK TABLE public.provider_connection IN ROW EXCLUSIVE MODE"))
+                connection = _binding(session, target, lock=True)
+                prior = connection.config
+                # Compare the observed revision and expiry, as well as the nonce
+                # and last outcome for simultaneous checks of a provider-capped token.
+                if prior[PRIVATE_CONFIG_KEY] != envelope or prior.get(RENEWAL_KEY) != saved:
+                    raise _SkipWrite("due", "credential_changed")
+                now = clock()
+                _check_time(now, old_expiry, proof)
+                replacement = dict(prior)
+                if failure:
+                    replacement[RENEWAL_KEY] = {**status, "state": "failed", "reason": failure,
+                                                 "next_check_after": None}
+                    event = "provider_credential.meta_renewal_failed"
+                else:
+                    expiry = proof.observed_at + LOCAL_EXPIRY_SECONDS
+                    if provider_expiry is not None:
+                        expiry = min(expiry, provider_expiry)
+                    replacement[PRIVATE_CONFIG_KEY] = vault.seal_token(
+                        connection=connection, tenant_id=target.tenant_id, access_token=credential.access_token,
+                        revision=credential.revision, expires_at=expiry, now=now, app_config=config)
+                    replacement[RENEWAL_KEY] = renewal_status(
+                        target, config, expiry, {"last_revalidated_at": proof.observed_at}, now)
+                    event = "provider_credential.meta_revalidated"
+
+                changed = session.execute(update(ProviderConnection).where(
+                    ProviderConnection.id == connection.id, ProviderConnection.config == prior)
+                    .values(config=replacement).returning(ProviderConnection.id)
+                    .execution_options(synchronize_session=False)).scalar_one_or_none()
+                if changed is None:
+                    raise _SkipWrite("due", "credential_changed")
+                result = replacement[RENEWAL_KEY]
+                session.add(AuditEvent(tenant_id=target.tenant_id, actor_user_id=None,
+                    event_type=event, resource_type="provider_connection", resource_id=str(connection.id),
+                    details={"revision": credential.revision, "reason": result["reason"],
+                             "expires_at": replacement[PRIVATE_CONFIG_KEY]["expires_at"]}))
+                session.flush()
+                _check_writer(config, lease.revalidate(config), epoch)
+                _check_time(clock(), old_expiry, proof)
+        except _SkipWrite as skip:
+            # Leave the lease normally after the application transaction rolls
+            # back. The shared authority adapter otherwise masks body errors.
+            return _summary(target, skip.state, skip.reason), False
+        except DBAPIError as exc:
+            # PostgreSQL can detect the competing write at lock or commit time.
+            if (getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)) == "40001":
+                return _summary(target, "due", "concurrent_update"), False
+            raise
     return _summary(target, result["state"], result["reason"]), bool(failure)
 
 
@@ -170,12 +180,6 @@ def renew_target(target_name, *, config, graph_get=native_graph_request,
             result, alert = _renew(target, config, db.engine if engine is None else engine, graph_get, clock)
         except _SkipWrite as skip:
             return _summary(target, skip.state, skip.reason)
-        except DBAPIError as exc:
-            # At SERIALIZABLE, PostgreSQL can reject a competing update while
-            # acquiring the row lock, before we can inspect the newer version.
-            if (getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)) == "40001":
-                return _summary(target, "due", "concurrent_update")
-            result, alert = _summary(target, "due", "renewal_unavailable"), False
         except Exception:
             # Driver/adapter exceptions may contain SQL parameters or request URLs.
             # Never copy them, including their traceback, into a log or response.
