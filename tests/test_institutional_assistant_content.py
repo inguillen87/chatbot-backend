@@ -291,6 +291,11 @@ class SelectorCapacityTests(unittest.TestCase):
         # An ambiguous procedure is resolved by offering the choice, never by guessing one.
         self.assertIn('ofrezcan elegir\nentre esos trámites', SELECTOR_INSTRUCTIONS)
         self.assertIn('no cambies a otro trámite ni a otra oficina por coincidir la\nlocalidad', SELECTOR_INSTRUCTIONS)
+        # The topic in course is no anchor for a question about something it does
+        # not cover, and it only disambiguates when its own actions offer the options.
+        self.assertIn('que los nodos del\ntema en curso no tratan, es un tema nuevo', SELECTOR_INSTRUCTIONS)
+        self.assertIn('el tema en curso\nsólo si sus propias acciones los ofrecen', SELECTOR_INSTRUCTIONS)
+        self.assertNotIn('por ejemplo el tema en curso', SELECTOR_INSTRUCTIONS)
 
     def test_selector_is_retried_once_only_after_a_fast_failure_without_result(self):
         bundle = normalize_bundle(sample(), 701, 'qa-knowledge')
