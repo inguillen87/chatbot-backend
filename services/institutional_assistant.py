@@ -38,6 +38,7 @@ UI = {
     'version': 'Versión', 'preview': 'Probar respuestas', 'large_text': 'Texto ampliado',
     'answer': 'Respuesta', 'evidence': 'Información respaldada por documentos', 'close': 'Cerrar fuentes',
     'pending': 'El cambio no está confirmado. Consultá el estado antes de volver a intentarlo.',
+    'question_metrics': 'Consultas escritas',
     'import_review_current_version': 'Versión actual',
     'import_review_proposed_version': 'Versión a incorporar',
     'import_review_empty_current': 'Sin versión incorporada',

@@ -200,6 +200,15 @@ class QuestionMetricsCases:
             {'node_id': 'start', 'count': 1, 'title': 'Inicio', 'is_start': True}])
         self.assertEqual(data['answered_by_node'], [{'node_id': 'requirements', 'count': 1, 'title': 'Requisitos', 'is_start': False}])
         self.assertNotIn(SECRET, response.get_data(as_text=True))
+        # The panel wording travels with the data; every label is non-empty text.
+        self.assertEqual(set(data['ui']), {
+            'title', 'description', 'period', 'answered', 'uncovered', 'typed_navigation', 'sources',
+            'unavailable', 'uncovered_rate', 'uncovered_by_node', 'answered_by_node', 'node', 'count',
+            'retired_node', 'empty', 'privacy', 'truncated'})
+        self.assertTrue(all(isinstance(text, str) and text.strip() and len(text) <= 200 for text in data['ui'].values()))
+        self.assertIn('{days}', data['ui']['period'])
+        # The administration workspace names the panel before any metric is requested.
+        self.assertEqual(self.get(client)['ui']['question_metrics'], data['ui']['title'])
         self.assertEqual(response.headers['Cache-Control'], 'private, no-store')
         wide = self.metrics(client, '?days=90&utc_offset_minutes=-180').get_json()
         self.assertEqual((wide['days'], wide['utc_offset_minutes'], len(wide['by_day'])), (90, -180, 90))

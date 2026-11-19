@@ -19,6 +19,24 @@ OUTCOMES = ('answered', 'uncovered', 'typed_navigation', 'sources', 'unavailable
 CHANNELS = ('web_reader',)
 DEFAULT_DAYS, MAX_DAYS, MAX_EVENTS, MAX_RANKING = 30, 90, 20000, 20
 MAX_UTC_OFFSET_MINUTES = 14 * 60
+# Wording of the administration panel. The client renders it as received.
+UI = {
+    'title': 'Consultas escritas',
+    'description': 'Resultado de las consultas que las personas escribieron en el lector público.',
+    'period': 'Últimos {days} días',
+    'answered': 'Con respuesta', 'uncovered': 'Sin respuesta en las fuentes',
+    'typed_navigation': 'Navegación escrita', 'sources': 'Pedidos de fuentes',
+    'unavailable': 'No se pudieron interpretar',
+    'uncovered_rate': 'Consultas sin respuesta',
+    'uncovered_by_node': 'Temas donde faltó información',
+    'answered_by_node': 'Temas más consultados',
+    'node': 'Tema', 'count': 'Consultas',
+    'retired_node': 'Tema de una versión anterior',
+    'empty': 'Todavía no hay consultas escritas en este período.',
+    'privacy': ('Se registra el resultado y el tema de cada consulta. '
+                'No se guarda el texto ni datos de quien consulta.'),
+    'truncated': 'Hay más consultas de las que se muestran; se usaron las más recientes.',
+}
 _NODE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,119}')
 _REVISION_PREFIX = re.compile(r'[a-f0-9]{16}')
 _observed = ContextVar('institutional_question_outcomes', default=None)
@@ -149,4 +167,5 @@ def question_metrics(tenant, state, *, days=DEFAULT_DAYS, utc_offset_minutes=0, 
         'by_channel': {channel: counts(counter) for channel, counter in by_channel.items()},
         'by_day': [{'date': day.isoformat(), **counts(counter)} for day, counter in sorted(by_day.items())],
         'uncovered_by_node': ranking(uncovered), 'answered_by_node': ranking(asked),
+        'ui': dict(UI),
     }
