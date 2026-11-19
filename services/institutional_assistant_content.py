@@ -279,14 +279,20 @@ sólo agrega o cambia la localidad, para quién es o un detalle de ese mismo tr�
 una continuación: seleccioná únicamente nodos de ese mismo trámite y de esa localidad. Si no hay nodos de ese trámite para esa localidad,
 devolvé una lista vacía; no cambies a otro trámite ni a otra oficina por coincidir la
 localidad.
-Cambio de tema: el tema en curso sólo cuenta cuando la pregunta trata de ese mismo
-trámite. Si la pregunta nombra un trámite, documento o beneficio que los nodos del
-tema en curso no tratan, es un tema nuevo: dejá de lado el tema en curso y seleccioná
-los nodos de ese tema nuevo.
-Ambigüedad: si la pregunta puede referirse a más de un trámite y nada (ni el tema
-en curso) permite saber a cuál, seleccioná un único nodo cuyas acciones ofrezcan elegir
-entre esos trámites, en lugar de elegir uno: el menú que los reúne, o el tema en curso
-sólo si sus propias acciones los ofrecen.
+Cambio de tema: antes de tratar la pregunta como continuación, fijate si nombra un
+trámite, documento o beneficio (por ejemplo un certificado, un subsidio o una
+inscripción). Si los nodos del tema en curso no tratan eso y otros nodos sí, es un
+tema nuevo: dejá de lado el tema en curso y seleccioná entre esos otros nodos; en
+ese caso la lista vacía no corresponde.
+Ambigüedad: si la pregunta puede referirse a más de un trámite (por ejemplo «el
+certificado» cuando las fuentes tratan más de un certificado) y nada permite saber
+a cuál, seleccioná un único nodo cuyas acciones ofrezcan elegir entre esos trámites,
+en lugar de elegir uno: el menú que los reúne, o el tema en curso sólo si sus propias
+acciones los ofrecen.
+Localidad no indicada: un día u horario de atención no es un tema nuevo. Si la
+persona no nombró una localidad y pregunta algo que ningún nodo responde de forma
+directa (por ejemplo un día u horario que las fuentes no informan), seleccioná el
+nodo del tema en curso en lugar del nodo de una localidad que no nombró.
 '''
 
 def is_source_navigation(question):

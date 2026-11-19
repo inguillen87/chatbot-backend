@@ -289,12 +289,16 @@ class SelectorCapacityTests(unittest.TestCase):
         self.assertEqual(set(seen[1]), {'question', 'current_node', 'knowledge'})
         self.assertIn('current_topic', SELECTOR_INSTRUCTIONS)
         # An ambiguous procedure is resolved by offering the choice, never by guessing one.
-        self.assertIn('ofrezcan elegir\nentre esos trámites', SELECTOR_INSTRUCTIONS)
+        self.assertIn('cuyas acciones ofrezcan elegir entre esos trámites', SELECTOR_INSTRUCTIONS)
         self.assertIn('no cambies a otro trámite ni a otra oficina por coincidir la\nlocalidad', SELECTOR_INSTRUCTIONS)
         # The topic in course is no anchor for a question about something it does
         # not cover, and it only disambiguates when its own actions offer the options.
-        self.assertIn('que los nodos del\ntema en curso no tratan, es un tema nuevo', SELECTOR_INSTRUCTIONS)
-        self.assertIn('el tema en curso\nsólo si sus propias acciones los ofrecen', SELECTOR_INSTRUCTIONS)
+        self.assertIn('Si los nodos del tema en curso no tratan eso y otros nodos sí, es un\ntema nuevo', SELECTOR_INSTRUCTIONS)
+        self.assertIn('el tema en curso sólo si sus propias\nacciones los ofrecen', SELECTOR_INSTRUCTIONS)
+        # A question that names no place is not answered with one city's office.
+        self.assertIn('seleccioná el\nnodo del tema en curso en lugar del nodo de una localidad que no nombró', SELECTOR_INSTRUCTIONS)
+        # A question about something other nodes cover never ends as "not in the sources".
+        self.assertIn('seleccioná entre esos otros nodos; en\nese caso la lista vacía no corresponde', SELECTOR_INSTRUCTIONS)
         self.assertNotIn('por ejemplo el tema en curso', SELECTOR_INSTRUCTIONS)
 
     def test_selector_is_retried_once_only_after_a_fast_failure_without_result(self):
