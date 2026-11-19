@@ -66,6 +66,29 @@ def _request_id() -> str:
     return incoming or uuid.uuid4().hex
 
 
+def _chat_demo_trial_contract() -> dict[str, dict[str, Any]]:
+    raw_limit = current_app.config.get("DEMO_MAX_MESSAGES_PER_SESSION")
+    try:
+        limit = int(raw_limit or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    if limit <= 0:
+        return {}
+    return {
+        "trial_policy": {
+            "contract_version": "demo.trial_policy.v1",
+            "scope": "anonymous_or_sandbox_demo",
+            "max_messages": limit,
+        },
+        "trial_usage": {
+            "channel": "chat",
+            "limit": limit,
+            "used": 0,
+            "remaining": limit,
+        },
+    }
+
+
 def _twilio_sandbox_number() -> str:
     raw = (
         current_app.config.get("TWILIO_WHATSAPP_SANDBOX_NUMBER")
@@ -3267,6 +3290,7 @@ def demo_session_v2():
                 "frontend_contract": frontend_contract,
                 "default_menu": default_menu,
                 "quick_menu": selector_menu,
+                **_chat_demo_trial_contract(),
             }
         )
 
@@ -3700,6 +3724,7 @@ def demo_session_v2():
                 "primary_actions": primary_actions,
                 "quick_menu": default_menu["items"],
                 "quick_replies": quick_replies,
+                **_chat_demo_trial_contract(),
             }
         )
 
@@ -3776,5 +3801,6 @@ def demo_session_v2():
             },
             "quick_menu": default_menu["items"],
             "quick_replies": quick_replies,
+            **_chat_demo_trial_contract(),
         }
     )

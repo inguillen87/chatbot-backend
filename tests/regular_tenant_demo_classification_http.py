@@ -102,6 +102,8 @@ class RegularTenantChatTests(unittest.TestCase):
                     response = self.post(endpoint=endpoint, session=endpoint, question='consulta ' + str(index))
                     self.assertEqual(response.status_code, 200, response.get_json())
                     self.assertIsNone(response.get_json()['limite_preguntas'])
+                    self.assertNotIn('trial_usage', response.get_json())
+                    self.assertNotIn('trial_policy', response.get_json())
                 self.assertEqual(responder.call_count, 4)
                 self.assertEqual(self.resolved_owners[-1], self.accounts['acceptance-a']['id'])
             tenant_id, data = self.stored(endpoint)

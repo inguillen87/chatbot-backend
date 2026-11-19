@@ -2322,6 +2322,26 @@ def _build_trial_upgrade_contract(reason_code: str) -> Dict[str, object]:
     }
 
 
+def _build_demo_trial_status(limite: int, usados: int) -> Dict[str, object]:
+    """Build the public chat quota contract for an active demo session."""
+
+    limite_normalizado = max(int(limite), 0)
+    usados_normalizados = max(int(usados), 0)
+    return {
+        "trial_usage": {
+            "channel": "chat",
+            "limit": limite_normalizado,
+            "used": usados_normalizados,
+            "remaining": max(limite_normalizado - usados_normalizados, 0),
+        },
+        "trial_policy": {
+            "contract_version": "demo.trial_policy.v1",
+            "scope": "anonymous_or_sandbox_demo",
+            "max_messages": limite_normalizado,
+        },
+    }
+
+
 def _build_demo_limit_response(limite: int) -> Dict[str, object]:
     request_id = request.headers.get("X-Request-Id") or getattr(g, "request_id", None) or uuid.uuid4().hex
     g.request_id = request_id
@@ -5212,6 +5232,8 @@ def _procesar_chat(
                         replay_payload["respuesta"] = message_body
                     elif respuesta and not message_body:
                         replay_payload["message_body"] = respuesta
+                    if incrementar_demo:
+                        replay_payload.update(_build_demo_trial_status(demo_limit, conteo_actual))
                     normalize_response_payload(replay_payload)
                     _emit_socket_payload(replay_payload)
                     return jsonify(replay_payload), 200
@@ -5427,6 +5449,9 @@ def _procesar_chat(
 
         if isinstance(resultado, dict):
             _enrich_demo_response_with_metadata(resultado, demo_metadata_for_responder)
+
+            if incrementar_demo:
+                resultado.update(_build_demo_trial_status(demo_limit, conteo_actual))
 
             audio_url = resultado.get("audio_url")
             if audio_url and channel == "web" and "audio" not in resultado:

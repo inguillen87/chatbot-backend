@@ -541,6 +541,18 @@ class DemoOnboardingTestCase(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(resp1.status_code, 200)
+                self.assertEqual(
+                    resp1.get_json().get("trial_usage"),
+                    {"channel": "chat", "limit": 2, "used": 1, "remaining": 1},
+                )
+                self.assertEqual(
+                    resp1.get_json().get("trial_policy"),
+                    {
+                        "contract_version": "demo.trial_policy.v1",
+                        "scope": "anonymous_or_sandbox_demo",
+                        "max_messages": 2,
+                    },
+                )
 
                 resp2 = client.post(
                     "/ask/pyme",
@@ -548,6 +560,10 @@ class DemoOnboardingTestCase(unittest.TestCase):
                     headers=headers,
                 )
                 self.assertEqual(resp2.status_code, 200)
+                self.assertEqual(
+                    resp2.get_json().get("trial_usage"),
+                    {"channel": "chat", "limit": 2, "used": 2, "remaining": 0},
+                )
 
                 with patch("routes.chat.socketio.emit") as mock_emit:
                     resp3 = client.post(
@@ -559,6 +575,10 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertEqual(resp3.status_code, 403)
                 data = resp3.get_json()
                 self.assertEqual(data.get("error"), "demo_limit_reached")
+                self.assertEqual(
+                    data.get("trial_usage"),
+                    {"channel": "chat", "limit": 2, "used": 2, "remaining": 0},
+                )
 
                 mock_emit.assert_called_once()
                 args, kwargs = mock_emit.call_args
@@ -567,6 +587,62 @@ class DemoOnboardingTestCase(unittest.TestCase):
                 self.assertEqual(kwargs.get("room"), session_id)
 
                 self.assertEqual(mock_responder.call_count, 3)
+
+    def test_demo_first_of_five_reports_four_remaining(self):
+        self.app.config["DEMO_MAX_MESSAGES_PER_SESSION"] = 5
+        session_id = "demo-session-five"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        with self.client as client, patch("routes.chat.responder_chatboc") as mock_responder:
+            mock_responder.return_value = {
+                "message_body": "ok",
+                "options_list": [],
+                "message_type": "text",
+            }
+            client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
+            client.post(
+                "/ask/pyme",
+                json={"pregunta": {"action": "demo_select_rubro:bodega"}},
+                headers=headers,
+            )
+            response = client.post(
+                "/ask/pyme",
+                json={"pregunta": "primera consulta"},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json().get("trial_usage"),
+            {"channel": "chat", "limit": 5, "used": 1, "remaining": 4},
+        )
+
+    def test_disabled_demo_limit_omits_trial_contract(self):
+        self.app.config["DEMO_MAX_MESSAGES_PER_SESSION"] = 0
+        session_id = "demo-session-unlimited"
+        headers = {"X-Chat-Session-Id": session_id}
+
+        with self.client as client, patch("routes.chat.responder_chatboc") as mock_responder:
+            mock_responder.return_value = {
+                "message_body": "ok",
+                "options_list": [],
+                "message_type": "text",
+            }
+            client.post("/ask/pyme", json={"pregunta": "__INIT__"}, headers=headers)
+            client.post(
+                "/ask/pyme",
+                json={"pregunta": {"action": "demo_select_rubro:bodega"}},
+                headers=headers,
+            )
+            response = client.post(
+                "/ask/pyme",
+                json={"pregunta": "consulta sin limite"},
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("trial_usage", response.get_json())
+        self.assertNotIn("trial_policy", response.get_json())
 
     def test_public_anonymous_limit_counts_chat_session_history(self):
         self.app.config["DEMO_ANONYMOUS_MAX_MESSAGES_PER_SESSION"] = 1
