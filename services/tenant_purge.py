@@ -13,6 +13,7 @@ from collections import Counter
 from typing import Any, Iterable
 
 from sqlalchemy import Integer, String, false, func, or_, select
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 CONTRACT_VERSION = "chatboc.tenant_purge.v1"
 MAX_CASCADE_DEPTH = 10
@@ -62,6 +63,10 @@ class _Purge:
         self.detached: Counter[str] = Counter()
         # Fixed identifier of the table in hand, for a failure report.
         self.current_table: str | None = None
+        # Tables the models declare but this database cannot query as
+        # declared (never migrated here, or a column differs).  They hold no
+        # row the purge could reach, so they are reported and skipped.
+        self.skipped: dict[str, str] = {}
         # Rows of other tenants may never disappear as a side effect.
         self.guard_tenant_rows = False
 
@@ -72,6 +77,24 @@ class _Purge:
             ).scalar()
             or 0
         )
+
+    def _reachable(self, table, condition) -> int | None:
+        """Rows matching ``condition``, or ``None`` when the table cannot be read.
+
+        The probe runs in a savepoint: a table or column missing in this
+        database is recorded by name and SQLSTATE and the purge moves on.
+        """
+
+        if table.name in self.skipped:
+            return None
+        try:
+            with self.session.begin_nested():
+                return self._count(table, condition)
+        except (ProgrammingError, OperationalError) as exc:
+            original = getattr(exc, "orig", None)
+            code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+            self.skipped[table.name] = str(code or type(exc).__name__)
+            return None
 
     def _detach(self, table, column, condition) -> None:
         result = self.session.execute(
@@ -84,11 +107,14 @@ class _Purge:
         if len(stack) >= MAX_CASCADE_DEPTH:
             raise TenantPurgeError("tenant_purge_cascade_too_deep")
         self.current_table = table.name
-        if not self._count(table, condition):
-            # Nothing here, so nothing can reference it: skip the whole subtree.
+        if not self._reachable(table, condition):
+            # Nothing here (or not readable here), so nothing can reference
+            # it: skip the whole subtree.
             return
         for child, child_column, parent_column in self.references.get(table.name, ()):
             matched = child_column.in_(select(parent_column).where(condition))
+            if child is not table and self._reachable(child, matched) is None:
+                continue
             if child is table or child.name in stack:
                 # Self reference or cycle: detach, never recurse.
                 if child_column.nullable:
@@ -218,6 +244,7 @@ def purge_tenant(
         "user_ids_kept": kept_user_ids if purge_users else sorted(user_ids + kept_user_ids),
         "deleted": dict(sorted(purge.deleted.items())),
         "detached": dict(sorted(purge.detached.items())),
+        "skipped_unreadable_tables": dict(sorted(purge.skipped.items())),
     }
 
 
