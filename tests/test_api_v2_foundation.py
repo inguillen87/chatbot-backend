@@ -1541,7 +1541,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(bodega_context.get("slug"), "bodega")
         self.assertEqual(ferreteria_context.get("slug"), "ferreteria")
         self.assertIn("vinos", bodega_context.get("prompt_context", ""))
-        self.assertIn("ferreteria", ferreteria_context.get("prompt_context", ""))
+        self.assertIn("ferretería", ferreteria_context.get("prompt_context", ""))
         self.assertIn("ver_catalogo_vinos", bodega_intents)
         self.assertIn("buscar_producto_ferreteria", ferreteria_intents)
         self.assertNotEqual(bodega_menu.get("items"), ferreteria_menu.get("items"))
@@ -1801,7 +1801,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIsNotNone(context)
         context_data = context.context_data or {}
         self.assertEqual((context_data.get("demo_metadata") or {}).get("key"), "ferreteria")
-        self.assertIn("ferreteria", (context_data.get("demo_metadata") or {}).get("prompt_context", ""))
+        self.assertIn("ferretería", (context_data.get("demo_metadata") or {}).get("prompt_context", ""))
         self.assertTrue((context_data.get("demo_metadata") or {}).get("tool_summary"))
         self.assertTrue(context_data.get("rubro_tool_summary"))
 

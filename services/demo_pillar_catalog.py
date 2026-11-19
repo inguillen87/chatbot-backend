@@ -11,28 +11,28 @@ _PILLARS: list[dict[str, Any]] = [
     {
         "key": "educacion",
         "label": "Colegios",
-        "description": "Experiencias para colegios publicos, privados e institutos.",
+        "description": "Experiencias para colegios públicos, privados e institutos.",
         "default_rubro": "colegios",
         "default_tipo_chat": "pyme",
         "vertical": "educacion",
-        "hero_prompt": "Elegir tipo de institucion para iniciar una conversacion escolar.",
+        "hero_prompt": "Elegí el tipo de institución para iniciar una conversación escolar.",
         "categories": [
             {
                 "slug": "colegios",
                 "label": "Colegios e instituciones educativas",
-                "description": "Atencion escolar para familias: inasistencias, oficina escolar, comunicados, pagos, certificados y casos con seguimiento.",
+                "description": "Atención escolar para familias: inasistencias, oficina escolar, comunicados, pagos, certificados y casos con seguimiento.",
                 "tipo_chat": "pyme",
                 "vertical": "educacion",
                 "subvertical": "colegio_general",
                 "sample_prompts": [
                     "Quiero justificar una inasistencia.",
                     "Necesito consultar admisiones.",
-                    "Te mando una foto del certificado medico.",
+                    "Te mando una foto del certificado médico.",
                 ],
                 "resources": [
                     {
                         "id": "catalogo_demo_colegios",
-                        "label": "Catalogo demo colegios",
+                        "label": "Catálogo demo colegios",
                         "kind": "pdf",
                         "url": "/api/v2/demo/catalog-assets/colegios/catalogo-demo-colegios.pdf",
                     },
@@ -53,7 +53,7 @@ _PILLARS: list[dict[str, Any]] = [
             },
             {
                 "slug": "colegio_publico",
-                "label": "Colegio publico",
+                "label": "Colegio público",
                 "tipo_chat": "pyme",
                 "vertical": "educacion",
                 "subvertical": "colegio_publico",
@@ -70,11 +70,11 @@ _PILLARS: list[dict[str, Any]] = [
     {
         "key": "gobierno",
         "label": "Gobiernos",
-        "description": "Atencion ciudadana, reclamos, tramites, campanas y gestion publica.",
+        "description": "Atención ciudadana, reclamos, trámites, campañas y gestión pública.",
         "default_rubro": "municipio",
         "default_tipo_chat": "municipio",
         "vertical": "gobierno",
-        "hero_prompt": "Elegir organismo o campana para simular atencion ciudadana.",
+        "hero_prompt": "Elegí un organismo o campaña para simular atención ciudadana.",
         "categories": [
             {
                 "slug": "municipio",
@@ -84,19 +84,19 @@ _PILLARS: list[dict[str, Any]] = [
                 "subvertical": "municipio",
                 "sample_prompts": [
                     "Quiero iniciar un reclamo por alumbrado.",
-                    "Necesito saber como renovar la licencia.",
-                    "Te mando la ubicacion del problema.",
+                    "Necesito saber cómo renovar la licencia.",
+                    "Te mando la ubicación del problema.",
                 ],
                 "resources": [
                     {
                         "id": "catalogo_demo_gobiernos",
-                        "label": "Guia demo gobiernos",
+                        "label": "Guía demo gobiernos",
                         "kind": "pdf",
                         "url": "/api/v2/demo/catalog-assets/gobiernos/catalogo-demo-gobiernos.pdf",
                     },
                     {
                         "id": "lista_servicios_gobiernos",
-                        "label": "Tramites y servicios demo",
+                        "label": "Trámites y servicios demo",
                         "kind": "pdf",
                         "url": "/api/v2/demo/catalog-assets/gobiernos/lista-precios-demo.pdf",
                     },
@@ -118,7 +118,7 @@ _PILLARS: list[dict[str, Any]] = [
             },
             {
                 "slug": "campana_electoral",
-                "label": "Campana electoral",
+                "label": "Campaña electoral",
                 "tipo_chat": "municipio",
                 "vertical": "gobierno",
                 "subvertical": "campana_electoral",
@@ -128,11 +128,11 @@ _PILLARS: list[dict[str, Any]] = [
     {
         "key": "empresas",
         "label": "Empresas",
-        "description": "Ventas, soporte, pedidos, catalogos y seguimiento comercial.",
+        "description": "Ventas, soporte, pedidos, catálogos y seguimiento comercial.",
         "default_rubro": "local_comercial_general",
         "default_tipo_chat": "pyme",
         "vertical": "pyme",
-        "hero_prompt": "Elegir rubro comercial para probar ventas y soporte con IA.",
+        "hero_prompt": "Elegí un rubro comercial para probar ventas y soporte con IA.",
         "categories": [
             {
                 "slug": "local_comercial_general",
@@ -141,14 +141,14 @@ _PILLARS: list[dict[str, Any]] = [
                 "vertical": "pyme",
                 "subvertical": "retail",
                 "sample_prompts": [
-                    "Quiero ver catalogo y precios.",
-                    "Necesito armar un pedido con envio.",
-                    "Que promociones tienen esta semana?",
+                    "Quiero ver catálogo y precios.",
+                    "Necesito armar un pedido con envío.",
+                    "¿Qué promociones tienen esta semana?",
                 ],
                 "resources": [
                     {
                         "id": "catalogo_demo_empresas",
-                        "label": "Catalogo demo empresas",
+                        "label": "Catálogo demo empresas",
                         "kind": "pdf",
                         "url": "/api/v2/demo/catalog-assets/empresas/catalogo-demo-empresas.pdf",
                     },
@@ -161,14 +161,27 @@ _PILLARS: list[dict[str, Any]] = [
                 ],
             },
             {"slug": "bodega", "label": "Bodega", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "bebidas"},
-            {"slug": "ferreteria", "label": "Ferreteria", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "retail"},
+            {"slug": "ferreteria", "label": "Ferretería", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "retail"},
             {"slug": "inmobiliaria", "label": "Inmobiliaria", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "servicios"},
-            {"slug": "medico_general", "label": "Clinica o consultorio", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "salud"},
+            {"slug": "medico_general", "label": "Clínica o consultorio", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "salud"},
             {"slug": "seguros", "label": "Seguros", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "servicios"},
-            {"slug": "logistica", "label": "Logistica", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "operaciones"},
+            {"slug": "logistica", "label": "Logística", "tipo_chat": "pyme", "vertical": "pyme", "subvertical": "operaciones"},
         ],
     },
 ]
+
+
+_CATEGORY_LABELS_BY_SLUG = {
+    str(category["slug"]): str(category["label"])
+    for pillar in _PILLARS
+    for category in pillar.get("categories") or []
+}
+_CATEGORY_LABELS_BY_SLUG.update(
+    {
+        "gobiernos_y_municipios": "Gobiernos y municipios",
+        "legislador_o_diputado": "Legislador o diputado",
+    }
+)
 
 
 _SECTOR_ALIASES = {
@@ -249,6 +262,12 @@ def category_for_rubro(rubro: object) -> dict[str, Any] | None:
                 payload.setdefault("sector", pillar["key"])
                 return payload
     return None
+
+
+def category_label_for_rubro(rubro: object) -> str | None:
+    """Return curated display copy without deriving labels from identifiers."""
+
+    return _CATEGORY_LABELS_BY_SLUG.get(_slug(rubro))
 
 
 def catalog_resources_for_rubro(rubro: object, sector: str | None = None) -> list[dict[str, Any]]:

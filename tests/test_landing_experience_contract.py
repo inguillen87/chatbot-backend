@@ -38,7 +38,7 @@ class LandingExperienceContractTestCase(unittest.TestCase):
         self.assertEqual(payload["hero"]["conversation_title"], "WhatsApp operativo")
         self.assertEqual(
             payload["hero"]["conversation_subtitle"],
-            "Un caso entra, el agente pide datos y deja una accion trazable.",
+            "Un caso entra, el agente pide datos y deja una acción trazable.",
         )
         self.assertEqual(payload["hero"]["primary_cta"]["href"], "/contacto")
         self.assertEqual(payload["hero"]["secondary_cta"]["href"], "/demo")

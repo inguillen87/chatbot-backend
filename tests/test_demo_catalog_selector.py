@@ -110,6 +110,17 @@ class DemoCatalogSelectorTest(unittest.TestCase):
 
         rubros = payload.get("rubros") or []
         self.assertEqual(len(rubros), 18)
+        category_labels = {
+            category.get("slug"): category.get("label")
+            for pillar in payload.get("pillars") or []
+            for category in pillar.get("categories") or []
+        }
+        self.assertEqual(category_labels.get("colegio_publico"), "Colegio público")
+        self.assertEqual(category_labels.get("campana_electoral"), "Campaña electoral")
+        self.assertEqual(category_labels.get("legislador"), "Legislador o diputado")
+        self.assertEqual(category_labels.get("ferreteria"), "Ferretería")
+        self.assertEqual(category_labels.get("medico_general"), "Clínica o consultorio")
+        self.assertEqual(category_labels.get("logistica"), "Logística")
         required_rubro_fields = {
             "slug",
             "key",

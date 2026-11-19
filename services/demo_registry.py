@@ -298,7 +298,7 @@ def load_demo_rubros(require_owner: bool = True) -> List[DemoRubro]:
         if not segment:
             segment = "gobiernos" if tipo_chat == "municipio" else "empresas"
         if not subsegment and segment == "empresas":
-            subsegment = "Empresas y Comercios"
+            subsegment = "Empresas y comercios"
 
         prompt_context = entry.get("prompt_context") or entry.get("prompt")
         welcome_message = entry.get("welcome_message")

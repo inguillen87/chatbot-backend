@@ -33,17 +33,17 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
                 "label": "Inasistencia con certificado",
                 "messages": [
                     "Hola, soy Marcela.",
-                    "Necesito justificar la inasistencia de Sofia de 3A.",
-                    "Te mando foto del certificado medico.",
+                    "Necesito justificar la inasistencia de Sofía de 3A.",
+                    "Te mando foto del certificado médico.",
                 ],
                 "expected_result": "caso_escolar",
                 "inputs": ["text", "image", "file"],
             },
             {
                 "id": "school_vote_live",
-                "label": "Encuesta o votacion escolar",
+                "label": "Encuesta o votación escolar",
                 "messages": [
-                    "Quiero participar en una votacion del colegio.",
+                    "Quiero participar en una votación del colegio.",
                     "Voto por extender el horario de biblioteca.",
                 ],
                 "expected_result": "survey_response",
@@ -54,18 +54,18 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
         return [
             {
                 "id": "municipal_claim_location",
-                "label": "Reclamo con ubicacion",
+                "label": "Reclamo con ubicación",
                 "messages": [
                     "Hola, soy Marcelo.",
-                    "Quiero iniciar un reclamo por alumbrado publico.",
-                    "Te comparto ubicacion y una foto de la luminaria.",
+                    "Quiero iniciar un reclamo por alumbrado público.",
+                    "Te comparto ubicación y una foto de la luminaria.",
                 ],
                 "expected_result": "ticket",
                 "inputs": ["text", "image", "audio", "location"],
             },
             {
                 "id": "municipal_live_vote",
-                "label": "Votacion ciudadana",
+                "label": "Votación ciudadana",
                 "messages": [
                     "Quiero responder una encuesta del municipio.",
                     "Mi prioridad es mejorar luminarias y plazas.",
@@ -80,19 +80,19 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
                 "id": "winery_order",
                 "label": "Pedido de vinos",
                 "messages": [
-                    "Hola, quiero ver catalogo y precios.",
-                    "Armame un pedido con 2 Malbec Reserva y una caja degustacion.",
-                    "Necesito envio a Mendoza centro.",
+                    "Hola, quiero ver catálogo y precios.",
+                    "Armame un pedido con 2 Malbec Reserva y una caja degustación.",
+                    "Necesito envío a Mendoza centro.",
                 ],
                 "expected_result": "order_or_cart",
                 "inputs": ["text", "location"],
             },
             {
                 "id": "winery_catalog_file",
-                "label": "Catalogo PDF/Excel",
+                "label": "Catálogo PDF/Excel",
                 "messages": [
-                    "Tenes lista de precios en PDF o Excel?",
-                    "Quiero compartir el catalogo con mi socio.",
+                    "¿Tenés lista de precios en PDF o Excel?",
+                    "Quiero compartir el catálogo con mi socio.",
                 ],
                 "expected_result": "catalog_resource",
                 "inputs": ["text", "file"],
@@ -102,7 +102,7 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
                 "label": "Encuesta de clientes",
                 "messages": [
                     "Quiero ver encuestas de clientes.",
-                    "Voto por la promo de envio bonificado.",
+                    "Voto por la promo de envío bonificado.",
                 ],
                 "expected_result": "survey_response",
                 "inputs": ["text"],
@@ -111,11 +111,11 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
     return [
         {
             "id": "commerce_catalog_order",
-            "label": "Catalogo y pedido",
+            "label": "Catálogo y pedido",
             "messages": [
-                "Hola, quiero ver catalogo y precios.",
+                "Hola, quiero ver catálogo y precios.",
                 "Necesito armar un pedido y saber el total.",
-                "Te paso mi ubicacion para coordinar envio.",
+                "Te paso mi ubicación para coordinar envío.",
             ],
             "expected_result": "order_or_cart",
             "inputs": ["text", "location"],
@@ -124,7 +124,7 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
             "id": "commerce_visual_support",
             "label": "Consulta con foto",
             "messages": [
-                "Te mando una foto para que me recomiendes una opcion.",
+                "Te mando una foto para que me recomiendes una opción.",
                 "Quiero precio, stock y alternativas.",
             ],
             "expected_result": "lead_or_order",
@@ -135,7 +135,7 @@ def _scenario_scripts(sector: str, rubro: str) -> list[dict[str, Any]]:
             "label": "Encuesta de clientes",
             "messages": [
                 "Quiero responder una encuesta del negocio.",
-                "Mi prioridad es mejor precio y entrega rapida.",
+                "Mi prioridad es mejor precio y entrega rápida.",
             ],
             "expected_result": "survey_response",
             "inputs": ["text"],
@@ -179,9 +179,9 @@ def demo_trial_policy(max_messages: int = DEFAULT_SANDBOX_MESSAGE_LIMIT) -> dict
             "realtime_video": {"max_sessions": 1, "window_seconds": 86400},
         },
         "rules": [
-            "No requiere usuario ni contrasena para iniciar demo.",
+            "No requiere usuario ni contraseña para iniciar la demo.",
             "El backend debe conservar anon_id/chat_session_id para no perder contexto.",
-            "Al llegar al limite, mostrar captura de lead o CTA comercial.",
+            "Al llegar al límite, mostrar captura de lead o CTA comercial.",
         ],
         "limit_reached_reason_code": "demo_message_limit_reached",
         "upgrade_required_after_limit": True,

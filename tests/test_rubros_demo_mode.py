@@ -53,7 +53,7 @@ class RubrosDemoModeTestCase(unittest.TestCase):
         payload = response.get_json()
         root_names = {item.get("nombre") for item in payload}
         self.assertIn("Soluciones para Empresas", root_names)
-        self.assertIn("Soluciones para Sector Publico", root_names)
+        self.assertIn("Soluciones para el sector público", root_names)
         self.assertIn("Colegios e instituciones educativas", root_names)
         education_root = next(item for item in payload if item.get("id") == 3)
         child_keys = {item.get("clave") for item in education_root.get("children") or []}

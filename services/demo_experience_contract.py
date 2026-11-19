@@ -5,6 +5,13 @@ from typing import Any
 from services.education_contracts import education_primary_actions, education_quick_menu, fold_text
 
 
+_DEFAULT_RUBRO_LABELS = {
+    "municipio": "Municipio",
+    "pyme": "PyME",
+    "educacion": "Educación",
+}
+
+
 def _is_education_experience(
     *,
     tenant_type: str,
@@ -42,11 +49,11 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
             },
             {
                 "id": "qa_secretaria",
-                "label": "Secretaria",
-                "description": "Crear seguimiento para tramites, certificados y documentacion.",
+                "label": "Secretaría",
+                "description": "Crear seguimiento para trámites, certificados y documentación.",
                 "intent": "tramites_secretaria",
                 "icon": "folder-check",
-                "cta_label": "Abrir tramite",
+                "cta_label": "Abrir trámite",
             },
             {
                 "id": "qa_convivencia",
@@ -62,7 +69,7 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
             {
                 "id": "qa_reclamo",
                 "label": "Crear reclamo",
-                "description": "Abrir un caso con categoria, ubicacion y seguimiento.",
+                "description": "Abrir un caso con categoría, ubicación y seguimiento.",
                 "intent": "iniciar_reclamo",
                 "icon": "alert-triangle",
                 "cta_label": "Probar reclamo",
@@ -78,7 +85,7 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
             {
                 "id": "qa_ticket",
                 "label": "Estado ticket",
-                "description": "Consultar avance y proximos pasos con lenguaje simple.",
+                "description": "Consultar avance y próximos pasos con lenguaje simple.",
                 "intent": "consultar_ticket",
                 "icon": "clipboard-check",
                 "cta_label": "Ver estado",
@@ -86,7 +93,7 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
             {
                 "id": "qa_heatmap",
                 "label": "Mapa operativo",
-                "description": "Visualizar demanda por zona, categoria y prioridad.",
+                "description": "Visualizar demanda por zona, categoría y prioridad.",
                 "intent": "analytics_heatmap",
                 "icon": "map",
                 "cta_label": "Ver mapa",
@@ -95,11 +102,11 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
     return [
         {
             "id": "qa_catalogo",
-            "label": "Ver catalogo",
+            "label": "Ver catálogo",
             "description": "Mostrar productos, precios y variantes sin salir del chat.",
             "intent": "ver_catalogo",
             "icon": "book-open",
-            "cta_label": "Abrir catalogo",
+            "cta_label": "Abrir catálogo",
         },
         {
             "id": "qa_pedido",
@@ -120,7 +127,7 @@ def _quick_actions_for_tipo(tipo: str) -> list[dict[str, Any]]:
         {
             "id": "qa_subir_pdf",
             "label": "Subir PDF",
-            "description": "Convertir catalogos y listas en conocimiento del agente.",
+            "description": "Convertir catálogos y listas en conocimiento del agente.",
             "intent": "subir_catalogo_pdf",
             "icon": "file-text",
             "cta_label": "Probar PDF",
@@ -141,20 +148,20 @@ def _starter_prompts_for_tipo(tipo: str) -> list[str]:
     if normalized == "educacion":
         return [
             "Quiero justificar una inasistencia.",
-            "Te mando una foto del certificado medico.",
+            "Te mando una foto del certificado médico.",
             "Necesito consultar comunicados del curso.",
-            "Quiero hablar con secretaria por admisiones.",
+            "Quiero hablar con secretaría por admisiones.",
         ]
     if normalized == "municipio":
         return [
-            "Quiero iniciar un reclamo por alumbrado publico.",
-            "Necesito saber como sacar un turno para licencia.",
-            "Donde reporto baches con ubicacion?",
+            "Quiero iniciar un reclamo por alumbrado público.",
+            "Necesito saber cómo sacar un turno para licencia.",
+            "¿Dónde reporto baches con ubicación?",
         ]
     return [
-        "Quiero ver el catalogo y precios mayoristas.",
-        "Necesito crear un pedido con envio en el dia.",
-        "Que promociones tienen esta semana?",
+        "Quiero ver el catálogo y precios mayoristas.",
+        "Necesito crear un pedido con envío en el día.",
+        "¿Qué promociones tienen esta semana?",
     ]
 
 
@@ -163,8 +170,8 @@ def _agent_persona_for_tipo(tipo: str, rubro: str) -> dict[str, Any]:
     if normalized == "educacion":
         return {
             "name": f"Asistente escolar {rubro}",
-            "tone": "calido, claro, prudente y organizado",
-            "promise": "Acompana a familias, alumnos y personal del colegio sin perder trazabilidad.",
+            "tone": "cálido, claro, prudente y organizado",
+            "promise": "Acompaña a familias, alumnos y personal del colegio sin perder trazabilidad.",
             "do": [
                 "pedir alumno, curso y fecha solo cuando haga falta",
                 "confirmar antes de crear casos",
@@ -175,16 +182,16 @@ def _agent_persona_for_tipo(tipo: str, rubro: str) -> dict[str, Any]:
     if normalized == "municipio":
         return {
             "name": "Asistente ciudadano",
-            "tone": "claro, resolutivo y empatico",
-            "promise": "Te ayuda a resolver tramites, reclamos y consultas sin vueltas.",
+            "tone": "claro, resolutivo y empático",
+            "promise": "Te ayuda a resolver trámites, reclamos y consultas sin vueltas.",
             "do": ["pedir datos de a uno", "confirmar antes de crear casos", "ofrecer seguimiento"],
             "avoid": ["pedir datos sensibles si no hacen falta", "prometer plazos no configurados"],
         }
     return {
         "name": f"Asistente comercial {rubro}",
         "tone": "profesional, cercano y vendedor sin presionar",
-        "promise": "Acompana al cliente desde la pregunta hasta el pedido o la compra.",
-        "do": ["mostrar opciones concretas", "recuperar carrito", "pasar a humano cuando hay intencion alta"],
+        "promise": "Acompaña al cliente desde la pregunta hasta el pedido o la compra.",
+        "do": ["mostrar opciones concretas", "recuperar carrito", "pasar a humano cuando hay intención alta"],
         "avoid": ["inventar stock", "inventar descuentos", "ocultar costos o pasos"],
     }
 
@@ -194,11 +201,11 @@ def _first_visit_for_tipo(tipo: str) -> dict[str, Any]:
     if normalized == "educacion":
         return {
             "headline": "Hola, soy el asistente inteligente del colegio.",
-            "subheadline": "Puedo ayudar con asistencia, comunicados, agenda, documentacion y secretaria.",
+            "subheadline": "Puedo ayudar con asistencia, comunicados, agenda, documentación y secretaría.",
             "primary_action": {"id": "start_attendance", "label": "Justificar inasistencia", "intent": "justificar_inasistencia"},
-            "secondary_action": {"id": "ask_secretary", "label": "Consultar secretaria", "intent": "tramites_secretaria"},
+            "secondary_action": {"id": "ask_secretary", "label": "Consultar secretaría", "intent": "tramites_secretaria"},
             "steps": [
-                {"id": "choose", "label": "Elegi una accion escolar"},
+                {"id": "choose", "label": "Elegí una acción escolar"},
                 {"id": "context", "label": "Pedimos solo los datos necesarios"},
                 {"id": "followup", "label": "Queda registrado para seguimiento"},
             ],
@@ -210,7 +217,7 @@ def _first_visit_for_tipo(tipo: str) -> dict[str, Any]:
             "primary_action": {"id": "start_reclamo", "label": "Crear un reclamo", "intent": "iniciar_reclamo"},
             "secondary_action": {"id": "ask_question", "label": "Hacer una consulta", "intent": "consultas_generales"},
             "steps": [
-                {"id": "choose", "label": "Elegi una accion"},
+                {"id": "choose", "label": "Elegí una acción"},
                 {"id": "details", "label": "Te pido solo lo necesario"},
                 {"id": "tracking", "label": "Queda registrado con seguimiento"},
             ],
@@ -218,11 +225,11 @@ def _first_visit_for_tipo(tipo: str) -> dict[str, Any]:
     return {
         "headline": "Hola, soy tu asistente comercial.",
         "subheadline": "Puedo mostrar productos, responder dudas y ayudarte a comprar.",
-        "primary_action": {"id": "browse_catalog", "label": "Ver catalogo", "intent": "ver_catalogo"},
+        "primary_action": {"id": "browse_catalog", "label": "Ver catálogo", "intent": "ver_catalogo"},
         "secondary_action": {"id": "talk_sales", "label": "Hablar con ventas", "intent": "derivar_humano"},
         "steps": [
-            {"id": "discover", "label": "Contame que estas buscando"},
-            {"id": "compare", "label": "Te muestro opciones utiles"},
+            {"id": "discover", "label": "Contame qué estás buscando"},
+            {"id": "compare", "label": "Te muestro opciones útiles"},
             {"id": "checkout", "label": "Avanzamos a pedido o asesor"},
         ],
     }
@@ -235,15 +242,15 @@ def _sample_conversations_for_tipo(tipo: str) -> list[dict[str, Any]]:
             {
                 "id": "sample_absence",
                 "title": "Inasistencia con certificado",
-                "user_message": "Mi hija falto hoy, te mando el certificado.",
+                "user_message": "Mi hija faltó hoy, te mando el certificado.",
                 "assistant_goal": "Leer adjunto, pedir alumno/curso si falta y crear seguimiento.",
                 "intent": "justificar_inasistencia",
             },
             {
                 "id": "sample_communications",
                 "title": "Comunicado por curso",
-                "user_message": "No me llego el comunicado de la reunion de 3A.",
-                "assistant_goal": "Ubicar curso/tema y orientar o derivar a secretaria.",
+                "user_message": "No me llegó el comunicado de la reunión de 3A.",
+                "assistant_goal": "Ubicar curso/tema y orientar o derivar a secretaría.",
                 "intent": "comunicados_familias",
             },
             {
@@ -258,21 +265,21 @@ def _sample_conversations_for_tipo(tipo: str) -> list[dict[str, Any]]:
         return [
             {
                 "id": "sample_reclamo",
-                "title": "Reclamo con ubicacion",
+                "title": "Reclamo con ubicación",
                 "user_message": "Hay una luminaria rota en mi cuadra.",
-                "assistant_goal": "Pedir direccion, categoria y crear ticket con seguimiento.",
+                "assistant_goal": "Pedir dirección, categoría y crear ticket con seguimiento.",
                 "intent": "iniciar_reclamo",
             },
             {
                 "id": "sample_tramite",
-                "title": "Consulta de tramite",
-                "user_message": "Que necesito para renovar licencia?",
+                "title": "Consulta de trámite",
+                "user_message": "¿Qué necesito para renovar la licencia?",
                 "assistant_goal": "Responder requisitos y ofrecer turno si corresponde.",
                 "intent": "info_tramite",
             },
             {
                 "id": "sample_handoff",
-                "title": "Derivacion humana",
+                "title": "Derivación humana",
                 "user_message": "Necesito hablar con alguien ahora.",
                 "assistant_goal": "Explicar canales disponibles y abrir handoff trazable.",
                 "intent": "derivar_humano",
@@ -281,15 +288,15 @@ def _sample_conversations_for_tipo(tipo: str) -> list[dict[str, Any]]:
     return [
         {
             "id": "sample_catalog",
-            "title": "Busqueda de producto",
+            "title": "Búsqueda de producto",
             "user_message": "Busco packs mayoristas para esta semana.",
-            "assistant_goal": "Mostrar opciones del catalogo y sugerir siguiente paso.",
+            "assistant_goal": "Mostrar opciones del catálogo y sugerir el siguiente paso.",
             "intent": "ver_catalogo",
         },
         {
             "id": "sample_order",
             "title": "Pedido guiado",
-            "user_message": "Quiero comprar 3 unidades y coordinar envio.",
+            "user_message": "Quiero comprar 3 unidades y coordinar envío.",
             "assistant_goal": "Armar pedido, validar contacto y preparar checkout.",
             "intent": "crear_pedido",
         },
@@ -308,18 +315,18 @@ def _trust_signals_for_tipo(tipo: str) -> list[dict[str, str]]:
     if normalized == "educacion":
         return [
             {"id": "privacy", "label": "Datos cuidados", "detail": "Familias y alumnos se tratan con contexto y privacidad."},
-            {"id": "traceability", "label": "Seguimiento escolar", "detail": "Cada tramite puede convertirse en caso con historial."},
+            {"id": "traceability", "label": "Seguimiento escolar", "detail": "Cada trámite puede convertirse en caso con historial."},
             {"id": "omnichannel", "label": "WhatsApp y panel", "detail": "El colegio ve el mismo contexto que llega por el chat."},
         ]
     if normalized == "municipio":
         return [
             {"id": "traceable", "label": "Casos trazables", "detail": "Cada reclamo queda con estado y contexto."},
-            {"id": "privacy", "label": "Privacidad primero", "detail": "No muestra datos sensibles en widget publico."},
+            {"id": "privacy", "label": "Privacidad primero", "detail": "No muestra datos sensibles en el widget público."},
             {"id": "omnichannel", "label": "Un solo historial", "detail": "Widget, WhatsApp y panel comparten contexto."},
         ]
     return [
-        {"id": "sales_ready", "label": "Listo para vender", "detail": "Catalogo, pedidos y pagos pueden convivir en el chat."},
-        {"id": "human_backup", "label": "Humano disponible", "detail": "El agente sabe cuando derivar a ventas o soporte."},
+        {"id": "sales_ready", "label": "Listo para vender", "detail": "Catálogo, pedidos y pagos pueden convivir en el chat."},
+        {"id": "human_backup", "label": "Humano disponible", "detail": "El agente sabe cuándo derivar a ventas o soporte."},
         {"id": "tenant_brand", "label": "White label", "detail": "La experiencia se adapta al tenant sin hardcodear React."},
     ]
 
@@ -340,9 +347,9 @@ def _lead_capture_for_tipo(tipo: str) -> dict[str, Any]:
         "title": title,
         "fields": [
             {"id": "name", "label": "Nombre", "required": True, "type": "text"},
-            {"id": "phone", "label": "Telefono", "required": False, "type": "tel"},
+            {"id": "phone", "label": "Teléfono", "required": False, "type": "tel"},
             {"id": "email", "label": "Email", "required": False, "type": "email"},
-            {"id": "interest", "label": "Interes", "required": False, "type": "text"},
+            {"id": "interest", "label": "Interés", "required": False, "type": "text"},
         ],
         "required_fields": ["name"],
         "required_any_of": [["phone", "email"]],
@@ -396,7 +403,7 @@ def _media_capabilities_for_tipo(tipo: str) -> dict[str, Any]:
                 "chat_payload_key": "attachmentInfo",
                 "accept": ["image/jpeg", "image/png", "image/webp"],
                 "intents": image_intents,
-                "expected_bot_behavior": "describir contexto visual, pedir datos faltantes y proponer accion de negocio.",
+                "expected_bot_behavior": "describir contexto visual, pedir datos faltantes y proponer una acción de negocio.",
             },
             "audio": {
                 "enabled": True,
@@ -413,7 +420,7 @@ def _media_capabilities_for_tipo(tipo: str) -> dict[str, Any]:
                 "payload_key": "location",
                 "fields": ["lat", "lon", "latitude", "longitude", "lng", "address", "accuracy"],
                 "intents": location_intents,
-                "expected_bot_behavior": "confirmar zona/direccion y usarla para ticket, envio o derivacion.",
+                "expected_bot_behavior": "confirmar zona/dirección y usarla para ticket, envío o derivación.",
             },
             "file": {
                 "enabled": True,
@@ -429,7 +436,7 @@ def _media_capabilities_for_tipo(tipo: str) -> dict[str, Any]:
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 ],
                 "intents": ["subir_catalogo", "soporte_documental", "adjuntar_evidencia"],
-                "expected_bot_behavior": "usar metadata del archivo, pedir confirmacion y ofrecer siguiente accion.",
+                "expected_bot_behavior": "usar metadata del archivo, pedir confirmación y ofrecer la siguiente acción.",
             },
         },
         "output_modes": {
@@ -517,7 +524,7 @@ def _conversion_ctas_for_tipo(tipo: str) -> dict[str, Any]:
             {
                 "id": "talk_secretary",
                 "action_id": "talk_secretary",
-                "label": "Hablar con secretaria",
+                "label": "Hablar con secretaría",
                 "intent": "derivar_humano",
                 "endpoint": "/api/v2/inbox/omnichannel/actions",
                 "show_when": ["sensitive_case", "handoff_requested", "guardian_needs_help"],
@@ -607,11 +614,11 @@ def _animation_tokens() -> dict[str, Any]:
 def _empty_states_for_tipo(tipo: str) -> dict[str, dict[str, str]]:
     return {
         "no_messages": {
-            "title": "Empeza con una accion rapida",
-            "body": "Elegi un ejemplo o escribi como si hablaras por WhatsApp.",
+            "title": "Empezá con una acción rápida",
+            "body": "Elegí un ejemplo o escribí como si hablaras por WhatsApp.",
         },
         "offline": {
-            "title": "Modo sin conexion",
+            "title": "Modo sin conexión",
             "body": "Guardamos el borrador y lo sincronizamos cuando vuelva internet.",
         },
         "handoff_waiting": {
@@ -620,7 +627,7 @@ def _empty_states_for_tipo(tipo: str) -> dict[str, dict[str, str]]:
         },
         "limit_reached": {
             "title": "Demo completada",
-            "body": "Ya viste el flujo principal. El plan Full habilita mas mensajes y automatizaciones.",
+            "body": "Ya viste el flujo principal. El plan Full habilita más mensajes y automatizaciones.",
         },
     }
 
@@ -628,9 +635,9 @@ def _empty_states_for_tipo(tipo: str) -> dict[str, dict[str, str]]:
 def _agent_copilot_for_tipo(tipo: str) -> dict[str, Any]:
     normalized = (tipo or "").strip().lower()
     if normalized == "municipio":
-        suggestions = ["Responder con proximo paso", "Asignar area", "Pedir ubicacion", "Cerrar caso"]
+        suggestions = ["Responder con próximo paso", "Asignar área", "Pedir ubicación", "Cerrar caso"]
     elif normalized == "educacion":
-        suggestions = ["Pedir alumno/curso", "Asignar secretaria", "Solicitar certificado", "Derivar convivencia"]
+        suggestions = ["Pedir alumno/curso", "Asignar secretaría", "Solicitar certificado", "Derivar convivencia"]
     else:
         suggestions = ["Sugerir producto", "Preparar checkout", "Ofrecer descuento configurado", "Derivar a ventas"]
     return {
@@ -651,7 +658,7 @@ def build_demo_experience_contract(
     education_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tipo = (tenant_type or "").strip().lower() or "pyme"
-    rubro = (rubro_label or tipo.title()).strip()
+    rubro = (rubro_label or _DEFAULT_RUBRO_LABELS.get(tipo) or tipo).strip()
     is_education = _is_education_experience(
         tenant_type=tipo,
         rubro_label=rubro,
@@ -681,17 +688,17 @@ def build_demo_experience_contract(
         "guided_onboarding": {
             "autostart_chat": True,
             "open_widget": True,
-            "entry_prompt": first_visit.get("subheadline") or "Que queres probar primero?",
+            "entry_prompt": first_visit.get("subheadline") or "¿Qué querés probar primero?",
             "starter_prompts": starter_prompts,
             "suggested_workflows": [
                 {"id": "wf_guided_chat", "label": "Chat guiado con botones"},
                 {"id": "wf_ticket_or_order", "label": "Crear y seguir ticket/pedido"},
-                {"id": "wf_feedback_loop", "label": "Recolectar feedback de satisfaccion"},
+                {"id": "wf_feedback_loop", "label": "Recolectar feedback de satisfacción"},
             ],
         },
         "hero": {
             "title": f"Demo IA para {rubro}",
-            "subtitle": "Proba en tiempo real WhatsApp, widget y automatizaciones sin configurar nada.",
+            "subtitle": "Probá en tiempo real WhatsApp, widget y automatizaciones sin configurar nada.",
             "badge": f"Demo {max_messages} mensajes",
         },
         "quick_actions": _quick_actions_for_tipo(experience_type),
@@ -716,13 +723,13 @@ def build_demo_experience_contract(
             },
             {
                 "id": "journey_business_action",
-                "title": "Ejecutar accion de negocio",
+                "title": "Ejecutar acción de negocio",
                 "steps": ["Crear reclamo/pedido", "Consultar estado", "Medir resultados en tablero"],
             },
         ],
         "upsell_wall": {
             "trigger_after_messages": max_messages,
-            "copy": "Llegaste al limite de demo. Activa plan Full para escalar.",
+            "copy": "Llegaste al límite de la demo. Activá el plan Full para escalar.",
             "locked_features": ["qdrant_catalogo_completo", "automatizaciones_enterprise"],
             "cta_label": "Quiero plan Full",
         },
@@ -732,16 +739,16 @@ def build_demo_experience_contract(
                 "starter_messages": (
                     [
                         "Quiero justificar una inasistencia",
-                        "Te mando una foto del certificado medico",
+                        "Te mando una foto del certificado médico",
                         "Necesito consultar comunicados del curso",
-                        "Quiero hablar con secretaria",
+                        "Quiero hablar con secretaría",
                     ]
                     if is_education
                     else [
                     "Quiero crear un reclamo",
                     "Te mando una foto del problema",
                     "Necesito precio por mayor",
-                    "Quiero subir mi catalogo en PDF",
+                    "Quiero subir mi catálogo en PDF",
                     ]
                 ),
                 "media_checks": ["text", "audio", "image", "location", "file"],
@@ -750,34 +757,34 @@ def build_demo_experience_contract(
                 "starter_messages": (
                     [
                         "Necesito ayuda con asistencia",
-                        "Quiero ver agenda academica",
+                        "Quiero ver la agenda académica",
                         "Tengo un comprobante para enviar",
                         "Quiero consultar admisiones",
                     ]
                     if is_education
                     else [
                     "Mostrame promociones vigentes",
-                    "Necesito un pedido rapido",
-                    "Quiero cargar un catalogo en Excel",
-                    "Quiero soporte con ubicacion",
+                    "Necesito un pedido rápido",
+                    "Quiero cargar un catálogo en Excel",
+                    "Quiero soporte con ubicación",
                     ]
                 ),
                 "media_checks": ["text", "audio", "image", "location", "file"],
             },
         },
         "conversion_pitch": {
-            "title": "Listo para atender familias desde el primer dia" if is_education else "Listo para vender en minutos",
+            "title": "Listo para atender familias desde el primer día" if is_education else "Listo para vender en minutos",
             "bullets": (
                 [
-                    "Menu escolar para WhatsApp, widget y panel",
-                    "Casos de secretaria, asistencia y convivencia con trazabilidad",
-                    "Soporte multimodal: audio, imagen, ubicacion y archivos",
+                    "Menú escolar para WhatsApp, widget y panel",
+                    "Casos de secretaría, asistencia y convivencia con trazabilidad",
+                    "Soporte multimodal: audio, imagen, ubicación y archivos",
                 ]
                 if is_education
                 else [
-                    "Menu inteligente por rubro",
-                    "Automatizacion de reclamos, pedidos y sugerencias",
-                    "Soporte multimodal: audio, imagen, ubicacion y archivos",
+                    "Menú inteligente por rubro",
+                    "Automatización de reclamos, pedidos y sugerencias",
+                    "Soporte multimodal: audio, imagen, ubicación y archivos",
                 ]
             ),
             "cta_label": "Hablar con admisiones" if is_education else "Hablar con ventas",
