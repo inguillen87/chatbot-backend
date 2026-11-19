@@ -295,6 +295,8 @@ class SelectorCapacityTests(unittest.TestCase):
         # not cover, and it only disambiguates when its own actions offer the options.
         self.assertIn('Si los nodos del tema en curso no tratan eso y otros nodos sí, es un\ntema nuevo', SELECTOR_INSTRUCTIONS)
         self.assertIn('el tema en curso sólo si sus propias\nacciones los ofrecen', SELECTOR_INSTRUCTIONS)
+        # A question that names no place is not answered with one city's office.
+        self.assertIn('no elijas el\nnodo de una localidad en particular para responderla', SELECTOR_INSTRUCTIONS)
         # A question about something other nodes cover never ends as "not in the sources".
         self.assertIn('La\nlista vacía no corresponde cuando otros nodos tratan lo que la pregunta nombra', SELECTOR_INSTRUCTIONS)
         self.assertNotIn('por ejemplo el tema en curso', SELECTOR_INSTRUCTIONS)

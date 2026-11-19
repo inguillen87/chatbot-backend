@@ -289,6 +289,9 @@ certificado» cuando las fuentes tratan más de un certificado) y nada permite s
 a cuál, seleccioná un único nodo cuyas acciones ofrezcan elegir entre esos trámites,
 en lugar de elegir uno: el menú que los reúne, o el tema en curso sólo si sus propias
 acciones los ofrecen.
+Localidad: si ni la pregunta ni el tema en curso indican una localidad, no elijas el
+nodo de una localidad en particular para responderla; seleccioná el nodo general de
+ese trámite, que permite elegirla.
 '''
 
 def is_source_navigation(question):
