@@ -296,9 +296,9 @@ class SelectorCapacityTests(unittest.TestCase):
         self.assertIn('Si los nodos del tema en curso no tratan eso y otros nodos sí, es un\ntema nuevo', SELECTOR_INSTRUCTIONS)
         self.assertIn('el tema en curso sólo si sus propias\nacciones los ofrecen', SELECTOR_INSTRUCTIONS)
         # A question that names no place is not answered with one city's office.
-        self.assertIn('no elijas el\nnodo de una localidad en particular para responderla', SELECTOR_INSTRUCTIONS)
+        self.assertIn('seleccioná el\nnodo del tema en curso en lugar del nodo de una localidad que no nombró', SELECTOR_INSTRUCTIONS)
         # A question about something other nodes cover never ends as "not in the sources".
-        self.assertIn('La\nlista vacía no corresponde cuando otros nodos tratan lo que la pregunta nombra', SELECTOR_INSTRUCTIONS)
+        self.assertIn('seleccioná entre esos otros nodos; en\nese caso la lista vacía no corresponde', SELECTOR_INSTRUCTIONS)
         self.assertNotIn('por ejemplo el tema en curso', SELECTOR_INSTRUCTIONS)
 
     def test_selector_is_retried_once_only_after_a_fast_failure_without_result(self):

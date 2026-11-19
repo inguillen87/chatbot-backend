@@ -282,16 +282,17 @@ localidad.
 Cambio de tema: antes de tratar la pregunta como continuación, fijate si nombra un
 trámite, documento o beneficio (por ejemplo un certificado, un subsidio o una
 inscripción). Si los nodos del tema en curso no tratan eso y otros nodos sí, es un
-tema nuevo: dejá de lado el tema en curso y seleccioná entre esos otros nodos. La
-lista vacía no corresponde cuando otros nodos tratan lo que la pregunta nombra.
+tema nuevo: dejá de lado el tema en curso y seleccioná entre esos otros nodos; en
+ese caso la lista vacía no corresponde.
 Ambigüedad: si la pregunta puede referirse a más de un trámite (por ejemplo «el
 certificado» cuando las fuentes tratan más de un certificado) y nada permite saber
 a cuál, seleccioná un único nodo cuyas acciones ofrezcan elegir entre esos trámites,
 en lugar de elegir uno: el menú que los reúne, o el tema en curso sólo si sus propias
 acciones los ofrecen.
-Localidad: si ni la pregunta ni el tema en curso indican una localidad, no elijas el
-nodo de una localidad en particular para responderla; seleccioná el nodo general de
-ese trámite, que permite elegirla.
+Localidad no indicada: un día u horario de atención no es un tema nuevo. Si la
+persona no nombró una localidad y pregunta algo que ningún nodo responde de forma
+directa (por ejemplo un día u horario que las fuentes no informan), seleccioná el
+nodo del tema en curso en lugar del nodo de una localidad que no nombró.
 '''
 
 def is_source_navigation(question):
