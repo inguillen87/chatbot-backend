@@ -7,6 +7,12 @@ from typing import Any
 
 _PRIVATE_CONFIG_SECTIONS = frozenset(
     {
+        # Assistant instructions written by the organisation's admins. They
+        # steer the model and may describe internal procedures; the public
+        # surfaces never need them.
+        "bot_settings",
+        "system_prompt",
+        "custom_instructions",
         "organization_setup_modules",
         "organization_workspace_branding",
         "organization_domain_binding",
