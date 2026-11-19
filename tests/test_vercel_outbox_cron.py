@@ -714,6 +714,10 @@ def test_vercel_config_declares_bounded_internal_crons():
             "path": "/api/internal/cron/weekly-analytics-report",
             "schedule": "0 0 * * 0",
         },
+        {
+            "path": "/api/internal/cron/meta-credential-renewal",
+            "schedule": "23 4 * * *",
+        },
     ]
 
 

@@ -12,6 +12,7 @@ _REGISTERED_CRON_PATHS = {
     'internal_cron.whatsapp_payload_retention': '/api/internal/cron/whatsapp-payload-retention',
     'internal_cron.survey_privacy_retention': '/api/internal/cron/survey-privacy-retention',
     'internal_cron.weekly_analytics_report': '/api/internal/cron/weekly-analytics-report',
+    'internal_cron.meta_credential_renewal': '/api/internal/cron/meta-credential-renewal',
 }
 _CRON_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS'})
 
@@ -30,6 +31,8 @@ def is_registered_internal_cron_request(req: Request) -> bool:
         and rule is not None
         and rule.rule == canonical_path
         and req.path == canonical_path
-        and req.method in _CRON_METHODS
+        and (req.method in _CRON_METHODS or (
+            req.method == 'POST' and req.endpoint == 'internal_cron.meta_credential_renewal'
+        ))
         and req.method in (rule.methods or ())
     )

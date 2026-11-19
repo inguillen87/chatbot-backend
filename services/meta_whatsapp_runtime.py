@@ -124,6 +124,10 @@ def _object_response(response) -> dict:
         raise MetaRuntimeError("meta_authority_temporarily_unavailable", transient=True)
     if not 200 <= status < 300:
         raise MetaRuntimeError("meta_authority_denied")
+    return _object_body(response)
+
+
+def _object_body(response) -> dict:
     raw = getattr(response, "content", None)
     try:
         if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_GRAPH_BYTES:
@@ -159,6 +163,11 @@ class MetaOutboundRuntime:
         return _clock_value(self.clock)
 
     def authority(self, sender: cloud.MetaSenderSnapshot, credential, *, observed_at=None):
+        proof, _ = self.observe_authority(sender, credential, observed_at=observed_at)
+        return proof
+
+    def observe_authority(self, sender, credential, *, observed_at=None, for_renewal=False):
+        """Return the short-lived authority proof and the earliest finite provider expiry."""
         now = self.now() if observed_at is None else observed_at
         registry = self.config.get(APP_SECRETS_KEY)
         secret = registry.get(sender.app_id) if isinstance(registry, Mapping) else None
@@ -178,30 +187,44 @@ class MetaOutboundRuntime:
                 raise
             except Exception:
                 raise MetaRuntimeError("meta_authority_temporarily_unavailable", transient=True) from None
-            return _object_response(response)
+            payload = _object_response(response)
+            if for_renewal and path != "debug_token":
+                paging = payload.get("paging", {})
+                if (not isinstance(payload.get("data"), list) or not isinstance(paging, dict)
+                        or paging.get("next")):
+                    # An incomplete listing cannot establish a revoked binding.
+                    raise MetaRuntimeError("meta_authority_response_invalid", transient=True)
+            return payload
         observed = get("debug_token", sender.app_id + "|" + secret,
                        {"input_token": credential.access_token}).get("data")
+        if for_renewal and (not isinstance(observed, dict)
+                            or type(observed.get("is_valid")) is not bool):
+            raise MetaRuntimeError("meta_authority_response_invalid", transient=True)
         if (not isinstance(observed, dict) or observed.get("is_valid") is not True
                 or observed.get("app_id") != sender.app_id
                 or not isinstance(observed.get("scopes"), list)
                 or any(not isinstance(scope, str) for scope in observed["scopes"])
                 or not _SCOPES.issubset(observed["scopes"])):
             raise MetaRuntimeError("meta_token_authority_invalid")
-        expiry = credential.expires_at
+        provider_expiries = []
         for name in ("expires_at", "data_access_expires_at"):
             if name not in observed:
                 if name == "expires_at":
-                    raise MetaRuntimeError("meta_token_authority_invalid")
+                    raise MetaRuntimeError("meta_token_authority_invalid", transient=for_renewal)
                 continue
             value = observed[name]
-            if type(value) is not int or value < 0 or (value and value <= now):
+            if type(value) is not int or value < 0:
+                raise MetaRuntimeError("meta_token_authority_expired", transient=for_renewal)
+            if value and value <= now:
                 raise MetaRuntimeError("meta_token_authority_expired")
             if value:
-                expiry = min(expiry, value)
+                provider_expiries.append(value)
         granular = observed.get("granular_scopes")
+        if for_renewal and granular is None:
+            raise MetaRuntimeError("meta_token_granular_scope_mismatch")
         if granular is not None:
             if not isinstance(granular, list):
-                raise MetaRuntimeError("meta_token_granular_scope_invalid")
+                raise MetaRuntimeError("meta_token_granular_scope_invalid", transient=for_renewal)
             for scope in _SCOPES:
                 entries = [x for x in granular if isinstance(x, dict) and x.get("scope") == scope]
                 if (len(entries) != 1 or not isinstance(entries[0].get("target_ids"), list)
@@ -223,11 +246,13 @@ class MetaOutboundRuntime:
                        for x in apps["data"]) != 1):
             raise MetaRuntimeError("meta_app_subscription_unverified")
         final_now = self.now()
-        valid_until = min(expiry, now + 60)
+        valid_until = min(credential.expires_at, now + 60, *provider_expiries)
         if not now <= final_now < valid_until:
-            raise MetaRuntimeError("meta_token_authority_expired")
-        return cloud.VerifiedMetaAuthority(sender, credential.revision, version,
+            # If the proof aged out during I/O, a new observation is needed.
+            raise MetaRuntimeError("meta_token_authority_expired", transient=for_renewal)
+        proof = cloud.VerifiedMetaAuthority(sender, credential.revision, version,
             now, valid_until, True, True)
+        return proof, min(provider_expiries, default=None)
 
     def load_binding(self, identity, *, session=None):
         failures = []

@@ -42,6 +42,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _CRON_PATHS = frozenset(
     {
+        "/api/internal/cron/meta-credential-renewal",
         "/api/internal/cron/outbox-reconciliation",
         "/api/internal/cron/survey-privacy-retention",
         "/api/internal/cron/weekly-analytics-report",

@@ -917,6 +917,10 @@ class Config:
         False,
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED",
     )
+    VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED = _env_flag(
+        False,
+        "VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED",
+    )
     WEEKLY_ANALYTICS_RESERVATION_REDIS_URL = os.getenv(
         "WEEKLY_ANALYTICS_RESERVATION_REDIS_URL",
         "",
@@ -1856,6 +1860,7 @@ def validate_runtime_security(config: Any) -> list[str]:
         "VERCEL_OUTBOX_CRON_ENABLED",
         "VERCEL_MAINTENANCE_CRONS_ENABLED",
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED",
+        "VERCEL_META_CREDENTIAL_RENEWAL_CRON_ENABLED",
     )
     if any(
         getattr(config, "get", lambda *_: None)(flag, False) is True

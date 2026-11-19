@@ -133,14 +133,19 @@ def _columns(row):
             for column in row.__table__.columns}
 
 
-def inspect_state(session, request: OperationRequest, *, lock=False):
-    target = TARGETS[request.target]
+def _inspect_tenant(session, target, *, lock):
     stmt = select(TenantProfile).options(lazyload("*")).where(TenantProfile.id == target.tenant_id)
     if lock:
         stmt = stmt.with_for_update()
     tenant = session.execute(stmt.execution_options(populate_existing=True, autoflush=False)).scalar_one_or_none()
     _require(tenant is not None and tenant.is_active is True and tenant.slug == target.slug
              and tenant.municipio_id is not None, "meta_operation_tenant_mismatch")
+    return tenant
+
+
+def inspect_state(session, request: OperationRequest, *, lock=False):
+    target = TARGETS[request.target]
+    tenant = _inspect_tenant(session, target, lock=lock)
     actor = session.execute(select(User).options(lazyload("*")).where(User.id == request.actor_user_id)
         .execution_options(populate_existing=True, autoflush=False)).unique().scalar_one_or_none()
     _require(actor is not None and is_authorized_superadmin_user(actor),
@@ -151,17 +156,33 @@ def inspect_state(session, request: OperationRequest, *, lock=False):
     clerk = auth.get("clerk", {}) if isinstance(auth, dict) else None
     _require(isinstance(auth, dict) and isinstance(clerk, dict)
              and not auth.get("disabled") and not clerk.get("disabled"), "meta_operation_actor_disabled")
-    connections = session.execute(select(ProviderConnection).where(
+    connection, sender = inspect_binding(session, target, lock=lock)
+    if connection is not None:
+        envelope = connection.config[PRIVATE_CONFIG_KEY]
+        _require(envelope["revision"] == request.expected_revision, "meta_operation_revision_conflict")
+    fingerprint = hashlib.sha256(_canonical({
+        "tenant": {"id": tenant.id, "slug": tenant.slug, "active": tenant.is_active,
+                   "owner": tenant.municipio_id},
+        "connection": _columns(connection), "sender": _columns(sender),
+    })).hexdigest()
+    return InspectedState(tenant, connection, sender, fingerprint)
+
+
+def inspect_binding(session, target, *, lock=False):
+    connection_query = select(ProviderConnection).where(
         ProviderConnection.tenant_id == target.tenant_id,
         ProviderConnection.provider == "meta", ProviderConnection.channel == "whatsapp",
         ProviderConnection.environment == target.environment)
-        .execution_options(populate_existing=True, autoflush=False)).scalars().all()
-    senders = session.execute(select(ProviderSender).where(
+    sender_query = select(ProviderSender).where(
         ProviderSender.channel == "whatsapp",
         (ProviderSender.phone_number_id == target.phone_id)
         | (ProviderSender.phone_number == target.phone)
         | (ProviderSender.sender_id == "whatsapp:" + target.phone))
-        .execution_options(populate_existing=True, autoflush=False)).scalars().all()
+    if lock:
+        connection_query = connection_query.with_for_update()
+        sender_query = sender_query.with_for_update(read=True)
+    connections = session.scalars(connection_query.execution_options(populate_existing=True, autoflush=False)).all()
+    senders = session.scalars(sender_query.execution_options(populate_existing=True, autoflush=False)).all()
     connection = sender = None
     if target.connection_id is None:
         _require(not connections and not senders, "meta_operation_new_binding_not_empty")
@@ -189,15 +210,9 @@ def inspect_state(session, request: OperationRequest, *, lock=False):
         envelope = cfg.get(PRIVATE_CONFIG_KEY)
         _require(isinstance(envelope, dict) and envelope.get("contract") == vault.CONTRACT
                  and type(envelope.get("revision")) is int
-                 and envelope["revision"] == request.expected_revision,
+                 and envelope["revision"] > 0,
                  "meta_operation_revision_conflict")
-        # Expired tokens are deliberately not opened during renewal.
-    fingerprint = hashlib.sha256(_canonical({
-        "tenant": {"id": tenant.id, "slug": tenant.slug, "active": tenant.is_active,
-                   "owner": tenant.municipio_id},
-        "connection": _columns(connection), "sender": _columns(sender),
-    })).hexdigest()
-    return InspectedState(tenant, connection, sender, fingerprint)
+    return connection, sender
 
 
 def _authority_config(target, config):
@@ -310,6 +325,7 @@ def prepare_operation(session, request, token, config, *, graph_get=native_graph
         "expires_at": expiry, "provider_expires_at": provider_expiry,
         "source": "provider" if provider_expiry == expiry else "local_policy",
         "local_maximum_seconds": expiry_policy_seconds,
+        "renewal": "automatic" if TARGETS[request.target].expected_revision > 0 else "manual",
     }
     return PreparedOperation(request, plan, _plan_digest(plan, token), proof.valid_until, proof.observed_at, metadata)
 
@@ -356,6 +372,9 @@ def apply_operation(session, prepared, token, config, *, approved_plan_sha256, w
         session.add(sender)
         session.flush()
     prior = deepcopy(connection.config)
+    replacement_config = dict(prior)
+    # A rejection or backoff belongs only to the old installed credential.
+    replacement_config.pop("meta_credential_renewal", None)
     envelope = vault.seal_token(connection=connection, tenant_id=target.tenant_id, access_token=token,
         revision=request.expected_revision + 1, expires_at=request.expires_at,
         now=clock(), app_config=config)
@@ -367,7 +386,7 @@ def apply_operation(session, prepared, token, config, *, approved_plan_sha256, w
         ProviderConnection.external_account_id == target.waba_id,
         ProviderConnection.credentials_ref == vault.VAULT_REF,
         ProviderConnection.config == prior)
-        .values(config={**prior, PRIVATE_CONFIG_KEY: envelope})
+        .values(config={**replacement_config, PRIVATE_CONFIG_KEY: envelope})
         .returning(ProviderConnection.id).execution_options(synchronize_session=False)).scalar_one_or_none()
     _require(changed is not None, "meta_operation_revision_conflict")
     session.add(AuditEvent(tenant_id=target.tenant_id, actor_user_id=request.actor_user_id,
