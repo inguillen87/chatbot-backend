@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from models import CatalogoItem, ChatSessionContext, MunicipioTicket, Rubro, TenantProfile, User, db
-from services.demo_municipio_runtime import _tenant_for_owner, handle_demo_municipio_message
+from services.demo_municipio_runtime import (
+    _classify_demo_intent,
+    _tenant_for_owner,
+    handle_demo_municipio_message,
+)
 from tests.auth_test_utils import clerk_superadmin_headers
 
 
@@ -80,8 +84,41 @@ def test_verified_server_demo_tenant_recovers_owner_mismatch(app, client, monkey
     assert ticket.tenant_id == demo_tenant.id
     assert ticket.municipio_id == legacy_owner.id
     assert ticket.user_id == legacy_owner.id
-    assert ticket.categoria == "Alumbrado publico"
+    assert ticket.categoria == "Alumbrado público"
+    assert ticket.asunto == "Reclamo de Alumbrado público"
     assert "Alumbrado público" in recovered["message_body"]
+    assert "la ubicación" in recovered["message_body"]
+    assert "una foto" in recovered["message_body"]
+    assert recovered["ticket"]["category"] == "Alumbrado público"
+    assert recovered["ticket"]["category_key"] == "alumbrado_publico"
+
+    status = handle_demo_municipio_message(
+        question="",
+        action_id="consultar_estado",
+        owner_user=selected_demo_owner,
+        verified_demo_tenant=demo_tenant,
+        chat_db_context=context,
+    )
+    assert "Alumbrado público" in status["message_body"]
+    assert "Pendiente de datos" in status["message_body"]
+    assert "pendiente_datos" not in status["message_body"]
+
+
+def test_demo_classifier_keeps_ascii_keys_and_canonical_visible_labels():
+    cases = (
+        ("alumbrado publico", "alumbrado_publico", "Alumbrado público", "Media"),
+        ("semaforo fuera de servicio", "transito_senalizacion", "Tránsito y señalización", "Alta"),
+        ("no recolectaron los residuos", "recoleccion_residuos", "Recolección de residuos", "Media"),
+        ("necesito poda de arbol en la plaza", "espacios_verdes", "Espacios verdes", "Media"),
+    )
+
+    for text, category_key, category_label, priority in cases:
+        assert _classify_demo_intent(text, None, None, None) == {
+            "kind": "claim",
+            "category_key": category_key,
+            "category_label": category_label,
+            "priority": priority,
+        }
 
 
 def test_public_chat_uses_signed_demo_tenant_when_registry_owner_is_misaligned(
