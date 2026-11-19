@@ -1,0 +1,37 @@
+name: Vector index keepalive
+
+# The catalog vector index runs on a free cluster that its provider suspends
+# after a week without requests and deletes after four. One request a day keeps
+# it in use, and a failed run is the alert that catalog publication is blocked.
+on:
+  schedule:
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: vector-index-keepalive
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask production whether the vector index answers
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            status=$(curl -sS -o body.json -w '%{http_code}' --max-time 60 \
+              https://api.chatboc.ar/api/health/vector-index || echo 000)
+            echo "attempt ${attempt}: HTTP ${status}"
+            cat body.json 2>/dev/null || true
+            echo
+            if [ "${status}" = "200" ]; then
+              exit 0
+            fi
+            sleep 45
+          done
+          echo "::error::The catalog vector index did not answer. Catalog publication is failing closed until it does."
+          exit 1
