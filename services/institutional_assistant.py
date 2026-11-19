@@ -12,6 +12,7 @@ from services.institutional_assistant_content import (
     ContentError, CONTRACT, MAX_QUESTION_CHARS, normalize_bundle, overview, digest, select_nodes, materialize_node,
     is_source_navigation, is_menu_command, advertised_choice,
 )
+from services.institutional_assistant_metrics import note_question_outcome
 KEY, CHANNEL = 'institutional_assistant', 'knowledge'
 UI = {
     'heading': 'Información y orientación', 'description': 'Consultá por tema o escribí tu pregunta.',
@@ -167,7 +168,12 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
         if selector is None:
             from services.llm_utils import llamar_llm_para_json_estructurado
             selector = llamar_llm_para_json_estructurado
-        nodes = select_nodes(bundle, question, node_id, selector)
+        try:
+            nodes = select_nodes(bundle, question, node_id, selector)
+        except ContentError as error:
+            if error.code == 'knowledge_interpretation_unavailable':
+                note_question_outcome(state['revision'], node_id, 'unavailable')
+            raise
     else:
         nodes = [deepcopy(bundle['nodes'][node_id])]
     db.session.expire_all()
@@ -189,6 +195,11 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     if navigation:
         result.update(result_type='source_navigation', text=UI['source_navigation'],
                       sources=overview(latest['bundle'], public=public)['sources'])
+    if called:
+        # Canonical identifiers of a delivered result only; the question is not kept.
+        note_question_outcome(state['revision'], node_id,
+            'sources' if navigation else 'typed_navigation' if chosen is not None
+            else 'answered' if nodes else 'uncovered', [node['id'] for node in result['nodes']])
     return result
 
 def _channel_source_label(source):

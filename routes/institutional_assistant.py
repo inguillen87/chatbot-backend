@@ -9,6 +9,10 @@ from utils.auth_helpers import token_requerido, auth_sin_escrituras_implicitas
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 from services.institutional_assistant import workspace, read_state, save_state, answer
 from services.institutional_assistant_content import ContentError, MAX_BYTES
+from services.institutional_assistant_metrics import (
+    DEFAULT_DAYS, MAX_DAYS, MAX_UTC_OFFSET_MINUTES, observe_question_outcomes,
+    question_metrics, record_question_outcomes,
+)
 institutional_assistant_bp = Blueprint('institutional_assistant', __name__)
 
 def _reply(data, status=200): return jsonify(data), status
@@ -19,7 +23,7 @@ def _private(response):
     response.headers['Vary'] = 'Cookie, Authorization, Origin'
     return response
 
-def _tenant(slug, actor=None, *, canonical_revision=None):
+def _tenant(slug, actor=None, *, canonical_revision=None, optional=()):
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if tenant is None or not tenant.is_active: raise ContentError('knowledge_not_available', 404)
     if actor is not None and not can_manage_tenant_control_plane(actor, tenant):
@@ -28,6 +32,8 @@ def _tenant(slug, actor=None, *, canonical_revision=None):
     if canonical_revision is not None:
         expected['revision'] = canonical_revision
     for key in request.args:
+        if key in optional:
+            continue
         if key not in expected or request.args.getlist(key) != [expected[key]]:
             raise ContentError('knowledge_scope_mismatch', 400)
     for header, target in [('X-Tenant', slug), ('X-Tenant-Slug', slug), ('X-Tenant-ID', str(tenant.id))]:
@@ -97,6 +103,27 @@ def private_canonical_node(actor, slug, node_id):
     tenant = _tenant(slug, actor, canonical_revision=revision)
     return _reply(answer(tenant, {'revision': revision, 'node_id': node_id}, actor=actor))
 
+def _bounded_integer(name, default, minimum, maximum):
+    values = request.args.getlist(name)
+    if not values:
+        return default
+    if len(values) != 1 or not re.fullmatch(r'-?[0-9]{1,4}', values[0]) or not minimum <= int(values[0]) <= maximum:
+        raise ContentError('knowledge_command_invalid', 400)
+    return int(values[0])
+
+@institutional_assistant_bp.route('/api/admin/tenants/<slug>/institutional-assistant/metrics', methods=['GET'])
+@limiter.limit('30 per minute')
+@token_requerido
+@auth_sin_escrituras_implicitas
+def private_question_metrics(actor, slug):
+    _origin()
+    if request.content_length:
+        raise ContentError('knowledge_command_invalid', 400)
+    tenant = _tenant(slug, actor, optional=('days', 'utc_offset_minutes'))
+    days = _bounded_integer('days', DEFAULT_DAYS, 1, MAX_DAYS)
+    offset = _bounded_integer('utc_offset_minutes', 0, -MAX_UTC_OFFSET_MINUTES, MAX_UTC_OFFSET_MINUTES)
+    return _reply(question_metrics(tenant, read_state(tenant), days=days, utc_offset_minutes=offset))
+
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant', methods=['GET'])
 def public_workspace(slug):
     tenant = _tenant(slug)
@@ -107,7 +134,16 @@ def public_workspace(slug):
 def public_answer(slug):
     # Same non-credentialed CORS surface as the public workspace. No session or
     # caller identity is used; only explicitly published tenant content is read.
-    return _reply(answer(_tenant(slug), _json(), public=True))
+    tenant, command = _tenant(slug), _json()
+    tenant_id, tenant_type = tenant.id, tenant.tipo
+    with observe_question_outcomes() as outcomes:
+        try:
+            result = answer(tenant, command, public=True)
+        finally:
+            # Anonymous count of the typed-question outcome (canonical node ids
+            # only). Best effort: it never changes the response or its status.
+            record_question_outcomes(tenant_id, tenant_type, 'web_reader', outcomes)
+    return _reply(result)
 
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/nodes/<node_id>', methods=['GET'])
 @limiter.limit('20 per minute')
