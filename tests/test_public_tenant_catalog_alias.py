@@ -1,3 +1,4 @@
+import pytest
 from urllib.parse import unquote_plus, urlparse
 
 from app import db
@@ -976,6 +977,97 @@ def test_widget_commerce_session_empty_municipio_promotes_assisted_upload(client
     assert body["assisted_intake"]["frontend_contract"]["render_as"] == "marketplace_assisted_intake"
     assert body["frontend_contract"]["empty_state_behavior"] == "assisted_intake_first"
     assert body["frontend_contract"]["primary_actions"][1] == "assisted_upload"
+
+
+def _municipio_with_widget_catalog(slug, configuracion):
+    owner = User(email=f"{slug}@test.com", name="Organismo de prueba", rol="admin", tipo_chat="municipio")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug=slug,
+        nombre="Organismo de prueba",
+        tipo="municipio",
+        plan="full",
+        municipio_id=owner.id,
+        vertical="gobierno",
+        configuracion=configuracion,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    db.session.add(
+        CatalogoItem(
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            nombre="Beneficio de prueba",
+            precio="900 pts",
+            sku=f"{slug}-beneficio",
+            modalidad="canje",
+            precio_puntos=900,
+            disponible=True,
+        )
+    )
+    db.session.commit()
+    return tenant
+
+
+def _widget_commerce_session(client, slug):
+    resp = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": slug},
+        headers={
+            "Origin": "https://www.chatboc.ar",
+            "X-Chat-Session-Id": f"chat_{slug}",
+            "X-Anon-Id": f"anon_{slug}",
+        },
+    )
+    assert resp.status_code == 200
+    return resp.get_json()
+
+
+@pytest.mark.parametrize(
+    "configuracion",
+    [
+        {"widget_catalog_enabled": False},
+        {"catalogo": {"widget_visible": False, "catalogo_widget_visible": False}},
+        {"catalogo_widget_visible": False, "catalogo": {"widget_visible": True}},
+    ],
+)
+def test_widget_commerce_session_respects_the_widget_catalog_switched_off(client, configuracion):
+    tenant = _municipio_with_widget_catalog("organismo-sin-tienda", configuracion)
+
+    body = _widget_commerce_session(client, tenant.slug)
+
+    # The organization turned its widget catalog off: the session does not
+    # present it as a shop, whatever is stored in its catalog.
+    assert body["catalog"]["enabled"] is False
+    assert body["cart"]["enabled"] is False
+    assert body["frontend_contract"]["primary_actions"] == ["chat", "portal"]
+    assert body["frontend_contract"]["empty_state_behavior"] == "chat_first_catalog_when_enabled"
+    # What is stored is still reported as stored.
+    assert body["catalog"]["products_count"] == 1
+    assert body["catalog"]["has_products"] is True
+
+
+@pytest.mark.parametrize(
+    "configuracion",
+    [
+        None,
+        {},
+        {"widget_catalog_enabled": True},
+        {"widget_catalog_enabled": "false"},
+        {"catalogo": {"titulo": "Beneficios"}},
+    ],
+)
+def test_widget_commerce_session_keeps_commerce_without_an_explicit_switch_off(client, configuracion):
+    tenant = _municipio_with_widget_catalog("organismo-con-canje", configuracion)
+
+    body = _widget_commerce_session(client, tenant.slug)
+
+    assert body["catalog"]["enabled"] is True
+    assert body["cart"]["enabled"] is True
+    for action in ("catalog", "cart", "checkout"):
+        assert action in body["frontend_contract"]["primary_actions"]
 
 
 def test_widget_commerce_session_requires_full_plan(client):
