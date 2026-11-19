@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
@@ -32,6 +33,61 @@ def health_check():
         return jsonify(status), 500
 
     return jsonify(status), 200
+
+
+# The vector index runs on a provider that suspends a cluster nobody queries
+# and later deletes it. Catalog publication fails closed without it, so its
+# state gets a probe of its own: cheap, cached, and with no provider detail.
+_VECTOR_INDEX_PROBE_TTL_SECONDS = 600.0
+# A failing index is asked again soon, but not on every request: the endpoint
+# is public and each probe can wait on the provider.
+_VECTOR_INDEX_FAILURE_TTL_SECONDS = 30.0
+_vector_index_probe = {"at": None, "state": None}
+
+
+def _probe_vector_index() -> str:
+    try:
+        from services.qdrant_utils import get_qdrant_client
+
+        client = get_qdrant_client()
+        if client is None:
+            return "not_configured"
+        client.get_collections()
+        return "connected"
+    except Exception as exc:
+        logger.warning(
+            "Vector index health probe failed error_type=%s",
+            type(exc).__name__,
+        )
+        return "error"
+
+
+@health_bp.route('/vector-index', methods=['GET'])
+def vector_index_health():
+    """Report whether the catalog vector index answers, probing at most every ten minutes."""
+
+    now = time.monotonic()
+    probed_at = _vector_index_probe["at"]
+    ttl = (
+        _VECTOR_INDEX_PROBE_TTL_SECONDS
+        if _vector_index_probe["state"] == "connected"
+        else _VECTOR_INDEX_FAILURE_TTL_SECONDS
+    )
+    cached = probed_at is not None and now - probed_at < ttl
+    if not cached:
+        _vector_index_probe["state"] = _probe_vector_index()
+        _vector_index_probe["at"] = now
+    state = _vector_index_probe["state"]
+    response = jsonify(
+        {
+            "contract_version": "chatboc.vector_index_health.v1",
+            "status": state,
+            "cached": cached,
+        }
+    )
+    response.status_code = 200 if state == "connected" else 503
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def _request_id() -> str:
