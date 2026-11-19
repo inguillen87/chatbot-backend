@@ -33,6 +33,7 @@ from services.public_survey_intake import public_survey_client_ip
 from services.demo_pillar_catalog import (
     DEMO_PILLAR_CONTRACT_VERSION,
     catalog_resources_for_rubro,
+    category_label_for_rubro,
     category_for_rubro,
     curated_demo_rubros,
     default_rubro_for_sector,
@@ -288,7 +289,7 @@ def _demo_rubro_selector_contract(
             categories.append(
                 {
                     "slug": slug,
-                    "label": category.get("label") or slug.replace("_", " ").title(),
+                    "label": category.get("label") or category_label_for_rubro(slug) or slug.replace("_", " ").title(),
                     "sector": sector,
                     "tipo_chat": category.get("tipo_chat"),
                     "vertical": category.get("vertical"),
@@ -301,7 +302,7 @@ def _demo_rubro_selector_contract(
                         "source": "landing_widget_rubro_selector",
                         "sector": sector,
                         "rubro": slug,
-                        "label": category.get("label") or slug.replace("_", " ").title(),
+                        "label": category.get("label") or category_label_for_rubro(slug) or slug.replace("_", " ").title(),
                     },
                 }
             )
@@ -317,14 +318,14 @@ def _demo_rubro_selector_contract(
         "open_chat_after_selection": True,
         "post_endpoint": "/api/v2/demo/session",
         "categories": categories,
-        "frontend_rule": "Si requires_selection=true, renderizar estas categorias y no enviar __INIT__ todavia.",
+        "frontend_rule": "Si requires_selection=true, renderizar estas categorías y no enviar __INIT__ todavía.",
     }
 
 
 def _demo_rubro_context(*, sector: str, rubro: str, tenant: TenantProfile) -> dict[str, Any]:
     category = category_for_rubro(rubro) or {}
     slug = _payload_slug(category.get("slug") or rubro or tenant.slug)
-    label = str(category.get("label") or tenant.nombre or slug.replace("_", " ").title()).strip()
+    label = str(category.get("label") or category_label_for_rubro(slug) or tenant.nombre or slug.replace("_", " ").title()).strip()
     base = {
         "contract_version": "demo.rubro_context.v1",
         "sector": sector,
@@ -342,30 +343,30 @@ def _demo_rubro_context(*, sector: str, rubro: str, tenant: TenantProfile) -> di
             "display_name": "Bodega",
             "description": "Venta de vinos, cajas, promociones, maridajes y pedidos mayoristas.",
             "prompt_context": (
-                "Demo PYME rubro bodega. Responde como asistente comercial de una bodega: "
-                "habla de vinos, varietales, cajas, maridajes, stock, promociones, envio y retiro. "
-                "No respondas como ferreteria ni comercio generico."
+                "Demo PYME rubro bodega. Respondé como asistente comercial de una bodega: "
+                "habla de vinos, varietales, cajas, maridajes, stock, promociones, envío y retiro. "
+                "No respondas como ferretería ni comercio genérico."
             ),
             "quick_actions": [
-                {"id": "ver_vinos", "label": "Ver vinos", "intent": "ver_catalogo_vinos", "description": "Mostrar catalogo de vinos y precios."},
+                {"id": "ver_vinos", "label": "Ver vinos", "intent": "ver_catalogo_vinos", "description": "Mostrar catálogo de vinos y precios."},
                 {"id": "armar_caja", "label": "Armar caja", "intent": "armar_caja_vinos", "description": "Combinar botellas por gusto y presupuesto."},
-                {"id": "maridaje", "label": "Sugerir maridaje", "intent": "sugerir_maridaje", "description": "Recomendar vino segun comida u ocasion."},
+                {"id": "maridaje", "label": "Sugerir maridaje", "intent": "sugerir_maridaje", "description": "Recomendar vino según la comida o la ocasión."},
                 {"id": "pedido_mayorista", "label": "Pedido mayorista", "intent": "pedido_mayorista", "description": "Tomar datos para compra mayorista."},
             ],
         },
         "ferreteria": {
-            "display_name": "Ferreteria",
-            "description": "Venta de herramientas, materiales, presupuesto, stock y envios.",
+            "display_name": "Ferretería",
+            "description": "Venta de herramientas, materiales, presupuestos, stock y envíos.",
             "prompt_context": (
-                "Demo PYME rubro ferreteria. Responde como asistente de ferreteria: "
-                "ayuda con herramientas, materiales, medidas, cantidades, presupuestos, stock, envio y retiro. "
+                "Demo PYME rubro ferretería. Respondé como asistente de ferretería: "
+                "ayudá con herramientas, materiales, medidas, cantidades, presupuestos, stock, envío y retiro. "
                 "No recomiendes vinos ni uses lenguaje de bodega."
             ),
             "quick_actions": [
                 {"id": "buscar_producto", "label": "Buscar producto", "intent": "buscar_producto_ferreteria", "description": "Encontrar herramientas o materiales."},
                 {"id": "calcular_materiales", "label": "Calcular materiales", "intent": "calcular_materiales", "description": "Estimar cantidades por medida u obra."},
                 {"id": "armar_presupuesto", "label": "Armar presupuesto", "intent": "armar_presupuesto_ferreteria", "description": "Preparar pedido con precios y stock."},
-                {"id": "coordinar_envio", "label": "Coordinar envio", "intent": "coordinar_envio_retiro", "description": "Resolver entrega, retiro o consulta de sucursal."},
+                {"id": "coordinar_envio", "label": "Coordinar envío", "intent": "coordinar_envio_retiro", "description": "Resolver entrega, retiro o consulta de sucursal."},
             ],
         },
         "inmobiliaria": {
@@ -376,38 +377,38 @@ def _demo_rubro_context(*, sector: str, rubro: str, tenant: TenantProfile) -> di
                 {"id": "buscar_propiedad", "label": "Buscar propiedad", "intent": "buscar_propiedad"},
                 {"id": "agendar_visita", "label": "Agendar visita", "intent": "agendar_visita"},
                 {"id": "requisitos", "label": "Consultar requisitos", "intent": "consultar_requisitos"},
-                {"id": "tasacion", "label": "Pedir tasacion", "intent": "pedir_tasacion"},
+                {"id": "tasacion", "label": "Pedir tasación", "intent": "pedir_tasacion"},
             ],
         },
         "medico_general": {
-            "display_name": "Clinica o consultorio",
+            "display_name": "Clínica o consultorio",
             "description": "Turnos, consultas, estudios y seguimiento administrativo.",
-            "prompt_context": "Demo PYME rubro salud. Prioriza turnos, estudios, cobertura, preparacion y derivacion administrativa.",
+            "prompt_context": "Demo PYME rubro salud. Priorizá turnos, estudios, cobertura, preparación y derivación administrativa.",
             "quick_actions": [
                 {"id": "pedir_turno", "label": "Pedir turno", "intent": "pedir_turno"},
                 {"id": "consultar_estudios", "label": "Consultar estudios", "intent": "consultar_estudios"},
                 {"id": "cobertura", "label": "Cobertura", "intent": "consultar_cobertura"},
-                {"id": "hablar_admin", "label": "Hablar con administracion", "intent": "derivar_administracion"},
+                {"id": "hablar_admin", "label": "Hablar con administración", "intent": "derivar_administracion"},
             ],
         },
         "seguros": {
             "display_name": "Seguros",
-            "description": "Cotizaciones, polizas, siniestros y documentacion.",
-            "prompt_context": "Demo PYME rubro seguros. Prioriza cotizaciones, coberturas, polizas, siniestros y documentacion.",
+            "description": "Cotizaciones, pólizas, siniestros y documentación.",
+            "prompt_context": "Demo PYME rubro seguros. Priorizá cotizaciones, coberturas, pólizas, siniestros y documentación.",
             "quick_actions": [
                 {"id": "cotizar", "label": "Cotizar seguro", "intent": "cotizar_seguro"},
                 {"id": "denunciar_siniestro", "label": "Denunciar siniestro", "intent": "denunciar_siniestro"},
-                {"id": "ver_poliza", "label": "Ver poliza", "intent": "consultar_poliza"},
-                {"id": "documentacion", "label": "Documentacion", "intent": "consultar_documentacion"},
+                {"id": "ver_poliza", "label": "Ver póliza", "intent": "consultar_poliza"},
+                {"id": "documentacion", "label": "Documentación", "intent": "consultar_documentacion"},
             ],
         },
         "logistica": {
-            "display_name": "Logistica",
-            "description": "Envios, seguimiento, retiros, tarifas y coordinacion operativa.",
-            "prompt_context": "Demo PYME rubro logistica. Prioriza seguimiento, retiros, tarifas, zonas, horarios y novedades de envio.",
+            "display_name": "Logística",
+            "description": "Envíos, seguimiento, retiros, tarifas y coordinación operativa.",
+            "prompt_context": "Demo PYME rubro logística. Priorizá seguimiento, retiros, tarifas, zonas, horarios y novedades de envío.",
             "quick_actions": [
-                {"id": "cotizar_envio", "label": "Cotizar envio", "intent": "cotizar_envio"},
-                {"id": "seguir_envio", "label": "Seguir envio", "intent": "seguir_envio"},
+                {"id": "cotizar_envio", "label": "Cotizar envío", "intent": "cotizar_envio"},
+                {"id": "seguir_envio", "label": "Seguir envío", "intent": "seguir_envio"},
                 {"id": "coordinar_retiro", "label": "Coordinar retiro", "intent": "coordinar_retiro"},
                 {"id": "zonas", "label": "Ver zonas", "intent": "consultar_zonas"},
             ],
@@ -415,13 +416,13 @@ def _demo_rubro_context(*, sector: str, rubro: str, tenant: TenantProfile) -> di
     }
     generic_pyme = {
         "display_name": "Comercio general",
-        "description": "Catalogo, pedidos, stock, promociones, envios y seguimiento comercial.",
+        "description": "Catálogo, pedidos, stock, promociones, envíos y seguimiento comercial.",
         "prompt_context": (
-            "Demo PYME generica. Responde como asistente comercial adaptable: pide rubro o producto si falta contexto, "
-            "ayuda con catalogo, precios, stock, pedido, envio y derivacion a una persona."
+            "Demo PYME genérica. Respondé como asistente comercial adaptable: pedí rubro o producto si falta contexto, "
+            "ayudá con catálogo, precios, stock, pedido, envío y derivación a una persona."
         ),
         "quick_actions": [
-            {"id": "ver_catalogo", "label": "Ver catalogo", "intent": "ver_catalogo", "description": "Mostrar productos y precios."},
+            {"id": "ver_catalogo", "label": "Ver catálogo", "intent": "ver_catalogo", "description": "Mostrar productos y precios."},
             {"id": "crear_pedido", "label": "Crear pedido", "intent": "crear_pedido", "description": "Tomar productos, cantidades y contacto."},
             {"id": "consultar_stock", "label": "Consultar stock", "intent": "consultar_stock", "description": "Validar disponibilidad."},
             {"id": "hablar_asesor", "label": "Hablar con asesor", "intent": "derivar_humano", "description": "Derivar a una persona."},
@@ -524,7 +525,7 @@ def _tenant_runtime_config_for_tools(tenant: TenantProfile) -> dict[str, Any]:
         runtime["ubicaciones"] = [
             {
                 "id": "tenant_main_location",
-                "label": tenant.nombre or "Ubicacion principal",
+                "label": tenant.nombre or "Ubicación principal",
                 "direccion": address or "",
                 "lat": lat,
                 "lng": lng,
@@ -722,7 +723,7 @@ def _extract_demo_locations(config: dict[str, Any], tenant: TenantProfile) -> li
         locations.append(
             {
                 "id": str(raw.get("id") or f"location_{index}"),
-                "label": str(raw.get("label") or raw.get("nombre") or tenant.nombre or "Ubicacion").strip(),
+                "label": str(raw.get("label") or raw.get("nombre") or tenant.nombre or "Ubicación").strip(),
                 "address": address,
                 "lat": lat,
                 "lng": lng,
@@ -737,7 +738,7 @@ def _extract_demo_locations(config: dict[str, Any], tenant: TenantProfile) -> li
             locations.append(
                 {
                     "id": "main_location",
-                    "label": str(config.get("ciudad") or tenant.nombre or "Ubicacion principal").strip(),
+                    "label": str(config.get("ciudad") or tenant.nombre or "Ubicación principal").strip(),
                     "address": address,
                     "lat": None,
                     "lng": None,
@@ -1379,7 +1380,7 @@ def _handoff_labels(experience: dict[str, Any]) -> dict[str, str]:
     configured = experience.get("handoff_labels")
     labels = configured if isinstance(configured, dict) else {}
     return {
-        "message": str(labels.get("message") or "Si hace falta, derivamos la conversacion."),
+        "message": str(labels.get("message") or "Si hace falta, derivamos la conversación."),
         "createTicket": str(labels.get("createTicket") or "Crear caso"),
         "openWhatsApp": str(labels.get("openWhatsApp") or "Continuar por WhatsApp"),
         "waitOperator": str(labels.get("waitOperator") or "Esperar respuesta"),
@@ -1520,7 +1521,7 @@ def _short_operational_menu_contract(
         return [
             _operational_action(
                 label="Crear caso escolar",
-                description="Conta que paso y adjunta foto, audio o PDF si hace falta.",
+                description="Contá qué pasó y adjuntá foto, audio o PDF si hace falta.",
                 action_id="create_school_case",
                 payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
             ),
@@ -1531,8 +1532,8 @@ def _short_operational_menu_contract(
                 payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
             ),
             _operational_action(
-                label="Hablar con secretaria",
-                description="Crea espera para secretaria o muestra horario real.",
+                label="Hablar con secretaría",
+                description="Crea una espera para secretaría o muestra el horario real.",
                 action_id="talk_secretary",
                 payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
             ),
@@ -1542,23 +1543,23 @@ def _short_operational_menu_contract(
         return [
             _operational_action(
                 label="Crear reclamo",
-                description="Contame que paso. Podes adjuntar foto, audio o ubicacion.",
+                description="Contame qué pasó. Podés adjuntar foto, audio o ubicación.",
                 action_id="crear_reclamo",
                 payload={"vertical": "municipio"},
             ),
             _operational_action(
                 label="Consultar estado",
-                description="Busca un reclamo por numero o datos de contacto.",
+                description="Buscá un reclamo por número o datos de contacto.",
                 action_id="consultar_estado_reclamo",
             ),
             _operational_action(
-                label="Consultar tramite",
-                description="Responde desde tramites publicados por el municipio.",
+                label="Consultar trámite",
+                description="Respondé desde los trámites publicados por el municipio.",
                 action_id="consultar_tramite",
             ),
             _operational_action(
                 label="Hablar con una persona",
-                description="Deriva a mesa de atencion si esta disponible.",
+                description="Derivá a la mesa de atención si está disponible.",
                 action_id="derivar_humano",
             ),
             survey_action,
@@ -1576,8 +1577,8 @@ def _short_operational_menu_contract(
                 action_id="crear_pedido",
             ),
             _operational_action(
-                label="Cotizar envio",
-                description="Usa direccion o ubicacion enviada por el usuario.",
+                label="Cotizar envío",
+                description="Usá la dirección o ubicación enviada por el usuario.",
                 action_id="cotizar_envio",
             ),
             _operational_action(
@@ -1628,30 +1629,30 @@ def _sales_story_for_demo(sector: str, tenant_name: str) -> dict[str, Any]:
         return {
             "contract_version": "demo.sales_story.v1",
             "problem": "Las familias escriben por muchos canales y el equipo administrativo pierde contexto, adjuntos y seguimiento.",
-            "promise": "Chatboc convierte consultas escolares en casos trazables con IA, derivacion humana y panel operativo.",
+            "promise": "Chatboc convierte consultas escolares en casos trazables con IA, derivación humana y panel operativo.",
             "value_path": [
                 "La familia consulta por widget o WhatsApp.",
                 "La IA pide solo alumno, curso, fecha o adjunto cuando corresponde.",
                 "El colegio recibe el caso con contexto, prioridad y siguiente paso.",
             ],
-            "commercial_cta": "Ver como quedaria para la comunidad de " + tenant_name,
+            "commercial_cta": "Ver cómo quedaría para la comunidad de " + tenant_name,
         }
     if normalized == "gobierno":
         return {
             "contract_version": "demo.sales_story.v1",
-            "problem": "Los reclamos llegan incompletos, sin ubicacion o por canales dispersos.",
-            "promise": "Chatboc ordena reclamos, tramites, comentarios y encuestas en un flujo ciudadano medible.",
+            "problem": "Los reclamos llegan incompletos, sin ubicación o por canales dispersos.",
+            "promise": "Chatboc ordena reclamos, trámites, comentarios y encuestas en un flujo ciudadano medible.",
             "value_path": [
-                "El vecino envia texto, foto, audio o ubicacion.",
+                "El vecino envía texto, foto, audio o ubicación.",
                 "La IA clasifica, pide faltantes y crea seguimiento.",
-                "El equipo ve bandeja, mapa operativo y estado publico por codigo.",
+                "El equipo ve bandeja, mapa operativo y estado público por código.",
             ],
-            "commercial_cta": "Probar atencion ciudadana con trazabilidad",
+            "commercial_cta": "Probar atención ciudadana con trazabilidad",
         }
     return {
         "contract_version": "demo.sales_story.v1",
-        "problem": "Las consultas comerciales se pierden entre chat, WhatsApp, catalogo y pagos.",
-        "promise": "Chatboc une catalogo, carrito invitado, pedidos, leads e historial en una experiencia white-label.",
+        "problem": "Las consultas comerciales se pierden entre chat, WhatsApp, catálogo y pagos.",
+        "promise": "Chatboc une catálogo, carrito invitado, pedidos, leads e historial en una experiencia white-label.",
         "value_path": [
             "El visitante consulta productos o servicios.",
             "La IA responde con contexto del rubro y propone pedido, checkout o asesor.",
@@ -1668,25 +1669,25 @@ def _consulting_playbook_for_demo(sector: str) -> dict[str, Any]:
             "contract_version": "demo.consulting_playbook.v1",
             "diagnosis": ["canales dispersos", "equipo administrativo saturado", "adjuntos sin trazabilidad", "casos sensibles sin ruta clara"],
             "detected_processes": ["inasistencias", "certificados", "admisiones", "pagos", "comunicados", "convivencia"],
-            "handoff_rules": ["convivencia sensible", "salud o datos personales", "familia solicita humano", "caso incompleto por mas de dos turnos"],
+            "handoff_rules": ["convivencia sensible", "salud o datos personales", "familia solicita humano", "caso incompleto por más de dos turnos"],
             "required_data": ["adulto responsable", "alumno", "curso", "motivo", "fecha", "adjunto cuando aplique"],
             "followup_rules": ["crear caso escolar", "notificar equipo administrativo", "mantener historial por tenant", "ofrecer seguimiento publico si aplica"],
         }
     if normalized == "gobierno":
         return {
             "contract_version": "demo.consulting_playbook.v1",
-            "diagnosis": ["reclamos incompletos", "ubicaciones ambiguas", "falta de estado publico", "baja lectura de demanda territorial"],
-            "detected_processes": ["reclamos", "tramites", "estado por codigo", "mapa operativo", "encuestas", "comentarios"],
-            "handoff_rules": ["urgencia", "riesgo ciudadano", "datos sensibles", "vecino pide operador", "categoria no configurada"],
-            "required_data": ["categoria", "descripcion", "ubicacion", "contacto opcional", "foto/audio si existe"],
-            "followup_rules": ["crear ticket", "generar codigo y PIN", "actualizar timeline", "mostrar mapa solo con coordenadas"],
+            "diagnosis": ["reclamos incompletos", "ubicaciones ambiguas", "falta de estado público", "baja lectura de demanda territorial"],
+            "detected_processes": ["reclamos", "trámites", "estado por código", "mapa operativo", "encuestas", "comentarios"],
+            "handoff_rules": ["urgencia", "riesgo ciudadano", "datos sensibles", "vecino pide operador", "categoría no configurada"],
+            "required_data": ["categoría", "descripción", "ubicación", "contacto opcional", "foto/audio si existe"],
+            "followup_rules": ["crear ticket", "generar código y PIN", "actualizar timeline", "mostrar mapa solo con coordenadas"],
         }
     return {
         "contract_version": "demo.consulting_playbook.v1",
-        "diagnosis": ["catalogo desordenado", "carritos abandonados", "leads sin contexto", "pedidos por canales separados"],
-        "detected_processes": ["catalogo", "carrito invitado", "checkout", "pedido", "comprobante", "seguimiento", "recuperacion de historial"],
-        "handoff_rules": ["compra mayorista", "duda compleja", "pago o envio sensible", "cliente pide asesor"],
-        "required_data": ["producto o necesidad", "cantidad", "contacto", "direccion/envio si aplica", "comprobante si aplica"],
+        "diagnosis": ["catálogo desordenado", "carritos abandonados", "leads sin contexto", "pedidos por canales separados"],
+        "detected_processes": ["catálogo", "carrito invitado", "checkout", "pedido", "comprobante", "seguimiento", "recuperación de historial"],
+        "handoff_rules": ["compra mayorista", "duda compleja", "pago o envío sensible", "cliente pide asesor"],
+        "required_data": ["producto o necesidad", "cantidad", "contacto", "dirección/envío si aplica", "comprobante si aplica"],
         "followup_rules": ["crear pedido o lead", "conservar anon_id", "vincular usuario al registrarse", "mostrar tracking de pedido"],
     }
 
@@ -1696,22 +1697,22 @@ def _wow_flows_for_demo(sector: str) -> list[dict[str, Any]]:
     if normalized == "educacion":
         return [
             {"id": "absence_certificate", "label": "Inasistencia con certificado", "trigger": "foto o archivo", "creates": "school_case", "primary": True},
-            {"id": "admissions_lead", "label": "Consulta de admisiones", "trigger": "interes comercial", "creates": "lead", "primary": True},
-            {"id": "sensitive_handoff", "label": "Caso sensible con derivacion", "trigger": "convivencia o datos sensibles", "creates": "handoff", "primary": True},
+            {"id": "admissions_lead", "label": "Consulta de admisiones", "trigger": "interés comercial", "creates": "lead", "primary": True},
+            {"id": "sensitive_handoff", "label": "Caso sensible con derivación", "trigger": "convivencia o datos sensibles", "creates": "handoff", "primary": True},
             {"id": "community_survey", "label": "Encuesta por comunidad", "trigger": "tenant con encuesta activa", "creates": "survey_response", "primary": False},
         ]
     if normalized == "gobierno":
         return [
-            {"id": "claim_with_location", "label": "Reclamo con foto, audio o ubicacion", "trigger": "media o mapa", "creates": "ticket", "primary": True},
-            {"id": "status_by_code", "label": "Estado por codigo y PIN", "trigger": "codigo de seguimiento", "creates": "tracking_view", "primary": True},
+            {"id": "claim_with_location", "label": "Reclamo con foto, audio o ubicación", "trigger": "media o mapa", "creates": "ticket", "primary": True},
+            {"id": "status_by_code", "label": "Estado por código y PIN", "trigger": "código de seguimiento", "creates": "tracking_view", "primary": True},
             {"id": "operations_map", "label": "Mapa operativo", "trigger": "ticket con coordenadas", "creates": "map_event", "primary": True},
-            {"id": "live_vote", "label": "Votacion ciudadana", "trigger": "tenant con votacion activa", "creates": "survey_response", "primary": False},
+            {"id": "live_vote", "label": "Votación ciudadana", "trigger": "tenant con votación activa", "creates": "survey_response", "primary": False},
         ]
     return [
-        {"id": "guest_cart", "label": "Catalogo y carrito invitado", "trigger": "consulta de producto", "creates": "cart_or_order", "primary": True},
+        {"id": "guest_cart", "label": "Catálogo y carrito invitado", "trigger": "consulta de producto", "creates": "cart_or_order", "primary": True},
         {"id": "checkout_preview", "label": "Checkout y comprobante", "trigger": "carrito listo", "creates": "checkout_intent", "primary": True},
-        {"id": "commercial_lead", "label": "Lead comercial con historial", "trigger": "interes alto", "creates": "lead", "primary": True},
-        {"id": "order_tracking", "label": "Seguimiento de pedido", "trigger": "codigo de pedido", "creates": "tracking_view", "primary": True},
+        {"id": "commercial_lead", "label": "Lead comercial con historial", "trigger": "interés alto", "creates": "lead", "primary": True},
+        {"id": "order_tracking", "label": "Seguimiento de pedido", "trigger": "código de pedido", "creates": "tracking_view", "primary": True},
     ]
 
 
@@ -1719,8 +1720,8 @@ def _live_modules_for_demo(sector: str) -> list[dict[str, Any]]:
     normalized = normalize_demo_sector(sector)
     base = [
         {"id": "inbox", "label": "Inbox omnicanal", "enabled": True, "endpoint": "/api/v2/inbox/omnichannel", "primary": True},
-        {"id": "human_handoff", "label": "Derivacion humana", "enabled": True, "endpoint": "/api/v2/inbox/omnichannel/actions", "primary": True},
-        {"id": "analytics", "label": "Analiticas", "enabled": True, "endpoint": "/api/v2/analytics/overview", "primary": True},
+        {"id": "human_handoff", "label": "Derivación humana", "enabled": True, "endpoint": "/api/v2/inbox/omnichannel/actions", "primary": True},
+        {"id": "analytics", "label": "Analíticas", "enabled": True, "endpoint": "/api/v2/analytics/overview", "primary": True},
         {"id": "surveys_votings", "label": "Encuestas y votaciones", "enabled": True, "endpoint": "/api/v2/surveys", "primary": False},
     ]
     if normalized in {"educacion", "gobierno"}:
@@ -1734,7 +1735,7 @@ def _live_modules_for_demo(sector: str) -> list[dict[str, Any]]:
     else:
         base.extend(
             [
-                {"id": "catalog", "label": "Catalogo", "enabled": True, "endpoint": "/api/public/tenants/{tenant_slug}/catalog", "primary": True},
+                {"id": "catalog", "label": "Catálogo", "enabled": True, "endpoint": "/api/public/tenants/{tenant_slug}/catalog", "primary": True},
                 {"id": "cart", "label": "Carrito invitado", "enabled": True, "endpoint": "/api/pwa/public/cart/items", "primary": True},
                 {"id": "orders", "label": "Pedidos", "enabled": True, "endpoint": "/api/public/tracking/experience?kind=order&code={code}", "primary": True},
             ]
@@ -1745,15 +1746,15 @@ def _live_modules_for_demo(sector: str) -> list[dict[str, Any]]:
 def _openai_runtime_for_demo(sector: str, allowed_actions: list[dict[str, Any]]) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector)
     if normalized == "educacion":
-        prompt_profile = "Asistente escolar prudente: equipo administrativo, familias, inasistencias, certificados, pagos, comunicados y derivacion sensible."
+        prompt_profile = "Asistente escolar prudente: equipo administrativo, familias, inasistencias, certificados, pagos, comunicados y derivación sensible."
         safety = ["no diagnosticar salud", "no exponer datos de menores", "derivar convivencia sensible", "confirmar antes de crear caso"]
         tools = ["crear_caso_escolar", "capturar_lead_admisiones", "derivar_humano", "registrar_adjunto"]
     elif normalized == "gobierno":
-        prompt_profile = "Asistente ciudadano: reclamos, tramites, ubicacion, foto/audio, estado por codigo y mapa operativo."
-        safety = ["no prometer plazos no configurados", "pedir ubicacion si falta", "derivar urgencias", "confirmar antes de crear ticket"]
+        prompt_profile = "Asistente ciudadano: reclamos, trámites, ubicación, foto/audio, estado por código y mapa operativo."
+        safety = ["no prometer plazos no configurados", "pedir ubicación si falta", "derivar urgencias", "confirmar antes de crear ticket"]
         tools = ["crear_reclamo", "consulta_estado_ticket", "registrar_ubicacion", "derivar_humano"]
     else:
-        prompt_profile = "Asistente comercial: catalogo, carrito, checkout, pedido, comprobante, lead e historial de compra."
+        prompt_profile = "Asistente comercial: catálogo, carrito, checkout, pedido, comprobante, lead e historial de compra."
         safety = ["no inventar stock", "no inventar descuentos", "no procesar pagos fuera del checkout", "derivar compra compleja"]
         tools = ["buscar_catalogo", "agregar_item_carrito", "crear_pedido", "capturar_lead", "derivar_humano"]
     return {
@@ -1918,7 +1919,7 @@ def _chat_bootstrap(
         "empty_states": {
             "runtime_unavailable": {
                 "title": "Demo conversacional no disponible",
-                "description": "No pudimos iniciar la respuesta en este momento. Reintenta en unos segundos o deja tus datos para seguimiento.",
+                "description": "No pudimos iniciar la respuesta en este momento. Reintentá en unos segundos o dejá tus datos para seguimiento.",
             }
         },
         "headers": {
@@ -1979,7 +1980,7 @@ def _chat_bootstrap(
             "El endpoint responde con IA server-side; el frontend no debe llamar OpenAI directo.",
             "Para imagen/archivo subir primero a /archivos/upload/chat_attachment y luego llamar al endpoint con attachmentInfo.",
             "Para audio enviar multipart al endpoint con campo audio_file.",
-            "Para ubicacion enviar payload JSON con location.",
+            "Para ubicación, enviá un payload JSON con location.",
         ],
     }
 
@@ -2136,7 +2137,7 @@ def _demo_default_menu_contract(
         "collapse_extra_items": True,
         "items": items[:5],
         "starter_prompts": quick_replies,
-        "empty_state": None if items else "Sin menu predeterminado disponible para este rubro.",
+        "empty_state": None if items else "Sin menú predeterminado disponible para este rubro.",
     }
 
 
@@ -2309,7 +2310,7 @@ def _demo_catalog_full_rate_limited(*, retry_after: int, scope: str):
             "contract_version": "demo.catalog.v2",
             "error": {
                 "code": 429,
-                "message": "Demasiadas solicitudes del catalogo demo completo.",
+                "message": "Demasiadas solicitudes del catálogo demo completo.",
             },
             "reason_code": "demo_catalog_full_rate_limited",
             "action_hint": "request_selector_profile_or_retry",
@@ -2328,7 +2329,7 @@ def _demo_catalog_full_rate_limit_unavailable(*, retry_after: int):
             "contract_version": "demo.catalog.v2",
             "error": {
                 "code": 503,
-                "message": "El control de capacidad del catalogo demo no esta disponible.",
+                "message": "El control de capacidad del catálogo demo no está disponible.",
             },
             "reason_code": "demo_catalog_full_rate_limit_unavailable",
             "action_hint": "retry_after_rate_limit_recovers",
@@ -2650,7 +2651,7 @@ def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, c
             "map": {
                 "enabled": False,
                 "points": [],
-                "empty_state": "Disponible cuando la sesion genere ubicaciones reales.",
+                "empty_state": "Disponible cuando la sesión genere ubicaciones reales.",
             },
             "session_activity": {
                 "contract_version": "demo.session_activity.v1",
@@ -2710,7 +2711,7 @@ def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, c
 
     cards = [
         {
-            "label": "Reclamos creados en esta sesion",
+            "label": "Reclamos creados en esta sesión",
             "value": str(len(tickets)),
             "detail": "tickets reales generados por el runtime demo",
         },
@@ -2737,7 +2738,7 @@ def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, c
         "map": {
             "enabled": bool(points),
             "points": points,
-            "empty_state": None if points else "Disponible cuando la sesion genere ubicaciones reales.",
+            "empty_state": None if points else "Disponible cuando la sesión genere ubicaciones reales.",
         },
         "session_activity": {
             "contract_version": "demo.session_activity.v1",
@@ -2766,7 +2767,7 @@ def _admin_preview_for_sector(
 
     presets: dict[str, dict[str, Any]] = {
         "educacion": {
-            "title": "Panel demo para direccion escolar",
+            "title": "Panel demo para dirección escolar",
             "subtitle": "Colegio privado integral",
             "modules": [
                 {"id": "summary", "label": "Resumen", "enabled": True},
@@ -2775,7 +2776,7 @@ def _admin_preview_for_sector(
                 {"id": "surveys", "label": "Encuestas", "enabled": True},
             ],
             "cards": [
-                {"label": "Casos creados en esta sesion", "value": "0", "detail": "se actualiza cuando el chat crea un caso"},
+                {"label": "Casos creados en esta sesión", "value": "0", "detail": "se actualiza cuando el chat crea un caso"},
                 {"label": "Adjuntos recibidos", "value": "0", "detail": "certificados, comprobantes o autorizaciones"},
                 {"label": "Derivaciones humanas", "value": "0", "detail": "equipo administrativo, admisiones o convivencia"},
             ],
@@ -2811,24 +2812,24 @@ def _admin_preview_for_sector(
         },
         "empresas": {
             "title": "Panel demo para ventas y soporte",
-            "subtitle": "Empresa con catalogo y pedidos",
+            "subtitle": "Empresa con catálogo y pedidos",
             "modules": [
                 {"id": "summary", "label": "Resumen", "enabled": True},
-                {"id": "catalog", "label": "Catalogo", "enabled": True},
+                {"id": "catalog", "label": "Catálogo", "enabled": True},
                 {"id": "orders", "label": "Pedidos", "enabled": True},
                 {"id": "customers", "label": "Clientes", "enabled": True},
             ],
             "cards": [
-                {"label": "Pedidos creados en esta sesion", "value": "0", "detail": "se actualiza cuando el chat crea pedido"},
-                {"label": "Items en carrito invitado", "value": "0", "detail": "se sincroniza por anon_id o widget token"},
+                {"label": "Pedidos creados en esta sesión", "value": "0", "detail": "se actualiza cuando el chat crea un pedido"},
+                {"label": "Ítems en carrito invitado", "value": "0", "detail": "se sincroniza por anon_id o widget token"},
                 {"label": "Leads comerciales", "value": "0", "detail": "asesor recibe contexto de compra"},
             ],
             "timeline": [
-                {"label": "Cliente consulta catalogo", "status": "setup"},
+                {"label": "Cliente consulta catálogo", "status": "setup"},
                 {"label": "IA propone carrito o asesor", "status": "waiting_for_session"},
                 {"label": "Panel conserva pedido y seguimiento", "status": "waiting_for_session"},
             ],
-            "catalog_title": "Catalogo demo empresas",
+            "catalog_title": "Catálogo demo empresas",
             "catalog_file": "empresa-demo.pdf",
         },
     }
@@ -2844,13 +2845,13 @@ def _admin_preview_for_sector(
             "map": {
                 "enabled": False,
                 "points": [],
-                "empty_state": "Disponible cuando la sesion genere ubicaciones reales.",
+                "empty_state": "Disponible cuando la sesión genere ubicaciones reales.",
             },
             "session_activity": {
                 "contract_version": "demo.session_activity.v1",
                 "source": "session_generated_events",
                 "has_session_data": False,
-                "empty_state": "Inicia la demo y envia un mensaje para crear actividad real en este panel.",
+                "empty_state": "Iniciá la demo y enviá un mensaje para crear actividad real en este panel.",
                 "items": [],
             },
         }
@@ -2877,7 +2878,7 @@ def _admin_preview_for_sector(
         "operations": {
             "contract_version": "demo.operations_preview.v1",
             "data_policy": "session_events_only",
-            "setup_message": "Sin actividad real todavia. El panel se llena con leads, tickets, pedidos o encuestas creadas por la demo.",
+            "setup_message": "Sin actividad real todavía. El panel se llena con leads, tickets, pedidos o encuestas creadas por la demo.",
         },
         "sales_story": commercial["sales_story"],
         "consulting_playbook": commercial["consulting_playbook"],
@@ -3234,8 +3235,8 @@ def demo_session_v2():
         }
         workspace = {
             "title": "Empresas",
-            "subtitle": "Elegir rubro comercial para probar ventas y soporte con IA.",
-            "welcome_message": "Que rubro de empresa queres simular?",
+            "subtitle": "Elegí un rubro comercial para probar ventas y soporte con IA.",
+            "welcome_message": "¿Qué rubro de empresa querés simular?",
             "rubro_selector": selector,
             "default_menu": default_menu,
             "quick_menu": selector_menu,
@@ -3437,7 +3438,7 @@ def demo_session_v2():
     workspace = {
         "title": tenant.nombre or "Demo Chatboc",
         "subtitle": (experience.get("hero") or {}).get("subtitle"),
-        "welcome_message": onboarding.get("entry_prompt") or "Que queres probar primero?",
+        "welcome_message": onboarding.get("entry_prompt") or "¿Qué querés probar primero?",
         "quick_replies": quick_replies,
         "primary_actions": primary_actions,
         "quick_menu": primary_actions,

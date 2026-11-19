@@ -303,7 +303,7 @@ def test_demo_survey_chat_menu_lists_five_with_whatsapp_vote_actions():
     assert menu["contract_version"] == "demo.encuestas_menu.v1"
     assert menu["pagination"]["page_size"] == 5
     assert len(menu["surveys"]) == 5
-    assert "Elegi una encuesta" in menu["message_body"]
+    assert "Elegí una encuesta" in menu["message_body"]
     assert "Compartir: https://wa.me/" not in menu["message_body"]
     assert len(menu["message_body"]) < 1400
     assert all((survey.get("seed") or {}).get("responses") == 100 for survey in menu["surveys"])
@@ -320,7 +320,7 @@ def test_demo_survey_chat_menu_lists_five_with_whatsapp_vote_actions():
     context_options = (formatted.get("contexto_actualizado") or {}).get("last_options_sent") or []
     action_ids = [str(option.get("action_id") or "") for option in context_options]
     assert len(formatted_body) < 1600
-    assert "Responde con el numero de la encuesta" in formatted_body
+    assert "Respondé con el número de la encuesta" in formatted_body
     assert formatted_body.count("Votar encuesta") == 5
     assert "Compartir 1" not in formatted_body
     assert "Compartir: https://wa.me/" not in formatted_body

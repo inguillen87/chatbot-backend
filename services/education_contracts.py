@@ -19,7 +19,7 @@ def education_primary_actions() -> list[dict[str, str]]:
     return [
         {"label": "Crear caso escolar", "texto": "Crear caso escolar", "action_id": "create_school_case", "id": "create_school_case"},
         {"label": "Justificar inasistencia", "texto": "Justificar inasistencia", "action_id": "justify_absence", "id": "justify_absence"},
-        {"label": "Hablar con secretaria", "texto": "Hablar con secretaria", "action_id": "talk_secretary", "id": "talk_secretary"},
+        {"label": "Hablar con secretaría", "texto": "Hablar con secretaría", "action_id": "talk_secretary", "id": "talk_secretary"},
     ]
 
 
@@ -185,8 +185,8 @@ def education_case_taxonomy() -> list[dict[str, Any]]:
     return [
         {
             "key": "secretaria",
-            "label": "Secretaria",
-            "description": "Constancias, certificados, documentacion y tramites generales.",
+            "label": "Secretaría",
+            "description": "Constancias, certificados, documentación y trámites generales.",
             "sensitivity_level": "normal",
             "queue": "secretaria",
         },
@@ -200,7 +200,7 @@ def education_case_taxonomy() -> list[dict[str, Any]]:
         {
             "key": "inasistencia",
             "label": "Inasistencia",
-            "description": "Justificaciones, certificados medicos y avisos de ausencia.",
+            "description": "Justificaciones, certificados médicos y avisos de ausencia.",
             "sensitivity_level": "normal",
             "queue": "preceptoria",
         },
@@ -235,14 +235,14 @@ def education_case_taxonomy() -> list[dict[str, Any]]:
         {
             "key": "admisiones",
             "label": "Admisiones",
-            "description": "Inscripciones, vacantes, entrevistas y documentacion de ingreso.",
+            "description": "Inscripciones, vacantes, entrevistas y documentación de ingreso.",
             "sensitivity_level": "normal",
             "queue": "admisiones",
         },
         {
             "key": "convivencia",
             "label": "Convivencia",
-            "description": "Situaciones de convivencia, bullying, cuidado y derivacion adulta.",
+            "description": "Situaciones de convivencia, bullying, cuidado y derivación adulta.",
             "sensitivity_level": "sensitive",
             "queue": "bienestar",
             "requires_handoff": True,
@@ -257,21 +257,21 @@ def education_case_taxonomy() -> list[dict[str, Any]]:
         {
             "key": "tecnologia",
             "label": "Tecnologia",
-            "description": "Campus virtual, accesos, dispositivos, plataformas y soporte tecnico.",
+            "description": "Campus virtual, accesos, dispositivos, plataformas y soporte técnico.",
             "sensitivity_level": "normal",
             "queue": "tecnologia",
         },
         {
             "key": "transporte",
             "label": "Transporte",
-            "description": "Recorridos, retiro, autorizaciones, ubicacion y cambios de logistica.",
+            "description": "Recorridos, retiro, autorizaciones, ubicación y cambios de logística.",
             "sensitivity_level": "private",
             "queue": "operaciones",
         },
         {
             "key": "comedor",
             "label": "Comedor",
-            "description": "Menu, alergias informadas, viandas y consultas de comedor.",
+            "description": "Menú, alergias informadas, viandas y consultas de comedor.",
             "sensitivity_level": "private",
             "queue": "comedor",
         },
@@ -319,14 +319,14 @@ def education_quick_menu(
         },
         {
             "id": "menu_documentacion",
-            "label": "Documentacion",
+            "label": "Documentación",
             "intent": "documentacion_certificados",
             "category": "documentacion",
             "accepted_media": ["image", "file", "text"],
         },
         {
             "id": "menu_tramites",
-            "label": "Tramites secretaria",
+            "label": "Trámites de secretaría",
             "intent": "tramites_secretaria",
             "category": "secretaria",
         },
@@ -340,7 +340,7 @@ def education_quick_menu(
         },
         {
             "id": "menu_humano",
-            "label": "Hablar con secretaria",
+            "label": "Hablar con secretaría",
             "intent": "derivar_humano",
             "category": "secretaria",
         },
@@ -440,16 +440,16 @@ def education_prompt_for_intent(intent: str | None, tenant: Any = None) -> dict[
     item = education_menu_item_for_intent(intent, tenant) or {}
     category = item.get("category") or "secretaria"
     prompts = {
-        "asistencia_alumno": "Decime nombre y apellido del alumno, curso y fecha. Si preferis, manda audio.",
-        "justificar_inasistencia": "Mandame alumno, curso, fecha y el motivo. Podes adjuntar foto o PDF del certificado.",
-        "comunicados_familias": "Contame sobre que comunicado queres consultar y de que curso o familia.",
-        "agenda_academica": "Decime curso, fecha o actividad que queres revisar.",
-        "documentacion_certificados": "Indica que documento necesitas o adjunta la autorizacion/certificado.",
-        "tramites_secretaria": "Contame el tramite y para que alumno o familia corresponde.",
+        "asistencia_alumno": "Decime el nombre y apellido del alumno, el curso y la fecha. Si preferís, mandá un audio.",
+        "justificar_inasistencia": "Mandame alumno, curso, fecha y motivo. Podés adjuntar una foto o el PDF del certificado.",
+        "comunicados_familias": "Contame qué comunicado querés consultar y de qué curso o familia.",
+        "agenda_academica": "Decime qué curso, fecha o actividad querés revisar.",
+        "documentacion_certificados": "Indicá qué documento necesitás o adjuntá la autorización o el certificado.",
+        "tramites_secretaria": "Contame el trámite y a qué alumno o familia corresponde.",
         "pagos_cuotas": "Contame la consulta de pago o adjunta comprobante. No compartas datos completos de tarjeta.",
         "admisiones_colegio": "Decime nivel, sala/grado/ano y datos de contacto para admisiones.",
-        "convivencia_escolar": "Contame que paso con el mayor detalle posible. Si hay riesgo inmediato, avisa al colegio o emergencias.",
-        "derivar_humano": "Te puedo derivar con secretaria. Contame el motivo y mejor horario de contacto.",
+        "convivencia_escolar": "Contame qué pasó con el mayor detalle posible. Si hay riesgo inmediato, avisá al colegio o a emergencias.",
+        "derivar_humano": "Te puedo derivar con secretaría. Contame el motivo y el mejor horario de contacto.",
     }
     body = prompts.get(str(item.get("intent") or intent), "Contame el detalle y lo dejo encaminado.")
     return {
@@ -457,8 +457,8 @@ def education_prompt_for_intent(intent: str | None, tenant: Any = None) -> dict[
         "message_body": body,
         "options_list": [
             {"texto": "Enviar detalle", "action_id": "education_send_detail"},
-            {"texto": "Hablar con secretaria", "action_id": "derivar_humano"},
-            {"texto": "Menu colegio", "action_id": "menu_principal"},
+            {"texto": "Hablar con secretaría", "action_id": "derivar_humano"},
+            {"texto": "Menú del colegio", "action_id": "menu_principal"},
         ],
     }
 
@@ -472,21 +472,21 @@ def build_education_whatsapp_playbook(tenant: Any = None) -> dict[str, Any]:
         "institution_type": institution,
         "welcome": {
             "assistant_label": "Asistente del colegio",
-            "message": "Hola, soy el asistente del colegio. Puedo ayudarte con asistencia, comunicados, agenda, tramites y secretaria.",
+            "message": "Hola, soy el asistente del colegio. Puedo ayudarte con asistencia, comunicados, agenda, trámites y secretaría.",
             "menu_action": "menu_colegio",
         },
         "primary_actions": education_primary_actions(),
         "quick_menu": education_quick_menu(tenant, surface="whatsapp"),
         "starter_messages": [
             "Quiero justificar una inasistencia",
-            "Te mando una foto del certificado medico",
+            "Te mando una foto del certificado médico",
             "Necesito ver comunicados del curso",
             "Quiero consultar pagos o admisiones",
         ],
         "media_intelligence": {
             "text": {
                 "enabled": True,
-                "expected_behavior": "Detectar alumno, curso, fecha, motivo y area; pedir solo lo faltante.",
+                "expected_behavior": "Detectar alumno, curso, fecha, motivo y área; pedir solo lo faltante.",
             },
             "audio": {
                 "enabled": True,
@@ -497,7 +497,7 @@ def build_education_whatsapp_playbook(tenant: Any = None) -> dict[str, Any]:
             "image": {
                 "enabled": True,
                 "intents": ["certificado_medico", "comprobante_pago", "autorizacion_firmada", "evidencia_convivencia"],
-                "expected_behavior": "Leer evidencia, clasificar el tramite y adjuntar al ticket escolar.",
+                "expected_behavior": "Leer evidencia, clasificar el trámite y adjuntar al ticket escolar.",
             },
             "location": {
                 "enabled": True,
@@ -507,7 +507,7 @@ def build_education_whatsapp_playbook(tenant: Any = None) -> dict[str, Any]:
             "file": {
                 "enabled": True,
                 "intents": ["documentacion_certificados", "pagos_cuotas", "admisiones_colegio"],
-                "expected_behavior": "Guardar adjunto y abrir seguimiento con secretaria si hace falta.",
+                "expected_behavior": "Guardar el adjunto y abrir seguimiento con secretaría si hace falta.",
             },
         },
         "routing_rules": [
@@ -604,7 +604,7 @@ def build_education_whatsapp_menu_payload(
     name_part = f", {profile_name}" if profile_name else ""
     body = (
         f"Hola{name_part}. Soy el asistente de {tenant_name}. "
-        "Puedo ayudarte con asistencia, comunicados, agenda, documentacion o secretaria."
+        "Puedo ayudarte con asistencia, comunicados, agenda, documentación o secretaría."
     )
     menu_items = playbook.get("quick_menu") or []
     if reduced:
@@ -620,17 +620,17 @@ def build_education_whatsapp_menu_payload(
         for item in menu_items
     ]
     audio_options = [
-        f"Opcion {idx}: {option.get('texto')}."
+        f"Opción {idx}: {option.get('texto')}."
         for idx, option in enumerate(options, start=1)
         if option.get("texto")
     ]
     audio_text = " ".join(
         [
             f"Hola. Soy el asistente de {tenant_name}.",
-            "Puedo ayudarte con asistencia, comunicados, agenda, documentacion, pagos o secretaria.",
-            "Elegi una opcion del menu o contame que necesitas.",
+            "Puedo ayudarte con asistencia, comunicados, agenda, documentación, pagos o secretaría.",
+            "Elegí una opción del menú o contame qué necesitás.",
             *audio_options,
-            "Tambien podes mandar audio, foto, archivo o ubicacion cuando corresponda.",
+            "También podés mandar audio, foto, archivo o ubicación cuando corresponda.",
         ]
     )
     try:
@@ -704,8 +704,8 @@ def build_education_case_ack_payload(ticket: dict[str, Any] | None, *, intent: s
         "message_type": "interactive_buttons",
         "options_list": [
             {"texto": "Ver estado", "action_id": "estado_ticket"},
-            {"texto": "Menu colegio", "action_id": "menu_principal"},
-            {"texto": "Hablar con secretaria", "action_id": "derivar_humano"},
+            {"texto": "Menú del colegio", "action_id": "menu_principal"},
+            {"texto": "Hablar con secretaría", "action_id": "derivar_humano"},
         ],
         "fuente": "education_whatsapp_case_created",
         "ticket_id": ticket.get("id"),

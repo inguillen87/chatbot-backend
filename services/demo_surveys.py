@@ -130,50 +130,50 @@ def _templates_for_sector(
             {
                 "id": "talleres-extra",
                 "tipo": "votacion",
-                "titulo": "Votacion de talleres extracurriculares",
-                "descripcion": "Familias eligen que talleres conviene abrir primero.",
-                "pregunta": "Que taller deberia abrir el colegio primero?",
-                "opciones": ["Robotica", "Arte", "Deportes", "Ingles conversacional"],
+                "titulo": "Votación de talleres extracurriculares",
+                "descripcion": "Las familias eligen qué talleres conviene abrir primero.",
+                "pregunta": "¿Qué taller debería abrir el colegio primero?",
+                "opciones": ["Robótica", "Arte", "Deportes", "Inglés conversacional"],
             },
             {
                 "id": "comunicacion-familias",
                 "tipo": "encuesta",
-                "titulo": "Encuesta de comunicacion con familias",
+                "titulo": "Encuesta de comunicación con familias",
                 "descripcion": "Mide canales preferidos y claridad de comunicados.",
-                "pregunta": "Como preferis recibir los comunicados?",
+                "pregunta": "¿Cómo preferís recibir los comunicados?",
                 "opciones": ["WhatsApp", "Email", "App escolar", "Cuaderno digital"],
             },
             {
                 "id": "biblioteca-horarios",
                 "tipo": "votacion",
-                "titulo": "Votacion de horario de biblioteca",
+                "titulo": "Votación de horario de biblioteca",
                 "descripcion": "Consulta para extender servicios de biblioteca.",
-                "pregunta": "Que horario seria mas util?",
-                "opciones": ["Antes de clases", "Mediodia", "Despues de clases", "Sabados"],
+                "pregunta": "¿Qué horario sería más útil?",
+                "opciones": ["Antes de clases", "Mediodía", "Después de clases", "Sábados"],
             },
             {
                 "id": "comedor-escolar",
                 "tipo": "encuesta",
                 "titulo": "Encuesta de comedor escolar",
-                "descripcion": "Releva experiencia de familias con menu y organizacion.",
-                "pregunta": "Que aspecto conviene mejorar primero?",
-                "opciones": ["Menu", "Horarios", "Comunicacion", "Dietas especiales"],
+                "descripcion": "Releva la experiencia de las familias con el menú y la organización.",
+                "pregunta": "¿Qué aspecto conviene mejorar primero?",
+                "opciones": ["Menú", "Horarios", "Comunicación", "Dietas especiales"],
             },
             {
                 "id": "salida-educativa",
                 "tipo": "votacion",
-                "titulo": "Votacion de salida educativa",
-                "descripcion": "Prioriza propuestas para la proxima salida escolar.",
-                "pregunta": "Que salida preferis para el curso?",
+                "titulo": "Votación de salida educativa",
+                "descripcion": "Priorizá propuestas para la próxima salida escolar.",
+                "pregunta": "¿Qué salida preferís para el curso?",
                 "opciones": ["Museo", "Reserva natural", "Teatro", "Universidad"],
             },
             {
                 "id": "convivencia-escolar",
                 "tipo": "encuesta",
                 "titulo": "Encuesta de convivencia escolar",
-                "descripcion": "Recoge percepciones anonimas para orientar acciones.",
-                "pregunta": "Que accion ayudaria mas a la convivencia?",
-                "opciones": ["Talleres", "Mediacion", "Charlas", "Mas tutorias"],
+                "descripcion": "Recoge percepciones anónimas para orientar acciones.",
+                "pregunta": "¿Qué acción ayudaría más a la convivencia?",
+                "opciones": ["Talleres", "Mediación", "Charlas", "Más tutorías"],
             },
         ]
     if normalized == "gobierno":
@@ -235,48 +235,48 @@ def _templates_for_sector(
             "id": "preferencias-productos",
             "tipo": "encuesta",
             "titulo": "Encuesta de preferencias de productos",
-            "descripcion": "Clientes indican que productos quieren ver primero.",
-            "pregunta": "Que linea te interesa mas?",
-            "opciones": ["Promos", "Novedades", "Combos", "Reposicion frecuente"],
+            "descripcion": "Los clientes indican qué productos quieren ver primero.",
+            "pregunta": "¿Qué línea te interesa más?",
+            "opciones": ["Promos", "Novedades", "Combos", "Reposición frecuente"],
         },
         {
             "id": "promo-semana",
             "tipo": "votacion",
-            "titulo": "Votacion de promo de la semana",
+            "titulo": "Votación de promo de la semana",
             "descripcion": "La comunidad elige una promo para activar en demo.",
-            "pregunta": "Que promo preferis?",
-            "opciones": ["2x1", "Envio bonificado", "Descuento por cantidad", "Combo premium"],
+            "pregunta": "¿Qué promo preferís?",
+            "opciones": ["2x1", "Envío bonificado", "Descuento por cantidad", "Combo premium"],
         },
         {
             "id": "experiencia-compra",
             "tipo": "encuesta",
             "titulo": "Encuesta de experiencia de compra",
-            "descripcion": "Releva atencion, entrega y claridad de catalogo.",
-            "pregunta": "Que punto conviene mejorar?",
-            "opciones": ["Catalogo", "Atencion", "Entrega", "Pagos"],
+            "descripcion": "Releva atención, entrega y claridad del catálogo.",
+            "pregunta": "¿Qué punto conviene mejorar?",
+            "opciones": ["Catálogo", "Atención", "Entrega", "Pagos"],
         },
         {
             "id": "entrega-envio",
             "tipo": "encuesta",
-            "titulo": "Consulta de entrega y envio",
+            "titulo": "Consulta de entrega y envío",
             "descripcion": "Mide horarios, zonas y preferencias de entrega.",
-            "pregunta": "Como preferis recibir tu pedido?",
-            "opciones": ["Retiro", "Envio en el dia", "Envio programado", "Coordinar por WhatsApp"],
+            "pregunta": "¿Cómo preferís recibir tu pedido?",
+            "opciones": ["Retiro", "Envío en el día", "Envío programado", "Coordinar por WhatsApp"],
         },
         {
             "id": "nuevo-producto",
             "tipo": "votacion",
-            "titulo": "Votacion de nuevo producto",
-            "descripcion": "Ayuda a decidir que producto sumar al catalogo.",
-            "pregunta": "Que deberia entrar al catalogo?",
-            "opciones": ["Linea economica", "Linea premium", "Accesorios", "Pack regalo"],
+            "titulo": "Votación de nuevo producto",
+            "descripcion": "Ayuda a decidir qué producto sumar al catálogo.",
+            "pregunta": "¿Qué debería entrar al catálogo?",
+            "opciones": ["Línea económica", "Línea premium", "Accesorios", "Pack regalo"],
         },
         {
             "id": "atencion-ventas",
             "tipo": "encuesta",
-            "titulo": "Encuesta de atencion de ventas",
-            "descripcion": "Evalua calidad de respuesta comercial y seguimiento.",
-            "pregunta": "Que tan clara fue la atencion?",
+            "titulo": "Encuesta de atención de ventas",
+            "descripcion": "Evalúa la calidad de la respuesta comercial y el seguimiento.",
+            "pregunta": "¿Qué tan clara fue la atención?",
             "opciones": ["Excelente", "Buena", "Regular", "Necesito hablar con alguien"],
         },
     ]
@@ -288,20 +288,20 @@ def _sector_labels(sector: str) -> dict[str, str]:
         return {
             "heading": "Encuestas y votaciones escolares",
             "menu_label": "Encuestas y votaciones",
-            "menu_description": "Participa como familia y mira resultados demo con 100 respuestas.",
+            "menu_description": "Participá como familia y mirá resultados demo con 100 respuestas.",
             "back_action": "menu_colegio",
         }
     if normalized == "gobierno":
         return {
             "heading": "Encuestas y votaciones ciudadanas",
             "menu_label": "Encuestas y votaciones",
-            "menu_description": "Prueba sondeos ciudadanos con resultados y mapas demo.",
+            "menu_description": "Probá sondeos ciudadanos con resultados y mapas demo.",
             "back_action": "menu_principal",
         }
     return {
         "heading": "Encuestas y votaciones de clientes",
         "menu_label": "Encuestas y votaciones",
-        "menu_description": "Prueba feedback comercial sin confirmar ventas reales.",
+        "menu_description": "Probá feedback comercial sin confirmar ventas reales.",
         "back_action": "menu_principal",
     }
 
@@ -478,7 +478,7 @@ def _demo_operational_next_steps(slug: str, public_base_url: str) -> dict[str, A
         "items": [
             {
                 "id": "share_public_link",
-                "label": "Compartir enlace publico",
+                "label": "Compartir enlace público",
                 "href": links["share_url"],
                 "priority": 1,
             },
@@ -909,7 +909,7 @@ def build_demo_live_results_payload(
                 "admin_next_steps",
             ],
             "polling_interval_ms": 8000,
-            "empty_state": "Todavia no hay respuestas para mostrar.",
+            "empty_state": "Todavía no hay respuestas para mostrar.",
         },
         "ui_actions": [
             {"id": "share_public_link", "label": "Compartir", "href": links["share_url"]},
@@ -1081,9 +1081,9 @@ def build_demo_survey_response_ack(
     request_fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:16]
     accepted = bool(answers)
     message = (
-        "Participacion de simulacion procesada. Se refleja solo en esta vista y no modifica datos ciudadanos."
+        "Participación de simulación procesada. Se refleja solo en esta vista y no modifica datos ciudadanos."
         if accepted
-        else "No se detecto una opcion valida para procesar la participacion de simulacion."
+        else "No se detectó una opción válida para procesar la participación de simulación."
     )
     persistence = {
         "contract_version": "demo.survey_persistence.v1",
@@ -1194,12 +1194,12 @@ def build_demo_survey_chat_menu(
     lines = [f"*{labels['heading']}*"]
     if is_whatsapp:
         lines.append(
-            "Elegi una encuesta para votar. Primero registramos tu voto anonimo "
-            "y despues ves resultados demo."
+            "Elegí una encuesta para votar. Primero registramos tu voto anónimo "
+            "y después ves resultados demo."
         )
     else:
         lines.append(
-            "Cada consulta parte de 100 respuestas sinteticas y separa las "
+            "Cada consulta parte de 100 respuestas sintéticas y separa las "
             "participaciones interactivas de Preview."
         )
     for index, item in enumerate(contract.get("items") or [], start=1):
@@ -1222,7 +1222,7 @@ def build_demo_survey_chat_menu(
 
     if is_whatsapp and contract.get("items"):
         lines.append("")
-        lines.append("Responde con el numero de la encuesta o toca una opcion.")
+        lines.append("Respondé con el número de la encuesta o tocá una opción.")
 
     options: list[dict[str, Any]] = []
     for index, item in enumerate(contract.get("items") or [], start=1):

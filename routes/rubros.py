@@ -88,7 +88,7 @@ def _education_profile_for_rubro(item: dict) -> dict:
 
 
 _DEMO_ROOTS = {
-    "gobierno": {"id": 1, "nombre": "Soluciones para Sector Publico", "clave": "gobierno"},
+    "gobierno": {"id": 1, "nombre": "Soluciones para el sector público", "clave": "gobierno"},
     "empresas": {"id": 2, "nombre": "Soluciones para Empresas", "clave": "empresas"},
     "educacion": {"id": 3, "nombre": "Colegios e instituciones educativas", "clave": "educacion"},
 }

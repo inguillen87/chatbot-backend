@@ -20,7 +20,7 @@ def _lead_capture_contract() -> dict[str, Any]:
             {"id": "name", "label": "Nombre", "type": "text", "required": True, "autocomplete": "name"},
             {"id": "phone", "label": "WhatsApp o telefono", "type": "tel", "required": False, "autocomplete": "tel"},
             {"id": "email", "label": "Email", "type": "email", "required": False, "autocomplete": "email"},
-            {"id": "message", "label": "Que queres probar?", "type": "textarea", "required": False},
+            {"id": "message", "label": "¿Qué querés probar?", "type": "textarea", "required": False},
         ],
         "required_fields": ["name"],
         "required_any_of": [["phone", "email"]],
@@ -83,7 +83,7 @@ def _conversion_journey_contract(kind: str) -> dict[str, Any]:
         "entrypoints": [
             {
                 "id": "landing_primary_cta",
-                "label": "Probar una conversacion real",
+                "label": "Probar una conversación real",
                 "intent": "start_demo",
                 "href": f"/demo?sector={demo_sector}",
             },
@@ -240,11 +240,11 @@ def _demo_showcase_contract() -> dict[str, str]:
 def _hero_for_kind(kind: str) -> dict[str, Any]:
     hero = {
         "contract_scope": "operational_demo_data",
-        "headline": "Converti conversaciones en operaciones reales",
+        "headline": "Convertí conversaciones en operaciones reales",
         "subheadline": "Chatboc atiende por web o WhatsApp, pide los datos justos y deja casos, pedidos o leads listos para operar.",
         "conversation_title": "WhatsApp operativo",
-        "conversation_subtitle": "Un caso entra, el agente pide datos y deja una accion trazable.",
-        "primary_cta": {"label": "Probar una conversacion real", "href": "/demo", "intent": "start_demo"},
+        "conversation_subtitle": "Un caso entra, el agente pide datos y deja una acción trazable.",
+        "primary_cta": {"label": "Probar una conversación real", "href": "/demo", "intent": "start_demo"},
         "secondary_cta": {"label": "Hablar con ventas", "href": "/contacto", "intent": "sales_contact"},
         "presentation": _walkthrough_presentation_contract(),
         "capability_overview": {
@@ -276,7 +276,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "id": "gobierno-reclamo-ubicacion",
             "label": "Gobiernos",
             "sector": "gobierno",
-            "user_message": "Te mando foto, audio y ubicacion de un semaforo caido.",
+            "user_message": "Te mando foto, audio y ubicación de un semáforo caído.",
             "agent_message": "Recibi la evidencia, clasifique el reclamo, marque la zona y lo deje listo para seguimiento.",
             "inputs": [
                 {
@@ -291,7 +291,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 },
                 {
                     "kind": "location",
-                    "label": "Ubicacion",
+                    "label": "Ubicación",
                     "address": "Av. San Martin y Rivadavia",
                     "lat": -34.6083,
                     "lng": -58.3712,
@@ -316,7 +316,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 },
                 "summary_items": ["categoria", "prioridad", "zona", "evidencia", "equipo_sugerido"],
                 "facts": [
-                    {"label": "Entrada", "value": "Foto, audio y ubicacion"},
+                    {"label": "Entrada", "value": "Foto, audio y ubicación"},
                     {"label": "Salida operativa", "value": "Ticket con equipo sugerido"},
                 ],
                 "details": {
@@ -355,7 +355,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 {
                     "kind": "image",
                     "label": "Foto",
-                    "detail": "Imagen usada para sugerir producto del catalogo real.",
+                    "detail": "Imagen usada para sugerir un producto del catálogo real.",
                 },
                 {"kind": "text", "label": "Cantidad", "detail": "Dos unidades solicitadas por el comprador."},
             ],
@@ -365,7 +365,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "status": "Listo para vender",
                 "creates": "order_or_lead",
                 "fields": [
-                    {"label": "Producto", "value": "Detectado desde catalogo"},
+                    {"label": "Producto", "value": "Detectado desde el catálogo"},
                     {"label": "Cantidad", "value": "2 unidades"},
                     {"label": "Carrito", "value": "Invitado"},
                     {"label": "Checkout", "value": "Segun tenant"},
@@ -402,7 +402,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "required_fields": ["nombre", "telefono"],
             },
             "admin_preview_endpoint": "/api/v2/demo/admin-preview?sector=empresas&tenant_slug=bodega",
-            "highlights": ["catalogo real", "carrito invitado", "seguimiento comercial"],
+            "highlights": ["catálogo real", "carrito invitado", "seguimiento comercial"],
             "workflow_steps": ["Detecta producto", "Arma carrito", "Pide contacto", "Deja pedido o lead"],
             "cta": {"label": "Probar venta real", "href": "/demo?sector=empresas"},
         },
@@ -411,23 +411,23 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "label": "Colegios",
             "sector": "educacion",
             "user_message": "Necesito un certificado de alumno regular y adjunto el DNI.",
-            "agent_message": "Identifique el tramite, guarde el adjunto y genere el caso para el equipo administrativo.",
+            "agent_message": "Identifiqué el trámite, guardé el adjunto y generé el caso para el equipo administrativo.",
             "inputs": [
                 {
                     "kind": "file",
                     "label": "Adjunto",
-                    "detail": "Documento asociado al tramite escolar.",
+                    "detail": "Documento asociado al trámite escolar.",
                 },
                 {"kind": "text", "label": "Solicitud", "detail": "Certificado de alumno regular."},
             ],
             "action": {
                 "label": "Caso escolar creado",
-                "detail": "Caso con familia, tramite, documentacion y derivacion al equipo correspondiente.",
+                "detail": "Caso con familia, trámite, documentación y derivación al equipo correspondiente.",
                 "status": "Listo para gestionar",
                 "creates": "school_case",
                 "fields": [
-                    {"label": "Tramite", "value": "Certificado"},
-                    {"label": "Equipo", "value": "Secretaria"},
+                    {"label": "Trámite", "value": "Certificado"},
+                    {"label": "Equipo", "value": "Secretaría"},
                     {"label": "Adjunto", "value": "DNI recibido"},
                     {"label": "Derivacion", "value": "Administrativa"},
                 ],
@@ -442,7 +442,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     {"label": "Salida operativa", "value": "Caso escolar derivado"},
                 ],
                 "details": {
-                    "operational_summary": "Tramite escolar con documentacion y derivacion administrativa.",
+                    "operational_summary": "Trámite escolar con documentación y derivación administrativa.",
                     "panel_target": "education",
                 },
                 "attributes": {
@@ -464,7 +464,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             },
             "admin_preview_endpoint": "/api/v2/demo/admin-preview?sector=educacion&tenant_slug=colegio-demo",
             "highlights": ["adjuntos procesados", "derivacion cuidada", "historial escolar"],
-            "workflow_steps": ["Reconoce tramite", "Valida adjunto", "Crea caso", "Deriva a secretaria"],
+            "workflow_steps": ["Reconoce el trámite", "Valida el adjunto", "Crea el caso", "Deriva a secretaría"],
             "cta": {"label": "Probar caso escolar", "href": "/demo?sector=educacion"},
         },
         {
@@ -487,13 +487,13 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             ],
             "action": {
                 "label": "Participacion registrada",
-                "detail": "Respuesta con resultados en vivo, comentario moderable y segmento territorial cuando hay ubicacion.",
+                "detail": "Respuesta con resultados en vivo, comentario moderable y segmento territorial cuando hay ubicación.",
                 "status": "Listo para analizar",
                 "creates": "survey_response",
                 "fields": [
                     {"label": "Participacion", "value": "Voto y comentario"},
                     {"label": "Segmento", "value": "Zona"},
-                    {"label": "Resultados", "value": "En vivo si esta habilitado"},
+                    {"label": "Resultados", "value": "En vivo si está habilitado"},
                     {"label": "Moderacion", "value": "Comentario revisable"},
                 ],
                 "metadata": {
@@ -530,7 +530,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "admin_preview_endpoint": "/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio",
             "highlights": ["resultados en vivo", "comentarios", "segmentos"],
             "workflow_steps": ["Registra voto", "Guarda comentario", "Segmenta respuesta", "Actualiza resultados"],
-            "cta": {"label": "Probar votacion", "href": "/demo?sector=gobierno&flow=encuestas"},
+            "cta": {"label": "Probar votación", "href": "/demo?sector=gobierno&flow=encuestas"},
         },
     ]
     preferred_by_kind = {

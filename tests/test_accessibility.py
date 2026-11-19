@@ -201,5 +201,5 @@ def test_education_whatsapp_menu_uses_fixed_audio_cache_contract():
         "cache": "tts_audio_cache",
         "inclusive": True,
     }
-    assert "Opcion 1" in payload["audio_text"]
+    assert "Opción 1" in payload["audio_text"]
     assert "Marcelo" not in payload["tts_cache_text"]
