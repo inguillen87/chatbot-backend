@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
@@ -557,7 +558,8 @@ def test_wrong_cron_bearer_fails_closed_without_running_workers():
     run.assert_not_called()
 
 
-def test_valid_cron_bearer_stays_inert_until_cutover_is_enabled():
+def test_valid_cron_bearer_stays_inert_until_cutover_is_enabled(caplog):
+    caplog.set_level(logging.INFO)
     app = _route_app(enabled=False)
     with patch.object(reconciliation, "run_outbox_reconciliation") as run:
         response = app.test_client().get(
@@ -574,6 +576,8 @@ def test_valid_cron_bearer_stays_inert_until_cutover_is_enabled():
     }
     assert response.headers["Cache-Control"] == "no-store"
     run.assert_not_called()
+    assert "reason_code=vercel_outbox_cron_disabled" in caplog.text
+    assert CRON_SECRET not in caplog.text
 
 
 def test_valid_cron_bearer_runs_reconciliation():
@@ -618,7 +622,7 @@ def test_time_budget_can_expire_after_lease_before_first_cycle():
     assert response.get_json()["status"] == "time_budget_reached"
 
 
-def test_degraded_reconciliation_returns_service_unavailable():
+def test_degraded_reconciliation_returns_service_unavailable(caplog):
     app = _route_app()
     degraded = _successful_reconciliation()
     degraded.update(
@@ -630,6 +634,7 @@ def test_degraded_reconciliation_returns_service_unavailable():
     degraded["components"]["domain_effects"].update(
         status="failed",
         cycle_failures=1,
+        provider_details="private-provider-payload-sentinel",
     )
     with patch.object(
         reconciliation,
@@ -643,6 +648,11 @@ def test_degraded_reconciliation_returns_service_unavailable():
 
     assert response.status_code == 503
     assert response.get_json()["status"] == "degraded"
+    assert "status=degraded" in caplog.text
+    assert "domain_effects:failed" in caplog.text
+    assert "failed_components=1" in caplog.text
+    assert CRON_SECRET not in caplog.text
+    assert "private-provider-payload-sentinel" not in caplog.text
 
 
 def test_malformed_reconciliation_report_returns_redacted_failure():
@@ -664,6 +674,23 @@ def test_malformed_reconciliation_report_returns_redacted_failure():
         "ok": False,
         "status": "failed",
     }
+
+
+@pytest.mark.parametrize("omitted", ("cycles_run", "failed_component_count", "attention_component_count"))
+def test_unavailable_report_keeps_optional_zero_counts_optional(omitted, caplog):
+    app = _route_app()
+    report = _successful_reconciliation()
+    report.update(ok=False, status="reconciliation_unavailable", has_more=True)
+    report.pop(omitted)
+    with patch.object(reconciliation, "run_outbox_reconciliation", return_value=report):
+        response = app.test_client().get(
+            "/api/internal/cron/outbox-reconciliation",
+            headers={"Authorization": f"Bearer {CRON_SECRET}"},
+        )
+    assert response.status_code == 503
+    assert response.get_json() == report
+    assert "status=reconciliation_unavailable" in caplog.text
+    assert CRON_SECRET not in caplog.text
 
 
 @pytest.mark.parametrize(

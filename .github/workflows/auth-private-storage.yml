@@ -58,6 +58,7 @@ name: Durable sessions and private attachments
       - services/email_service.py
       - services/render_env_sync.py
       - services/global_writer_authority.py
+      - services/outbox_reconciliation.py
       - socket_service.py
       - utils/auth_helpers.py
       - utils/database_availability.py
@@ -87,6 +88,7 @@ name: Durable sessions and private attachments
       - tests/test_request_lifecycle_database_availability.py
       - tests/test_rubros_database_availability.py
       - tests/test_internal_cron_request_gates.py
+      - tests/test_vercel_outbox_cron.py
       - tests/test_widget_bootstrap.py
       - tests/test_production_login_bootstrap.py
       - tests/test_production_whatsapp_webhook_bootstrap.py
@@ -175,6 +177,12 @@ jobs:
           mkdir -p .qa-artifacts/auth-private-storage/tenant-availability
           git show --no-patch --format='commit %H%ntree %T%nparents %P' HEAD > .qa-artifacts/auth-private-storage/tenant-availability/checkout.txt
           python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_tenant_dependency_availability.py", "tests/test_internal_cron_request_gates.py", "tests/test_request_lifecycle_database_availability.py", "tests/test_rubros_database_availability.py", "tests/test_widget_bootstrap.py", "tests/test_production_login_bootstrap.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/tenant-availability/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/tenant-availability/tests.log
+      - name: Outbox cron reports and diagnostic redaction
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-private-storage/outbox-cron
+          python -X utf8 -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import os; os.environ["CORS_ALLOWED_ORIGINS"]="https://panel.example.invalid"; import pytest; raise SystemExit(pytest.main(["tests/test_vercel_outbox_cron.py", "-q", "-p", "no:cacheprovider", "--junitxml=.qa-artifacts/auth-private-storage/outbox-cron/tests.xml"]))' 2>&1 | tee .qa-artifacts/auth-private-storage/outbox-cron/tests.log
       - name: Clerk organization-scoped panel access
         shell: bash
         run: |
@@ -431,6 +439,7 @@ jobs:
           path: |
             .qa-artifacts/auth-private-storage/*.log
             .qa-artifacts/auth-private-storage/tenant-availability/
+            .qa-artifacts/auth-private-storage/outbox-cron/
             .qa-artifacts/auth-private-storage/landing-admission/
             .qa-artifacts/auth-private-storage/tenant-factory-owner-lock/
             .qa-artifacts/auth-private-storage/whatsapp-webhook-bootstrap/

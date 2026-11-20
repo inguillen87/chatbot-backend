@@ -296,6 +296,9 @@ def outbox_reconciliation():
         return response
 
     if not _outbox_cron_is_enabled():
+        current_app.logger.info(
+            "Outbox reconciliation skipped; reason_code=vercel_outbox_cron_disabled"
+        )
         response = jsonify(
             {
                 "contract_version": "internal.cron.activation.v1",
@@ -329,6 +332,20 @@ def outbox_reconciliation():
                 "status": "failed",
             },
             503,
+        )
+    if payload["ok"] is not True:
+        # Only validated enum values/counts reach logs, never provider reports,
+        # bearer credentials, message content or tenant/recipient identifiers.
+        components = ",".join(
+            f"{name}:{component['status']}"
+            for name, component in sorted(payload["components"].items())
+        ) or "none"
+        current_app.logger.warning(
+            "Outbox reconciliation unavailable; status=%s cycles=%s "
+            "failed_components=%s attention_components=%s components=%s",
+            payload["status"], payload.get("cycles_run", 0),
+            payload.get("failed_component_count", 0), payload.get("attention_component_count", 0),
+            components,
         )
     response = jsonify(payload)
     response.status_code = 200 if payload.get("ok") is True else 503

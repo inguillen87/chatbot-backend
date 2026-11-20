@@ -17,7 +17,7 @@ credenciales habilitada; verificarlo en el deployment antes de operar.
 | --- | --- | --- |
 | Aplicación | `1719510329487224` | Aplicación compartida; no modificar su callback global |
 | Junín | tenant `22`, slug `junin`, Production, `+17432643718`, phone ID `660753250460901`, WABA `10068207913300410` | Único candidato a cambio de callback |
-| Inmovar | `+18564858583`, WABA compartida `10068207913300410` | Control; el Phone Number ID aún no está validado |
+| Inmovar | `+18564858589`, WABA compartida `10068207913300410` | Control; el Phone Number ID aún no está validado |
 | TDF de prueba | tenant `46`, slug `tierra-del-fuego`, sandbox, `+15556565679`, phone ID `1137550632773388`, WABA `2192778428137676` | Control con credencial propia; no cambiar callback |
 
 El número de Inmovar procede de una lectura comunicada por el operador, no de
