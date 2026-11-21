@@ -14,6 +14,7 @@ name: Durable sessions and private attachments
       - middleware/tenant_context.py
       - routes/auth.py
       - routes/admin_tenant.py
+      - routes/portal_api.py
       - routes/v2/auth.py
       - routes/v2/saas.py
       - routes/backoffice.py
@@ -88,6 +89,9 @@ name: Durable sessions and private attachments
       - tests/test_rubros_database_availability.py
       - tests/test_internal_cron_request_gates.py
       - tests/test_widget_bootstrap.py
+      - tests/test_portal_integration_read_access.py
+      - tests/test_user_portal_flow.py
+      - tests/test_v2_widget_token_resolution.py
       - tests/test_production_login_bootstrap.py
       - tests/test_production_whatsapp_webhook_bootstrap.py
       - tests/test_bootstrap_wsgi.py
@@ -148,6 +152,22 @@ jobs:
           cache-dependency-path: requirements.txt
       - name: Install existing application dependencies
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Portal integration reads and public widget compatibility
+        shell: python
+        run: |
+          import sys
+          sys.path.insert(0, ".")
+          from tests.profile_acceptance_runtime import prepare_process
+          prepare_process()
+          import os
+          os.environ["CORS_ALLOWED_ORIGINS"] = "https://panel.example.invalid"
+          import pytest
+          raise SystemExit(pytest.main([
+              "tests/test_portal_integration_read_access.py",
+              "tests/test_user_portal_flow.py",
+              "tests/test_v2_widget_token_resolution.py",
+              "-q", "-p", "no:cacheprovider",
+          ]))
       - name: Session lineage, retirement and scoped source HTTP regressions
         shell: bash
         run: |

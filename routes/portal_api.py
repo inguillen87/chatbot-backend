@@ -9,8 +9,12 @@ from extensions import db
 from services.tenant_resolver import resolve_tenant_only, TenantResolutionError
 from services.rewards import recompensas_service
 from services.demo_experience_contract import build_demo_experience_contract
-from routes.public_resolver import _build_widget_embed_payload, _canonical_widget_token
+from routes.admin_tenant import _is_authorized_for_tenant, _resolve_admin_tenant
+from routes.public_resolver import _build_widget_embed_payload
 from utils.auth_decorators import require_auth_optional, require_auth
+from utils.auth_helpers import auth_sin_escrituras_implicitas, token_requerido
+from utils.roles import ROLE_EMPLEADO, canonical_role
+from utils.tenant_admin_access import can_manage_tenant_control_plane
 from routes.catalogo import _formatear_producto
 from services.encuestas_service import (
     EncuestaError,
@@ -1808,19 +1812,25 @@ def get_portal_redeems(tenant_slug):
 
 
 @portal_api_bp.route('/integration', methods=['GET'])
-def get_integration_info(tenant_slug):
-    """
-    Returns integration details for the tenant: widget script, catalog URL, etc.
-    This helps the 'Integration' page in the frontend populate its data.
-    """
-    tenant = _resolve_context(tenant_slug)
+@token_requerido
+@auth_sin_escrituras_implicitas
+def get_integration_info(current_user, tenant_slug):
+    """Read the integration settings for the requested organization's panel."""
+    tenant = _resolve_admin_tenant(current_user, tenant_slug)
+    if tenant is None or not tenant.is_active:
+        return jsonify({"error": "Tenant not found"}), 404
+    if current_user.es_empleado or canonical_role(current_user.rol) == ROLE_EMPLEADO:
+        authorized = _is_authorized_for_tenant(current_user, tenant)
+    else:
+        authorized = can_manage_tenant_control_plane(current_user, tenant)
+    if not authorized:
+        return jsonify({"error": "Unauthorized"}), 403
     owner = tenant.municipio or tenant.pyme
 
     # Base URL for catalog/portal
     # Logic similar to pwa_public but simpler
     portal_url = f"https://chatboc.ar/{tenant.slug}"
-    widget_token = _canonical_widget_token(tenant, None)
-    widget_payload = _build_widget_embed_payload(tenant, widget_token)
+    widget_payload = _build_widget_embed_payload(tenant, None, read_only=True)
     widget_script = widget_payload.get("embed_snippet")
 
     demo_menu = _portal_demo_menu_for_tenant(tenant)
@@ -1829,7 +1839,7 @@ def get_integration_info(tenant_slug):
         rubro_label=(tenant.nombre or tenant.tipo),
         max_messages=10,
     )
-    return jsonify({
+    response = jsonify({
         "slug": tenant.slug,
         "name": tenant.nombre,
         "portalUrl": portal_url,
@@ -1861,6 +1871,10 @@ def get_integration_info(tenant_slug):
             },
         },
     })
+    response.cache_control.private = True
+    response.cache_control.no_store = True
+    response.vary.update(("Cookie", "Authorization"))
+    return response
 
 
 @portal_api_bp.route('/integration/demo/activate-whatsapp', methods=['POST'])
