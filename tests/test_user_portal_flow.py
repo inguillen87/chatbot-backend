@@ -79,7 +79,8 @@ def test_full_flow(client):
     assert "cover_url" in data['news'][0]
 
     # 6b. Integration contract exposes WhatsApp trial + rubro-aware menu
-    integration_resp = client.get(f"/api/v1/portal/demo-flow/integration", headers=headers)
+    owner_token = issue_token({"user_id": owner.id, "rol": owner.rol, "exp": datetime.now(timezone.utc) + timedelta(hours=1)})
+    integration_resp = client.get("/api/v1/portal/demo-flow/integration", headers={"Authorization": f"Bearer {owner_token}"})
     assert integration_resp.status_code == 200
     integration = integration_resp.json
     onboarding = integration.get("demoOnboarding") or {}
