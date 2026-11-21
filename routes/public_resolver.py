@@ -1724,13 +1724,15 @@ def realtime_action_event():
     return jsonify({"ok": True, "action": action_name})
 
 
-def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | None) -> dict:
+def _build_widget_embed_payload(
+    tenant: TenantProfile, provided_token: str | None, *, read_only: bool = False
+) -> dict:
     """Expose a rich embed configuration so `integracion.tsx` can render a SaaS builder."""
 
     integration_access = integration_access_payload(tenant)
     widget_embed_enabled = bool(integration_access.get("enabled"))
     canonical_token = _canonical_widget_token(tenant, provided_token) if widget_embed_enabled else None
-    if canonical_token:
+    if canonical_token and not read_only:
         cfg = tenant.configuracion or {}
         tokens_cfg = cfg.get("widget_tokens")
         tokens: list[str] = []
@@ -1909,16 +1911,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     rubro_profile = _tenant_rubro_profile(tenant)
     demo_trial = _demo_trial_payload_for_widget(tenant, cfg)
     quick_menu = _quick_menu_for_widget(tenant)
-    fixed_menu_audio = _maybe_warm_widget_fixed_menu_audio(
-        _widget_fixed_menu_audio_contract(
-            tenant,
-            quick_menu,
-            surface="widget",
-            menu_key="quick_menu",
-            version="v1",
-        ),
-        cfg,
+    fixed_menu_audio = _widget_fixed_menu_audio_contract(
+        tenant, quick_menu, surface="widget", menu_key="quick_menu", version="v1"
     )
+    if not read_only:
+        fixed_menu_audio = _maybe_warm_widget_fixed_menu_audio(fixed_menu_audio, cfg)
     education_profile = rubro_profile.get("education_profile") if isinstance(rubro_profile, dict) else None
     experience_blueprint = build_demo_experience_contract(
         tenant_type=tenant.tipo,
