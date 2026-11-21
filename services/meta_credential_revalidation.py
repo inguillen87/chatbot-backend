@@ -13,7 +13,7 @@ REJECTION_REASONS = frozenset({
 })
 
 
-def revalidate_credential(target, credential, config, *, graph_get, clock):
+def revalidate_credential(target, credential, config, *, graph_get, clock, require_default_callback=False):
     """Return a current proof and the provider expiry, or a fixed, redacted error."""
     def get(method, url, **kwargs):
         # The runtime constructs only its three authority GETs. Its native TLS
@@ -36,8 +36,9 @@ def revalidate_credential(target, credential, config, *, graph_get, clock):
     try:
         runtime = MetaOutboundRuntime(ops._authority_config(target, config), get=get, clock=clock)
         sender = MetaSenderSnapshot(target.tenant_id, target.connection_id, target.sender_id,
-            ops.APP_ID, target.waba_id, target.phone_id, target.environment)
-        return runtime.observe_authority(sender, credential, for_renewal=True)
+            target.app_id, target.waba_id, target.phone_id, target.environment)
+        return runtime.observe_authority(sender, credential, for_renewal=True,
+                                         require_default_callback=require_default_callback)
     except MetaRuntimeError as exc:
         if not exc.transient and exc.code in REJECTION_REASONS:
             raise MetaRuntimeError(exc.code) from None

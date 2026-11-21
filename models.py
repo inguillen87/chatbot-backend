@@ -4512,6 +4512,32 @@ class ProviderSender(db.Model):
     )
 
 
+class MetaDirectSignupSession(db.Model):
+    __tablename__ = "meta_direct_signup_session"
+
+    state_hash = db.Column(db.String(64), primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    created_at_epoch = db.Column(db.BigInteger, nullable=False)
+    status = db.Column(db.String(24), nullable=False)
+    provider_session_hash = db.Column(db.String(64), nullable=True)
+    code_hash = db.Column(db.String(64), nullable=True)
+    waba_id = db.Column(db.String(40), nullable=True)
+    phone_number_id = db.Column(db.String(40), nullable=True)
+    connection_id = db.Column(db.Integer, db.ForeignKey("provider_connection.id"), nullable=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey("provider_sender.id"), nullable=True)
+    reason_code = db.Column(db.String(100), nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("provider_session_hash", name="uq_meta_signup_provider_session_hash"),
+        db.UniqueConstraint("code_hash", name="uq_meta_signup_code_hash"),
+        db.CheckConstraint(
+            "status IN ('issued', 'exchanging', 'pending', 'connected', 'rejected')",
+            name="ck_meta_signup_status",
+        ),
+    )
+
+
 class MessagingEventLedger(db.Model):
     __tablename__ = "messaging_event_ledger"
 

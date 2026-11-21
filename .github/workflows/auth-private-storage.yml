@@ -119,6 +119,11 @@ name: Durable sessions and private attachments
       - services/whatsapp_inbound_worker.py
       - services/whatsapp_survey_conversation.py
       - tests/run_meta_whatsapp_survey_postgres.py
+      - services/meta_direct_signup.py
+      - services/meta_direct_signup_graph.py
+      - tests/test_meta_direct_signup.py
+      - tests/run_meta_direct_signup_postgres.py
+      - migrations/pending/20261121_add_meta_direct_signup_session.py
       - tests/test_meta_whatsapp_crm_acceptance.py
       - tests/test_meta_whatsapp_inbound_worker.py
       - tests/test_meta_whatsapp_outbox.py
@@ -498,6 +503,12 @@ jobs:
           python -B -X utf8 -m tests.run_meta_whatsapp_survey_postgres --github-disposable-service 2>&1 | tee "$output/postgres.log"
           sha256sum "${sources[@]}" > "$output/source-after.txt"
           cmp "$output/source-before.txt" "$output/source-after.txt"
+      - name: Verify concurrent direct Meta signup on disposable PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/auth-session-postgres
+          python -B -X utf8 -m tests.run_meta_direct_signup_postgres --github-disposable-service 2>&1 | tee .qa-artifacts/auth-session-postgres/meta-direct-signup.log
       - name: Exercise exact migration, grants, session concurrency and HTTP lease CAS
         shell: bash
         run: |
