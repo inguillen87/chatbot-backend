@@ -36,6 +36,14 @@ def _sensitive_path():
     return has_request_context() and (request.path == PREFIX or request.path.startswith(PREFIX + "/"))
 
 
+def _direct_signup_path():
+    return (has_request_context()
+            and current_app.config.get("META_WHATSAPP_DIRECT_EMBEDDED_SIGNUP_ENABLED") is True
+            and request.path.rstrip("/").endswith(("/whatsapp/tech-provider/embedded-signup",
+                                                   "/whatsapp/tech-provider/embedded-signup/sessions",
+                                                   "/whatsapp/tech-provider/embedded-signup/resume")))
+
+
 def runtime_is_production():
     # These variables are consumed only in the actual deployed web process.
     # The operator endpoint cannot accept runtime identity from its caller.
@@ -64,7 +72,7 @@ def _install_log_redaction():
 
     def factory(*args, **kwargs):
         record = previous(*args, **kwargs)
-        if _renewing_credential.get() or _sensitive_path():
+        if _renewing_credential.get() or _sensitive_path() or _direct_signup_path():
             # Covers third-party HTTP/SQL DEBUG and exception records too.
             # Keep request diagnostics outside this path unchanged. Never
             # disable logging process-wide on concurrent Vercel requests.
@@ -82,6 +90,13 @@ def register_meta_credential_http_boundary(app):
 
     @app.before_request
     def meta_credential_boundary():
+        if _direct_signup_path() and request.method == "POST":
+            if request.query_string:
+                return response({"ok": False, "reason_code": "meta_signup_body_only"}, 400)
+            if request.content_length is None or request.content_length > MAX_BODY_BYTES:
+                return response({"ok": False, "reason_code": "meta_signup_body_limit"}, 413)
+            if request.mimetype != "application/json" or request.headers.get("Content-Encoding"):
+                return response({"ok": False, "reason_code": "meta_signup_json_required"}, 415)
         if not _sensitive_path():
             return None
         if (not is_meta_credential_admin_request()
@@ -115,7 +130,7 @@ def register_meta_credential_http_boundary(app):
 
     @app.after_request
     def meta_credential_private_response(result):
-        if _sensitive_path():
+        if _sensitive_path() or _direct_signup_path():
             result.headers["Cache-Control"] = "private, no-store"
             result.headers["Pragma"] = "no-cache"
             result.headers["X-Content-Type-Options"] = "nosniff"

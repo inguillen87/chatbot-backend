@@ -1,9 +1,6 @@
 import json
 import os
 import unittest
-from datetime import datetime, timedelta
-
-import jwt
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
@@ -54,6 +51,8 @@ class ProductFlowWhatsappOnboardingTest(unittest.TestCase):
         self.admin.tenant_id = self.tenant.id
         db.session.add(self.admin)
         db.session.commit()
+        login = self.client.post("/auth/login", json={"email": self.admin.email, "password": "secret123"})
+        self.assertEqual(login.status_code, 200, login.get_json())
 
     def tearDown(self):
         db.session.remove()
@@ -61,17 +60,7 @@ class ProductFlowWhatsappOnboardingTest(unittest.TestCase):
         self.ctx.pop()
 
     def _auth(self):
-        token = jwt.encode(
-            {
-                "user_id": self.admin.id,
-                "rol": self.admin.rol,
-                "tenant_slug": self.tenant.slug,
-                "exp": datetime.utcnow() + timedelta(hours=1),
-            },
-            self.app.config["SECRET_KEY"],
-            algorithm="HS256",
-        )
-        return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": self.tenant.slug}
+        return {"X-Tenant-Slug": self.tenant.slug}
 
     def _signup_endpoint(self):
         return (
