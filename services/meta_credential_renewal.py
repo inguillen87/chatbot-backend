@@ -83,9 +83,11 @@ def _binding(session, target, config, *, lock=False):
     direct = target.name == DIRECT_TARGET
     if direct and (config.get(DIRECT_FLAG) is not True or config.get(FLAG) is not True):
         raise _SkipWrite("disabled", "renewal_disabled")
-    ops._inspect_tenant(session, target, lock=lock, require_municipio=not direct)
+    tenant = ops._inspect_tenant(session, target, lock=lock, require_municipio=not direct)
     connection, sender = ops.inspect_binding(session, target, lock=lock)
     if direct:
+        from services.meta_direct_signup import SignupError, _protect_assets
+
         protected = ops.TARGETS["junin-production"]
         def digits(value):
             return "".join(c for c in (value or "") if c.isdigit())
@@ -95,16 +97,12 @@ def _binding(session, target, config, *, lock=False):
                 or digits(protected.phone) in {digits(sender.phone_number), digits(sender.sender_id)}
                 or connection.config.get(DIRECT_MARKER) is not True):
             raise _SkipWrite("disabled", "direct_binding_unavailable")
-        # Recheck global WABA ownership under the same transaction as the CAS.
-        foreign = session.scalar(select(ProviderConnection.id).where(
-            ProviderConnection.provider == "meta", ProviderConnection.channel == "whatsapp",
-            ProviderConnection.external_account_id == target.waba_id,
-            ProviderConnection.tenant_id != target.tenant_id).limit(1))
-        foreign_sender = session.scalar(select(ProviderSender.id).where(
-            ProviderSender.channel == "whatsapp", ProviderSender.waba_id == target.waba_id,
-            ProviderSender.tenant_id != target.tenant_id).limit(1))
-        if foreign is not None or foreign_sender is not None:
-            raise _SkipWrite("disabled", "direct_binding_unavailable")
+        # Apply the signup ownership rules again under the renewal transaction.
+        try:
+            _protect_assets(session, tenant, target.waba_id, target.phone_id, sender.phone_number,
+                            own_connection=connection.id, own_sender=sender.id)
+        except SignupError:
+            raise _SkipWrite("disabled", "direct_binding_unavailable") from None
     return connection
 
 

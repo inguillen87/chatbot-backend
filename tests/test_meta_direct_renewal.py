@@ -176,3 +176,31 @@ def test_existing_sandbox_renewal_retains_its_custom_callback(run):
     install(run.config, NOW + DAY)
     run.graph.apps[0]["override_callback_uri"] = "https://example.invalid/sandbox-callback"
     assert run.renew()["state"] == "ok"
+
+
+@pytest.mark.parametrize("when", ["before_read", "during_observation"])
+def test_foreign_waba_in_pending_twilio_connection_preserves_envelope(run, monkeypatch, when):
+    account = install_direct(run, 73)
+    graph = schedule(run, monkeypatch, [account])
+    run.config[renewal.DIRECT_FLAG] = True
+    before = db.session.get(ProviderConnection, account.connection_id).config[PRIVATE_CONFIG_KEY].copy()
+
+    def reserve_waba():
+        foreign = ProviderConnection.query.filter_by(provider="twilio").one()
+        assert foreign.tenant_id != account.tenant_id and not foreign.senders.count()
+        foreign.external_business_id = account.waba_id
+        foreign.status = "pending"
+        db.session.commit()
+
+    if when == "before_read":
+        reserve_waba()
+    else:
+        graph.on_debug = reserve_waba
+    result = renewal.run_renewal(run.config)[1]
+    assert result["state"] == "disabled" and result["reason"] == "direct_binding_unavailable"
+    assert len(graph.calls) == (0 if when == "before_read" else 3)
+    db.session.expire_all()
+    config = db.session.get(ProviderConnection, account.connection_id).config
+    after = config[PRIVATE_CONFIG_KEY]
+    assert (after["nonce"], after["expires_at"]) == (before["nonce"], before["expires_at"])
+    assert after == before and renewal.RENEWAL_KEY not in config and AuditEvent.query.count() == 0
