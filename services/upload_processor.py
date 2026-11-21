@@ -262,14 +262,16 @@ def procesar_y_embedear_catalogo(
     return len(items_para_db)
 
 @upload_bp.route("/subir_catalogo", methods=["POST"])
-def subir_catalogo(current_user: Optional[User] = None):
-    # Authenticate (Simplified from original for brevity)
-    user = current_user or g.get("current_user")
-    if not user:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-        if token:
-            user = User.query.filter_by(token=token).first()
+def subir_catalogo_route():
+    # Import tardío: routes.auth importa servicios que a su vez cargan este módulo.
+    from routes.auth import token_requerido
 
+    return token_requerido(subir_catalogo)()
+
+
+def subir_catalogo(current_user: Optional[User] = None):
+    # Sólo una sesión verificada (resuelta por token_requerido) puede cargar un catálogo.
+    user = current_user or g.get("current_user")
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
 

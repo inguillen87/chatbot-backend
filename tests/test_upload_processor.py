@@ -7,6 +7,7 @@ from app import create_app
 from config import TestConfig
 from models import db, User, ArchivoAdjunto
 from services.upload_processor import _store_catalog_attachment_record
+from utils.auth_helpers import generar_token
 
 
 class UploadProcessorCatalogAttachmentTests(unittest.TestCase):
@@ -22,6 +23,9 @@ class UploadProcessorCatalogAttachmentTests(unittest.TestCase):
         db.session.add(self.user)
         db.session.commit()
         self.client = self.app.test_client()
+        self.session_token = generar_token(
+            self.user.id, self.user.rol, self.user.tipo_chat, self.user.municipio_id, self.user.pyme_id
+        )
 
     def tearDown(self):
         db.session.remove()
@@ -67,7 +71,7 @@ class UploadProcessorCatalogAttachmentTests(unittest.TestCase):
         response = self.client.post(
             "/subir_catalogo",
             data=data,
-            headers={"Authorization": f"Bearer {self.user.token}"},
+            headers={"Authorization": f"Bearer {self.session_token}"},
             content_type="multipart/form-data",
         )
 
@@ -90,7 +94,7 @@ class UploadProcessorCatalogAttachmentTests(unittest.TestCase):
             response = self.client.post(
                 "/subir_catalogo",
                 data={"file": (io.BytesIO(b"12345"), "catalogo.csv")},
-                headers={"Authorization": f"Bearer {self.user.token}"},
+                headers={"Authorization": f"Bearer {self.session_token}"},
                 content_type="multipart/form-data",
             )
 
