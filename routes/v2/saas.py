@@ -2985,7 +2985,14 @@ def whatsapp_tech_provider_v2(current_user, tenant_slug: str | None = None):
     plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
-    return _json_response(build_twilio_tech_provider_contract(tenant, current_app.config))
+    contract = build_twilio_tech_provider_contract(tenant, current_app.config)
+    if tenant_slug and current_app.config.get("META_WHATSAPP_DIRECT_EMBEDDED_SIGNUP_ENABLED") is True:
+        from services.meta_direct_signup import panel_capability
+
+        capability = panel_capability(tenant, current_app.config)
+        if capability:
+            contract["direct_embedded_signup"] = capability
+    return _json_response(contract)
 
 
 def _whatsapp_smoke_execution_result(
@@ -3451,8 +3458,8 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
         payload,
         existing_state=existing_state,
     )
-    if current_app.config.get("META_WHATSAPP_DIRECT_EMBEDDED_SIGNUP_ENABLED") is True:
-        from services import meta_direct_signup as direct
+    from services import meta_direct_signup as direct
+    if current_app.config.get(direct.FLAG) is True and not direct.reserved_tenant(tenant):
         from utils.meta_credential_http import response
 
         if not tenant_slug or tenant.slug != tenant_slug:

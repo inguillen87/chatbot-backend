@@ -27,7 +27,10 @@ PHONE = "+15550000101"
 class Provider:
     app_id = "710000000000101"
 
-    def __init__(self):
+    def __init__(self, *, token=TOKEN, expires_at=NOW + 30 * 86400, phone=PHONE):
+        self.token = token
+        self.expires_at = expires_at
+        self.phone = phone
         self.exchanges = self.subscriptions = self.rechecks = 0
         self.reject = None
         self.pending = False
@@ -35,8 +38,8 @@ class Provider:
         self.after_exchange = None
 
     def proof(self):
-        credential = vault.MetaCredential(1, NOW + 30 * 86400, TOKEN)
-        return DirectSignupProof(credential, PHONE, self.registered)
+        credential = vault.MetaCredential(1, self.expires_at, self.token)
+        return DirectSignupProof(credential, self.phone, self.registered)
 
     def exchange_and_verify(self, code, waba, phone_id):
         self.exchanges += 1
@@ -48,6 +51,7 @@ class Provider:
         return self.proof()
 
     def subscribe_and_verify(self, waba, credential):
+        assert (credential.access_token, credential.expires_at) == (self.token, self.expires_at)
         self.subscriptions += 1
         logging.getLogger("direct-fixture").debug("Synthetic provider received %s", credential.access_token)
         if self.pending:
@@ -56,8 +60,8 @@ class Provider:
     def verify_credential(self, waba, phone_id, credential):
         self.rechecks += 1
         assert (waba, phone_id) == (WABA, PHONE_ID)
-        assert credential == self.proof().credential
-        return self.proof()
+        assert (credential.access_token, credential.expires_at) == (self.token, self.expires_at)
+        return DirectSignupProof(credential, self.phone, self.registered)
 
 
 @pytest.fixture
@@ -93,7 +97,11 @@ def flow(environment, monkeypatch):
         args.update(changes)
         return signup.finish_signup(db.session, config, **args)
 
-    f.start, f.finish = start, finish
+    def resume(state):
+        return signup.resume_signup(db.session, config, tenant_id, actor_id, state=state,
+                                    authorize=authorized, clock=lambda: f.now, graph_factory=lambda *a, **kw: f.graph)
+
+    f.start, f.finish, f.resume = start, finish, resume
     return f
 
 
@@ -253,3 +261,142 @@ def test_active_state_cannot_change_the_original_completion(flow, mismatch):
     assert flow.finish(state, **mismatch)[1] == 409
     assert owned(flow)[0].config == before and AuditEvent.query.count() == 2
     assert flow.graph.exchanges == flow.graph.subscriptions == 1
+
+
+def expired_pending_signup(flow):
+    state = issued(flow)
+    flow.graph.registered = False
+    assert flow.finish(state)[1] == 202
+    flow.now = flow.graph.expires_at
+    flow.graph = Provider(token=TOKEN + "-new", expires_at=flow.now + 3600)
+    return state
+
+
+def complete_new_authorization(flow, state, **changes):
+    return flow.finish(state, **{"code": CODE + "-new", "sdk_session": SDK + "-new", **changes})
+
+
+@pytest.mark.parametrize("legacy_revision", [False, True])
+def test_reauthorization_rotates_the_expired_pair_and_requires_subscription(flow, legacy_revision):
+    old_state = expired_pending_signup(flow)
+    conn, sender = owned(flow)
+    conn.config = {**conn.config, "operator_note": "keep"}
+    if legacy_revision:
+        Attempt.query.one().credential_revision = None
+    db.session.commit()
+    original_ids = (conn.id, sender.id)
+    assert flow.resume(old_state)[0]["reason_code"] == "meta_signup_credential_reauthorization_required"
+    new_state = issued(flow)
+    flow.graph.pending = True
+    answer, status = complete_new_authorization(flow, new_state)
+    assert status == 202 and answer["reason_code"] == "meta_subscription_unverified"
+    conn, sender = owned(flow)
+    assert (conn.id, sender.id) == original_ids and sender.provider_connection_id == conn.id
+    assert conn.status == sender.status == "pending"
+    assert conn.config[signup.MARKER] is True and conn.config["operator_note"] == "keep"
+    credential = vault.open_token(connection=conn, tenant_id=flow.tenant_id, now=flow.now, app_config=flow.config)
+    assert credential == vault.MetaCredential(2, flow.graph.expires_at, flow.graph.token)
+    rotated_config = deepcopy(conn.config)
+
+    flow.graph.pending = False
+    for result, status in (flow.resume(old_state), flow.finish(old_state)):
+        assert status == 409 and result["reason_code"] == "meta_signup_superseded"
+    assert conn.config == rotated_config and conn.status == sender.status == "pending"
+    assert (flow.graph.exchanges, flow.graph.rechecks, flow.graph.subscriptions) == (1, 0, 1)
+
+    connected = flow.resume(new_state)
+    assert connected[1] == 200 and connected[0]["status"] == "connected"
+    assert complete_new_authorization(flow, new_state) == connected
+    assert (flow.graph.exchanges, flow.graph.rechecks, flow.graph.subscriptions) == (1, 1, 2)
+    conn, sender = owned(flow)
+    assert (conn.id, sender.id) == original_ids and conn.status == sender.status == "connected"
+    assert conn.config == rotated_config
+    events = AuditEvent.query.filter_by(tenant_id=flow.tenant_id).order_by(AuditEvent.id).all()
+    assert [(e.event_type, e.details["revision"]) for e in events] == [
+        ("provider_credential.meta_signup_sealed", 1),
+        ("provider_credential.meta_signup_reauthorized", 2),
+        ("whatsapp.meta_signup_connected", 2),
+    ]
+    assert all(e.actor_user_id == flow.actor_id and e.resource_id == str(conn.id)
+               and e.details["sender_id"] == sender.id for e in events)
+
+
+@pytest.mark.parametrize("change", ["waba", "phone_id", "phone", "foreign_org", "manual", "active", "valid",
+                                     "sender_active", "missing_original_pair", "missing_code_claim",
+                                     "missing_sdk_claim", "invalid_envelope"])
+def test_reauthorization_requires_exact_owned_direct_expired_pair(flow, change):
+    expired_pending_signup(flow)
+    conn, sender = owned(flow)
+    if change == "manual":
+        conn.config = {k: v for k, v in conn.config.items() if k != signup.MARKER}
+    elif change == "active":
+        conn.status = sender.status = "connected"
+    elif change == "sender_active":
+        sender.status = "connected"
+    elif change == "valid":
+        flow.now -= 1
+    elif change == "missing_original_pair":
+        Attempt.query.one().sender_id = None
+    elif change == "missing_code_claim":
+        Attempt.query.one().code_hash = None
+    elif change == "missing_sdk_claim":
+        Attempt.query.one().provider_session_hash = None
+    elif change == "invalid_envelope":
+        config = deepcopy(conn.config)
+        config[PRIVATE_CONFIG_KEY]["expires_at"] -= 1
+        conn.config = config
+    db.session.commit()
+    before = (conn.id, sender.id, conn.status, sender.status, deepcopy(conn.config))
+
+    args = {}
+    if change == "waba":
+        args["waba"] = "810000000000102"
+    elif change == "phone_id":
+        args["phone_id"] = "910000000000102"
+    elif change == "phone":
+        flow.graph.phone = "+15550000102"
+    if change == "foreign_org":
+        other = TenantProfile.query.filter_by(slug="tierra-del-fuego").one()
+        args.update(tenant_id=other.id, actor_id=other.municipio_id,
+                    authorize=lambda candidate: candidate.id == other.id)
+        response, status = signup.start_signup(db.session, flow.config, **args, clock=lambda: flow.now)
+        assert status == 201
+        state = response["signup_state"]
+    else:
+        state = issued(flow)
+    _, status = complete_new_authorization(flow, state, **args)
+    assert status == 409
+    assert flow.graph.exchanges == (1 if change == "phone" else 0)
+    assert flow.graph.subscriptions == 0
+    conn, sender = owned(flow)
+    assert (conn.id, sender.id, conn.status, sender.status, conn.config) == before
+    assert AuditEvent.query.count() == 1
+
+
+def test_stale_reauthorization_cannot_replace_the_winners_expired_revision(flow):
+    expired_pending_signup(flow)
+    slow_state, fast_state = issued(flow), issued(flow)
+    slow_graph = flow.graph
+    fast_graph = Provider(token=TOKEN + "-winner", expires_at=flow.now + 2)
+    fast_graph.registered = False
+
+    def complete_competitor():
+        # Both requests see revision 1 before exchanging. Revision 2 is already
+        # expired when the slower request returns from its provider call.
+        result, status = complete_new_authorization(flow, fast_state, code=CODE + "-fast",
+            sdk_session=SDK + "-fast", graph_factory=lambda *a, **kw: fast_graph)
+        assert status == 202 and result["status"] == "pending"
+        flow.now = fast_graph.expires_at
+
+    slow_graph.after_exchange = complete_competitor
+    lost = complete_new_authorization(flow, slow_state)
+    assert lost[1] == 409 and complete_new_authorization(flow, slow_state) == lost
+    conn, sender = owned(flow)
+    assert conn.status == sender.status == "pending"
+    winning_credential = vault.open_token(connection=conn, tenant_id=flow.tenant_id, now=flow.now - 1,
+                                         app_config=flow.config)
+    assert winning_credential == vault.MetaCredential(2, fast_graph.expires_at, fast_graph.token)
+    assert slow_graph.exchanges == fast_graph.exchanges == 1
+    assert slow_graph.subscriptions == fast_graph.subscriptions == 0
+    events = AuditEvent.query.order_by(AuditEvent.id).all()
+    assert [e.details["revision"] for e in events] == [1, 2]

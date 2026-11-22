@@ -76,6 +76,37 @@ def begin(flow):
     return response.get_json()["signup_state"]
 
 
+def test_panel_discovers_direct_mode_and_only_the_matching_login_configuration(flow, monkeypatch):
+    url = flow.url.removesuffix("/embedded-signup")
+    monkeypatch.setitem(flow.app.config, "TWILIO_META_APP_ID", APP_ID)
+    monkeypatch.setitem(flow.app.config, "TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID", "112233")
+
+    def contract():
+        result = flow.browser.get(url)
+        assert result.status_code == 200
+        return result.get_json()
+
+    assert contract()["direct_embedded_signup"] == {
+        "enabled": True, "app_id": APP_ID, "configuration_id": "112233"}
+    monkeypatch.setitem(flow.app.config, "TWILIO_META_APP_ID", "556677")
+    assert contract()["direct_embedded_signup"]["configuration_id"] is None
+    monkeypatch.setitem(flow.app.config, signup.FLAG, False)
+    assert "direct_embedded_signup" not in contract()
+    assert not flow.provider.calls
+
+
+def test_reserved_organization_keeps_its_existing_signup_with_feature_on(flow, monkeypatch):
+    from dataclasses import replace
+    protected = signup.TARGETS["junin-production"]
+    monkeypatch.setitem(signup.TARGETS, protected.name, replace(protected, tenant_id=flow.tenant.id))
+    contract = flow.browser.get(flow.url.removesuffix("/embedded-signup"))
+    assert contract.status_code == 200 and "direct_embedded_signup" not in contract.get_json()
+    result = flow.browser.post(flow.url, json=finish_payload(None))
+    assert result.status_code == 200
+    assert result.get_json()["contract_version"] == "twilio.tech_provider.embedded_signup.v1"
+    assert not flow.provider.calls and MetaDirectSignupSession.query.count() == 0
+
+
 def test_signup_binds_only_after_verified_subscription_and_replay_is_idempotent(flow):
     state = begin(flow)
     assert MetaDirectSignupSession.query.one().status == "issued"

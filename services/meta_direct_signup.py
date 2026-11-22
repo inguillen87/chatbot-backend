@@ -6,6 +6,7 @@ import hmac
 import re
 import secrets
 import time
+from dataclasses import dataclass
 
 from sqlalchemy import or_, select, text, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -19,6 +20,7 @@ from services.global_writer_authority import global_writer_authority_lease
 from services.meta_credential_operations import TARGETS
 from services.meta_direct_signup_graph import DirectSignupGraph
 from services.meta_whatsapp_runtime import MetaRuntimeError
+from services.provider_connection_cutover_contract import MANAGED_CONNECTION_MARKER
 from services.tenant_provider_credentials import PRIVATE_CONFIG_KEY, ProviderCredentialError, _keyring
 from services.twilio_tech_provider import STATE_KEY
 from utils.meta_credential_http import private_renewal_logs
@@ -46,7 +48,9 @@ def _result(row, now=None):
     if row.status == "exchanging" and now is not None and now >= row.created_at_epoch + SESSION_SECONDS + 300:
         return failure("meta_signup_new_authorization_required", 409)
     http = {"pending": 202, "connected": 200, "rejected": 422, "exchanging": 202}[row.status]
-    if row.status == "rejected" and row.reason_code in {"meta_signup_asset_in_use", "meta_signup_asset_reserved"}:
+    if row.status == "rejected" and row.reason_code in {
+        "meta_signup_asset_in_use", "meta_signup_asset_reserved", "meta_signup_superseded",
+    }:
         http = 409
     return {"contract_version": CONTRACT, "ok": row.status == "connected",
             "status": row.status, "reason_code": row.reason_code}, http
@@ -86,13 +90,28 @@ def _commit(session, config, lease):
     session.commit()
 
 
+def reserved_tenant(org):
+    protected = TARGETS["junin-production"]
+    return org.id == protected.tenant_id or org.slug.casefold() == protected.slug
+
+
+def panel_capability(org, config):
+    if config.get(FLAG) is not True or not org.is_active or reserved_tenant(org):
+        return None
+    app_id = DirectSignupGraph.app_id
+    configuration_id = config.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID")
+    if (config.get("TWILIO_META_APP_ID") != app_id or not isinstance(configuration_id, str)
+            or not re.fullmatch(r"[1-9][0-9]{0,39}", configuration_id)):
+        configuration_id = None
+    return {"enabled": True, "app_id": app_id, "configuration_id": configuration_id}
+
+
 def _guard_org(session, tenant_id, authorize):
     org = session.scalars(select(TenantProfile).options(lazyload("*")).filter_by(id=tenant_id).with_for_update(of=TenantProfile)
                           .execution_options(populate_existing=True)).unique().one_or_none()
     if org is None or org.is_active is not True or not authorize(org):
         raise SignupError("meta_signup_organization_denied", 403)
-    protected = TARGETS["junin-production"]
-    if org.id == protected.tenant_id or org.slug.casefold() == protected.slug:
+    if reserved_tenant(org):
         raise SignupError("meta_signup_asset_reserved", 409)
     return org
 
@@ -179,11 +198,74 @@ def _protect_assets(session, org, waba, phone_id, phone=None, *, own_connection=
         raise SignupError("meta_signup_asset_in_use", 409)
 
 
+def _revision(row):
+    # Sessions from the first version of the pending schema could only seal v1.
+    return 1 if row.credential_revision is None else row.credential_revision
+
+
+@dataclass
+class _ExpiredBinding:
+    owner: Attempt
+    connection: Connection
+    sender: Sender
+
+    def snapshot(self):
+        # Capture immutable values before releasing the transaction for OAuth.
+        return (self.owner.state_hash, self.connection.id, self.sender.id, self.sender.phone_number,
+                dict(self.connection.config[PRIVATE_CONFIG_KEY]))
+
+
+def _eligible_binding(session, org, app_id, waba, phone_id, now, config, *, phone=None):
+    connection = session.scalars(select(Connection).filter_by(tenant_id=org.id, provider="meta",
+        channel="whatsapp", environment="production").execution_options(populate_existing=True)).one_or_none()
+    if connection is None:
+        _protect_assets(session, org, waba, phone_id, phone)
+        return None
+
+    conflict = SignupError("meta_signup_asset_in_use", 409)
+    cfg = connection.config if isinstance(connection.config, dict) else {}
+    envelope = cfg.get(PRIVATE_CONFIG_KEY)
+    managed = cfg.get(MANAGED_CONNECTION_MARKER)
+    if (connection.status != "pending" or connection.credentials_ref != vault.VAULT_REF
+            or connection.external_app_id != app_id or connection.external_account_id != waba
+            or cfg.get(MARKER) is not True or (isinstance(managed, dict) and managed.get("enabled") is True)
+            or not isinstance(envelope, dict) or envelope.get("contract") != vault.CONTRACT
+            or type(envelope.get("expires_at")) is not int or not 0 < envelope["expires_at"] <= now
+            or type(envelope.get("revision")) is not int or envelope["revision"] < 1):
+        raise conflict
+
+    senders = session.scalars(select(Sender).filter_by(provider_connection_id=connection.id)
+                              .limit(2).execution_options(populate_existing=True)).all()
+    if len(senders) != 1:
+        raise conflict
+    sender = senders[0]
+    if (sender.tenant_id != org.id or sender.status != "pending" or sender.channel != "whatsapp"
+            or sender.waba_id != waba or sender.phone_number_id != phone_id
+            or not sender.phone_number or (phone is not None and phone != sender.phone_number)):
+        raise conflict
+    owners = session.scalars(select(Attempt).filter_by(connection_id=connection.id, status="pending")
+                             .limit(2).execution_options(populate_existing=True)).all()
+    if len(owners) != 1:
+        raise conflict
+    owner = owners[0]
+    if (not owner.code_hash or not owner.provider_session_hash
+            or (owner.tenant_id, owner.waba_id, owner.phone_number_id, owner.sender_id, _revision(owner))
+            != (org.id, waba, phone_id, sender.id, envelope["revision"])):
+        raise conflict
+    _protect_assets(session, org, waba, phone_id, sender.phone_number,
+                    own_connection=connection.id, own_sender=sender.id)
+    try:
+        vault.authenticate_expired_envelope(connection=connection, tenant_id=org.id, now=now, app_config=config)
+    except ProviderCredentialError:
+        raise conflict from None
+    return _ExpiredBinding(owner, connection, sender)
+
+
 def _audit(session, row, name):
     session.add(AuditEvent(tenant_id=row.tenant_id, actor_user_id=row.actor_user_id,
                            event_type=name, resource_type="provider_connection",
                            resource_id=str(row.connection_id),
-                           details={"sender_id": row.sender_id, "revision": 1, "status": row.status}))
+                           details={"sender_id": row.sender_id, "revision": _revision(row), "status": row.status}))
 
 
 def _lock_bindings(session):
@@ -194,26 +276,36 @@ def _lock_bindings(session):
                              "public.provider_sender, public.whatsapp_numero IN SHARE ROW EXCLUSIVE MODE"))
 
 
-def _bind(session, row, org, graph, proof, config, now):
+def _bind(session, row, org, graph, proof, config, now, expected):
     _lock_bindings(session)
-    _protect_assets(session, org, row.waba_id, row.phone_number_id, proof.phone)
-    connection = Connection(tenant_id=org.id, provider="meta", channel="whatsapp", environment="production",
-                            status="pending", external_app_id=graph.app_id, external_account_id=row.waba_id,
-                            credentials_ref=vault.VAULT_REF, config={MARKER: True})
-    session.add(connection)
-    session.flush()
+    previous = _eligible_binding(session, org, graph.app_id, row.waba_id, row.phone_number_id, now, config,
+                                 phone=proof.phone)
+    if (previous.snapshot() if previous else None) != expected:
+        raise SignupError("meta_signup_asset_in_use", 409)
+    if previous:
+        connection, sender = previous.connection, previous.sender
+        revision = _revision(previous.owner) + 1
+        previous.owner.status, previous.owner.reason_code = "rejected", "meta_signup_superseded"
+    else:
+        revision = 1
+        connection = Connection(tenant_id=org.id, provider="meta", channel="whatsapp", environment="production",
+                                status="pending", external_app_id=graph.app_id, external_account_id=row.waba_id,
+                                credentials_ref=vault.VAULT_REF, config={MARKER: True})
+        session.add(connection)
+        session.flush()
+        sender = Sender(tenant_id=org.id, channel="whatsapp", provider_connection_id=connection.id,
+                        phone_number=proof.phone, phone_number_id=row.phone_number_id,
+                        waba_id=row.waba_id, status="pending")
+        session.add(sender)
+        session.flush()
     envelope = vault.seal_token(connection=connection, tenant_id=org.id,
-                                access_token=proof.credential.access_token, revision=1,
+                                access_token=proof.credential.access_token, revision=revision,
                                 expires_at=proof.credential.expires_at, now=now, app_config=config)
-    connection.config = {MARKER: True, PRIVATE_CONFIG_KEY: envelope}
-    sender = Sender(tenant_id=org.id, channel="whatsapp", provider_connection_id=connection.id,
-                    phone_number=proof.phone, phone_number_id=row.phone_number_id,
-                    waba_id=row.waba_id, status="pending")
-    session.add(sender)
-    session.flush()
+    connection.config = {**connection.config, PRIVATE_CONFIG_KEY: envelope}
+    row.credential_revision = revision
     row.connection_id, row.sender_id, row.status = connection.id, sender.id, "pending"
     row.reason_code = "meta_subscription_pending" if proof.registered else "meta_phone_registration_pending"
-    _audit(session, row, "provider_credential.meta_signup_sealed")
+    _audit(session, row, "provider_credential.meta_signup_reauthorized" if previous else "provider_credential.meta_signup_sealed")
 
 
 def _subscription(session, config, lease, row, graph, proof, clock, authorize):
@@ -232,7 +324,7 @@ def _subscription(session, config, lease, row, graph, proof, clock, authorize):
     if isinstance(envelope, dict) and type(envelope.get("expires_at")) is int and envelope["expires_at"] <= clock():
         return failure("meta_signup_credential_reauthorization_required", 409)
     credential = vault.open_token(connection=connection, tenant_id=row.tenant_id, now=clock(), app_config=config)
-    if credential.revision != 1:
+    if credential.revision != _revision(row):
         raise SignupError("meta_signup_binding_changed", 409)
     org = _guard_org(session, row.tenant_id, authorize)
     def check_ownership():
@@ -293,9 +385,10 @@ def finish_signup(session, config, tenant_id, actor_id, *, state, sdk_session, w
             return _subscription(session, config, lease, row, graph, None, clock, authorize)
         if not row.created_at_epoch <= clock() < row.created_at_epoch + SESSION_SECONDS:
             raise SignupError("meta_signup_session_expired", 410)
-        _protect_assets(session, org, waba, phone_id)
         _keyring(config)
         graph = graph_factory(config, clock=clock)
+        previous = _eligible_binding(session, org, graph.app_id, waba, phone_id, clock(), config)
+        expected = previous.snapshot() if previous else None
         # Commit the one-shot claim before OAuth: after transport/process loss a
         # second worker cannot safely tell whether Meta consumed the code.
         claimed = session.execute(update(Attempt).where(Attempt.state_hash == state_hash,
@@ -319,7 +412,7 @@ def finish_signup(session, config, tenant_id, actor_id, *, state, sdk_session, w
         if row.status != "exchanging":
             raise SignupError("meta_signup_session_conflict", 409)
         try:
-            _bind(session, row, org, graph, proof, config, clock())
+            _bind(session, row, org, graph, proof, config, clock(), expected)
         except SignupError as exc:
             if exc.status != 409:
                 raise

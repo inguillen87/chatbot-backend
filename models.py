@@ -4526,6 +4526,7 @@ class MetaDirectSignupSession(db.Model):
     phone_number_id = db.Column(db.String(40), nullable=True)
     connection_id = db.Column(db.Integer, db.ForeignKey("provider_connection.id"), nullable=True)
     sender_id = db.Column(db.Integer, db.ForeignKey("provider_sender.id"), nullable=True)
+    credential_revision = db.Column(db.Integer, nullable=True)
     reason_code = db.Column(db.String(100), nullable=True)
 
     __table_args__ = (

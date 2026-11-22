@@ -28,6 +28,7 @@ def upgrade():
         sa.Column("phone_number_id", sa.String(40), nullable=True),
         sa.Column("connection_id", sa.Integer(), sa.ForeignKey("provider_connection.id"), nullable=True),
         sa.Column("sender_id", sa.Integer(), sa.ForeignKey("provider_sender.id"), nullable=True),
+        sa.Column("credential_revision", sa.Integer(), nullable=True),
         sa.Column("reason_code", sa.String(100), nullable=True),
         sa.UniqueConstraint("provider_session_hash", name="uq_meta_signup_provider_session_hash"),
         sa.UniqueConstraint("code_hash", name="uq_meta_signup_code_hash"),
