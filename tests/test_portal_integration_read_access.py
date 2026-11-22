@@ -17,7 +17,10 @@ def session_headers(user):
 
 def create_user(role, *, label=None, **fields):
     label = label or role
-    user = User(name=label, email=f"{label}@example.test", rol=role, password_hash="synthetic", **fields)
+    user = User(
+        name=label, email=f"{label}@example.test", rol=role,
+        password_hash="synthetic", **fields,
+    )
     db.session.add(user)
     db.session.flush()
     return user
@@ -27,8 +30,10 @@ def create_user(role, *, label=None, **fields):
 def organization(client):
     owner = create_user("admin", tipo_chat="municipio")
     owner.token = "synthetic-existing-widget"
-    tenant = TenantProfile(slug="portal-fixture", nombre="Organización de prueba", tipo="municipio",
-                           municipio_id=owner.id, plan="full", configuracion={"widget_position": "left"})
+    tenant = TenantProfile(
+        slug="portal-fixture", nombre="Organización de prueba", tipo="municipio",
+        municipio_id=owner.id, plan="full", configuracion={"widget_position": "left"},
+    )
     db.session.add(tenant)
     db.session.commit()
     return tenant
@@ -61,6 +66,7 @@ def test_operational_users_can_read_the_organization(client, organization, role,
     data = response.get_json()
     assert data["slug"] == organization.slug
     assert data["widget"]["embed_enabled"] is True
+    assert response.cache_control.private and response.cache_control.no_store
 
 
 @pytest.mark.parametrize("role", ["usuario", "empleado"])
@@ -91,12 +97,25 @@ def test_locked_plan_omits_widget_embed(client, organization):
     assert organization.municipio.token not in response.get_data(as_text=True)
 
 
-def test_repeated_reads_preserve_configuration_and_do_not_start_audio_jobs(client, organization, monkeypatch):
+@pytest.mark.parametrize("credential", ["bearer", "cookie"])
+def test_repeated_reads_preserve_configuration_and_do_not_start_audio_jobs(
+    client, organization, monkeypatch, credential
+):
     organization.configuracion = {**organization.configuracion, "tts_fixed_menu_warmup_enabled": True}
+    owner = organization.municipio
+    if credential == "cookie":
+        owner.set_password("synthetic-portal-password")
     db.session.commit()
+    if credential == "cookie":
+        login = client.post("/auth/login", json={"email": owner.email, "password": "synthetic-portal-password"})
+        assert login.status_code == 200
+        owner.entity_token = None
+        db.session.commit()
+        headers = {}
+    else:
+        headers = session_headers(owner)
     tenant_id = organization.id
     before = deepcopy(organization.configuracion)
-    headers = session_headers(organization.municipio)
     path = integration_path(organization)
     warm = Mock(return_value={})
     monkeypatch.setattr("services.tts_orchestrator.warm_tts_cache", warm)
