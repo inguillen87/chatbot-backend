@@ -19,6 +19,7 @@ from services import meta_whatsapp_credentials as vault
 from services.global_writer_authority import global_writer_authority_lease
 from services.meta_credential_operations import TARGETS
 from services.meta_direct_signup_graph import DirectSignupGraph
+from services.meta_direct_signup_labels import PANEL_LABELS
 from services.meta_whatsapp_runtime import MetaRuntimeError
 from services.provider_connection_cutover_contract import MANAGED_CONNECTION_MARKER
 from services.tenant_provider_credentials import PRIVATE_CONFIG_KEY, ProviderCredentialError, _keyring
@@ -103,7 +104,7 @@ def panel_capability(org, config):
     if (config.get("TWILIO_META_APP_ID") != app_id or not isinstance(configuration_id, str)
             or not re.fullmatch(r"[1-9][0-9]{0,39}", configuration_id)):
         configuration_id = None
-    return {"enabled": True, "app_id": app_id, "configuration_id": configuration_id}
+    return {"enabled": True, "app_id": app_id, "configuration_id": configuration_id, "labels": PANEL_LABELS}
 
 
 def _guard_org(session, tenant_id, authorize):

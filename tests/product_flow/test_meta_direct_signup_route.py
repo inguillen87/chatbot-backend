@@ -86,8 +86,11 @@ def test_panel_discovers_direct_mode_and_only_the_matching_login_configuration(f
         assert result.status_code == 200
         return result.get_json()
 
-    assert contract()["direct_embedded_signup"] == {
-        "enabled": True, "app_id": APP_ID, "configuration_id": "112233"}
+    capability = contract()["direct_embedded_signup"]
+    labels = capability.pop("labels")
+    assert capability == {"enabled": True, "app_id": APP_ID, "configuration_id": "112233"}
+    assert labels["manage"] == "Administrar conexión con Meta"
+    assert all(isinstance(text, str) and text.strip() for text in labels.values())
     monkeypatch.setitem(flow.app.config, "TWILIO_META_APP_ID", "556677")
     assert contract()["direct_embedded_signup"]["configuration_id"] is None
     monkeypatch.setitem(flow.app.config, signup.FLAG, False)
