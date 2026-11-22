@@ -70,8 +70,15 @@ def native_graph_request(method: str, url: str, **kwargs):
         path += "?" + urlencode(params)
     body = None
     if method == "POST":
-        body = json.dumps(kwargs.get("json"), ensure_ascii=False, allow_nan=False,
-                          separators=(",", ":")).encode("utf-8")
+        if "data" in kwargs:
+            if (not parsed.path.endswith(("/oauth/access_token", "/debug_token"))
+                    or params or "json" in kwargs
+                    or kwargs.get("headers", {}).get("Content-Type") != "application/x-www-form-urlencoded"):
+                raise MetaRuntimeError("meta_graph_transport_contract_invalid")
+            body = urlencode(kwargs["data"]).encode("ascii")
+        else:
+            body = json.dumps(kwargs.get("json"), ensure_ascii=False, allow_nan=False,
+                              separators=(",", ":")).encode("utf-8")
         if len(body) > MAX_GRAPH_BYTES:
             raise MetaRuntimeError("meta_graph_request_too_large")
     connection = http.client.HTTPSConnection("graph.facebook.com",
@@ -148,6 +155,75 @@ def _object_body(response) -> dict:
         raise MetaRuntimeError("meta_authority_response_invalid", transient=True) from None
 
 
+def verify_token_authority(observed, app_id, waba_id, now, *, for_renewal):
+    if for_renewal and (not isinstance(observed, dict)
+                        or type(observed.get("is_valid")) is not bool):
+        raise MetaRuntimeError("meta_authority_response_invalid", transient=True)
+    if (not isinstance(observed, dict) or observed.get("is_valid") is not True
+            or observed.get("app_id") != app_id
+            or not isinstance(observed.get("scopes"), list)
+            or any(not isinstance(scope, str) for scope in observed["scopes"])
+            or not _SCOPES.issubset(observed["scopes"])):
+        raise MetaRuntimeError("meta_token_authority_invalid")
+    provider_expiries = []
+    for name in ("expires_at", "data_access_expires_at"):
+        if name not in observed:
+            if name == "expires_at":
+                raise MetaRuntimeError("meta_token_authority_invalid", transient=for_renewal)
+            continue
+        value = observed[name]
+        if type(value) is not int or value < 0:
+            raise MetaRuntimeError("meta_token_authority_expired", transient=for_renewal)
+        if value and value <= now:
+            raise MetaRuntimeError("meta_token_authority_expired")
+        if value:
+            provider_expiries.append(value)
+    granular = observed.get("granular_scopes")
+    if for_renewal and granular is None:
+        raise MetaRuntimeError("meta_token_granular_scope_mismatch")
+    if granular is not None:
+        if not isinstance(granular, list):
+            raise MetaRuntimeError("meta_token_granular_scope_invalid", transient=for_renewal)
+        for scope in _SCOPES:
+            entries = [x for x in granular if isinstance(x, dict) and x.get("scope") == scope]
+            if (len(entries) != 1 or not isinstance(entries[0].get("target_ids"), list)
+                    or any(not isinstance(value, str) for value in entries[0]["target_ids"])
+                    or waba_id not in entries[0]["target_ids"]):
+                raise MetaRuntimeError("meta_token_granular_scope_mismatch")
+    return provider_expiries
+
+
+def verify_phone_membership(phones, phone_number_id):
+    if (not isinstance(phones.get("paging", {}), dict) or phones.get("paging", {}).get("next")
+            or not isinstance(phones.get("data"), list)):
+        raise MetaRuntimeError("meta_phone_membership_unverified")
+    matches = [row for row in phones["data"] if isinstance(row, dict) and row.get("id") == phone_number_id]
+    if len(matches) != 1:
+        raise MetaRuntimeError("meta_phone_membership_unverified")
+    return matches[0]
+
+
+def verify_app_subscription(apps, app_id, *, allow_absent=False, require_default_callback=False):
+    if (not isinstance(apps.get("paging", {}), dict)
+            or apps.get("paging", {}).get("next") or not isinstance(apps.get("data"), list)):
+        raise MetaRuntimeError("meta_app_subscription_unverified")
+    rows = [row for row in apps["data"]
+            if isinstance(row, dict) and isinstance(row.get("whatsapp_business_api_data"), dict)]
+    ids = [row["whatsapp_business_api_data"].get("id") for row in rows]
+    if allow_absent:
+        if (len(ids) != len(apps["data"])
+                or any(not isinstance(value, str) or not re.fullmatch(r"[1-9][0-9]{0,39}", value)
+                       for value in ids)):
+            raise MetaRuntimeError("meta_app_subscription_unverified")
+        if app_id not in ids:
+            return False
+    if ids.count(app_id) != 1:
+        raise MetaRuntimeError("meta_app_subscription_unverified")
+    if require_default_callback and rows[ids.index(app_id)].get("override_callback_uri") not in (None, ""):
+        raise MetaRuntimeError("meta_app_subscription_unverified")
+    return True
+
+
 @dataclass(frozen=True)
 class MetaOutboundRuntime:
     config: Mapping[str, Any] = field(repr=False)
@@ -166,7 +242,8 @@ class MetaOutboundRuntime:
         proof, _ = self.observe_authority(sender, credential, observed_at=observed_at)
         return proof
 
-    def observe_authority(self, sender, credential, *, observed_at=None, for_renewal=False):
+    def observe_authority(self, sender, credential, *, observed_at=None, for_renewal=False,
+                          require_default_callback=False):
         """Return the short-lived authority proof and the earliest finite provider expiry."""
         now = self.now() if observed_at is None else observed_at
         registry = self.config.get(APP_SECRETS_KEY)
@@ -197,54 +274,13 @@ class MetaOutboundRuntime:
             return payload
         observed = get("debug_token", sender.app_id + "|" + secret,
                        {"input_token": credential.access_token}).get("data")
-        if for_renewal and (not isinstance(observed, dict)
-                            or type(observed.get("is_valid")) is not bool):
-            raise MetaRuntimeError("meta_authority_response_invalid", transient=True)
-        if (not isinstance(observed, dict) or observed.get("is_valid") is not True
-                or observed.get("app_id") != sender.app_id
-                or not isinstance(observed.get("scopes"), list)
-                or any(not isinstance(scope, str) for scope in observed["scopes"])
-                or not _SCOPES.issubset(observed["scopes"])):
-            raise MetaRuntimeError("meta_token_authority_invalid")
-        provider_expiries = []
-        for name in ("expires_at", "data_access_expires_at"):
-            if name not in observed:
-                if name == "expires_at":
-                    raise MetaRuntimeError("meta_token_authority_invalid", transient=for_renewal)
-                continue
-            value = observed[name]
-            if type(value) is not int or value < 0:
-                raise MetaRuntimeError("meta_token_authority_expired", transient=for_renewal)
-            if value and value <= now:
-                raise MetaRuntimeError("meta_token_authority_expired")
-            if value:
-                provider_expiries.append(value)
-        granular = observed.get("granular_scopes")
-        if for_renewal and granular is None:
-            raise MetaRuntimeError("meta_token_granular_scope_mismatch")
-        if granular is not None:
-            if not isinstance(granular, list):
-                raise MetaRuntimeError("meta_token_granular_scope_invalid", transient=for_renewal)
-            for scope in _SCOPES:
-                entries = [x for x in granular if isinstance(x, dict) and x.get("scope") == scope]
-                if (len(entries) != 1 or not isinstance(entries[0].get("target_ids"), list)
-                        or any(not isinstance(value, str) for value in entries[0]["target_ids"])
-                        or sender.waba_id not in entries[0]["target_ids"]):
-                    raise MetaRuntimeError("meta_token_granular_scope_mismatch")
+        provider_expiries = verify_token_authority(observed, sender.app_id, sender.waba_id, now,
+                                                 for_renewal=for_renewal)
         phones = get(sender.waba_id + "/phone_numbers", credential.access_token,
                      {"fields": "id", "limit": "100"})
-        if (not isinstance(phones.get("paging", {}), dict)
-                or phones.get("paging", {}).get("next") or not isinstance(phones.get("data"), list)
-                or sum(isinstance(x, dict) and x.get("id") == sender.phone_number_id
-                       for x in phones["data"]) != 1):
-            raise MetaRuntimeError("meta_phone_membership_unverified")
+        verify_phone_membership(phones, sender.phone_number_id)
         apps = get(sender.waba_id + "/subscribed_apps", credential.access_token)
-        if (not isinstance(apps.get("paging", {}), dict)
-                or apps.get("paging", {}).get("next") or not isinstance(apps.get("data"), list)
-                or sum(isinstance(x, dict) and isinstance(x.get("whatsapp_business_api_data"), dict)
-                       and x["whatsapp_business_api_data"].get("id") == sender.app_id
-                       for x in apps["data"]) != 1):
-            raise MetaRuntimeError("meta_app_subscription_unverified")
+        verify_app_subscription(apps, sender.app_id, require_default_callback=require_default_callback)
         final_now = self.now()
         valid_until = min(credential.expires_at, now + 60, *provider_expiries)
         if not now <= final_now < valid_until:

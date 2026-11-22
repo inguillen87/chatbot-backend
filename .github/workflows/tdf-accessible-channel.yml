@@ -37,6 +37,17 @@ on:
       - 'services/meta_credential_renewal.py'
       - 'services/meta_credential_revalidation.py'
       - 'tests/test_meta_credential_renewal.py'
+      - 'routes/v2/saas.py'
+      - 'services/meta_direct_signup.py'
+      - 'services/meta_direct_signup_graph.py'
+      - 'services/meta_direct_signup_labels.py'
+      - 'migrations/pending/20261121_add_meta_direct_signup_session.py'
+      - 'tests/test_meta_direct_renewal.py'
+      - 'tests/test_meta_direct_signup.py'
+      - 'tests/test_meta_direct_signup_graph.py'
+      - 'tests/test_meta_direct_signup_migration.py'
+      - 'tests/product_flow/test_meta_direct_signup_route.py'
+      - 'tests/product_flow/test_whatsapp_onboarding_product_flow.py'
       - 'services/meta_phone_webhook_inspection.py'
       - 'routes/meta_credential_admin.py'
       - 'utils/meta_credential_http.py'
@@ -419,6 +430,12 @@ jobs:
               'tests/test_meta_credential_operations.py',
               'tests/test_meta_credential_admin.py',
               'tests/test_meta_credential_renewal.py',
+              'tests/test_meta_direct_renewal.py',
+              'tests/test_meta_direct_signup.py',
+              'tests/test_meta_direct_signup_graph.py',
+              'tests/test_meta_direct_signup_migration.py',
+              'tests/product_flow/test_meta_direct_signup_route.py',
+              'tests/product_flow/test_whatsapp_onboarding_product_flow.py',
               'tests/test_meta_phone_webhook_inspection.py',
               'tests/test_whatsapp_webhook_twilio_scoping.py',
               'tests/test_municipal_conversation_uow.py',
@@ -443,6 +460,9 @@ jobs:
               'services/meta_credential_operations.py', 'scripts/manage_meta_whatsapp_credentials.py',
               'services/meta_credential_admin_runtime.py', 'routes/meta_credential_admin.py',
               'services/meta_credential_renewal.py', 'services/meta_credential_revalidation.py',
+              'services/meta_direct_signup.py', 'services/meta_direct_signup_graph.py',
+              'services/meta_direct_signup_labels.py', 'routes/v2/saas.py',
+              'migrations/pending/20261121_add_meta_direct_signup_session.py',
               'services/meta_phone_webhook_inspection.py',
               'utils/meta_credential_http.py', 'middleware/tenant_context.py',
               'services/common_utils.py',

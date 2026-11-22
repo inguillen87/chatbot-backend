@@ -1,0 +1,25 @@
+"""Operator-facing copy for the authenticated direct signup capability."""
+
+PANEL_LABELS = {
+    "panel_title": "Conexión directa con Meta",
+    "manage": "Administrar conexión con Meta",
+    "unconfigured": "La plataforma debe completar la configuración de Meta para esta organización.",
+    "legacy_title": "Activación con Twilio",
+    "prepare": "Preparar autorización",
+    "resume": "Consultar estado del registro",
+    "done": "WhatsApp conectado",
+    "restored": "Podés consultar el resultado del registro anterior.",
+    "prepared": "La autorización está lista. Continuá con Meta.",
+    "prepare_failed": "No pudimos preparar el registro. Podés volver a intentarlo.",
+    "connected": "Meta confirmó la conexión del número con esta organización.",
+    "new_authorization": "La autorización anterior terminó. Revisá la cuenta y prepará una nueva autorización.",
+    "register_phone": "Todavía falta registrar el número en Meta. Después podés consultar el estado.",
+    "pending": "La conexión sigue pendiente. Podés consultar el estado del registro.",
+    "unknown": "No pudimos confirmar el resultado. Consultá el estado del registro.",
+    "choose_phone": "Para conectar WhatsApp, seleccioná una cuenta y su número en Meta.",
+    "cancelled": "El registro fue cancelado. Podés preparar otra autorización.",
+    "provider_error": "Meta no pudo completar el registro. Revisá la cuenta y volvé a intentarlo.",
+    "not_authorized": "Meta no completó la autorización. Podés empezar otra.",
+    "sending": "Confirmando el registro con Meta.",
+    "checking": "Consultando el estado del registro.",
+}

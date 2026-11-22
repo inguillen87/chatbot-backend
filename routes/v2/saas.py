@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 import hashlib
 import json
 import math
@@ -148,7 +149,7 @@ from services.whatsapp_workflow_versioning import (
     save_workflow_draft,
     workflow_durable_control_plane_gate,
 )
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import auth_sin_escrituras_implicitas, token_requerido
 from utils.permissions import require_role
 from utils.roles import ROLE_EMPLEADO, canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user
 from utils.tenant_admin_access import resolve_consistent_user_tenant
@@ -2984,7 +2985,14 @@ def whatsapp_tech_provider_v2(current_user, tenant_slug: str | None = None):
     plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
     if plan_error:
         return plan_error
-    return _json_response(build_twilio_tech_provider_contract(tenant, current_app.config))
+    contract = build_twilio_tech_provider_contract(tenant, current_app.config)
+    if tenant_slug and current_app.config.get("META_WHATSAPP_DIRECT_EMBEDDED_SIGNUP_ENABLED") is True:
+        from services.meta_direct_signup import panel_capability
+
+        capability = panel_capability(tenant, current_app.config)
+        if capability:
+            contract["direct_embedded_signup"] = capability
+    return _json_response(contract)
 
 
 def _whatsapp_smoke_execution_result(
@@ -3362,9 +3370,68 @@ def whatsapp_tech_provider_voice_app_v2(current_user, tenant_slug: str | None = 
     )
 
 
+def _direct_signup_authorizer(actor, slug):
+    from services.auth_session_lifecycle import cookie_lineage_for_user
+    from utils.auth_helpers import is_user_auth_disabled, user_from_token
+
+    def authorized(org):
+        db.session.refresh(actor)
+        claims = getattr(g, "token_payload", {}) or {}
+        if claims.get("session_kind") in {"widget", "demo"} or claims.get("demo_mode"):
+            return False
+        if getattr(g, "auth_token", None):
+            principal = user_from_token(g.auth_token)
+            if principal is None or principal.id != actor.id:
+                return False
+        elif getattr(g, "auth_credential_source", None) != "flask_cookie" or not cookie_lineage_for_user(actor.id):
+            return False
+        return (org.slug == slug and not is_user_auth_disabled(actor)
+                and (canonical_role(actor.rol) == canonical_role("admin") or is_authorized_superadmin_user(actor))
+                and _user_can_access_tenant(actor, org) and plan_allows_full_integrations(org))
+    return authorized
+
+
+def _embedded_signup_auth(view):
+    # Preserve the original cookie behavior for the legacy Twilio workflow.
+    legacy = token_requerido(view)
+    direct = token_requerido(auth_sin_escrituras_implicitas(view))
+
+    @wraps(view)
+    def authenticate(*args, **kwargs):
+        handler = direct if current_app.config.get("META_WHATSAPP_DIRECT_EMBEDDED_SIGNUP_ENABLED") is True else legacy
+        return handler(*args, **kwargs)
+    return authenticate
+
+
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/embedded-signup/resume", methods=["POST"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/embedded-signup/sessions", methods=["POST"])
+@token_requerido
+@auth_sin_escrituras_implicitas
+@require_role("admin", "super_admin")
+def start_whatsapp_direct_signup(current_user, tenant_slug):
+    from services import meta_direct_signup as direct
+    from utils.meta_credential_http import response
+
+    if current_app.config.get(direct.FLAG) is not True:
+        return response(*direct.failure("meta_signup_unavailable", 404))
+    tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_sender_management")
+    if plan_error:
+        return plan_error
+    authorize = _direct_signup_authorizer(current_user, tenant_slug)
+    if request.path.rstrip("/").endswith("/resume"):
+        payload = request.get_json(silent=True)
+        state = payload.get("signup_state") if isinstance(payload, dict) else None
+        return response(*direct.resume_signup(db.session, current_app.config, tenant.id, current_user.id,
+                                              state=state, authorize=authorize))
+    return response(*direct.start_signup(db.session, current_app.config, tenant.id, current_user.id, authorize=authorize))
+
+
 @v2_saas_bp.route("/whatsapp/tech-provider/embedded-signup", methods=["POST"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/embedded-signup", methods=["POST"])
-@token_requerido
+@_embedded_signup_auth
 @require_role("admin", "super_admin")
 def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
@@ -3391,6 +3458,28 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
         payload,
         existing_state=existing_state,
     )
+    from services import meta_direct_signup as direct
+    if current_app.config.get(direct.FLAG) is True and not direct.reserved_tenant(tenant):
+        from utils.meta_credential_http import response
+
+        if not tenant_slug or tenant.slug != tenant_slug:
+            return response(*direct.failure("meta_signup_tenant_path_required", 400))
+        if not verification.get("accepted"):
+            conflict = any(reason in {"embedded_signup_waba_conflict", "embedded_signup_phone_number_conflict"}
+                           for reason in verification.get("blockers", ()))
+            return response(*direct.failure("meta_signup_asset_in_use" if conflict else
+                            "embedded_signup_completion_invalid", 409 if conflict else 422))
+        if validate_only:
+            return response({"contract_version": direct.CONTRACT, "ok": True, "status": "validated",
+                             "persisted": False, "provider_calls_performed": False})
+        normalized = verification["normalized"]
+        auth = payload.get("authResponse") or payload.get("auth_response")
+        code = (payload.get("code") or payload.get("auth_code") or payload.get("authorization_code")
+                or (auth.get("code") if isinstance(auth, dict) else None))
+        return response(*direct.finish_signup(db.session, current_app.config, tenant.id, current_user.id,
+                        state=payload.get("signup_state"), sdk_session=normalized.get("session_id"),
+                        waba=normalized.get("waba_id"), phone_id=normalized.get("phone_number_id"),
+                        code=code, authorize=_direct_signup_authorizer(current_user, tenant_slug)))
     if not verification.get("accepted"):
         return _json_response(
             {

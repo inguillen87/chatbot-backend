@@ -58,11 +58,12 @@ class Target:
     environment: str
     waba_id: str
     phone_id: str
-    phone: str
+    phone: str | None
     connection_id: int | None
     sender_id: int | None
     expected_revision: int
     callback: str
+    app_id: str = APP_ID
 
 
 TARGETS = {
@@ -133,13 +134,13 @@ def _columns(row):
             for column in row.__table__.columns}
 
 
-def _inspect_tenant(session, target, *, lock):
+def _inspect_tenant(session, target, *, lock, require_municipio=True):
     stmt = select(TenantProfile).options(lazyload("*")).where(TenantProfile.id == target.tenant_id)
     if lock:
         stmt = stmt.with_for_update()
     tenant = session.execute(stmt.execution_options(populate_existing=True, autoflush=False)).scalar_one_or_none()
     _require(tenant is not None and tenant.is_active is True and tenant.slug == target.slug
-             and tenant.municipio_id is not None, "meta_operation_tenant_mismatch")
+             and (not require_municipio or tenant.municipio_id is not None), "meta_operation_tenant_mismatch")
     return tenant
 
 
@@ -173,11 +174,11 @@ def inspect_binding(session, target, *, lock=False):
         ProviderConnection.tenant_id == target.tenant_id,
         ProviderConnection.provider == "meta", ProviderConnection.channel == "whatsapp",
         ProviderConnection.environment == target.environment)
-    sender_query = select(ProviderSender).where(
-        ProviderSender.channel == "whatsapp",
-        (ProviderSender.phone_number_id == target.phone_id)
-        | (ProviderSender.phone_number == target.phone)
-        | (ProviderSender.sender_id == "whatsapp:" + target.phone))
+    matches_phone = ProviderSender.phone_number_id == target.phone_id
+    if target.phone:
+        matches_phone |= ((ProviderSender.phone_number == target.phone)
+                          | (ProviderSender.sender_id == "whatsapp:" + target.phone))
+    sender_query = select(ProviderSender).where(ProviderSender.channel == "whatsapp", matches_phone)
     if lock:
         connection_query = connection_query.with_for_update()
         sender_query = sender_query.with_for_update(read=True)
@@ -194,7 +195,7 @@ def inspect_binding(session, target, *, lock=False):
                  and sender.tenant_id == target.tenant_id
                  and sender.provider_connection_id == connection.id
                  and sender.phone_number_id == target.phone_id and sender.waba_id == target.waba_id
-                 and connection.external_app_id == APP_ID
+                 and connection.external_app_id == target.app_id
                  and connection.external_account_id == target.waba_id
                  and connection.credentials_ref == vault.VAULT_REF
                  and connection.status == "connected" and sender.status == "connected",
@@ -217,7 +218,7 @@ def inspect_binding(session, target, *, lock=False):
 
 def _authority_config(target, config):
     selected = dict(config)
-    if target.name == "tdf-sandbox":
+    if target is not None and target.name == "tdf-sandbox":
         _require(config.get("META_TDF_SANDBOX_APP_ID") == APP_ID,
                  "meta_operation_app_secret_scope_invalid")
         secret = config.get("META_TDF_SANDBOX_APP_SECRET")

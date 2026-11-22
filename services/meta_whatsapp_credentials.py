@@ -80,8 +80,7 @@ def seal_token(*, connection: Any, tenant_id: int, access_token: str,
                 ciphertext=base64.b64encode(ciphertext).decode("ascii"))
 
 
-def open_token(*, connection: Any, tenant_id: int, now: int,
-               app_config: Mapping) -> MetaCredential:
+def _stored_envelope(connection, tenant_id):
     binding = _binding(connection, tenant_id)
     if getattr(connection, "credentials_ref", None) != VAULT_REF:
         raise ProviderCredentialError("meta_credential_reference_invalid")
@@ -89,10 +88,14 @@ def open_token(*, connection: Any, tenant_id: int, now: int,
     envelope = cfg.get(PRIVATE_CONFIG_KEY)
     if not isinstance(envelope, dict) or envelope.get("contract") != CONTRACT:
         raise ProviderCredentialError("meta_credential_envelope_invalid")
-    revision, expires_at = envelope.get("revision"), envelope.get("expires_at")
-    if (type(revision) is not int or revision <= 0 or type(now) is not int or now < 0
-            or type(expires_at) is not int or expires_at <= now):
+    if (type(envelope.get("revision")) is not int or envelope["revision"] <= 0
+            or type(envelope.get("expires_at")) is not int or envelope["expires_at"] <= 0):
         raise ProviderCredentialError("meta_credential_expired_or_invalid")
+    return binding, envelope
+
+
+def _authenticated_token(binding, envelope, app_config):
+    revision, expires_at = envelope["revision"], envelope["expires_at"]
     _, keys = _keyring(app_config)
     try:
         kid = envelope["key_id"]
@@ -111,4 +114,24 @@ def open_token(*, connection: Any, tenant_id: int, now: int,
             raise ValueError
     except (KeyError, ValueError, TypeError, binascii.Error, UnicodeError, InvalidTag):
         raise ProviderCredentialError("meta_credential_integrity_failed") from None
-    return MetaCredential(revision=revision, expires_at=expires_at, access_token=token)
+    return token
+
+
+def authenticate_expired_envelope(*, connection, tenant_id, now, app_config) -> None:
+    """Verify the old binding and its authenticated expiry before replacement.
+
+    Never release an expired credential to the caller or the provider.
+    """
+    binding, envelope = _stored_envelope(connection, tenant_id)
+    if type(now) is not int or now < envelope["expires_at"]:
+        raise ProviderCredentialError("meta_credential_not_expired")
+    _authenticated_token(binding, envelope, app_config)
+
+
+def open_token(*, connection: Any, tenant_id: int, now: int,
+               app_config: Mapping) -> MetaCredential:
+    binding, envelope = _stored_envelope(connection, tenant_id)
+    if type(now) is not int or now < 0 or envelope["expires_at"] <= now:
+        raise ProviderCredentialError("meta_credential_expired_or_invalid")
+    return MetaCredential(revision=envelope["revision"], expires_at=envelope["expires_at"],
+                          access_token=_authenticated_token(binding, envelope, app_config))
