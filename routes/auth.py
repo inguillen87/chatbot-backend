@@ -1065,8 +1065,66 @@ from services.plan_access import tenant_allows_workspace_branding
 from utils.tenant_admin_access import can_manage_tenant_control_plane, resolve_consistent_user_tenant
 
 
+def _widget_public_profile(user: User) -> Dict[str, Any]:
+    """Organization view for a widget session: branding and session state only.
+
+    A widget session represents the organization serving a public chat, not a
+    person signed in to the panel, so the response carries no account, contact,
+    plan or permission data. It is built from read-only helpers.
+    """
+    owner = getattr(g, "widget_owner_user", None) or user
+    tenant_profile = _panel_tenant_for_user(owner)
+    rubro_obj = getattr(owner, "rubro", None)
+    rubro_nombre = getattr(rubro_obj, "nombre", None) or "General"
+    tipo_chat = _resolve_tipo_chat(owner, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
+    token_payload = getattr(g, "token_payload", {}) or {}
+    auth_token = getattr(g, "auth_token", None)
+    tenant_slug_value = getattr(tenant_profile, "slug", None)
+    payload = {
+        "contract_version": "widget.public_profile.v1",
+        "tipo_chat": tipo_chat,
+        "nombre_empresa": getattr(owner, "nombre_empresa", None),
+        "logo_url": getattr(owner, "logo_url", None),
+        "rubro": rubro_nombre,
+        "rubro_clave": getattr(rubro_obj, "clave", None) if rubro_obj else None,
+        "catalogo_label": (
+            "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
+        ),
+        "color_primario": getattr(owner, "color_primario", None),
+        "color_secundario": getattr(owner, "color_secundario", None),
+        "tenant_slug": tenant_slug_value,
+        "tenantSlug": tenant_slug_value,
+        "workspace_appearance": build_workspace_appearance(
+            tenant_profile, entitled=tenant_allows_workspace_branding(tenant_profile)),
+        "token": auth_token,
+        "auth_token": auth_token,
+        "session_token": auth_token,
+        "session_kind": "widget",
+        "session_expires_at": _timestamp_to_iso(token_payload.get("exp")),
+        "session_renew_until": _timestamp_to_iso(token_payload.get("renew_until")),
+        "widget_session_active": True,
+        "widget_embed_token": None,
+        "widget_embed_token_kind": "plan_required",
+        "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
+        "widget_access_minutes": current_app.config.get("WIDGET_ACCESS_MINUTES", 45),
+        "widget_renew_days": current_app.config.get("WIDGET_RENEW_DAYS", 7),
+    }
+    # A widget session is only issued to a caller holding the organization's
+    # published widget identifier, so echoing it back discloses nothing new and
+    # keeps installed widgets working. It is read, never created, here.
+    owner_token = getattr(owner, "token", None)
+    if owner_token and not _looks_like_jwt(owner_token):
+        payload["entity_token"] = owner_token
+        payload["entityToken"] = owner_token
+        payload["owner_token"] = owner_token
+    return payload
+
+
 def build_profile_payload(user: User) -> Dict[str, Any]:
     """Assemble the profile payload shared by the legacy and new endpoints."""
+
+    if getattr(g, "widget_session", False):
+        return _widget_public_profile(user)
 
     tenant_profile = None
     rubro_obj = getattr(user, "rubro", None)
