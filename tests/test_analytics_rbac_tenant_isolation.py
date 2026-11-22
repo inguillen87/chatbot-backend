@@ -44,10 +44,9 @@ def _tenant(*, tenant_id: int, owner: User, slug: str) -> TenantProfile:
 
 
 def _login(client, user: User) -> None:
-    with client.session_transaction() as session:
-        session.clear()
-        session["_user_id"] = str(user.id)
-        session["_fresh"] = True
+    response = client.post("/auth/login", json={"email": user.email, "password": "test-pass"})
+    assert response.status_code == 200
+    client.environ_base["HTTP_AUTHORIZATION"] = "Bearer " + response.get_json()["token"]
 
 
 def test_tenant_admin_bot_settings_stay_inside_own_profile(client):

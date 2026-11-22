@@ -95,7 +95,7 @@ def _api_error(error: str, *, status: int, code: str) -> tuple:
 def _analytics_request_user():
     """Return the request actor while preserving explicit Bearer precedence."""
 
-    if getattr(g, "explicit_bearer_present", False):
+    if getattr(g, "explicit_bearer_present", False) or getattr(g, "widget_credential_selected", False):
         return getattr(g, "viewer", None)
     viewer = getattr(g, "viewer", None)
     if viewer is not None:

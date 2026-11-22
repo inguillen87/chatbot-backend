@@ -79,6 +79,8 @@ class WidgetAuthMarketplaceTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 201)
         data = response.get_json()
+        self.assertTrue({"entity_token", "entityToken", "owner_token"}.isdisjoint(data))
+        self.assertNotIn("X-Entity-Token", response.headers)
         self.assertEqual(data.get("tenant_id"), self.tenant.id)
         self.assertEqual(data.get("tenant_slug"), self.tenant.slug)
         self.assertIn("marketplace", data)

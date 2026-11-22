@@ -53,6 +53,8 @@ def notifications_options():
 @token_requerido
 @require_tenant
 def get_notifications(current_user: User):
+    if getattr(g, "widget_session", False):
+        return jsonify([])
     tenant = g.tenant_profile
     get_current_tenant()
     if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):

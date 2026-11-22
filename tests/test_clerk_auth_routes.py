@@ -80,19 +80,18 @@ def test_registration_logs_never_include_submitted_secrets(client, monkeypatch):
     for level in ("info", "warning", "error"):
         monkeypatch.setattr(client.application.logger, level, _capture_log)
 
-    response = client.post(
-        "/auth/register",
-        json={
-            "name": "Secure Logging Owner",
-            "email": "secure-logging@chatboc.test",
-            "nombre_empresa": "Secure Logging Company",
-            "rubro": rubro_id,
-            "tipo_chat": "pyme",
-            "acepto_terminos": True,
-            **submitted_secrets,
-        },
-    )
-
+    payload = {
+        "name": "Secure Logging Owner",
+        "email": "secure-logging@chatboc.test",
+        "nombre_empresa": "Secure Logging Company",
+        "rubro": rubro_id,
+        "tipo_chat": "pyme",
+        "acepto_terminos": True,
+        **submitted_secrets,
+    }
+    assert client.post("/auth/register", json=payload).status_code == 404
+    del payload["empresa_token"]
+    response = client.post("/auth/register", json=payload)
     assert response.status_code == 201
     from services.auth_session_lifecycle import descriptor_for_token
     with client.application.app_context():

@@ -89,6 +89,12 @@ name: Durable sessions and private attachments
       - tests/test_rubros_database_availability.py
       - tests/test_internal_cron_request_gates.py
       - tests/test_widget_bootstrap.py
+      - tests/test_widget_actor_boundary.py
+      - tests/test_widget_public_profile_contract.py
+      - tests/test_visitor_registration_scope.py
+      - tests/test_perfil_alias.py
+      - tests/test_widget_token_endpoint.py
+      - services/visitor_registration.py
       - tests/test_portal_integration_read_access.py
       - tests/test_user_portal_flow.py
       - tests/test_v2_widget_token_resolution.py
@@ -171,6 +177,12 @@ jobs:
               "tests/test_portal_integration_read_access.py",
               "tests/test_user_portal_flow.py",
               "tests/test_v2_widget_token_resolution.py",
+              "tests/test_widget_actor_boundary.py",
+              "tests/test_widget_public_profile_contract.py",
+              "tests/test_visitor_registration_scope.py",
+              "tests/test_perfil_alias.py",
+              "tests/test_widget_token_endpoint.py::WidgetTokenEndpointTests::test_widget_profile_logs_the_header_source_without_its_value",
+              "tests/test_analytics_rbac_tenant_isolation.py",
               "-q", "-p", "no:cacheprovider",
           ]))
       - name: Session lineage, retirement and scoped source HTTP regressions

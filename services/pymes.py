@@ -15,7 +15,7 @@ from fuzzywuzzy import fuzz, process
 
 from models import Conversacion, db, PymePedido, PymeTicket, ArchivoAdjunto
 try:
-    from flask import session as flask_session, current_app, request # Añadir request
+    from flask import session as flask_session, current_app, g, has_request_context, request # Añadir request
 except Exception:
     flask_session = {}
     current_app = None
@@ -2335,54 +2335,12 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
         return None
 
 def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
-    """
-    Busca un usuario PYME por su token. Si no existe, crea uno nuevo
-    con valores predeterminados y un rubro genérico.
-    """
-    if not token:
-        return None
+    """Compatibility lookup for an existing organization accepting widget signups."""
+    from services.visitor_registration import visitor_scope_for_entity_token
 
-    # Intentar encontrar el usuario existente
-    user = models.User.query.filter_by(token=token).first()
-    if user:
-        return user
+    scope = visitor_scope_for_entity_token(token, require_widget_access=True)
+    return scope[0] if scope else None
 
-    # Si no existe, crear uno nuevo
-    logger.info(f"No se encontró un usuario para el token '{token[:10]}...'. Creando uno nuevo.")
-
-    # Asegurarse de que el rubro "General" exista
-    rubro_general = models.Rubro.query.filter(func.lower(models.Rubro.nombre) == "general").first()
-    if not rubro_general:
-        logger.info("No se encontró el rubro 'General', creándolo...")
-        rubro_general = models.Rubro(nombre="General", clave="general", es_publico=False)
-        db.session.add(rubro_general)
-        db.session.commit()
-        logger.info(f"Rubro 'General' creado con ID: {rubro_general.id}")
-
-    # Crear el nuevo usuario (Pyme)
-    nuevo_pyme_user = models.User(
-        token=token,
-        email=f"pyme_{token[:8]}@chatboc.com", # Email de marcador de posición
-        nombre_empresa=f"Empresa {token[:8]}",
-        rubro_id=rubro_general.id,
-        rol='admin', # El dueño de la Pyme es admin de su propia entidad
-        tipo_chat='pyme',
-        plan='gratis', # O el plan por defecto que corresponda
-        acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
-        fecha_aceptacion_terminos=datetime.now(timezone.utc)
-    )
-    nuevo_pyme_user.name = f"Empresa {token[:8]}"
-    nuevo_pyme_user.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
-
-    try:
-        db.session.add(nuevo_pyme_user)
-        db.session.commit()
-        logger.info(f"Nuevo usuario Pyme creado con ID {nuevo_pyme_user.id} para el token '{token[:10]}...'")
-        return nuevo_pyme_user
-    except Exception as e:
-        db.session.rollback()
-        logger.error(f"Error al crear el usuario Pyme para el token '{token[:10]}...': {e}", exc_info=True)
-        return None
 
 from services.llm_orchestrator import llamar_llm_con_fallback
 from .chat_orchestrator import ChatOrchestrator # Importar el nuevo Orchestrator
@@ -2393,6 +2351,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
 
     demo_metadata = kwargs.pop("demo_metadata", None)
     rubro_tool_summary = kwargs.pop("rubro_tool_summary", None)
+    registration_consent = kwargs.pop("registration_consent", {})
 
     if not owner_user:
         logger.error("[responder_pyme] Critical error: owner_user is None. Cannot proceed.")
@@ -3490,6 +3449,13 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         CONTEXTO_PYME: pyme_ctx_actual,
         "user_id": getattr(owner_user, "id", None), # ID de la PYME (owner)
         "tenant_id": tenant_id,
+        "widget_registration": channel == "widget" or (
+            has_request_context() and (
+                bool(getattr(g, "widget_session", False)) or
+                getattr(g, "owner_resolution_source", None) in {"static_entity_token", "explicit_entity_token"}
+            )
+        ),
+        "registration_consent": registration_consent,
         "nombre_pyme": nombre_pyme_display,
         "rubro_nombre": rubro_nombre_para_contexto,
         "viewer_user_obj": viewer_user,

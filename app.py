@@ -428,6 +428,7 @@ def create_app(config_class=Config):
             g.token_payload = {}
             g.auth_credential_source = None
             g.explicit_bearer_present = False
+            g.widget_credential_selected = False
             if is_public_liveness_request(request) or is_registered_internal_cron_request(request):
                 return
             from utils.auth_helpers import obtener_token, user_from_token
@@ -462,6 +463,10 @@ def create_app(config_class=Config):
                     )
                 return
             if current_user and current_user.is_authenticated:
+                from utils.auth_helpers import is_public_widget_credential
+                if is_public_widget_credential(obtener_token()):
+                    g.widget_credential_selected = True
+                    return
                 g.viewer = current_user
                 current_app.logger.debug("Authenticated request source=flask_login")
                 return

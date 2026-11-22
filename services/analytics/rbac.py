@@ -57,7 +57,7 @@ def current_analytics_scope_actor() -> Any:
     actor = getattr(g, "viewer", None)
     if actor is not None:
         return actor
-    if getattr(g, "explicit_bearer_present", False):
+    if getattr(g, "explicit_bearer_present", False) or getattr(g, "widget_credential_selected", False):
         return None
     if current_app.config.get("TESTING"):
         return request.headers.get("X-Debug-Role")
@@ -285,7 +285,7 @@ def resolve_viewer() -> AnalyticsViewer:
             abort(403, description="Role not authorised for analytics")
         return candidate
 
-    if getattr(g, "explicit_bearer_present", False):
+    if getattr(g, "explicit_bearer_present", False) or getattr(g, "widget_credential_selected", False):
         abort(401, description="Authentication required")
 
     app = current_app

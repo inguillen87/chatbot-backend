@@ -1437,9 +1437,7 @@ def _effective_ticket_actor(current_user: Optional[User], owner_user: Optional[U
 
     if current_user:
         return current_user
-    if owner_user and getattr(g, "widget_session", False):
-        return owner_user
-    return None
+    return getattr(g, "jwt_user", None)
 
 
 def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, access: Optional[dict] = None) -> tuple[str | None, str | None, str | None]:
