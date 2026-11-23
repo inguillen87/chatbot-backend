@@ -16,6 +16,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from flask import Flask, current_app, g, jsonify, request
+from utils.internal_cron_request import is_registered_internal_cron_request
+from utils.runtime_metadata import is_public_version_metadata_request
 from flask.sessions import SecureCookieSession, SessionInterface
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,10 +102,13 @@ class PublicLivenessPipelineTest(unittest.TestCase):
             "g": g, "request": request, "current_app": current_app,
             "jsonify": jsonify, "re": re,
             "is_public_liveness_request": is_public_liveness_request,
+            "is_registered_internal_cron_request": is_registered_internal_cron_request,
+            "is_public_version_metadata_request": is_public_version_metadata_request,
             "resolve_contact_identity_from_request": self.contact,
             "request_path_allows_contact_identity_body": self.body_allowed,
             "_resolve_tenant_profile": self.tenant_resolver,
         }
+        _source_function("middleware/tenant_context.py", "_is_global_platform_landing_request", namespace)
         self.user_hook = _source_function("app.py", "attach_current_user", namespace)
         self.contact_hook = _source_function("app.py", "attach_contact_identity", namespace)
         self.tenant_hook = _source_function("middleware/tenant_context.py", "attach_tenant_profile", namespace)
