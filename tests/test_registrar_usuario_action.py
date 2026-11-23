@@ -19,22 +19,22 @@ class RegistrarUsuarioActionTests(unittest.TestCase):
             self.assertFalse(result['success'])
 
     def test_success(self):
-        owner = SimpleNamespace(id=1, rubro='municipio', rubro_id=2, tipo_chat='municipio')
+        owner = SimpleNamespace(id=1, rubro='municipio', rubro_id=2, tipo_chat='municipio', municipio_id=None)
         created_user = SimpleNamespace(id=5, email='ana@example.com', token='tnew', set_password=lambda x: None)
 
-        query_by_token = SimpleNamespace(first=lambda: owner)
         query_filter = SimpleNamespace(first=lambda: None)
 
         with patch('services.actions.general_actions.User') as UserMock, \
              patch('services.actions.general_actions.db') as db_mock, \
+             patch('services.actions.general_actions.registration_tenant', return_value=SimpleNamespace(id=3, slug='municipal', municipio_id=1)), \
              patch('services.actions.general_actions.validar_email', return_value=True):
-            UserMock.query.filter_by.return_value = query_by_token
+            db_mock.session.get.return_value = owner
             UserMock.query.filter.return_value = query_filter
             UserMock.return_value = created_user
             db_mock.session.add = lambda x: None
             db_mock.session.commit = lambda: None
 
-            handler = RegistrarUsuarioActionHandler({'empresa_token': 'token', 'user_obj': owner})
+            handler = RegistrarUsuarioActionHandler({'user_id': owner.id, 'tenant_id': 3})
             data = {
                 'name': 'Ana',
                 'email': 'ana@example.com',

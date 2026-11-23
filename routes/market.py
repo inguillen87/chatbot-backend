@@ -67,7 +67,12 @@ def _resolve_tenant(slug: str) -> TenantProfile:
         # Reutilizamos el mismo resolver multitenant usado en el resto de la app
         # para respetar aliases y configuraciones de dominio.
         # Esto incluye la creación "lazy" de demos si no existen en BD.
-        tenant = resolve_tenant_only(tenant_slug=slug_clean, require_explicit_slug=True)
+        allow_discovery = not getattr(g, "widget_session", False)
+        tenant = resolve_tenant_only(
+            tenant_slug=slug_clean, require_explicit_slug=True,
+            allow_fallback=allow_discovery, allow_context_fallback=allow_discovery,
+            allow_lazy_demo_creation=allow_discovery, register_widget_token=allow_discovery,
+        )
     except TenantResolutionError:
         tenant = None
 
@@ -80,6 +85,11 @@ def _resolve_tenant(slug: str) -> TenantProfile:
 
     if tenant is None:
         abort(make_response(jsonify({"error": "Tenant no encontrado"}), 404))
+
+    if getattr(g, "widget_session", False):
+        widget_tenant = auth_tenant_for_user(g.widget_owner_user)
+        if not tenant.is_active or widget_tenant is None or widget_tenant.id != tenant.id:
+            abort(403)
 
     g.tenant_profile = tenant
     g.tenant_profile_slug = tenant.slug
@@ -251,7 +261,7 @@ def _runtime_rewards_profile(tenant_id: int, puntos_en_carrito: float) -> Dict[s
     }
 
 
-def _resolve_contact_key(user: User, session_id: str) -> Optional[str]:
+def _resolve_contact_key(user: Optional[User], session_id: str) -> Optional[str]:
     identity = getattr(g, "contact_identity", None)
     if isinstance(identity, dict):
         contact_key = str(identity.get("contact_key") or "").strip()
@@ -268,7 +278,7 @@ def _resolve_contact_key(user: User, session_id: str) -> Optional[str]:
 
 def _get_or_create_cart_for_user(
     tenant: TenantProfile,
-    user: User,
+    user: Optional[User],
     *,
     create_if_missing: bool = True,
 ) -> Optional[MarketCart]:
@@ -280,6 +290,9 @@ def _get_or_create_cart_for_user(
     creating a new record.
     """
 
+    widget_session = getattr(g, "widget_session", False)
+    if widget_session:
+        user = None
     session_id = _resolve_session_identifier()
     user_id = getattr(user, "id", None)
 
@@ -287,6 +300,8 @@ def _get_or_create_cart_for_user(
         MarketCart.tenant_id == tenant.id,
         MarketCart.status == "open",
     )
+    if widget_session:
+        base_query = base_query.filter(MarketCart.user_id.is_(None))
 
     stored_carts = session.get("market_cart_ids") or {}
     cart_id = stored_carts.get(tenant.slug)
@@ -1125,6 +1140,8 @@ def start_checkout(current_user, slug: str):
         return jsonify({"error": "El carrito está vacío"}), 400
 
     payload = request.get_json(silent=True) or {}
+    if getattr(g, "widget_session", False):
+        current_user = None
     contact = resolve_order_contact_payload(
         user=current_user,
         payload=payload,
@@ -1146,7 +1163,7 @@ def start_checkout(current_user, slug: str):
     cart.contact_email = email
     cart.contact_key = contact.get("contact_key")
     cart.channel = contact.get("channel")
-    if current_user.is_authenticated and cart.user_id is None:
+    if current_user is not None and current_user.is_authenticated and cart.user_id is None:
         cart.user_id = current_user.id
 
     summary = _cart_summary(cart, owner, event="checkout")

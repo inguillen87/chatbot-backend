@@ -7,8 +7,7 @@ from sqlalchemy import func
 from services.rubro_classification import es_rubro_publico
 from services.common_utils import validar_email
 from services.pyme_menu import get_pyme_menu_payload
-import uuid
-from datetime import datetime
+from services.visitor_registration import registration_consent, registration_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -103,16 +102,10 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
         name = action_data.get("name")
         email = action_data.get("email")
         password = action_data.get("password")
-        empresa_token = (
-            action_data.get("empresa_token")
-            or self.context.get("empresa_token")
-            or (getattr(self.context.get("user_obj"), "token", None) if self.context else None)
-        )
-
-        if not all([name, email, password, empresa_token]):
+        if not all(isinstance(value, str) and value.strip() for value in (name, email, password)):
             return {
                 "success": False,
-                "message_to_user": "Faltan datos para registrarte (nombre, email, contraseña o token).",
+                "message_to_user": "Faltan datos para registrarte (nombre, email o contraseña).",
                 "pedir_info": "datos_registro"
             }
 
@@ -123,11 +116,13 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
                 "pedir_info": "email"
             }
 
-        owner_user = User.query.filter_by(token=empresa_token.strip()).first()
-        if not owner_user:
+        owner_id = self.context.get("user_id")
+        owner_user = db.session.get(User, owner_id) if owner_id else None
+        tenant = registration_tenant(owner_user, widget=self.context.get("widget_registration", False))
+        if tenant is None or tenant.id != self.context.get("tenant_id"):
             return {
                 "success": False,
-                "message_to_user": "Token de entidad inválido o no encontrado.",
+                "message_to_user": "El registro no está disponible para esta organización.",
             }
 
         existing = User.query.filter(func.lower(User.email) == func.lower(email.strip())).first()
@@ -141,14 +136,15 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
         nuevo = User(
             name=name.strip(),
             email=email.strip().lower(),
-            token=str(uuid.uuid4()),
             rubro_id=owner_user.rubro_id,
             empresa_id=owner_user.id,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            municipio_id=owner_user.municipio_id or tenant.municipio_id,
             plan="gratis",
             rol="usuario",
             tipo_chat=getattr(owner_user, "tipo_chat", None) or ("municipio" if es_rubro_publico(owner_user.rubro) else "pyme"),
-            acepto_terminos=True,
-            fecha_aceptacion_terminos=datetime.utcnow(),
+            **registration_consent(self.context.get("registration_consent") or {}),
         )
         nuevo.set_password(password)
 
@@ -158,11 +154,11 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
             return {
                 "success": True,
                 "message_to_user": f"Usuario '{nuevo.email}' registrado exitosamente.",
-                "data": {"user_id": nuevo.id, "token": nuevo.token}
+                "data": {"user_id": nuevo.id}
             }
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Error en RegistrarUsuarioActionHandler: {e}", exc_info=True)
+            logger.error("Error en RegistrarUsuarioActionHandler: %s", type(e).__name__)
             return {
                 "success": False,
                 "message_to_user": "Error interno al registrar el usuario.",

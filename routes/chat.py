@@ -74,9 +74,13 @@ from routes.v2.tenants import decode_demo_session_token
 from routes.auth import _first_active_tenant_for_demo
 from utils.auth_helpers import (
     anon_o_token_requerido,
+    auth_tenant_for_user,
+    get_or_create_anon_id,
     obtener_entity_token,
     obtener_token,
     user_from_token,
+    widget_owner_from_token,
+    _set_anon_cookie,
     _is_jwt_token,
 )
 from utils.map_config import get_map_config
@@ -5379,6 +5383,11 @@ def _procesar_chat(
                 if isinstance(contexto_chat, dict) and isinstance(contexto_chat.get("education_context"), dict)
                 else None
             )
+            registration_fields = request.get_json(silent=True) if request.is_json else request.form
+            registration_consent = {
+                key: registration_fields[key] for key in ("acepto_terminos", "acepta_marketing")
+                if registration_fields and key in registration_fields
+            }
             resultado = responder_chatboc(
                 pregunta,
                 owner_user=owner_del_bot,
@@ -5400,6 +5409,7 @@ def _procesar_chat(
                 tenant_id=_idempotency_tenant_id,
                 demo_metadata=demo_metadata_for_responder or None,
                 education_context=education_context_for_responder,
+                **({"registration_consent": registration_consent} if registration_consent and tipo_chat == "pyme" else {}),
             )
 
         # Después de que responder_chatboc y sus sub-funciones hayan modificado chat_context_obj.context_data,
@@ -5748,20 +5758,44 @@ def set_profile_name():
     raw_chat_session_id = request.headers.get("X-Chat-Session-Id")
     chat_session_id = _normalize_chat_session_id(raw_chat_session_id) if raw_chat_session_id else None
     if chat_session_id:
+        from services.tenant_resolver import tenant_by_exact_widget_token
+        from services.municipio_chat_idempotency import IdempotencyScopeConflict
+        entity = obtener_entity_token() or obtener_token()
+        if _is_jwt_token(entity):
+            tenant = auth_tenant_for_user(widget_owner_from_token(entity))
+        else:
+            tenant = tenant_by_exact_widget_token(entity) if entity else None
+        anon_id = get_or_create_anon_id()
         chat_context_obj = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
         if not chat_context_obj:
             chat_context_obj = ChatSessionContext(
                 chat_session_id=chat_session_id,
+                tenant_id=tenant.id if tenant else None,
+                anon_id=anon_id if tenant else None,
                 context_data={
                     "source_chat_session_id": raw_chat_session_id,
                 } if raw_chat_session_id and raw_chat_session_id != chat_session_id else {},
             )
             db.session.add(chat_context_obj)
+        elif chat_context_obj.tenant_id or chat_context_obj.anon_id or chat_context_obj.user_id:
+            if chat_context_obj.tenant_id and (not tenant or tenant.id != chat_context_obj.tenant_id):
+                return jsonify({"error": "La sesión no corresponde a esta organización."}), 409
+            try:
+                _assert_municipio_session_context_scope(
+                    chat_context_obj, tenant_id=chat_context_obj.tenant_id,
+                    current_user=getattr(g, "viewer", None), anon_id=anon_id,
+                    allow_authenticated_transition=False, bind_authenticated_transition=False,
+                )
+            except IdempotencyScopeConflict as exc:
+                return jsonify({"error": str(exc)}), 409
         if chat_context_obj.context_data is None:
             chat_context_obj.context_data = {}
         chat_context_obj.context_data["profile_name"] = profile_name
         flag_modified(chat_context_obj, "context_data")
         commit_with_retry(db.session)
+        if tenant:
+            resp.headers["X-Anon-Id"] = anon_id
+            _set_anon_cookie(resp, anon_id)
 
     return resp, 200
 
@@ -5791,14 +5825,15 @@ def widget_config():
     if not token:
         return jsonify({"error": {"code": 400, "message": "Token requerido"}}), 400 # NEW FORMAT
 
-    user = user_from_token(token)
+    user = widget_owner_from_token(token) or user_from_token(token)
     if not user:
         user = User.query.filter_by(token=token).first()
     if not user:
         return jsonify({"error": {"code": 404, "message": "Token inválido"}}), 404 # NEW FORMAT
 
+    tenant = auth_tenant_for_user(user)
     config = {
-        "nombre_empresa": user.nombre_empresa or user.name or "",
+        "nombre_empresa": (tenant.nombre if tenant else user.nombre_empresa) or "",
         "logo_url": user.logo_url or "",
         "color_primario": user.color_primario or "#000000",
         "color_secundario": user.color_secundario or "#FFFFFF",

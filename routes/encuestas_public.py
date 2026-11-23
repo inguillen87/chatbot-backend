@@ -255,6 +255,8 @@ def _feature_guard():
 def _resolve_preview_user():
     """Return an authenticated user allowed to preview unpublished surveys."""
 
+    if getattr(g, "explicit_bearer_present", False) or getattr(g, "widget_credential_selected", False):
+        return getattr(g, "viewer", None)
     token = obtener_token()
     if token:
         user = user_from_token(token)

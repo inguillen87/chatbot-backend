@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import TestConfig
-from models import User
+from models import ChatSessionContext, TenantProfile, User
 
 
 class ChatOwnerContextPersistenceTest(unittest.TestCase):
@@ -168,10 +168,16 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
 
 
     def test_public_widget_claim_response_adds_channel_capabilities_and_only_missing_contacts(self):
+        tenant = TenantProfile(slug="widget-claims", nombre="Municipio", tipo="municipio",
+                               municipio_id=self.owner.id, configuracion={"widget_tokens": [self.owner.token]})
+        db.session.add(tenant)
+        db.session.commit()
         session_id = "claim-widget-session"
         headers = {
             "Origin": "https://chatboc.ar",
             "X-Chat-Session-Id": session_id,
+            "X-Entity-Token": self.owner.token,
+            "X-Anon-Id": "claim-widget-visitor",
         }
 
         save_resp = self.client.post(
@@ -180,6 +186,8 @@ class ChatOwnerContextPersistenceTest(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(save_resp.status_code, 200)
+        context = db.session.get(ChatSessionContext, session_id)
+        self.assertEqual((context.tenant_id, context.anon_id), (tenant.id, headers["X-Anon-Id"]))
 
         with patch("services.logic.responder_chatboc") as mock_responder:
             mock_responder.return_value = {

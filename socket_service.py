@@ -155,6 +155,12 @@ def _user_from_token(token: str):
     return user_from_token(token)
 
 
+def _is_public_widget_socket(token: str) -> bool:
+    from utils.auth_helpers import widget_owner_from_token
+
+    return widget_owner_from_token(token) is not None
+
+
 class SurveyRealtimeTransportError(RuntimeError):
     """A worker cannot prove that its Socket.IO event enters shared pub/sub."""
 
@@ -1403,6 +1409,8 @@ def on_connect(auth):
         try:
             user = _user_from_token(str(token))
             if not user:
+                if _is_public_widget_socket(str(token)):
+                    return  # Public connection, without operator identity or rooms.
                 current_app.logger.warning(
                     "Socket.IO connection rejected for sid %s due to invalid or revoked token.",
                     request.sid,
@@ -1461,6 +1469,9 @@ def on_subscribe_ticket_updates(data):
 
     user = _user_from_token(str(token))
     if not user:
+        if _is_public_widget_socket(str(token)):
+            emit('subscription_error', {'error': 'operator_session_required'})
+            return
         current_app.logger.warning("Socket subscribe rejected for sid %s: invalid or revoked token", request.sid)
         emit('subscription_error', {'error': 'invalid_token'})
         return
@@ -1571,6 +1582,9 @@ def handle_send_chat_message(data):
 
     current_user = _user_from_token(str(token))
     if not current_user:
+        if _is_public_widget_socket(str(token)):
+            emit('chat_error', {'error': 'operator_session_required'})
+            return
         current_app.logger.warning("Token invalido o revocado en 'send_chat_message'")
         emit('chat_error', {'error': 'invalid_token'})
         return

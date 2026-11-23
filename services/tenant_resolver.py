@@ -289,10 +289,11 @@ def _tenant_by_number(number: Optional[str]) -> Optional[TenantProfile]:
         return None
     return matches[0] if matches else None
 
-def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
+def tenants_by_exact_widget_token(token: Optional[str]) -> list[TenantProfile]:
+    """Return active, exact matches so mixed credential sources can detect conflicts."""
     normalized = str(token or "").strip()
     if not normalized:
-        return None
+        return []
 
     def _has_exact_token(tenant: TenantProfile) -> bool:
         cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
@@ -305,20 +306,19 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
             values = []
         return any(str(value or "").strip() == normalized for value in values)
 
-    # The JSON expression is only a shortlist. Exact comparison below prevents
-    # a token such as ``demo`` from matching ``demo-production``.
-    try:
+    # PostgreSQL can shortlist by JSON text in the database. Preserve the
+    # compatibility scan on SQLite, whose JSON text behavior differs.
+    if db.session.get_bind().dialect.name == "postgresql":
         candidates = _active_tenants_query().filter(
-            TenantProfile.configuracion["widget_tokens"].astext.contains(normalized)
+            TenantProfile.configuracion["widget_tokens"].astext.contains(normalized, autoescape=True)
         ).all()
-    except Exception:
-        candidates = []
+    else:
+        candidates = _active_tenants_query().all()
+    return [tenant for tenant in candidates if _has_exact_token(tenant)]
 
-    matches = [tenant for tenant in candidates if _has_exact_token(tenant)]
-    if not matches:
-        # SQLite and some JSON drivers do not implement ``astext`` consistently.
-        matches = [tenant for tenant in _active_tenants_query().all() if _has_exact_token(tenant)]
 
+def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
+    matches = tenants_by_exact_widget_token(token)
     if len(matches) > 1:
         logger.error(
             "[tenant_resolver] Refusing ambiguous widget_token assigned to tenants %s",

@@ -144,6 +144,12 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             algorithms=["HS256"],
         )
         self.assertEqual(refreshed.get("session_kind"), "widget")
+        profile = self.client.get(
+            "/auth/me", headers={"Authorization": "Bearer " + payload["token"]}
+        )
+        self.assertEqual(profile.status_code, 200)
+        self.assertEqual(profile.get_json()["tenant_slug"], self.tenant.slug)
+        self.assertNotIn("email", profile.get_json())
         self.assertEqual(
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
@@ -208,7 +214,19 @@ class WidgetTokenEndpointTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
-        self.assertEqual(payload.get("id"), self.user.id)
+        self.assertEqual(payload["tenant_slug"], self.tenant.slug)
+        self.assertEqual(payload["tipo_chat"], self.tenant.tipo)
+        self.assertNotIn("email", payload)
+        self.assertNotIn("token", payload)
+
+    def test_widget_profile_logs_the_header_source_without_its_value(self):
+        token = self.tenant.configuracion["widget_tokens"][0]
+        with self.assertLogs(self.app.logger, level="DEBUG") as captured:
+            response = self.client.get("/auth/me", headers={"X-Widget-Token": token})
+        self.assertEqual(response.status_code, 200)
+        messages = "\n".join(captured.output)
+        self.assertIn("X-Widget-Token", messages)
+        self.assertNotIn(token[:10], messages)
 
     def test_widget_token_blocks_free_plan(self):
         self.tenant.plan = "free"

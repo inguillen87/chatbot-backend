@@ -55,6 +55,8 @@ productos_bp = Blueprint("productos", __name__, url_prefix="/productos")
 def _resolve_authenticated_user() -> Optional[User]:
     """Devuelve el usuario autenticado si existe (token o sesión)."""
 
+    if getattr(g, "explicit_bearer_present", False) or getattr(g, "widget_credential_selected", False):
+        return getattr(g, "viewer", None)
     if getattr(current_user, "is_authenticated", False):
         return current_user  # type: ignore[return-value]
 

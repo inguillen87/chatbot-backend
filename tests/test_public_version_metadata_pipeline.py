@@ -15,6 +15,7 @@ from unittest.mock import patch
 from urllib.parse import urlparse
 
 from flask import Flask, current_app, g, request
+from utils.internal_cron_request import is_registered_internal_cron_request
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,9 +60,10 @@ class PublicVersionMetadataPipelineTest(unittest.TestCase):
         namespace = dict(g=g, request=request, current_app=current_app, urlparse=urlparse,
                          _TENANT_HINT_BODY_MAX_BYTES=65_536,
                          is_public_liveness_request=liveness.is_public_liveness_request,
+                         is_registered_internal_cron_request=is_registered_internal_cron_request,
                          is_public_version_metadata_request=metadata.is_public_version_metadata_request)
         names = {"_normalize_slug", "_tenant_slug_from_body", "_tenant_slug_from_url",
-                 "_tenant_slug_from_path", "_resolve_tenant_profile", "tenant_middleware"}
+                 "_tenant_slug_from_path", "_resolve_tenant_profile", "_is_global_platform_landing_request", "tenant_middleware"}
         _source_functions(ROOT / "middleware/tenant_context.py", names, namespace)
 
         def find_tenant(slug):

@@ -67,9 +67,11 @@ def test_panel_session_keeps_the_full_profile(client, owner_org):
 
 
 
-def test_installed_widget_keeps_its_identifier_without_owner_data(client, owner_org):
+
+def test_installed_widget_profile_without_owner_data(client, owner_org):
     owner, _tenant = owner_org
-    data = client.get("/perfil", headers={"X-Entity-Token": owner.token}).get_json()
-    assert data["entity_token"] == owner.token
-    assert data["widget_embed_token"] is None
-    assert owner.email not in str(data)
+    response = client.get("/perfil", headers={"X-Entity-Token": owner.token})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["session_kind"] == "widget"
+    assert owner.email not in response.get_data(as_text=True)

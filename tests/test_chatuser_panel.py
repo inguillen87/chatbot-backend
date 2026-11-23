@@ -1,6 +1,5 @@
 import unittest
 import uuid
-from unittest.mock import patch, MagicMock
 from app import create_app, db
 from models import ChatSessionContext, PymeTicket, TenantProfile, User, Rubro
 from config import TestConfig
@@ -43,6 +42,7 @@ class ChatUserPanelTests(unittest.TestCase):
 
         self.tenant = TenantProfile(
             slug=f"testco-{self.owner_user.id}",
+            plan="full",
             nombre="TestCo",
             tipo="pyme",
             pyme_id=self.owner_user.id,
@@ -77,16 +77,15 @@ class ChatUserPanelTests(unittest.TestCase):
         db.session.commit()
 
         # 2. Register the user with the same chat session id
-        with patch('services.pymes.get_or_create_pyme_user_by_token', return_value=self.owner_user):
-            resp = self.client.post('/auth/chatuserregisterpanel', json={
-                'name': 'New User',
-                'email': 'newuser@example.com',
-                'password': 'password123',
-                'empresa_token': self.owner_user.token
-            }, headers={
-                'X-Chat-Session-Id': chat_session_id,
-                'X-Anon-Id': anon_id
-            })
+        resp = self.client.post('/auth/chatuserregisterpanel', json={
+            'name': 'New User',
+            'email': 'newuser@example.com',
+            'password': 'password123',
+            'empresa_token': self.owner_user.token
+        }, headers={
+            'X-Chat-Session-Id': chat_session_id,
+            'X-Anon-Id': anon_id
+        })
 
         self.assertEqual(resp.status_code, 201)
         json_data = resp.get_json()
@@ -116,15 +115,19 @@ class ChatUserPanelTests(unittest.TestCase):
         )
         municipal_owner.set_password('password')
         db.session.add(municipal_owner)
+        db.session.flush()
+        db.session.add(TenantProfile(
+            slug="municipal", nombre="Municipal", tipo="municipio",
+            municipio_id=municipal_owner.id, plan="full",
+        ))
         db.session.commit()
 
-        with patch('services.pymes.get_or_create_pyme_user_by_token', return_value=municipal_owner):
-            resp = self.client.post('/auth/chatuserregisterpanel', json={
-                'name': 'Ciudadano',
-                'email': 'ciudadano@test.com',
-                'password': 'password123',
-                'empresa_token': municipal_owner.token
-            })
+        resp = self.client.post('/auth/chatuserregisterpanel', json={
+            'name': 'Ciudadano',
+            'email': 'ciudadano@test.com',
+            'password': 'password123',
+            'empresa_token': municipal_owner.token
+        })
 
         self.assertEqual(resp.status_code, 201)
         data = resp.get_json()
@@ -151,6 +154,11 @@ class ChatUserPanelTests(unittest.TestCase):
         )
         municipal_owner.set_password('password')
         db.session.add(municipal_owner)
+        db.session.flush()
+        db.session.add(TenantProfile(
+            slug="municipal", nombre="Municipal", tipo="municipio",
+            municipio_id=municipal_owner.id, plan="full",
+        ))
         db.session.commit()
 
         existing_user = User(
@@ -164,13 +172,12 @@ class ChatUserPanelTests(unittest.TestCase):
         db.session.add(existing_user)
         db.session.commit()
 
-        with patch('services.pymes.get_or_create_pyme_user_by_token', return_value=municipal_owner):
-            resp = self.client.post('/auth/chatuserregisterpanel', json={
-                'name': 'Ciudadano',
-                'email': 'ciudadano@test.com',
-                'password': 'existing',
-                'empresa_token': municipal_owner.token
-            })
+        resp = self.client.post('/auth/chatuserregisterpanel', json={
+            'name': 'Ciudadano',
+            'email': 'ciudadano@test.com',
+            'password': 'existing',
+            'empresa_token': municipal_owner.token
+        })
 
         self.assertEqual(resp.status_code, 409)
         payload = resp.get_json()

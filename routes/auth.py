@@ -35,6 +35,7 @@ from cutover_writer_fence import cutover_writer_view
 from services.google_auth import login_o_crear_usuario
 from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import resolve_unique_tenant_for_owner
+from services.visitor_registration import registration_consent, registration_tenant, visitor_scope_for_entity_token
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
 from services.catalog_seed import provision_demo_catalog
@@ -129,6 +130,7 @@ auth_bp = Blueprint('auth', __name__, url_prefix='/auth')
 auth_api_bp = Blueprint('auth_api', __name__, url_prefix='/api/auth')
 
 from utils.auth_helpers import (
+    auth_sin_escrituras_implicitas,
     token_requerido,
     obtener_token,
     get_or_create_anon_id,
@@ -139,6 +141,7 @@ from utils.auth_helpers import (
     is_demo_user_account,
     user_tenant_auth_allowed,
     user_from_token,
+    widget_owner_from_token,
     get_or_create_entity_token,
     _safe_user_query,
 )
@@ -1065,66 +1068,56 @@ from services.plan_access import tenant_allows_workspace_branding
 from utils.tenant_admin_access import can_manage_tenant_control_plane, resolve_consistent_user_tenant
 
 
-def _widget_public_profile(user: User) -> Dict[str, Any]:
-    """Organization view for a widget session: branding and session state only.
+_HSL_CHANNELS = r"-?\d+(?:\.\d+)?(?:deg)?[\s,]+\d+(?:\.\d+)?%[\s,]+\d+(?:\.\d+)?%"
+_WIDGET_COLOR = re.compile(rf"#[0-9a-f]{{3}}(?:[0-9a-f]{{3}})?|{_HSL_CHANNELS}|hsl\({_HSL_CHANNELS}\)", re.I)
 
-    A widget session represents the organization serving a public chat, not a
-    person signed in to the panel, so the response carries no account, contact,
-    plan or permission data. It is built from read-only helpers.
-    """
-    owner = getattr(g, "widget_owner_user", None) or user
-    tenant_profile = _panel_tenant_for_user(owner)
-    rubro_obj = getattr(owner, "rubro", None)
-    rubro_nombre = getattr(rubro_obj, "nombre", None) or "General"
-    tipo_chat = _resolve_tipo_chat(owner, tenant_obj=tenant_profile, rubro_nombre=rubro_nombre)
-    token_payload = getattr(g, "token_payload", {}) or {}
-    auth_token = getattr(g, "auth_token", None)
-    tenant_slug_value = getattr(tenant_profile, "slug", None)
-    payload = {
-        "contract_version": "widget.public_profile.v1",
-        "tipo_chat": tipo_chat,
-        "nombre_empresa": getattr(owner, "nombre_empresa", None),
-        "logo_url": getattr(owner, "logo_url", None),
-        "rubro": rubro_nombre,
-        "rubro_clave": getattr(rubro_obj, "clave", None) if rubro_obj else None,
-        "catalogo_label": (
-            "Cargar Catálogo de Trámites" if tipo_chat == "municipio" else "Cargar Catálogo de Productos"
-        ),
-        "color_primario": getattr(owner, "color_primario", None),
-        "color_secundario": getattr(owner, "color_secundario", None),
-        "tenant_slug": tenant_slug_value,
-        "tenantSlug": tenant_slug_value,
-        "workspace_appearance": build_workspace_appearance(
-            tenant_profile, entitled=tenant_allows_workspace_branding(tenant_profile)),
-        "token": auth_token,
-        "auth_token": auth_token,
-        "session_token": auth_token,
+
+def _widget_profile_payload(owner: User) -> Dict[str, Any]:
+    """Expose the installed organization's published identity and widget session state."""
+    tenant = _panel_tenant_for_user(owner)
+    rubro = owner.rubro
+    claims = getattr(g, "token_payload", {}) or {}
+    public = {
+        "tipo_chat": _resolve_tipo_chat(owner, tenant),
+        "rubro": rubro.nombre if rubro else "General",
+        "rubro_clave": rubro.clave if rubro else None,
         "session_kind": "widget",
-        "session_expires_at": _timestamp_to_iso(token_payload.get("exp")),
-        "session_renew_until": _timestamp_to_iso(token_payload.get("renew_until")),
         "widget_session_active": True,
-        "widget_embed_token": None,
-        "widget_embed_token_kind": "plan_required",
-        "widget_token_cookie_name": current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token"),
-        "widget_access_minutes": current_app.config.get("WIDGET_ACCESS_MINUTES", 45),
-        "widget_renew_days": current_app.config.get("WIDGET_RENEW_DAYS", 7),
+        "visitor_authenticated": False,
+        "session_expires_at": _timestamp_to_iso(claims.get("exp")),
+        "session_renew_until": _timestamp_to_iso(claims.get("renew_until")),
     }
-    # A widget session is only issued to a caller holding the organization's
-    # published widget identifier, so echoing it back discloses nothing new and
-    # keeps installed widgets working. It is read, never created, here.
-    owner_token = getattr(owner, "token", None)
-    if owner_token and not _looks_like_jwt(owner_token):
-        payload["entity_token"] = owner_token
-        payload["entityToken"] = owner_token
-        payload["owner_token"] = owner_token
-    return payload
+    if tenant and tenant.is_active:
+        settings = tenant.widget_settings
+        config = tenant.widget_config
+        theme = tenant.get_theme_config()
+        palette = {}
+        for mode in ("light", "dark"):
+            colors = theme.get(mode)
+            if isinstance(colors, dict):
+                palette[mode] = {
+                    key: value for key, value in colors.items()
+                    if key in {"primary", "secondary", "text", "background", "foreground"}
+                    and isinstance(value, str) and _WIDGET_COLOR.fullmatch(value.strip())
+                }
+        public.update({
+            "tenant_slug": tenant.slug,
+            "tenantSlug": tenant.slug,
+            "nombre_empresa": tenant.nombre,
+            "logo_url": (settings and settings.avatar_url) or tenant.logo_url or (config and config.logo_url),
+            "welcome_title": (settings and settings.welcome_title) or (config and config.welcome_message),
+            "welcome_subtitle": settings and settings.welcome_subtitle,
+            "default_open": settings and settings.default_open,
+            "theme_config": palette,
+        })
+    return {key: value for key, value in public.items() if value is not None}
 
 
 def build_profile_payload(user: User) -> Dict[str, Any]:
     """Assemble the profile payload shared by the legacy and new endpoints."""
 
     if getattr(g, "widget_session", False):
-        return _widget_public_profile(user)
+        return _widget_profile_payload(getattr(g, "widget_owner_user", None) or user)
 
     tenant_profile = None
     rubro_obj = getattr(user, "rubro", None)
@@ -1141,9 +1134,8 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
     # /me is the identity contract for normal panel login. The middleware also
     # resolves anonymous/public widget hints, so its tenant is not authoritative
-    # here. A verified widget session resolves its owner separately.
-    profile_user = getattr(g, 'widget_owner_user', None) if getattr(g, 'widget_session', False) else user
-    tenant_profile = _panel_tenant_for_user(profile_user or user)
+    # here.
+    tenant_profile = _panel_tenant_for_user(user)
     token_payload = getattr(g, 'token_payload', {}) or {}
     if token_payload.get('auth_intent') == CLERK_INTENT_TENANT_PORTAL:
         tenant_id = token_payload.get('tenant_id')
@@ -1255,8 +1247,6 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     profile_data["requires_rubro_selection"] = bool(not getattr(user, "rubro_id", None) and tipo_chat == "pyme")
 
     owner_token = _resolve_owner_token(user)
-    widget_session_active = bool(getattr(g, "widget_session", False))
-    widget_owner = getattr(g, "widget_owner_user", None)
     auth_token = getattr(g, "auth_token", None)
     token_payload = getattr(g, "token_payload", {}) or {}
 
@@ -1272,26 +1262,26 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
     session_kind = token_payload.get("session_kind")
     if not session_kind:
-        session_kind = "widget" if widget_session_active else ("panel" if auth_token else "none")
+        session_kind = "panel" if auth_token else "none"
 
     profile_data["session_token"] = auth_token
     profile_data["session_kind"] = session_kind
     profile_data["session_expires_at"] = _timestamp_to_iso(token_payload.get("exp"))
     profile_data["session_renew_until"] = _timestamp_to_iso(token_payload.get("renew_until"))
-    profile_data["widget_session_active"] = widget_session_active
-    profile_data["widget_session_owner_id"] = getattr(widget_owner, "id", None)
+    profile_data["widget_session_active"] = False
+    profile_data["widget_session_owner_id"] = None
 
     if owner_token:
         profile_data["entity_token"] = owner_token
         profile_data["entityToken"] = owner_token
         profile_data["owner_token"] = owner_token
-        if integration_access.get("enabled") and not widget_session_active:
+        if integration_access.get("enabled"):
             profile_data["widget_embed_token"] = owner_token
             profile_data["widget_embed_token_kind"] = "entity"
     elif getattr(user, "token", None) and not _looks_like_jwt(user.token):
         profile_data["entity_token"] = user.token
         profile_data.setdefault("entityToken", user.token)
-        if integration_access.get("enabled") and not widget_session_active:
+        if integration_access.get("enabled"):
             profile_data.setdefault("widget_embed_token", user.token)
             profile_data.setdefault("widget_embed_token_kind", "legacy")
 
@@ -1324,7 +1314,9 @@ def _sign(payload, minutes, renew_days=None):
     )
 
     payload = dict(payload)
-    payload.setdefault("session_kind", "widget")
+    payload["session_kind"] = "widget"
+    payload["audience"] = "widget"
+    payload.pop("rol", None)  # Renew historical widget tokens without the owner's panel role.
     now_ts = _now()
     payload.update({"iat": now_ts - 1, "exp": now_ts + minutes * 60})
     if renew_days:
@@ -1527,7 +1519,7 @@ def widget_token():
     )
     owner_user = None
     if token:
-        jwt_user = user_from_token(token)
+        jwt_user = user_from_token(token) or widget_owner_from_token(token)
         if jwt_user:
             owner_user = (
                 _user_query().get(jwt_user.empresa_id)
@@ -1589,7 +1581,7 @@ def widget_token():
                     )
     owner = {
         "user_id": owner_user.id,
-        "rol": owner_user.rol,
+        "tenant_id": tenant.id,
         "tipo_chat": owner_user.tipo_chat,
         "municipio_id": owner_user.municipio_id,
         "pyme_id": owner_user.pyme_id,
@@ -2809,6 +2801,60 @@ def google_login():
         current_app.logger.error(f"Error en google_login: {e}", exc_info=True)
         return jsonify({"error": "Error interno"}), 500
 
+def _registration_slug_tenant(slug):
+    from services.tenant_resolver import TenantResolutionError
+
+    if not isinstance(slug, str) or not slug.strip():
+        return None
+    try:
+        return resolve_tenant_only(
+            tenant_slug=slug, require_explicit_slug=True, allow_fallback=False,
+            allow_lazy_demo_creation=False, allow_context_fallback=False, register_widget_token=False,
+        )
+    except TenantResolutionError:
+        return None
+
+
+def _registration_scope_matches(tenant, data):
+    slug_hints = (
+        data.get("tenant_slug"), data.get("tenantSlug"), data.get("tenant"),
+        request.args.get("tenant_slug"), request.args.get("tenantSlug"), request.args.get("tenant"),
+        request.headers.get("X-Tenant"), request.headers.get("X-Tenant-Slug"),
+    )
+    for slug in slug_hints:
+        if slug and slug != tenant.slug and _registration_slug_tenant(slug) != tenant:
+            return False
+    return all(str(value) == str(tenant.id) for value in (
+        data.get("tenant_id"), request.args.get("tenant_id"), request.headers.get("X-Tenant-Id")
+    ) if value is not None)
+
+
+def _claim_visitor_chat(user, tenant, anon_id):
+    """Claim only the existing anonymous chat proven by both opaque identifiers."""
+    session_id = request.headers.get("X-Chat-Session-Id")
+    if not anon_id or not session_id:
+        return False
+    chat = ChatSessionContext.query.filter_by(
+        chat_session_id=session_id, tenant_id=tenant.id, anon_id=anon_id, user_id=None,
+    ).with_for_update().one_or_none()
+    if not chat:
+        return False
+    db.session.flush()
+    chat.user_id = user.id
+    chat.anon_id = None
+    chat.context_data = {**(chat.context_data or {}), "just_logged_in_flag": True}
+    return True
+
+
+def _bind_visitor_login(user, tenant, anon_id):
+    _attach_user_to_tenant(user, tenant)
+    chat_claimed = _claim_visitor_chat(user, tenant, anon_id)
+    db.session.commit()
+    if chat_claimed:
+        from services.ticket_service import servicio_tickets
+        servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id, tenant_id=tenant.id)
+
+
 @auth_bp.route('/register', methods=['POST'])
 def register():
     data = request.get_json(silent=True) or {}
@@ -2819,18 +2865,19 @@ def register():
             "botones": [{"texto": "Volver al chat"}],
         }), 400
 
+    # The widget form posts here too. Its entity identity must select the
+    # organization before any portal or business onboarding branch is entered.
+    if data.get("empresa_token") or (request.headers.get("X-Entity-Token") and not data.get("nombre_empresa")):
+        return chatuser_register_panel()
+
     # Check if this is an end-user registration for a specific tenant
     tenant_slug = data.get("tenant_slug") or data.get("tenantSlug") or request.args.get("tenant_slug") or request.args.get("tenantSlug")
     if tenant_slug:
         current_app.logger.debug(f"Processing tenant_slug={tenant_slug}")
         try:
-            try:
-                tenant = resolve_tenant_only(tenant_slug=tenant_slug)
-                current_app.logger.debug(f"Tenant resolved: {tenant}")
-            except Exception:
-                tenant = None
-
-            if not tenant:
+            tenant = _registration_slug_tenant(tenant_slug)
+            owner = _tenant_owner(tenant)
+            if not tenant or not owner or is_user_auth_disabled(owner) or not _registration_scope_matches(tenant, data):
                 return jsonify({"error": "Tenant no encontrado"}), 404
 
             # Registration for end-user (usuario)
@@ -2851,8 +2898,7 @@ def register():
                 token=generate_token(),
                 rol="usuario",
                 telefono=telefono,
-                acepta_marketing=True, # Default for portal users? Or passed from UI
-                fecha_aceptacion_marketing=datetime.utcnow(),
+                **registration_consent(data),
                 email_verified=False,
                 email_verification_token=_generate_email_verification_token(),
                 email_verification_sent_at=datetime.now(timezone.utc),
@@ -2863,20 +2909,17 @@ def register():
             current_app.logger.debug("Attaching tenant")
             _attach_user_to_tenant(nuevo, tenant)
 
-            # Set rubro/tipo_chat from tenant owner context if needed, or leave generic
-            current_app.logger.debug("Finding owner")
-            owner = _tenant_owner(tenant)
-            if owner:
-                nuevo.rubro_id = owner.rubro_id
-                nuevo.tipo_chat = owner.tipo_chat
-                nuevo.empresa_id = owner.id # Link as client of the owner
+            nuevo.rubro_id = owner.rubro_id
+            nuevo.tipo_chat = owner.tipo_chat
+            nuevo.empresa_id = owner.id
 
             db.session.add(nuevo)
+            anon_id = request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id") or data.get("anon_id")
+            chat_claimed = _claim_visitor_chat(nuevo, tenant, anon_id)
             db.session.commit()
 
             # Migrate anon data if present
-            anon_id = data.get("anon_id") or request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id")
-            if anon_id:
+            if chat_claimed:
                 try:
                     from services.ticket_service import servicio_tickets
                     servicio_tickets.migrar_tickets_de_anonimo(
@@ -2884,11 +2927,6 @@ def register():
                         nuevo.id,
                         tenant_id=getattr(tenant, "id", None),
                     )
-
-                    # Migrate cart
-                    from routes.market import _get_or_create_cart_for_user
-                    if tenant:
-                        _get_or_create_cart_for_user(tenant, nuevo, create_if_missing=False)
                 except Exception as e:
                     current_app.logger.warning(
                         "[register.portal] Anonymous data migration failed error_type=%s",
@@ -3120,6 +3158,7 @@ def verify_email():
 
 @auth_bp.route('/widget/register', methods=['POST'])
 @token_requerido
+@auth_sin_escrituras_implicitas
 def register_from_widget(user):
     """Registro rápido desde el widget asociado al token."""
     # Aceptar tanto JSON como formularios tradicionales
@@ -3143,8 +3182,8 @@ def register_from_widget(user):
             "botones": [{"texto": "Volver al chat"}],
         }), 400
 
-    owner_tenant = _tenant_for_owner(user)
-    if not owner_tenant:
+    owner_tenant = registration_tenant(user, widget=bool(getattr(g, "widget_session", False)))
+    if not owner_tenant or not _registration_scope_matches(owner_tenant, data):
         return (
             jsonify({"error": "Tenant no especificado o no encontrado para el widget"}),
             404,
@@ -3156,7 +3195,6 @@ def register_from_widget(user):
             "botones": [{"texto": "Volver al chat"}],
         }), 409
 
-    acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
     if isinstance(tags, list):
         tags_value = ','.join(tags)
@@ -3178,8 +3216,7 @@ def register_from_widget(user):
         rol="usuario",
         tipo_chat=getattr(user, "tipo_chat", None) or ("municipio" if es_rubro_publico(user.rubro) else "pyme"),
         telefono=telefono,
-        acepta_marketing=acepta_marketing,
-        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+        **registration_consent(data),
         tags=tags_value,
         email_verified=False,
         email_verification_token=_generate_email_verification_token(),
@@ -3188,13 +3225,12 @@ def register_from_widget(user):
     nuevo.set_password(password)
     try:
         db.session.add(nuevo)
-        db.session.commit()
-
         _attach_user_to_tenant(nuevo, owner_tenant)
+        chat_claimed = _claim_visitor_chat(nuevo, owner_tenant, anon_id)
         db.session.commit()
 
         # --------- BLOQUE CRÍTICO --------------
-        if anon_id:
+        if chat_claimed:
             from services.ticket_service import servicio_tickets
             servicio_tickets.migrar_tickets_de_anonimo(
                 anon_id,
@@ -3217,7 +3253,6 @@ def register_from_widget(user):
         _send_verification_email(nuevo)
         _apply_welcome_points_if_configured(nuevo)
 
-        owner_token = _resolve_owner_token(user)
         response_payload = {
             "id": nuevo.id,
             "token": jwt_token,
@@ -3231,14 +3266,10 @@ def register_from_widget(user):
             "tenantSlug": owner_tenant.slug if owner_tenant else getattr(nuevo, "tenant_slug", None),
             "marketplace": _tenant_market_payload(owner_tenant),
         }
-        entity_token_value = _include_entity_token_fields(response_payload, owner_token)
-
         resp = jsonify(response_payload)
         if anon_id:
             resp.headers["X-Anon-Id"] = anon_id
             resp.headers["Anon-Id"] = anon_id
-        if entity_token_value:
-            resp.headers.setdefault("X-Entity-Token", entity_token_value)
         return resp, 201
     except Exception as e:
         db.session.rollback()
@@ -3253,6 +3284,7 @@ def register_from_widget(user):
 
 @auth_bp.route('/widget/login', methods=['POST'])
 @token_requerido
+@auth_sin_escrituras_implicitas
 def login_from_widget(owner_user):
     """Login desde el widget asociado al token."""
     data = request.get_json(silent=True)
@@ -3268,8 +3300,8 @@ def login_from_widget(owner_user):
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
-    owner_tenant = _resolve_tenant_for_user(owner_user, _tenant_for_owner(owner_user))
-    if not owner_tenant:
+    owner_tenant = registration_tenant(owner_user)
+    if not owner_tenant or not _registration_scope_matches(owner_tenant, data):
         return jsonify({"error": "Tenant no especificado o no encontrado para el widget"}), 404
     if not _tenant_allows_auth(owner_user, owner_tenant):
         return jsonify({"error": "Credenciales inválidas."}), 401
@@ -3279,20 +3311,10 @@ def login_from_widget(owner_user):
     ).first()
     if not user or is_user_auth_disabled(user) or not user.check_password(password):
         return jsonify({"error": "Credenciales inválidas."}), 401
-    if not _tenant_allows_auth(user, owner_tenant):
+    if user.tenant_id not in (None, owner_tenant.id) or not _tenant_allows_auth(user, owner_tenant):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
-    if anon_id:
-        from services.ticket_service import servicio_tickets
-        servicio_tickets.migrar_tickets_de_anonimo(
-            anon_id,
-            user.id,
-            tenant_id=getattr(owner_tenant, "id", None),
-        )
-
-    _attach_user_to_tenant(user, owner_tenant)
-    db.session.add(user)
-    db.session.commit()
+    _bind_visitor_login(user, owner_tenant, anon_id)
 
     user_rubro = getattr(user, "rubro", None)
     owner_rubro = getattr(owner_user, "rubro", None)
@@ -3312,7 +3334,6 @@ def login_from_widget(owner_user):
     }
     jwt_token = _issue_native_panel_token(jwt_payload, bind_cookie=False, audience='portal')
 
-    owner_token = _resolve_owner_token(owner_user)
     response_payload = {
         "id": user.id,
         "token": jwt_token,
@@ -3329,14 +3350,10 @@ def login_from_widget(owner_user):
         "marketplace": _tenant_market_payload(owner_tenant),
     }
 
-    entity_token_value = _include_entity_token_fields(response_payload, owner_token)
-
     resp = jsonify(response_payload)
     if anon_id:
         resp.headers["X-Anon-Id"] = anon_id
         resp.headers["Anon-Id"] = anon_id
-    if entity_token_value:
-        resp.headers.setdefault("X-Entity-Token", entity_token_value)
     return resp
 
 
@@ -3349,7 +3366,8 @@ def chatuser_register_panel():
     if not data:
         data = request.form.to_dict() if request.form else {}
 
-    empresa_token = data.get('empresa_token') or obtener_token()
+    entity_header = request.headers.get("X-Entity-Token")
+    empresa_token = entity_header or data.get('empresa_token') or obtener_token()
     current_app.logger.info(
         "[chatuser_register_panel] Registration attempt metadata=%s header_has_anon_session=%s",
         _registration_log_metadata(data),
@@ -3361,11 +3379,8 @@ def chatuser_register_panel():
         current_app.logger.warning("[chatuser_register_panel] Registration attempt failed: Falta empresa_token")
         return jsonify({"error": "Falta empresa_token"}), 400
 
-    # Keep the large commerce/chat stack off authentication startup imports.
-    from services.pymes import get_or_create_pyme_user_by_token
-
-    owner_user = get_or_create_pyme_user_by_token(empresa_token.strip())
-    if not owner_user:
+    scope = visitor_scope_for_entity_token(empresa_token, require_widget_access=True)
+    if not scope:
         current_app.logger.warning(
             "[chatuser_register_panel] Registration attempt failed: invalid entity token"
         )
@@ -3374,9 +3389,15 @@ def chatuser_register_panel():
             404,
         )
 
-    owner_tenant = _tenant_for_owner(owner_user)
+    owner_user, owner_tenant = scope
+    body_token = data.get("empresa_token")
+    if entity_header and body_token and body_token != entity_header:
+        if visitor_scope_for_entity_token(body_token, require_widget_access=True) != scope:
+            return jsonify({"error": "La organización indicada no coincide con el registro."}), 409
+    if not _registration_scope_matches(owner_tenant, data):
+        return jsonify({"error": "La organización indicada no coincide con el registro."}), 409
 
-    name = data.get('name')
+    name = data.get('name') or data.get('nombre')
     email = data.get('email')
     password = data.get('password')
     anon_id = (
@@ -3424,7 +3445,6 @@ def chatuser_register_panel():
         owner_user.id,
         _registration_log_metadata(data),
     )
-    acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
     if isinstance(tags, list):
         tags_value = ','.join(tags)
@@ -3444,8 +3464,7 @@ def chatuser_register_panel():
         rol="lead" if not data.get('password') else "usuario",
         tipo_chat=owner_tipo_chat,
         telefono=telefono,
-        acepta_marketing=acepta_marketing,
-        fecha_aceptacion_marketing=datetime.utcnow() if acepta_marketing else None,
+        **registration_consent(data),
         tags=tags_value,
         email_verified=False,
         email_verification_token=_generate_email_verification_token(),
@@ -3454,11 +3473,9 @@ def chatuser_register_panel():
     nuevo.set_password(password)
     try:
         db.session.add(nuevo)
+        _attach_user_to_tenant(nuevo, owner_tenant)
+        chat_claimed = _claim_visitor_chat(nuevo, owner_tenant, anon_id)
         db.session.commit()
-
-        if owner_tenant:
-            _attach_user_to_tenant(nuevo, owner_tenant)
-            db.session.commit()
 
         current_app.logger.info(
             "[chatuser_register_panel] Registration completed user_id=%s owner_id=%s",
@@ -3466,34 +3483,13 @@ def chatuser_register_panel():
             owner_user.id,
         )
 
-        if anon_id:
+        if chat_claimed:
             from services.ticket_service import servicio_tickets
             servicio_tickets.migrar_tickets_de_anonimo(
                 anon_id,
                 nuevo.id,
                 tenant_id=getattr(owner_tenant, "id", None),
             )
-
-        # Update ChatSessionContext
-        chat_session_id = request.headers.get("X-Chat-Session-Id")
-        if chat_session_id and owner_tenant:
-            chat_context = ChatSessionContext.query.filter_by(
-                chat_session_id=chat_session_id,
-                tenant_id=owner_tenant.id,
-            ).one_or_none()
-            if chat_context:
-                chat_context.user_id = nuevo.id
-                chat_context.anon_id = None
-                if chat_context.context_data is None:
-                    chat_context.context_data = {}
-                chat_context.context_data['just_logged_in_flag'] = True
-                flag_modified(chat_context, "context_data")
-                db.session.add(chat_context)
-                db.session.commit()
-                current_app.logger.info(
-                    "[chatuser_register_panel] Chat session associated user_id=%s",
-                    nuevo.id,
-                )
 
         # Generar el token JWT
         jwt_payload = {
@@ -3550,12 +3546,12 @@ def chatuser_login_panel():
     if not empresa_token:
         return jsonify({"error": "Falta empresa_token"}), 400
 
-    owner_user = _user_query().filter_by(token=empresa_token.strip()).first()
-    if not owner_user:
+    scope = visitor_scope_for_entity_token(empresa_token, require_widget_access=False)
+    if not scope:
         return jsonify({"error": "Token de empresa inválido"}), 404
 
-    owner_tenant = _tenant_for_owner(owner_user)
-    if not _tenant_allows_auth(owner_user, owner_tenant):
+    owner_user, owner_tenant = scope
+    if not _registration_scope_matches(owner_tenant, data) or not _tenant_allows_auth(owner_user, owner_tenant):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
     email = data.get('email')
@@ -3586,19 +3582,10 @@ def chatuser_login_panel():
     if not _tenant_allows_auth(user, owner_tenant):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
-    if anon_id:
-        from services.ticket_service import servicio_tickets
-        servicio_tickets.migrar_tickets_de_anonimo(
-            anon_id,
-            user.id,
-            tenant_id=getattr(owner_tenant, "id", None),
-        )
+    _bind_visitor_login(user, owner_tenant, anon_id)
 
-    _attach_user_to_tenant(user, owner_tenant)
-    db.session.add(user)
-    db.session.commit()
-
-    rubro_nombre = user.rubro.nombre if user.rubro else owner_user.rubro.nombre if owner_user else "General"
+    rubro = user.rubro or owner_user.rubro
+    rubro_nombre = rubro.nombre if rubro else "General"
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=owner_tenant, rubro_nombre=rubro_nombre)
 
     effective_municipio_id = getattr(owner_tenant, "municipio_id", None) or user.municipio_id
@@ -3638,6 +3625,8 @@ def chatuser_login_panel():
 @token_requerido
 def token_info(user):
     """Devuelve el rubro y la empresa asociados al token."""
+    if getattr(g, "widget_session", False):
+        return jsonify(build_profile_payload(user))
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
     return jsonify({
         "id": user.id,

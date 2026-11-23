@@ -255,9 +255,11 @@ def test_explicit_static_widget_bearer_overrides_stale_flask_session(client):
         stale_user = _create_user(email="stale-static-session@test.com")
         widget_owner = _create_user(email="explicit-static-widget@test.com")
         widget_owner.entity_token = "explicit-static-widget-token"
+        db.session.add(TenantProfile(
+            slug="static-widget", nombre="Widget de prueba", tipo="pyme", pyme_id=widget_owner.id,
+        ))
         db.session.commit()
         stale_user_id = stale_user.id
-        widget_owner_id = widget_owner.id
 
     with client.session_transaction() as flask_session:
         flask_session["_user_id"] = str(stale_user_id)
@@ -269,7 +271,11 @@ def test_explicit_static_widget_bearer_overrides_stale_flask_session(client):
     )
 
     assert response.status_code == 200
-    assert response.get_json()["id"] == widget_owner_id
+    profile = response.get_json()
+    assert profile["tenant_slug"] == "static-widget"
+    assert profile["session_kind"] == "widget"
+    assert profile["visitor_authenticated"] is False
+    assert "id" not in profile
 
 
 @pytest.mark.parametrize("deactivation_method", ("delete", "put"))

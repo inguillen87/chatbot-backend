@@ -4,7 +4,19 @@ import pytest
 from io import BytesIO
 from datetime import datetime, timedelta
 from flask import current_app
-from utils.auth_helpers import anon_o_token_requerido
+from utils.auth_helpers import anon_o_token_requerido, generar_token
+
+
+def panel_token(user):
+    return generar_token(user.id, user.rol, user.tipo_chat, user.municipio_id, user.pyme_id)
+
+
+def widget_cookie(client):
+    name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    cookie = client.get_cookie(name)
+    assert cookie is not None and cookie.http_only
+    return cookie.value
+
 
 def test_perfil_alias_works(client):
     """Verifica que el alias /perfil funciona correctamente."""
@@ -20,12 +32,7 @@ def test_perfil_alias_works(client):
     db.session.add(user)
     db.session.commit()
 
-    # Generate a JWT token for the user
-    jwt_payload = {
-        'user_id': user.id,
-        'exp': datetime.utcnow() + timedelta(days=1)
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+    jwt_token = panel_token(user)
 
     response = client.get(
         '/perfil',
@@ -79,10 +86,7 @@ def test_perfil_uses_tenant_slug_and_exposes_profile_sections(client):
     db.session.add(tenant)
     db.session.commit()
 
-    jwt_payload = {"user_id": owner.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(owner)
 
     response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
     assert response.status_code == 200
@@ -125,10 +129,7 @@ def test_admin_role_aliases_receive_ticket_panels_and_capabilities(client, role)
     db.session.add(tenant)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
     headers = {"Authorization": f"Bearer {jwt_token}"}
 
     profile_response = client.get("/auth/perfil", headers=headers)
@@ -177,10 +178,7 @@ def test_perfil_allows_consent_avatar_url_and_exposes_picture_alias(client):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     avatar_url = "https://cdn.example.com/profiles/avatar-profile.jpg"
     update_response = client.put(
@@ -232,10 +230,7 @@ def test_perfil_rejects_avatar_url_without_explicit_consent(client):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     response = client.put(
         "/auth/perfil",
@@ -275,10 +270,7 @@ def test_perfil_hides_legacy_avatar_without_explicit_consent(client):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
     assert response.status_code == 200
@@ -316,10 +308,7 @@ def test_perfil_hides_legacy_avatar_with_unsafe_url_even_with_consent(client):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     response = client.get("/auth/perfil", headers={"Authorization": f"Bearer {jwt_token}"})
     assert response.status_code == 200
@@ -349,10 +338,7 @@ def test_perfil_rejects_unsafe_avatar_url(client):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     response = client.put(
         "/auth/perfil",
@@ -382,10 +368,7 @@ def test_perfil_rejects_scraped_avatar_source_even_with_https(client):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     response = client.put(
         "/auth/perfil",
@@ -418,10 +401,7 @@ def test_perfil_rejects_whatsapp_profile_avatar_source_even_with_consent(client)
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     response = client.put(
         "/auth/perfil",
@@ -462,10 +442,7 @@ def test_perfil_avatar_consent_false_clears_existing_avatar(client):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     response = client.put(
         "/auth/perfil",
@@ -499,10 +476,7 @@ def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     def fake_upload(file_storage, kind="attachments", **kwargs):
         assert kind == "profile_avatars"
@@ -565,10 +539,7 @@ def test_profile_avatar_upload_rejects_oversize_before_storage(client, monkeypat
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     upload_called = False
 
@@ -613,10 +584,7 @@ def test_profile_avatar_upload_requires_explicit_consent(client, monkeypatch):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     upload_called = False
 
@@ -657,10 +625,7 @@ def test_profile_avatar_upload_rejects_denied_consent(client, monkeypatch):
     db.session.add(user)
     db.session.commit()
 
-    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(user)
 
     upload_called = False
 
@@ -731,13 +696,7 @@ def test_perfil_returns_owner_token_for_employee(client):
     db.session.add(employee)
     db.session.commit()
 
-    jwt_payload = {
-        'user_id': employee.id,
-        'exp': datetime.utcnow() + timedelta(days=1)
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode('utf-8')
+    jwt_token = panel_token(employee)
 
     response = client.get(
         '/auth/perfil',
@@ -833,19 +792,15 @@ def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
     response = client.get('/auth/perfil', query_string={'token': owner.token})
     assert response.status_code == 200
     data = response.get_json()
-    assert data["entity_token"] == owner.token
-    auth_token = data["auth_token"]
+    assert {"entity_token", "auth_token", "session_token", "owner_token", "widget_embed_token"}.isdisjoint(data)
+    auth_token = widget_cookie(client)
     assert auth_token and auth_token != owner.token
     assert auth_token.count('.') == 2
-    assert data["widget_embed_token"] is None
-    assert data["widget_embed_token_kind"] == "plan_required"
-    assert data["owner_token"] == owner.token
-    assert data["session_token"] == auth_token
+    assert data["tenant_slug"] == tenant.slug
     assert data["session_kind"] == "widget"
     assert data["widget_session_active"] is True
     assert data["session_expires_at"]
     assert data["session_renew_until"]
-    assert data["widget_token_cookie_name"] == client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
 
     widget_cookie_name = client.application.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
     cookie_headers = response.headers.getlist("Set-Cookie")
@@ -858,9 +813,9 @@ def test_perfil_accepts_static_entity_token_and_sets_widget_session(client):
     response_2 = client.get('/auth/perfil', query_string={'token': owner.token})
     assert response_2.status_code == 200
     data_2 = response_2.get_json()
-    assert data_2["auth_token"] == auth_token
+    assert widget_cookie(client) == auth_token
     assert data_2["session_kind"] == "widget"
-    assert data_2["session_token"] == auth_token
+    assert "session_token" not in data_2
     assert data_2["widget_session_active"] is True
 
     # El token de widget no debe permitir acceder a rutas administrativas como /pedidos.
@@ -898,8 +853,8 @@ def test_perfil_prefers_entity_header_over_placeholder_authorization(client):
 
     assert response.status_code == 200
     data = response.get_json()
-    assert data["entity_token"] == owner.token
-    auth_token = data["auth_token"]
+    assert data["session_kind"] == "widget"
+    auth_token = widget_cookie(client)
     assert auth_token and auth_token != owner.token
     assert auth_token.count('.') == 2
 
@@ -936,8 +891,7 @@ def test_static_entity_token_overrides_authorization_jwt(client):
 
     first = client.get('/auth/perfil', query_string={'token': owner_a.token})
     assert first.status_code == 200
-    first_data = first.get_json()
-    jwt_owner_a = first_data["auth_token"]
+    jwt_owner_a = widget_cookie(client)
     assert jwt_owner_a and jwt_owner_a.count('.') == 2
 
     second = client.get(
@@ -950,8 +904,8 @@ def test_static_entity_token_overrides_authorization_jwt(client):
 
     assert second.status_code == 200
     second_data = second.get_json()
-    assert second_data["entity_token"] == owner_b.token
-    jwt_owner_b = second_data["auth_token"]
+    assert second_data["session_kind"] == "widget"
+    jwt_owner_b = widget_cookie(client)
     assert jwt_owner_b and jwt_owner_b.count('.') == 2
     assert jwt_owner_b != jwt_owner_a
 
@@ -988,13 +942,11 @@ def test_perfil_accepts_demo_anon_token(client):
 
     assert response.status_code == 200
     data = response.get_json()
-    assert data["entity_token"] == owner.token
-    assert data["widget_embed_token"] is None
-    assert data["widget_embed_token_kind"] == "plan_required"
-    assert data["owner_token"] == owner.token
+    assert data["tipo_chat"] == "municipio"
+    assert {"entity_token", "owner_token", "session_token", "widget_embed_token"}.isdisjoint(data)
     assert data["session_kind"] == "widget"
     assert data["widget_session_active"] is True
-    assert data["session_token"] and data["session_token"].count('.') == 2
+    assert widget_cookie(client).count('.') == 2
 
 
 def test_demo_anon_token_still_works_without_registry(monkeypatch, client):
@@ -1024,7 +976,8 @@ def test_demo_anon_token_still_works_without_registry(monkeypatch, client):
 
     assert response.status_code == 200
     data = response.get_json()
-    assert data["entity_token"] == owner.token
+    assert data["tipo_chat"] == "municipio"
+    assert data["rubro"] == rubro.nombre
     assert data["widget_session_active"] is True
     assert data["session_kind"] == "widget"
 
@@ -1056,13 +1009,14 @@ def test_demo_slug_token_fallback_uses_rubro(monkeypatch, client):
 
     assert response.status_code == 200
     data = response.get_json()
-    assert data["entity_token"] == owner.token
+    assert data["tipo_chat"] == "pyme"
+    assert data["rubro_clave"] == "ferreteria"
     assert data["widget_session_active"] is True
     assert data["session_kind"] == "widget"
 
 
 def test_legacy_perfil_accepts_demo_token(client, monkeypatch):
-    """Legacy /perfil route should also resolve demo tokens and expose legacy fields."""
+    """Legacy /perfil resolves the demo's public sector and session."""
 
     monkeypatch.setattr("utils.auth_helpers.demo_rubro_for_token", lambda *_: None)
 
@@ -1096,20 +1050,16 @@ def test_legacy_perfil_accepts_demo_token(client, monkeypatch):
     assert response.status_code == 200
     data = response.get_json()
 
-    assert data["entity_token"] == owner.token
-    assert data["widget_embed_token"] is None
-    assert data["owner_token"] == owner.token
-    assert data["widget_embed_token_kind"] == "plan_required"
     assert data["widget_session_active"] is True
     assert data["session_kind"] == "widget"
-    assert data["session_token"] and data["session_token"].count('.') == 2
-    assert data["auth_token"] == data["session_token"]
-    assert data["token"] == data["session_token"]
-    # A widget session describes the organization, not the account behind it.
-    for account_field in ("telefono", "direccion", "email", "name", "preguntas_usadas",
-                          "limite_preguntas", "plan"):
-        assert account_field not in data
-    assert data["catalogo_label"] == "Cargar Catálogo de Trámites"
+    assert widget_cookie(client).count('.') == 2
+    assert data["tipo_chat"] == "municipio"
+    assert data["rubro"] == rubro.nombre
+    assert {
+        "entity_token", "widget_embed_token", "owner_token", "auth_token", "session_token", "token",
+        "telefono", "direccion", "ciudad", "provincia", "pais", "preguntas_usadas", "limite_preguntas",
+        "catalogo_label",
+    }.isdisjoint(data)
 
 def test_login_jwt_wins_over_entity_token_header(client):
     """Panel requests must keep using the login JWT even if they also send the entity token."""
@@ -1132,13 +1082,7 @@ def test_login_jwt_wins_over_entity_token_header(client):
     db.session.add(admin)
     db.session.commit()
 
-    jwt_payload = {
-        "user_id": admin.id,
-        "exp": datetime.utcnow() + timedelta(days=1),
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(admin)
 
     response = client.get(
         "/auth/me",
@@ -1203,15 +1147,14 @@ def test_widget_cookie_is_scoped_to_owner_token(client):
 
     first = client.get('/auth/perfil', query_string={'token': owner_a.token})
     assert first.status_code == 200
-    first_data = first.get_json()
-    token_a = first_data["auth_token"]
+    token_a = widget_cookie(client)
     assert token_a and token_a.count('.') == 2
 
     second = client.get('/auth/perfil', query_string={'token': owner_b.token})
     assert second.status_code == 200
     second_data = second.get_json()
-    assert second_data["entity_token"] == owner_b.token
-    token_b = second_data["auth_token"]
+    assert second_data["session_kind"] == "widget"
+    token_b = widget_cookie(client)
     assert token_b and token_b.count('.') == 2
     assert token_b != token_a
 
@@ -1269,8 +1212,8 @@ def test_expired_widget_cookie_does_not_block_renewal(client):
     response = client.get('/auth/perfil', query_string={'token': owner.token})
     assert response.status_code == 200
     data = response.get_json()
-    assert data["entity_token"] == owner.token
-    renewed_token = data["auth_token"]
+    assert data["session_kind"] == "widget"
+    renewed_token = widget_cookie(client)
     assert renewed_token and renewed_token != expired_token
     assert renewed_token.count('.') == 2
 
@@ -1296,13 +1239,7 @@ def test_me_generates_entity_token_for_admin_when_missing(client):
     db.session.add(admin)
     db.session.commit()
 
-    jwt_payload = {
-        "user_id": admin.id,
-        "exp": datetime.utcnow() + timedelta(days=1),
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(admin)
 
     headers = {"Authorization": f"Bearer {jwt_token}"}
 
@@ -1354,12 +1291,12 @@ def test_widget_jwt_stays_anonymous_in_anon_decorator(app, client):
 
     perfil = client.get("/auth/perfil", query_string={"token": owner.token})
     assert perfil.status_code == 200
-    widget_token = perfil.get_json()["auth_token"]
+    widget_token = widget_cookie(client)
     assert widget_token and widget_token.count(".") == 2
 
     with app.test_request_context(
-        "/test/widget-view",
-        method="GET",
+        "/ask",
+        method="POST",
         headers={"Authorization": f"Bearer {widget_token}"},
     ):
         response = widget_view()
@@ -1390,13 +1327,7 @@ def test_panel_jwt_behaves_like_widget_in_anon_decorator(app, client):
     db.session.add(owner)
     db.session.commit()
 
-    jwt_payload = {
-        "user_id": owner.id,
-        "exp": datetime.utcnow() + timedelta(days=1),
-    }
-    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
-    if isinstance(jwt_token, bytes):
-        jwt_token = jwt_token.decode("utf-8")
+    jwt_token = panel_token(owner)
 
     from flask import jsonify, g
 
@@ -1412,8 +1343,8 @@ def test_panel_jwt_behaves_like_widget_in_anon_decorator(app, client):
         )
 
     with app.test_request_context(
-        "/test/widget-view",
-        method="GET",
+        "/ask",
+        method="POST",
         headers={"Authorization": f"Bearer {jwt_token}"},
     ):
         response = widget_view()
