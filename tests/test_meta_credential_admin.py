@@ -433,3 +433,26 @@ def test_rejection_reports_only_the_reason_code(capsys):
         {"event": "meta_credential_operation_rejected", "action": "plan",
          "reason_code": "meta_operation_unavailable", "status": 409},
     ]
+
+
+def test_granular_mismatch_report_has_no_identifiers(capsys):
+    import json as _json
+    import pytest as _pytest
+    from services.meta_whatsapp_runtime import MetaRuntimeError, verify_token_authority
+
+    observed = {"is_valid": True, "app_id": "100", "expires_at": 0,
+                "scopes": ["whatsapp_business_management", "whatsapp_business_messaging"],
+                "granular_scopes": [
+                    {"scope": "whatsapp_business_management", "target_ids": ["900"]},
+                    {"scope": "whatsapp_business_messaging"},
+                    {"scope": "business_management", "target_ids": ["901"]},
+                ]}
+    with _pytest.raises(MetaRuntimeError):
+        verify_token_authority(observed, "100", "555", 1, for_renewal=False)
+    out = capsys.readouterr().out
+    report = _json.loads(out.strip().splitlines()[-1])
+    assert report["scopes"]["whatsapp_business_management"] == {
+        "entries": 1, "target_ids_present": True, "target_count": 1, "includes_expected_account": False}
+    assert report["scopes"]["whatsapp_business_messaging"]["target_ids_present"] is False
+    assert report["other_scopes"] == ["business_management"]
+    assert "900" not in out and "901" not in out and "555" not in out

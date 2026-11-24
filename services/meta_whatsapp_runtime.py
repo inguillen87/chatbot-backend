@@ -155,6 +155,30 @@ def _object_body(response) -> dict:
         raise MetaRuntimeError("meta_authority_response_invalid", transient=True) from None
 
 
+def _report_granular_mismatch(granular, waba_id):
+    """Describe why the granular scopes did not match, without identifiers.
+
+    Logging is suppressed on the credential paths, so this writes one JSON line
+    to stdout with counts and booleans only: never the token, the target ids
+    or any other provider value.
+    """
+    shape = {}
+    for scope in sorted(_SCOPES):
+        entries = [x for x in granular if isinstance(x, dict) and x.get("scope") == scope]
+        targets = entries[0].get("target_ids") if len(entries) == 1 else None
+        shape[scope] = {
+            "entries": len(entries),
+            "target_ids_present": isinstance(targets, list),
+            "target_count": len(targets) if isinstance(targets, list) else None,
+            "includes_expected_account": isinstance(targets, list) and waba_id in targets,
+        }
+    other = sorted({x.get("scope") for x in granular if isinstance(x, dict)
+                    and isinstance(x.get("scope"), str) and re.fullmatch(r"[a-z_]{1,64}", x["scope"])}
+                   - set(_SCOPES))
+    print(json.dumps({"event": "meta_token_granular_scope_mismatch", "scopes": shape,
+                      "other_scopes": other}), flush=True)
+
+
 def verify_token_authority(observed, app_id, waba_id, now, *, for_renewal):
     if for_renewal and (not isinstance(observed, dict)
                         or type(observed.get("is_valid")) is not bool):
@@ -189,6 +213,7 @@ def verify_token_authority(observed, app_id, waba_id, now, *, for_renewal):
             if (len(entries) != 1 or not isinstance(entries[0].get("target_ids"), list)
                     or any(not isinstance(value, str) for value in entries[0]["target_ids"])
                     or waba_id not in entries[0]["target_ids"]):
+                _report_granular_mismatch(granular, waba_id)
                 raise MetaRuntimeError("meta_token_granular_scope_mismatch")
     return provider_expiries
 
