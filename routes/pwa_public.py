@@ -181,6 +181,14 @@ def _tenant_resolution_error_response():
     return response
 
 
+def _exact_brand_identity(tenant):
+    """Like the workspace palette, only an exactly resolved tenant shows its identity."""
+    if getattr(g, "public_tenant_resolution_exact", False) is not True:
+        return None
+    from services.brand_identity import public_brand_identity
+    return public_brand_identity(tenant)
+
+
 def _tenant_info_response():
     tenant = _require_tenant()
     request_id = _request_id()
@@ -188,6 +196,7 @@ def _tenant_info_response():
     from services.organization_branding import build_public_workspace_appearance
     public_payload["workspace_appearance"] = build_public_workspace_appearance(
         tenant, exact_resolution=getattr(g, "public_tenant_resolution_exact", False))
+    public_payload["brand_identity"] = _exact_brand_identity(tenant)
     cart_url, _, _ = _build_public_cart_url(tenant)
     public_payload.setdefault("public_cart_url", cart_url)
     public_payload.setdefault("public_catalog_url", f"/api/pwa/public/catalog?tenant={tenant.slug}")
@@ -802,6 +811,7 @@ def tenant_info():
     public_payload = tenant.to_public_dict()
     public_payload["workspace_appearance"] = build_public_workspace_appearance(
         tenant, exact_resolution=getattr(g, "public_tenant_resolution_exact", False))
+    public_payload["brand_identity"] = _exact_brand_identity(tenant)
     response = jsonify(public_payload)
     response.headers["Cache-Control"] = "no-store"
     return response
