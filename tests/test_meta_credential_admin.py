@@ -444,7 +444,7 @@ def test_granular_mismatch_report_has_no_identifiers(capsys):
                 "scopes": ["whatsapp_business_management", "whatsapp_business_messaging"],
                 "granular_scopes": [
                     {"scope": "whatsapp_business_management", "target_ids": ["900"]},
-                    {"scope": "whatsapp_business_messaging"},
+                    {"scope": "whatsapp_business_messaging", "target_ids": "900"},
                     {"scope": "business_management", "target_ids": ["901"]},
                 ]}
     with _pytest.raises(MetaRuntimeError):
@@ -456,3 +456,37 @@ def test_granular_mismatch_report_has_no_identifiers(capsys):
     assert report["scopes"]["whatsapp_business_messaging"]["target_ids_present"] is False
     assert report["other_scopes"] == ["business_management"]
     assert "900" not in out and "901" not in out and "555" not in out
+
+
+def _observed(granular):
+    return {"is_valid": True, "app_id": "100", "expires_at": 0,
+            "scopes": ["whatsapp_business_management", "whatsapp_business_messaging"],
+            "granular_scopes": granular}
+
+
+def test_system_user_permissions_without_account_list_are_accepted():
+    from services.meta_whatsapp_runtime import verify_token_authority
+
+    granular = [{"scope": "whatsapp_business_management"},
+                {"scope": "whatsapp_business_messaging"},
+                {"scope": "business_management"}]
+    for renewal in (False, True):
+        assert verify_token_authority(_observed(granular), "100", "555", 1, for_renewal=renewal) == []
+
+
+def test_account_list_that_omits_the_number_account_is_still_rejected():
+    import pytest as _pytest
+    from services.meta_whatsapp_runtime import MetaRuntimeError, verify_token_authority
+
+    cases = [
+        [{"scope": "whatsapp_business_management"},
+         {"scope": "whatsapp_business_messaging", "target_ids": ["900"]}],
+        [{"scope": "whatsapp_business_management"}],
+        [{"scope": "whatsapp_business_management"}, {"scope": "whatsapp_business_messaging"},
+         {"scope": "whatsapp_business_messaging"}],
+        [],
+    ]
+    for granular in cases:
+        with _pytest.raises(MetaRuntimeError) as caught:
+            verify_token_authority(_observed(granular), "100", "555", 1, for_renewal=False)
+        assert caught.value.code == "meta_token_granular_scope_mismatch"

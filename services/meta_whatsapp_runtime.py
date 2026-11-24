@@ -210,6 +210,11 @@ def verify_token_authority(observed, app_id, waba_id, now, *, for_renewal):
             raise MetaRuntimeError("meta_token_granular_scope_invalid", transient=for_renewal)
         for scope in _SCOPES:
             entries = [x for x in granular if isinstance(x, dict) and x.get("scope") == scope]
+            if len(entries) == 1 and entries[0].get("target_ids") is None:
+                # Meta omits target_ids when a system user's permission covers every
+                # asset assigned to it. The WABA-scoped phone and subscription reads
+                # made with this same token are what prove access to the account.
+                continue
             if (len(entries) != 1 or not isinstance(entries[0].get("target_ids"), list)
                     or any(not isinstance(value, str) for value in entries[0]["target_ids"])
                     or waba_id not in entries[0]["target_ids"]):
