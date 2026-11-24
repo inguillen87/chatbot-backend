@@ -552,6 +552,27 @@ class WhiteLabelPhaseZeroSecurityTests(unittest.TestCase):
         self.assertTrue(can_manage_tenant_catalog(employee, tenant_a))
         self.assertFalse(can_manage_tenant_catalog(employee, tenant_b))
 
+    def test_widget_editor_starts_from_the_published_colors(self):
+        owner, tenant = self._tenant("brand-editor-colors")
+        headers = self._headers(owner, tenant)
+
+        without_settings = self.client.get(f"/api/tenant/config?tenant_slug={tenant.slug}", headers=headers)
+        self.assertEqual(without_settings.status_code, 200, without_settings.get_json())
+        published = tenant.get_theme_config()["light"]
+        self.assertEqual(without_settings.get_json()["primary_color"], published["primary"])
+        self.assertEqual(without_settings.get_json()["secondary_color"], published["secondary"])
+
+        db.session.add(WidgetSettings(tenant_id=tenant.id, welcome_subtitle="Asistente propio"))
+        db.session.commit()
+        without_colors = self.client.get(f"/api/tenant/config?tenant_slug={tenant.slug}", headers=headers)
+        self.assertEqual(without_colors.get_json()["primary_color"], published["primary"])
+        self.assertEqual(without_colors.get_json()["welcome_subtitle"], "Asistente propio")
+
+        tenant.widget_settings.primary_color = "#0f8f4f"
+        db.session.commit()
+        saved = self.client.get(f"/api/tenant/config?tenant_slug={tenant.slug}", headers=headers)
+        self.assertEqual(saved.get_json()["primary_color"], "#0f8f4f")
+
     def test_widget_update_is_validated_merged_and_visible_in_public_contract(self):
         owner, tenant = self._tenant("brand-runtime")
         settings = WidgetSettings(
