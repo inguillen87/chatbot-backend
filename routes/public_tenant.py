@@ -2091,14 +2091,17 @@ def tenant_config_api(current_user):
         # Similar to what the frontend expects: theme_json, welcome_message, etc.
 
         settings = WidgetSettings.query.filter_by(tenant_id=tenant.id).first()
+        # The editor starts from the colors the published widget shows today,
+        # so saving another field never recolors the organization's widget.
+        published_light = (tenant.get_theme_config() or {}).get("light") or {}
         if not settings:
             # Return defaults from TenantProfile if no specific widget settings
             response = jsonify({
                 "theme_json": tenant.theme_json or {},
                 "welcome_message": "¡Hola! ¿En qué puedo ayudarte?",
                 "avatar_url": tenant.logo_url,
-                "primary_color": "#000000", # Default
-                "secondary_color": "#FFFFFF"
+                "primary_color": published_light.get("primary") or "#000000",
+                "secondary_color": published_light.get("secondary") or "#FFFFFF",
             })
         else:
             response = jsonify({
@@ -2106,8 +2109,8 @@ def tenant_config_api(current_user):
                 "welcome_message": settings.welcome_title or "¡Hola! ¿En qué puedo ayudarte?",
                 "welcome_subtitle": settings.welcome_subtitle,
                 "avatar_url": settings.avatar_url or tenant.logo_url,
-                "primary_color": settings.primary_color,
-                "secondary_color": settings.secondary_color,
+                "primary_color": settings.primary_color or published_light.get("primary"),
+                "secondary_color": settings.secondary_color or published_light.get("secondary"),
                 # Include other settings as needed
                 "bottom": settings.bottom,
                 "side_offset": settings.side_offset,
