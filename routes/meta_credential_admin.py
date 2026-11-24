@@ -113,6 +113,19 @@ def _rate_limit(actor, action):
         raise RequestDenied("meta_operation_rate_storage_unavailable", 503) from None
 
 
+def _report_rejection(action, code, status_code):
+    """Leave the finite reason code of a rejected operation in the runtime log.
+
+    The request path suppresses every logging record, so this writes one JSON
+    line to stdout with only fixed application identifiers: never the target
+    values, the token, the actor or any provider text.
+    """
+    if not re.fullmatch(r"[a-z0-9_]{1,120}", str(code or "")):
+        code = "meta_operation_unavailable"
+    print(json.dumps({"event": "meta_credential_operation_rejected", "action": action,
+                      "reason_code": code, "status": int(status_code)}), flush=True)
+
+
 def _handle(action):
     body = None
     try:
@@ -128,6 +141,7 @@ def _handle(action):
                       else runtime.run_operation(action, body, actor, current_app.config))
         return response(result)
     except RequestDenied as exc:
+        _report_rejection(action, exc.code, exc.status)
         return error(exc.code, exc.status, writes_performed=False)
     except Exception as exc:
         code = "meta_operation_unavailable"
@@ -144,6 +158,7 @@ def _handle(action):
                  if action == "apply" else {"writes_performed": False})
         if action == "inspect":
             extra.update(inspection_complete=False, write_ready=False, provider_mutations=False, messages_sent=False)
+        _report_rejection(action, code, status_code)
         return error(code, status_code, **extra)
     finally:
         if isinstance(body, dict):
