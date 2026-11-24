@@ -137,3 +137,42 @@ class BrowserVoiceHTTPAcceptance(unittest.TestCase):
             self.assertEqual(client.post(self.endpoint+'/sessions/'+identifier+'/stop',json={}).status_code,200)
             self.assertEqual(client.post(self.endpoint+'/sessions',json=command).status_code,410)
             create.assert_called_once();hangup.assert_called_once()
+
+    def test_only_a_superadmin_switches_the_trial_with_explicit_caps(self):
+        trial=self.endpoint+'/trial'
+        enable={'enabled':True,'max_sessions_per_hour':3,'max_total_sessions':3,'days':7}
+        owner=self.login()
+        denied=owner.put(trial,json=enable)
+        self.assertEqual(denied.status_code,403)
+        self.assertEqual(denied.json['reason_code'],'browser_voice_superadmin_required')
+        # The platform operator is the second synthetic admin, recognized as superadmin here.
+        operator=self.login('second')
+        is_operator=lambda actor:actor.email==self.accounts['second']['email']
+        patcher=patch('routes.browser_realtime.is_authorized_superadmin_user',side_effect=is_operator)
+        patcher.start();self.addCleanup(patcher.stop)
+        for invalid in ({'enabled':True},{**enable,'max_sessions_per_hour':4},{**enable,'days':0},
+                        {**enable,'max_total_sessions':True},{**enable,'extra':1},{'enabled':False,'days':1},{}):
+            self.assertEqual(operator.put(trial,json=invalid).status_code,400,invalid)
+        tenant_id=self.accounts['acceptance-a']['tenant_id']
+        self.assertEqual(self.db.session.get(self.Tenant,tenant_id).configuracion,{})
+        before=int(datetime.now(timezone.utc).timestamp())
+        response=operator.put(trial,json=enable)
+        self.assertEqual(response.status_code,200,response.json)
+        self.db.session.expire_all()
+        stored=self.db.session.get(self.Tenant,tenant_id).configuracion['browser_realtime_voice']
+        self.assertEqual(stored,response.json['trial'])
+        self.assertEqual({k:stored[k] for k in ('enabled','max_sessions_per_hour','max_total_sessions')},
+                         {'enabled':True,'max_sessions_per_hour':3,'max_total_sessions':3})
+        self.assertTrue(before+7*86400-5<=stored['trial_expires_at']<=before+7*86400+60)
+        with patch('routes.browser_realtime.read_state',return_value=STATE):
+            capability=owner.get(self.endpoint+'/capabilities')
+        self.assertIs(capability.json['enabled'],True,capability.json)
+        self.assertEqual(capability.json['admission']['total_sessions_remaining'],3)
+        off=operator.put(trial,json={'enabled':False})
+        self.assertEqual(off.status_code,200)
+        self.db.session.expire_all()
+        stored=self.db.session.get(self.Tenant,tenant_id).configuracion['browser_realtime_voice']
+        self.assertIs(stored['enabled'],False);self.assertEqual(stored['max_total_sessions'],3)
+        self.assertEqual(owner.get(self.endpoint+'/capabilities').json['reason_code'],'browser_voice_disabled')
+        events=self.db.session.query(self.Audit).filter(self.Audit.event_type=='browser_realtime.trial_configured').count()
+        self.assertEqual(events,2)

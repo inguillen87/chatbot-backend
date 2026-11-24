@@ -1,5 +1,6 @@
 """Authenticated tenant owner trial; public/widget/demo credentials cannot issue voice."""
 import re
+from uuid import uuid4
 from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import select
@@ -206,6 +207,63 @@ def stop(current_user, slug, identifier):
             raise VoiceError('browser_voice_provider_not_configured')
         result = VoiceLedger(db.session, TenantProfile, AuditEvent).stop(tenant.id, actor.id, identifier, key)
         return _response({'contract_version': CONTRACT, **result})
+    except VoiceError as error:
+        return _fail(error)
+    except SQLAlchemyError:
+        return _fail(VoiceError('browser_voice_ledger_unavailable'))
+
+
+TRIAL_FIELDS = {'enabled', 'max_sessions_per_hour', 'max_total_sessions', 'days'}
+
+
+def _bounded(command, field, low, high):
+    value = command.get(field)
+    if type(value) is not int or not low <= value <= high:
+        raise VoiceError('browser_voice_trial_invalid', 400)
+    return value
+
+
+@browser_realtime_bp.put(PREFIX + '/trial')
+@token_requerido
+@auth_sin_escrituras_implicitas
+def configure_trial(current_user, slug):
+    """Superadmin-only switch for the owner voice trial, always with explicit caps.
+
+    Enabling writes the caps that ``limits`` requires plus a deadline counted
+    from now; it never resets the tenant's consumed sessions. Disabling keeps
+    the caps for the record. Each change is appended to the audit ledger.
+    """
+    try:
+        actor, tenant = _actor(), _tenant(slug)
+        if not is_authorized_superadmin_user(actor):
+            raise VoiceError('browser_voice_superadmin_required', 403)
+        if cutover_writer_fence_enabled(current_app.config):
+            raise VoiceError('browser_voice_writer_fenced')
+        command = request.get_json(silent=True)
+        if not isinstance(command, dict) or type(command.get('enabled')) is not bool:
+            raise VoiceError('browser_voice_trial_invalid', 400)
+        ledger = VoiceLedger(db.session, TenantProfile, AuditEvent)
+        if command['enabled']:
+            if set(command) != TRIAL_FIELDS:
+                raise VoiceError('browser_voice_trial_invalid', 400)
+            hourly = _bounded(command, 'max_sessions_per_hour', 1, 3)
+            total = _bounded(command, 'max_total_sessions', 1, 3)
+            days = _bounded(command, 'days', 1, 30)
+            value = {'enabled': True, 'max_sessions_per_hour': hourly, 'max_total_sessions': total,
+                     'trial_expires_at': int(ledger.clock().timestamp()) + days * 86400}
+            limits({'browser_realtime_voice': value})
+        elif set(command) != {'enabled'}:
+            raise VoiceError('browser_voice_trial_invalid', 400)
+        tenant = ledger.lock(tenant.id)
+        config = dict(tenant.configuracion or {})
+        if not command['enabled']:
+            previous = config.get('browser_realtime_voice')
+            value = {**(previous if isinstance(previous, dict) else {}), 'enabled': False}
+        config['browser_realtime_voice'] = value
+        tenant.configuracion = config
+        ledger.append(tenant.id, actor.id, uuid4().hex, 'trial_configured', dict(value))
+        return _response({'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
+                          'trial': value})
     except VoiceError as error:
         return _fail(error)
     except SQLAlchemyError:
