@@ -13,6 +13,7 @@ from services.institutional_assistant_content import (
     is_source_navigation, is_menu_command, advertised_choice,
 )
 from services.institutional_assistant_metrics import note_question_outcome
+from services.institutional_assistant_easy_read import is_easy_read_command
 KEY, CHANNEL = 'institutional_assistant', 'knowledge'
 UI = {
     'heading': 'Información y orientación', 'description': 'Consultá por tema o escribí tu pregunta.',
@@ -83,8 +84,11 @@ def workspace(tenant, state, *, editable=False, public=False):
         data['knowledge'] = {**overview(bundle, public=public), 'version': bundle['version'], 'initial': materialize_node(bundle['nodes'][bundle['start']], public=public)}
         if state['visibility'] == 'public':
             from services.institutional_assistant_audio import audio_reading_capability
+            from services.institutional_assistant_easy_read import easy_read_capability
             capability = audio_reading_capability()
             if capability is not None: data['audio_reading'] = capability
+            easy_read = easy_read_capability()
+            if easy_read is not None: data['easy_read'] = easy_read
     return data
 
 def save_state(tenant, actor, command):
@@ -157,8 +161,11 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     # start node), then the bounded menu vocabulary. The node's own option keeps
     # its published target. Anything else, including partial labels and labels
     # not on screen, goes to the selector with the current topic.
-    chosen = None
-    if called and not navigation:
+    # "Explicámelo más simple" re-reads the current answer: the reader asks
+    # for its easy-read version (a separate, verified request).
+    easy_read = called and not navigation and is_easy_read_command(question)
+    chosen = node_id if easy_read else None
+    if called and not navigation and not easy_read:
         chosen = (advertised_choice(bundle, question, [node_id])
                   or (bundle['start'] if is_menu_command(question) else None))
     if navigation:
@@ -196,6 +203,8 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     if navigation:
         result.update(result_type='source_navigation', text=UI['source_navigation'],
                       sources=overview(latest['bundle'], public=public)['sources'])
+    if easy_read:
+        result['easy_read_requested'] = True
     if called:
         # Canonical identifiers of a delivered result only; the question is not kept.
         note_question_outcome(state['revision'], node_id,
@@ -443,8 +452,20 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
             'knowledge_tenant': {'id': tenant.id, 'slug': tenant.slug},
             'context_revision': state['revision']}
     from services.institutional_assistant_audio import audio_reading_capability
+    from services.institutional_assistant_easy_read import EASY_READ, easy_read_capability, easy_read_node
     capability = audio_reading_capability()
-    return {'message_body': result['text'] + ''.join('\n\n' + l['label'] + ': ' + l['url'] for l in links)
+    easy_read = easy_read_capability()
+    body = result['text']
+    easy_read_text = None
+    if result.get('easy_read_requested') and len(nodes) == 1 and nodes[0]['id'] != state['bundle']['start']:
+        # Typed "explicámelo más simple" (web chat and WhatsApp): the verified
+        # easy-read version of the current answer, or the original with a notice.
+        try:
+            easy_read_text = easy_read_node(tenant, state, nodes[0]['id'])
+            body = easy_read_text + '\n\n' + EASY_READ['disclosure']
+        except ContentError:
+            body = EASY_READ['error'] + '\n\n' + result['text']
+    return {'message_body': body + ''.join('\n\n' + l['label'] + ': ' + l['url'] for l in links)
         + ('\n\n' + UI['sources'] + ':\n' + '\n'.join(citations) if citations else ''),
         'message_type': 'interactive_buttons' if choices else 'text',
         'botones': buttons,
@@ -452,4 +473,6 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
         'knowledge_tenant': deepcopy(result['tenant']), 'knowledge_nodes': deepcopy(nodes),
         'knowledge_ui': {key: UI[key] for key in _CHANNEL_UI_KEYS},
         **({'knowledge_audio_reading': capability} if capability is not None else {}),
+        **({'knowledge_easy_read': easy_read} if easy_read is not None else {}),
+        **({'knowledge_easy_read_text': easy_read_text} if easy_read_text is not None else {}),
         'fuente': 'institutional_knowledge', 'context_revision': state['revision']}

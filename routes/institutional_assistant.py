@@ -166,6 +166,15 @@ def public_audio(slug):
     response.headers['X-Chatboc-Tenant-ID'] = str(tenant.id)
     return response
 
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/easy-read', methods=['POST'])
+@limiter.limit('20 per minute')
+def public_easy_read(slug):
+    from services.institutional_assistant_easy_read import MAX_EASY_READ_COMMAND_BYTES, easy_read_public_node
+    if not request.content_length or request.content_length > MAX_EASY_READ_COMMAND_BYTES:
+        raise ContentError('knowledge_command_invalid', 400)
+    tenant = _tenant(slug)
+    return _reply(easy_read_public_node(tenant, _json()))
+
 def _source_reply(tenant, source_id, revision, *, public=False, actor=None):
     from services.institutional_assistant_sources import source_document
     data, filename, mime = source_document(tenant, source_id, revision, public=public, actor=actor)
