@@ -2520,6 +2520,10 @@ def tenant_profile():
     public_appearance = build_public_workspace_appearance(tenant,
         exact_resolution=not resolved_from_fallback and public_brand_slug_matches(tenant, tenant_slug_original))
     tenant_info["workspace_appearance"] = public_appearance
+    tenant_info["brand_identity"] = None
+    if not resolved_from_fallback and public_brand_slug_matches(tenant, tenant_slug_original):
+        from services.brand_identity import public_brand_identity
+        tenant_info["brand_identity"] = public_brand_identity(tenant)
     payload = {
         "contract_version": TENANT_PROFILE_CONTRACT_VERSION,
         "tenant": tenant_info,

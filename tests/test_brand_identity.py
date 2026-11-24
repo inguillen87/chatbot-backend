@@ -127,3 +127,14 @@ class BrandIdentityHTTP(unittest.TestCase):
         tenant.configuracion = {"brand_identity": {"palette": ["red"]}}
         self.db.session.commit()
         self.assertIsNone(self.public_identity())
+
+
+    def test_the_exact_public_profile_carries_the_identity(self):
+        operator = self.login("second")
+        self.assertEqual(operator.put(self.endpoint, json={"brand_identity": IDENTITY}).status_code, 200)
+        profile = self.app.test_client().get("/api/pwa/public/tenant-info?tenant=acceptance-a")
+        self.assertEqual(profile.status_code, 200, profile.get_data(as_text=True)[:300])
+        tenant = profile.json.get("tenant") or {}
+        self.assertEqual(tenant["brand_identity"]["palette"], IDENTITY["palette"])
+        other = self.app.test_client().get("/api/pwa/public/tenant-info?tenant=acceptance-b")
+        self.assertIsNone((other.json.get("tenant") or {}).get("brand_identity"))
