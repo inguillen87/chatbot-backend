@@ -1229,8 +1229,11 @@ def public_tenant_widget_config(tenant_slug: str):
     widget["access"] = access
     widget["embed_locked"] = not integration_enabled
 
+    from services.brand_identity import public_brand_identity
+
     return jsonify({
         "contract_version": "public.widget_config.v1",
+        "brand_identity": public_brand_identity(tenant),
         "access": access,
         "embed_locked": not integration_enabled,
         "tenant": {
