@@ -10,7 +10,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
     ContentError, CONTRACT, MAX_QUESTION_CHARS, normalize_bundle, overview, digest, select_nodes, materialize_node,
-    is_source_navigation, is_menu_command, advertised_choice,
+    is_source_navigation, is_menu_command, advertised_choice, bundle_glossary,
 )
 from services.institutional_assistant_metrics import note_question_outcome
 from services.institutional_assistant_easy_read import is_easy_read_command
@@ -28,6 +28,7 @@ UI = {
     'unknown_in_topic_no_options': ('Esta información no está incluida en las fuentes disponibles. '
                                     'Seguís en «{title}»: podés escribir otra consulta sobre este tema.'),
     'source_navigation': 'Podés consultar el catálogo de documentos en Documentos y fuentes.',
+    'acronyms': 'Siglas',
     'error': 'No se pudo completar la consulta. Volvé a intentarlo o elegí un tema.',
     'retry': 'Volver a consultar', 'import': 'Incorporar conocimiento',
     'import_help': 'Cargá la versión integrada de documentos, respuestas y menús de esta organización.',
@@ -52,7 +53,7 @@ UI = {
     'import_review_yes': 'Sí', 'import_review_no': 'No',
     'import_review_notice': 'Vista previa local del archivo. El servidor validará el contenido al confirmar. Estas declaraciones no acreditan aprobación institucional ni vigencia.',
 }
-_CHANNEL_UI_KEYS = ('more_options', 'previous_options', 'options_page', 'large_text', 'source_details')
+_CHANNEL_UI_KEYS = ('more_options', 'previous_options', 'options_page', 'large_text', 'source_details', 'acronyms')
 
 def _record(tenant_id):
     return TenantConfig.query.filter_by(tenant_id=tenant_id, key=KEY, channel=CHANNEL).first()
@@ -81,7 +82,7 @@ def workspace(tenant, state, *, editable=False, public=False):
         'can_edit': editable, 'ui': deepcopy(UI), 'knowledge': None}
     if state:
         bundle = state['bundle']
-        data['knowledge'] = {**overview(bundle, public=public), 'version': bundle['version'], 'initial': materialize_node(bundle['nodes'][bundle['start']], public=public)}
+        data['knowledge'] = {**overview(bundle, public=public), 'version': bundle['version'], 'initial': materialize_node(bundle['nodes'][bundle['start']], public=public, glossary=bundle_glossary(bundle))}
         if state['visibility'] == 'public':
             from services.institutional_assistant_audio import audio_reading_capability
             from services.institutional_assistant_easy_read import easy_read_capability
@@ -196,8 +197,9 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
             raise ContentError('knowledge_forbidden', 403)
     if latest is None or latest['revision'] != state['revision']:
         raise ContentError('knowledge_revision_conflict', 412)
+    glossary = bundle_glossary(state['bundle'])
     result = {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
-        'revision': state['revision'], 'nodes': [materialize_node(n, public=public) for n in nodes],
+        'revision': state['revision'], 'nodes': [materialize_node(n, public=public, glossary=glossary) for n in nodes],
         'text': UI['unknown'] if not nodes else '\n\n'.join(n['text'] for n in nodes),
         'selection_performed': called and not navigation and chosen is None, 'business_writes_performed': False}
     if navigation:
