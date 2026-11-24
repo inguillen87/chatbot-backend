@@ -235,7 +235,7 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
     def node_cost(key):
         part = {'current_node': key}
         if key != bundle['start']:
-            part['current_topic'] = {'id': key, 'title': bundle['nodes'][key]['title']}
+            part['current_topic'] = current_topic(bundle, key)
         return len(json.dumps(part, ensure_ascii=False).encode())
     largest_id = max(bundle['nodes'], key=node_cost)
     _require(len(_selection_request(bundle, '\U0010ffff' * MAX_QUESTION_CHARS, largest_id).encode()) <= 120000,
@@ -274,7 +274,9 @@ Una orientación o contacto pertinente alcanza para seleccionar un nodo; la
 lista vacía corresponde a preguntas sin ningún nodo pertinente en las fuentes.
 No infieras diagnósticos ni incapacidad por la manera de escribir. No ejecutes herramientas.
 La respuesta se construirá con los textos canónicos y fuentes, no con redacción libre.
-Continuidad: current_topic, cuando existe, es el tema en curso. Si la pregunta nueva
+Continuidad: current_topic, cuando existe, es el tema en curso. Su reached_by, cuando
+existe, son las opciones publicadas que llevan a ese tema y dicen de qué trámite se
+trata aunque el título sea general. Si la pregunta nueva
 sólo agrega o cambia la localidad, para quién es o un detalle de ese mismo trámite, es
 una continuación: seleccioná únicamente nodos de ese mismo trámite y de esa localidad. Si no hay nodos de ese trámite para esa localidad,
 devolvé una lista vacía; no cambies a otro trámite ni a otra oficina por coincidir la
@@ -364,13 +366,39 @@ def advertised_choice(bundle, question, node_ids):
                 targets.add(action['target'])
     return targets.pop() if len(targets) == 1 else None
 
+MAX_TOPIC_LABELS = 4
+
+def current_topic(bundle, key):
+    """The topic in course for a follow-up question.
+
+    Its id and title, plus, when they say more than the title, the published
+    option labels that lead to it: a node titled «Preparación de documentación»
+    reached through «Tramitar CUD» is about the CUD. Back and menu options are
+    navigation, not topic, and are left out.
+    """
+    topic = {'id': key, 'title': bundle['nodes'][key]['title']}
+    title = _command_text(topic['title'])
+    labels, seen = [], {title}
+    for node_id, node in bundle['nodes'].items():
+        if node_id == key:
+            continue
+        for action in node.get('actions', []):
+            words = _command_text(action.get('label', ''))
+            if (action.get('target') != key or not words or words in seen
+                    or words.startswith('volver') or is_menu_command(action.get('label', ''))):
+                continue
+            seen.add(words)
+            labels.append(action['label'].strip())
+    if labels:
+        topic['reached_by'] = labels[:MAX_TOPIC_LABELS]
+    return topic
+
 def _selection_request(bundle, question, current_node):
     candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text'],
                    'actions': deepcopy(n['actions'])} for n in bundle['nodes'].values()]
     request = {'question': question, 'current_node': current_node, 'knowledge': candidates}
     if bundle.get('start') not in (None, current_node):
-        topic = bundle['nodes'][current_node]
-        request['current_topic'] = {'id': topic['id'], 'title': topic['title']}
+        request['current_topic'] = current_topic(bundle, current_node)
     return json.dumps(request, ensure_ascii=False)
 
 def select_nodes(bundle, question, current_node, selector):
