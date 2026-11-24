@@ -399,9 +399,73 @@ def select_nodes(bundle, question, current_node, selector):
     _require(len(set(ids)) == len(ids) and all(k in bundle['nodes'] for k in ids), 'knowledge_selection_invalid')
     return [deepcopy(bundle['nodes'][key]) for key in ids]
 
-def materialize_node(node, *, public=False):
+# Acronyms explained by the organization's own published text: a definition
+# such as «Certificado Único de Discapacidad (CUD)». Nothing is expanded from
+# outside the version; an acronym defined in two different ways is left out.
+_ACRONYM_DEFINITION = re.compile(r'\(([A-ZÁÉÍÓÚÑ]{2,8})\)')
+_ACRONYM_WORD = re.compile(r'[^\W\d_][\w]*')
+_ACRONYM_LINKS = frozenset({'de', 'del', 'la', 'las', 'los', 'y', 'e', 'para', 'en', 'a'})
+MAX_NODE_ACRONYMS = 6
+
+def _plain_initial(word):
+    return unicodedata.normalize('NFD', word[0].upper())[0]
+
+def _acronym_definition(text, opening, acronym):
+    """The capitalized words right before «(ACR)» whose initials spell it."""
+    before = text[max(0, opening - 200):opening]
+    words = list(_ACRONYM_WORD.finditer(before))
+    letters = ''.join(_plain_initial(letter) for letter in acronym)
+    significant = []
+    for match in reversed(words):
+        word = match.group()
+        if word.casefold() in _ACRONYM_LINKS and significant:
+            continue
+        if not word[0].isupper():
+            return None
+        significant.insert(0, match)
+        if len(significant) == len(letters):
+            break
+    if len(significant) != len(letters) or ''.join(_plain_initial(m.group()) for m in significant) != letters:
+        return None
+    expansion = before[significant[0].start():significant[-1].end()]
+    # Only words and spaces in the definition, and nothing else before «(».
+    if before[significant[-1].end():].strip() or not re.fullmatch(r'[\w ]+', expansion):
+        return None
+    return ' '.join(expansion.split())
+
+def bundle_glossary(bundle):
+    """Acronym → expansion, from definitions in the published titles, texts and options."""
+    found, conflicting = {}, set()
+    for node in bundle['nodes'].values():
+        for text in (node['title'], node['text'], *(action['label'] for action in node['actions'])):
+            for match in _ACRONYM_DEFINITION.finditer(text):
+                acronym = match.group(1)
+                expansion = _acronym_definition(text, match.start(), acronym)
+                if expansion is None:
+                    continue
+                previous = found.setdefault(acronym, expansion)
+                if previous.casefold() != expansion.casefold():
+                    conflicting.add(acronym)
+    return {acronym: expansion for acronym, expansion in found.items() if acronym not in conflicting}
+
+def node_acronyms(glossary, node):
+    """Defined acronyms that this node uses without explaining them, in reading order."""
+    text = '\n'.join((node['title'], node['text'], *(action['label'] for action in node['actions'])))
+    folded = text.casefold()
+    positions = []
+    for acronym, expansion in glossary.items():
+        match = re.search(r'(?<![\w-])' + re.escape(acronym) + r'(?![\w-])', text)
+        if match and expansion.casefold() not in folded:
+            positions.append((match.start(), acronym, expansion))
+    return [{'acronym': acronym, 'expansion': expansion}
+            for _, acronym, expansion in sorted(positions)[:MAX_NODE_ACRONYMS]]
+
+def materialize_node(node, *, public=False, glossary=None):
     value = deepcopy(node)
     value['sources'] = [_source_projection(source, public=public) for source in value['sources']]
     now = datetime.now(timezone.utc)
     value['links'] = [link for link in value.get('links', []) if datetime.fromisoformat(link['review_after'].replace('Z', '+00:00')) > now]
+    acronyms = node_acronyms(glossary, node) if glossary else []
+    if acronyms:
+        value['acronyms'] = acronyms
     return value

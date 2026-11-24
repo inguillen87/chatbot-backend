@@ -443,3 +443,33 @@ class SelectorCapacityTests(unittest.TestCase):
             with self.subTest(typed=typed):
                 self.assertIsNone(advertised_choice(bundle, typed, ['start']))
         self.assertEqual(advertised_choice(bundle, '9', ['requirements']), 'start')
+
+
+class AcronymGlossaryTests(unittest.TestCase):
+    def bundle(self):
+        data = sample()
+        data['nodes']['start']['text'] = 'Consultá por el Certificado Único de Discapacidad (CUD) y el DNI.'
+        data['nodes']['requirements']['text'] = 'Para el CUD llevá el turno. La Ley 389 (RUPE) no se explica.'
+        return normalize_bundle(data, 701, 'qa-knowledge')
+
+    def test_acronyms_come_only_from_the_published_definitions(self):
+        from services.institutional_assistant_content import bundle_glossary
+        glossary = bundle_glossary(self.bundle())
+        self.assertEqual(glossary, {'CUD': 'Certificado Único de Discapacidad'})
+
+    def test_a_node_lists_the_defined_acronyms_it_uses_without_explaining_them(self):
+        from services.institutional_assistant_content import bundle_glossary
+        bundle = self.bundle()
+        glossary = bundle_glossary(bundle)
+        requirements = materialize_node(bundle['nodes']['requirements'], public=True, glossary=glossary)
+        self.assertEqual(requirements['acronyms'], [{'acronym': 'CUD', 'expansion': 'Certificado Único de Discapacidad'}])
+        # The node that already explains it, and a materialization without glossary, add nothing.
+        self.assertNotIn('acronyms', materialize_node(bundle['nodes']['start'], public=True, glossary=glossary))
+        self.assertNotIn('acronyms', materialize_node(bundle['nodes']['requirements'], public=True))
+
+    def test_conflicting_or_unspelled_definitions_are_left_out(self):
+        from services.institutional_assistant_content import bundle_glossary
+        data = sample()
+        data['nodes']['start']['text'] = 'Centro Único de Datos (CUD). Oficina Central (OCX).'
+        data['nodes']['requirements']['text'] = 'Certificado Único de Discapacidad (CUD).'
+        self.assertEqual(bundle_glossary(normalize_bundle(data, 701, 'qa-knowledge')), {})
