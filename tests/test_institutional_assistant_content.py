@@ -4,7 +4,7 @@ import json
 from unittest.mock import patch
 from services.institutional_assistant_content import normalize_bundle, select_nodes, overview, materialize_node, ContentError
 from services.institutional_assistant_content import (
-    SELECTOR_INSTRUCTIONS, _selection_request, advertised_choice, is_menu_command,
+    SELECTOR_INSTRUCTIONS, _selection_request, advertised_choice, current_topic, is_menu_command,
 )
 
 def sample(tenant_id=701, slug='qa-knowledge'):
@@ -274,6 +274,24 @@ class SelectorCapacityTests(unittest.TestCase):
         bundle = normalize_bundle(data, 701, 'qa-knowledge')
         self.assertIsNone(advertised_choice(bundle, 'requisitos', ['start', 'requirements']))
         self.assertEqual(advertised_choice(bundle, 'requisitos', ['requirements']), 'start')
+
+    def test_current_topic_names_the_procedure_through_the_options_that_lead_to_it(self):
+        data = sample()
+        data['nodes']['requirements']['title'] = 'Preparación de documentación'
+        data['nodes']['start']['actions'][0]['label'] = '🪪 Tramitar el certificado'
+        bundle = normalize_bundle(data, 701, 'qa-knowledge')
+        seen = []
+        def selector(instructions, request):
+            seen.append(json.loads(request))
+            return {'node_ids': []}
+        select_nodes(bundle, '¿Y en Ushuaia?', 'requirements', selector)
+        self.assertEqual(seen[0]['current_topic'], {
+            'id': 'requirements', 'title': 'Preparación de documentación',
+            'reached_by': ['🪪 Tramitar el certificado']})
+        self.assertIn('reached_by', SELECTOR_INSTRUCTIONS)
+        # Labels that only repeat the title, go back or open the menu say nothing new.
+        self.assertEqual(current_topic(normalize_bundle(sample(), 701, 'qa-knowledge'), 'requirements'),
+                         {'id': 'requirements', 'title': 'Requisitos'})
 
     def test_follow_up_request_carries_the_current_topic_and_no_conversation_text(self):
         bundle = normalize_bundle(sample(), 701, 'qa-knowledge')

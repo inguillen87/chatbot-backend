@@ -595,7 +595,9 @@ class RegularTenantChatTests(unittest.TestCase):
         selector.assert_called_once(); direct.assert_not_called()
         request = __import__('json').loads(selector.call_args.args[1])
         self.assertEqual(request['current_node'], 'requirements')
-        self.assertEqual(request['current_topic'], {'id': 'requirements', 'title': 'Requisitos'})
+        # The option that leads to the topic names the procedure its title leaves general.
+        self.assertEqual(request['current_topic'], {'id': 'requirements', 'title': 'Requisitos',
+            'reached_by': ['🪪 Certificados: CUD y CMO']})
         stored = self.stored()[1]
         self.assertEqual(stored[CONTEXTO_MUNICIPIO], {})
         self.assertEqual(stored['institutional_knowledge']['node_id'], 'requirements')
