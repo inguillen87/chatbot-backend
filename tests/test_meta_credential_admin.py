@@ -418,3 +418,18 @@ def test_successful_apply_does_not_leak_sql_parameters_or_cached_body(http, capl
     for secret in (TOKEN, KEY, APP_SECRET, "ciphertext", "nonce"):
         assert secret not in caplog.text
     assert_private(result)
+
+
+def test_rejection_reports_only_the_reason_code(capsys):
+    import json as _json
+    from routes.meta_credential_admin import _report_rejection
+
+    _report_rejection("plan", "meta_token_granular_scope_mismatch", 409)
+    _report_rejection("plan", "EAAG secret-looking value", 409)
+    lines = [_json.loads(line) for line in capsys.readouterr().out.strip().splitlines()]
+    assert lines == [
+        {"event": "meta_credential_operation_rejected", "action": "plan",
+         "reason_code": "meta_token_granular_scope_mismatch", "status": 409},
+        {"event": "meta_credential_operation_rejected", "action": "plan",
+         "reason_code": "meta_operation_unavailable", "status": 409},
+    ]
