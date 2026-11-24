@@ -45,7 +45,7 @@ from services.whatsapp_receipts import (
     build_claim_replay_text,
     render_ticket_whatsapp,
 )
-from services.live_chat_schedule import build_tenant_live_chat_status
+from services.live_chat_schedule import build_tenant_live_chat_status, live_chat_next_steps
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from utils.ticket_utils import normalize_category
 from services.common_utils import validar_telefono, formatear_telefono_e164, validar_email
@@ -2775,15 +2775,7 @@ class DerivarHumanoActionHandler(MunicipalUnitAction):
                         "live_chat_status": live_chat_status.get("mode"),
                     }
                 )
-            if not live_chat_status.get("available"):
-                schedule_text = live_chat_status.get("description")
-                if schedule_text:
-                    user_message = (
-                        f"{user_message}\n\n"
-                        f"⏰ Nuestro horario de atención en vivo es {schedule_text}."
-                    )
-                else:
-                    user_message = f"{user_message}\n\n⏰ Ahora mismo no hay agentes disponibles."
+            user_message = f"{user_message}\n\n{live_chat_next_steps(live_chat_status)}"
             return {
                 "success": True,
                 "message_to_user": user_message,

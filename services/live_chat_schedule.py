@@ -441,6 +441,26 @@ def get_schedule_description(schedule: Optional[LiveChatSchedule] = None) -> str
     return base
 
 
+def live_chat_next_steps(live_chat_status: Optional[Mapping[str, Any]]) -> str:
+    """What happens after asking for a person: who receives it, where the reply
+    arrives and what to write. It never promises a response time."""
+    status = live_chat_status or {}
+    lines = ["📨 *Qué pasa ahora*"]
+    if status.get("available"):
+        lines.append("• Le avisamos al equipo de atención. Escribí tu consulta acá y te responden por este mismo chat.")
+    else:
+        schedule = str(status.get("description") or "").strip()
+        lines.append("• Escribí tu mensaje acá: lo recibe el equipo de atención en su panel.")
+        lines.append(
+            f"• Te responden por este mismo chat. Horario de atención en vivo: {schedule}."
+            if schedule
+            else "• Te responden por este mismo chat cuando haya una persona disponible."
+        )
+        lines.append("• No hay un plazo de respuesta garantizado.")
+    lines.append("• Contá en pocas palabras qué necesitás. No compartas contraseñas ni datos de salud.")
+    return "\n".join(lines)
+
+
 def build_live_chat_status(now: Optional[datetime] = None, schedule_override: Optional[dict] = None) -> dict:
     schedule = build_schedule_from_config(schedule_override) if schedule_override is not None else get_live_chat_schedule()
     description = get_schedule_description(schedule)

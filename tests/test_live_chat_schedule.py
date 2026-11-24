@@ -299,3 +299,24 @@ def test_pyme_live_chat_ctas_use_deterministic_handoff(
     assert response["contexto_actualizado"][CONTEXTO_PYME]["live_chat_cta_action"] == expected_action
     assert execute.call_args.args[0]["cta_action"] == expected_action
     llm_call.assert_not_called()
+
+
+def test_live_chat_next_steps_explains_who_receives_and_promises_no_time():
+    from services.live_chat_schedule import live_chat_next_steps
+
+    offline = live_chat_next_steps({"available": False, "description": "lunes a viernes de 09:00 a 13:00"})
+    assert "lo recibe el equipo de atención en su panel" in offline
+    assert "Te responden por este mismo chat. Horario de atención en vivo: lunes a viernes de 09:00 a 13:00." in offline
+    assert "No hay un plazo de respuesta garantizado." in offline
+    assert "No compartas contraseñas ni datos de salud." in offline
+
+    without_schedule = live_chat_next_steps({"available": False})
+    assert "cuando haya una persona disponible" in without_schedule
+    assert "Horario de atención en vivo" not in without_schedule
+
+    online = live_chat_next_steps({"available": True, "description": "lunes a viernes"})
+    assert "Le avisamos al equipo de atención" in online
+    assert "plazo" not in online
+    assert "Horario" not in online
+
+    assert live_chat_next_steps(None).startswith("📨 *Qué pasa ahora*")

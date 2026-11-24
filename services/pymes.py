@@ -2633,7 +2633,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             or ""
         ).strip()
         if cta_message.lower() in _LIVE_CHAT_CTA_ACTIONS or not cta_message:
-            cta_message = "Solicitud de atencion humana"
+            cta_message = "Solicitud de atención humana"
         handler_context = {
             CONTEXTO_PYME: pyme_ctx_actual,
             "user_obj": owner_user,

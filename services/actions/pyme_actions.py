@@ -9,7 +9,7 @@ from services.promocion_service import promocion_service
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from services.preferences import add_preference
 from services.config_loader import cargar_configuracion_pyme
-from services.live_chat_schedule import build_live_chat_status, build_tenant_live_chat_status
+from services.live_chat_schedule import build_live_chat_status, build_tenant_live_chat_status, live_chat_next_steps
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from models import db
 import models
@@ -498,15 +498,7 @@ class DerivarHumanoActionHandlerPyme(BasePymeHandler):
                         "live_chat_status": live_chat_status.get("mode"),
                     }
                 )
-            if not live_chat_status.get("available"):
-                schedule_text = live_chat_status.get("description")
-                if schedule_text:
-                    user_message = (
-                        f"{user_message}\n\n"
-                        f"⏰ Nuestro horario de atención en vivo es {schedule_text}."
-                    )
-                else:
-                    user_message = f"{user_message}\n\n⏰ Ahora mismo no hay agentes disponibles."
+            user_message = f"{user_message}\n\n{live_chat_next_steps(live_chat_status)}"
             return {
                 "success": True,
                 "message_to_user": user_message,

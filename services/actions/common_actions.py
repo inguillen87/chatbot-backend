@@ -4,7 +4,7 @@ from typing import Dict, Any
 from .base_action_handler import BaseActionHandler
 from services.ticket_service import servicio_tickets
 from services.ticket_utils import formatear_ticket_respuesta
-from services.live_chat_schedule import build_tenant_live_chat_status
+from services.live_chat_schedule import build_tenant_live_chat_status, live_chat_next_steps
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from socket_service import emit_new_ticket
 from routes.ticket import serialize_ticket_to_json
@@ -100,15 +100,7 @@ class DerivarHumanoAction(BaseActionHandler):
                 ticket_id=sala.id,
             )
             socket_room = live_chat_status["socket_room"]
-            if not live_chat_status.get("available"):
-                schedule_text = live_chat_status.get("description")
-                if schedule_text:
-                    user_message = (
-                        f"{user_message}\n\n"
-                        f"⏰ Nuestro horario de atención en vivo es {schedule_text}."
-                    )
-                else:
-                    user_message = f"{user_message}\n\n⏰ Ahora mismo no hay agentes disponibles."
+            user_message = f"{user_message}\n\n{live_chat_next_steps(live_chat_status)}"
             return {
                 "success": True,
                 "message_to_user": user_message,
