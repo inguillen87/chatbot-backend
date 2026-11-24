@@ -5305,7 +5305,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             "motivo_derivacion",
             action_payload.get("handoff_reason")
             or mensaje_previo
-            or "Solicitud de atencion humana",
+            or "Solicitud de atención humana",
         )
 
         handler = municipal_handler(DerivarHumanoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id))
@@ -11870,7 +11870,7 @@ def responder_municipio(
             or ""
         ).strip()
         if cta_message.lower() in _LIVE_CHAT_CTA_ACTIONS or not cta_message:
-            cta_message = "Solicitud de atencion humana"
+            cta_message = "Solicitud de atención humana"
         context["pregunta_actual_usuario"] = cta_message
         handler_result = municipal_handler(DerivarHumanoActionHandler, context, **private_municipal_arguments(unit_of_work, conversation_turn_id)).execute(
             {
