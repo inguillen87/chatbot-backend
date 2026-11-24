@@ -903,6 +903,7 @@ def create_app(config_class=Config):
     from routes.internal_cutover import internal_cutover_bp
     from routes.voice_routes import voice_bp
     from routes.browser_realtime import browser_realtime_bp
+    from routes.brand_identity import brand_identity_bp
     from routes.catalog_routes import catalog_bp as catalog_v2_bp
     from routes.orders import orders_bp
     from routes.admin_fulfillment import admin_fulfillment_bp
@@ -1093,6 +1094,7 @@ def create_app(config_class=Config):
     app.register_blueprint(meta_credential_admin_bp)
     app.register_blueprint(voice_bp)
     app.register_blueprint(browser_realtime_bp)
+    app.register_blueprint(brand_identity_bp)
     app.register_blueprint(catalog_v2_bp)
     app.register_blueprint(orders_bp)
     app.register_blueprint(admin_fulfillment_bp)
