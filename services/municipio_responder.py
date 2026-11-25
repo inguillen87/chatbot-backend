@@ -11192,6 +11192,11 @@ SIMPLE_GREETINGS = {
     "hola buenos dias", "hola buenas tardes", "hola buenas noches", "buenas",
     "que tal", "como va", "todo bien", "buenas como va"
 }
+_THANKS = {"gracias", "muchas gracias", "mil gracias", "gracias totales", "ok gracias", "okey gracias",
+           "listo gracias", "dale gracias", "genial gracias", "perfecto gracias", "buenisimo gracias",
+           "joya gracias", "bueno gracias", "gracias genial", "gracias igualmente"}
+_GOODBYES = {"chau", "chao", "adios", "hasta luego", "nos vemos", "chau gracias", "gracias chau",
+             "bueno chau", "listo chau", "gracias hasta luego", "chau buen dia", "chau buenas noches"}
 RETURN_TO_MAIN_MENU = {"volver al inicio", "volver al menu", "inicio", "menu", "menú principal"}
 RETURN_TO_MAIN_MENU_NORMALIZED = {normalizar_texto(value) for value in RETURN_TO_MAIN_MENU}
 
@@ -12060,6 +12065,28 @@ def responder_municipio(
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
+
+    # Thanks and goodbyes get a short human answer without the LLM. A thanks
+    # keeps the conversation state, so a pending step can continue; a goodbye
+    # closes a claim in progress, as finalizar_tramite does.
+    courtesy = " ".join(normalized_input_for_greeting.replace("!", " ").replace(".", " ").split())
+    if courtesy in _THANKS or courtesy in _GOODBYES:
+        if courtesy in _GOODBYES:
+            contexto_municipio_actual["historial_llm_reclamo"] = []
+            contexto_municipio_actual["datos_parciales_llm_reclamo"] = {}
+            contexto_municipio_actual.pop("esperando_info_llm_reclamo", None)
+            contexto_municipio_actual.pop("esperando_info_llm", None)
+            contexto_municipio_actual["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+        return _finalize_response({
+            "message_body": (
+                "¡Gracias a vos! Cuando necesites algo, escribime por acá."
+                if courtesy in _GOODBYES else
+                "¡De nada! Si necesitás algo más, escribime o escribí «menú» para ver las opciones."
+            ),
+            "fuente": "courtesy_reply",
+        })
 
     interrupt_action = received_payload.get("action") or received_payload.get("action_id")
     if not interrupt_action and pregunta_str:

@@ -241,3 +241,20 @@ class TestJuninAsksForAPerson(TestJuninCriticalTranscriptReplay):
         self.assertFalse(_asks_for_a_person("una persona tiró basura en la vereda de la escuela"))
         self.assertFalse(_asks_for_a_person("agente de tránsito mal estacionado en mi cuadra"))
         self.assertTrue(_asks_for_a_person("necesito hablar con alguien"))
+
+
+class TestJuninCourtesyWithoutLlm(TestJuninCriticalTranscriptReplay):
+    def test_thanks_and_goodbyes_answer_without_llm_and_keep_state(self):
+        for phrase, expected in (("gracias", "De nada"), ("Muchas gracias!", "De nada"), ("chau", "Gracias a vos")):
+            with self.subTest(phrase=phrase):
+                chat_context = self._new_chat_context("cortesia-" + str(abs(hash(phrase))))
+                self._respond("hola", chat_context)
+                response = self._respond(phrase, chat_context)
+                self.assertEqual(response.get("fuente"), "courtesy_reply")
+                self.assertIn(expected, response.get("message_body", ""))
+
+    def test_a_claim_that_ends_in_thanks_is_not_a_courtesy(self):
+        chat_context = self._new_chat_context("cortesia-reclamo")
+        self._respond("hola", chat_context)
+        response = self._respond("1", chat_context)
+        self.assertNotEqual(response.get("fuente"), "courtesy_reply")
