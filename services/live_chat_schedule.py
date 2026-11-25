@@ -518,7 +518,7 @@ def _build_channel_metadata(status: dict) -> dict:
             },
             "schedule": {
                 "id": "view_live_chat_schedule",
-                "label": "Ver horario de atencion",
+                "label": "Ver horario de atención",
                 "schedule_label": schedule_label,
             },
         },

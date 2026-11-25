@@ -702,7 +702,7 @@ class ConsultarEstadoPedidoAction(BaseActionHandler):
         if not nro_pedido_llm:
             return {
                 "success": False,
-                "message_to_user": "Necesito el numero de pedido para consultar.",
+                "message_to_user": "Pasame el número de pedido y lo consulto.",
                 "pedir_info": "id_pedido_mencionado",
             }
 
@@ -710,7 +710,7 @@ class ConsultarEstadoPedidoAction(BaseActionHandler):
         if not nro_pedido_str:
             return {
                 "success": False,
-                "message_to_user": "Necesito el numero de pedido para consultar.",
+                "message_to_user": "Pasame el número de pedido y lo consulto.",
                 "pedir_info": "id_pedido_mencionado",
             }
 
@@ -750,7 +750,7 @@ class ConsultarEstadoPedidoAction(BaseActionHandler):
 
         return {
             "success": True,
-            "message_to_user": f"No encontre el pedido #{nro_pedido_str} en esta cuenta. Verifica el numero o escribi hablar con ventas.",
+            "message_to_user": f"No encontré el pedido #{nro_pedido_str} en esta cuenta. Revisá el número o escribí «hablar con ventas».",
             "data": {
                 "nro_pedido": nro_pedido_str,
                 "estado_actual": None,
