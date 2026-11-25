@@ -63,7 +63,7 @@ super_admin_bp = Blueprint('super_admin', __name__, url_prefix='/api/admin')
 LEGACY_TENANT_SEEDS = {
     "mauricio@junin.com": {
         "slug": "junin",
-        "nombre": "Municipalidad de Junin",
+        "nombre": "Municipalidad de Junín",
         "tipo": "municipio",
         "plan": "full",
     },
@@ -959,20 +959,9 @@ def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
     if existing:
         user.tenant_id = existing.id
         user.tenant_slug = existing.slug
-        if seed:
-            desired_slug = seed["slug"]
-            if desired_slug and not _slug_conflicts(desired_slug, tenant_id=existing.id):
-                existing.slug = desired_slug
-            elif desired_slug:
-                current_app.logger.warning(
-                    "SA:seed tenant slug '%s' is already in use; keeping '%s' for user %s",
-                    desired_slug,
-                    existing.slug,
-                    user.email,
-                )
-            existing.nombre = seed["nombre"]
-            existing.tipo = normalize_tenant_type(seed["tipo"])
-            existing.plan = _normalize_plan_key(seed["plan"])
+        # Legacy seeds only fill an organization that is created here. Once it
+        # exists, its name, slug, type and plan belong to the organization: this
+        # runs on every directory read and must never overwrite their edits.
         if existing.tipo == "municipio":
             existing.municipio_id = user.id
             existing.pyme_id = None
