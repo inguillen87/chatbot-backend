@@ -172,7 +172,34 @@ def _resolve_live_chat_cta_action(payload: dict[str, Any], question: Any = None)
         normalized = str(candidate or "").strip().lower()
         if normalized in _LIVE_CHAT_CTA_ACTIONS:
             return normalized
+    if _asks_for_a_person(question):
+        return "request_agent"
     return None
+
+
+_PERSON_WORDS = r"(?:una persona|alguien|un humano|una humana|humano|humana|un agente|una agente|agente|un operador|una operadora|operador|operadora|persona real|un empleado|una empleada)"
+_ASK_FOR_PERSON = re.compile(
+    r"^(?:hola\s+)?(?:quiero|quisiera|necesito|puedo|me gustaria|podria|prefiero)?\s*"
+    r"(?:hablar|comunicarme|chatear|que me atienda|ser atendid[oa]|atencion)\s+(?:con\s+)?" + _PERSON_WORDS + r"\b"
+    r"|^(?:atencion humana|persona real|operador|operadora|un humano|una persona|agente humano|pasame con (?:una persona|alguien|un agente|un humano))$"
+)
+
+
+def _asks_for_a_person(question: Any) -> bool:
+    """Explicit, short requests for a person go straight to live chat.
+
+    Only whole short messages count (up to 9 words), so a claim that merely
+    mentions «una persona» («una persona tiró basura») keeps its normal flow.
+    """
+    if not isinstance(question, str):
+        return False
+    text = unicodedata.normalize("NFKD", question.casefold())
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^a-z0-9ñ ]+", " ", text)
+    text = " ".join(text.split())
+    if not text or len(text.split()) > 9:
+        return False
+    return bool(_ASK_FOR_PERSON.search(text))
 
 LOCATION_KEYWORD_TOKENS = {
     "barrio": {"barrio", "b°", "bº"},
@@ -11902,7 +11929,7 @@ def responder_municipio(
                     if isinstance(handler_result, dict)
                     else None
                 )
-                or "No pudimos iniciar la atencion con un agente.",
+                or "No pudimos iniciar la atención con un agente.",
                 "options_list": handler_result.get("options_list", [])
                 if isinstance(handler_result, dict)
                 else [],
