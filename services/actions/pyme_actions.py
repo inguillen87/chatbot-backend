@@ -188,7 +188,7 @@ class CatalogoHandler(BasePymeHandler):
         if tiene_archivo_catalogo(self.pyme_id_actual):
             url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
             if self.context.get("channel") == "whatsapp":
-                body += f"\n\n📂 También puedes descargar nuestro catálogo completo aquí: {url_cat}"
+                body += f"\n\nTambién podés descargar el catálogo completo acá: {url_cat}"
             else:
                 options.append({
                     "id": "descargar_catalogo_pyme_pdf",
@@ -276,7 +276,7 @@ class OfertasHandler(BasePymeHandler):
                 "fuente": "pyme_promos_estaticas_v1",
             }
 
-        body_no_ofertas = "Por el momento no tenemos ofertas especiales activas, pero te invito a explorar nuestro catálogo completo donde encontrarás excelentes productos."
+        body_no_ofertas = "Hoy no hay promociones activas. Podés ver todos los productos en el catálogo."
         return {
             "message_body": body_no_ofertas,
             "options_list": options,
@@ -291,8 +291,8 @@ class HumanHandler(BasePymeHandler):
         )
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
         return {
-            "message_body": result.get("message_to_user") or "No pude abrir el canal de atencion en este momento.",
-            "options_list": [{"id": "ver_catalogo_pyme_post_human", "texto": "Ver catalogo"}],
+            "message_body": result.get("message_to_user") or "No pude abrir el chat con el equipo en este momento. Probá de nuevo en unos minutos.",
+            "options_list": [{"id": "ver_catalogo_pyme_post_human", "texto": "Ver catálogo"}],
             "message_type": "interactive_buttons",
             "fuente": "pyme_human_handler_scoped_v4",
             "ticket_id": data.get("ticket_id"),
