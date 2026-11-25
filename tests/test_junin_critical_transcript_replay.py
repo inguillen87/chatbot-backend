@@ -221,3 +221,23 @@ class TestJuninCriticalTranscriptReplay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestJuninAsksForAPerson(TestJuninCriticalTranscriptReplay):
+    """Explicit requests for a person skip the LLM and open live chat."""
+
+    def test_short_requests_for_a_person_open_live_chat_without_llm(self):
+        for phrase in ("hablar con una persona", "Quiero hablar con un humano", "atención humana"):
+            with self.subTest(phrase=phrase):
+                chat_context = self._new_chat_context("persona-" + str(abs(hash(phrase))))
+                self._respond("hola", chat_context)
+                response = self._respond(phrase, chat_context)
+                self.assertNotIn("llm", str(response.get("fuente", "")))
+                self.assertTrue(response.get("message_body"))
+                self.assertNotIn("No pudimos iniciar", response.get("message_body", ""))
+
+    def test_a_claim_that_mentions_a_person_is_not_a_handoff(self):
+        from services.municipio_responder import _asks_for_a_person
+        self.assertFalse(_asks_for_a_person("una persona tiró basura en la vereda de la escuela"))
+        self.assertFalse(_asks_for_a_person("agente de tránsito mal estacionado en mi cuadra"))
+        self.assertTrue(_asks_for_a_person("necesito hablar con alguien"))
