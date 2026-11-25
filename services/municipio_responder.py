@@ -4270,7 +4270,7 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context, *, u
             flag_modified(chat_db_context, "context_data")
         return _get_main_menu_payload(
             context,
-            welcome_message_override="¡Listo! Empezamos de nuevo. ¿En qué te puedo ayudar?",
+            welcome_message_override="¡Listo! Empezamos de nuevo.",
         )
 
     if action_id == "mostrar_menu_reclamos":
