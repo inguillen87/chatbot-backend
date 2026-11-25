@@ -983,8 +983,7 @@ def _get_main_menu_payload(
             part
             for part in [
                 assistant_intro,
-                "*Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz* con lo que necesitás y te ofreceremos opciones para trámites, reclamos y más. Este servicio es accesible y está listo para ayudarte.",
-                "También podés usar emojis para realizar acciones rápidas.",
+                "Podés escribir, mandar una foto, un audio o tu ubicación.",
                 "¿Cómo te puedo ayudar hoy?",
             ]
             if part

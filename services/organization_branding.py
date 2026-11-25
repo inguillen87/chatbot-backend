@@ -82,7 +82,7 @@ def build_branding(tenant, *, can_edit=False, entitled=False, writes_blocked=Fal
         'message':messages[reason],'appearance':appearance,'presets':deepcopy(PRESETS),
         'workflow_ui':build_brand_workflow_ui(tenant),
         'save_endpoint':f'/api/admin/tenants/{tenant.slug}/config','provider_calls_performed':False,
-        'heading':'Paleta del espacio','scope_note':'Se aplica al perfil institucional y centro de implementación. No cambia dominios, PWA, WhatsApp ni plantillas aprobadas.'}
+        'heading':'Paleta del espacio','scope_note':'Pinta los botones y pestañas del portal público y del panel de esta organización. No cambia dominios, PWA, WhatsApp ni plantillas aprobadas.'}
 
 
 def build_workspace_appearance(tenant, *, entitled=False):

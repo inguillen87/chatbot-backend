@@ -615,7 +615,7 @@ class TestNewFeatures(unittest.TestCase):
 
         mock_classify.assert_called_once()
         mock_llamar_gemini.assert_called_once()
-        self.assertIn("Podés compartir tu ubicación", response.get("message_body", ""))
+        self.assertIn("mandar una foto, un audio o tu ubicación", response.get("message_body", ""))
         self.assert_menu_actions(response, self.WHATSAPP_MENU_ACTIONS)
         self.assertTrue(
             any(opt.get("texto") == "🗣️ Reclamos y Consultas" for opt in response.get("options_list", []))
