@@ -889,7 +889,7 @@ def _get_main_menu_payload(
              contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
              contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_NOMBRE_INICIAL.name
              return {
-                "message_body": f"¡Hola! Soy el asistente virtual de {tenant_name_text}. Para una atención más personalizada, ¿podrías decirme tu nombre?",
+                "message_body": f"Hola. Soy el asistente de {tenant_name_text}. ¿Cómo te llamás?",
                 "message_type": "text",
                 "fuente": "pedir_nombre_inicial_pyme"
             }
@@ -974,7 +974,7 @@ def _get_main_menu_payload(
                 assistant_intro,
                 "Estas son las opciones principales del municipio.",
                 "Podés compartir tu ubicación, enviarnos fotos o mandarnos una nota de voz con lo que necesitás.",
-                "Elegí una o contame qué necesitás y te ayudo al instante.",
+                "Elegí una opción o contame qué necesitás.",
             ]
             if part
         )
@@ -1104,7 +1104,7 @@ def _get_main_menu_payload(
     else:
         audio_intro = (
             "Puedo ayudarte con trámites, reclamos e información del municipio. "
-            "Podés compartir tu ubicación, fotos o notas de voz y usar emojis para acciones rápidas."
+            "Podés mandar tu ubicación, una foto o una nota de voz."
         )
         audio_prompt = "Elegí una categoría para comenzar."
 

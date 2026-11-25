@@ -188,7 +188,7 @@ class CatalogoHandler(BasePymeHandler):
         if tiene_archivo_catalogo(self.pyme_id_actual):
             url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
             if self.context.get("channel") == "whatsapp":
-                body += f"\n\n📂 También puedes descargar nuestro catálogo completo aquí: {url_cat}"
+                body += f"\n\nTambién podés descargar el catálogo completo acá: {url_cat}"
             else:
                 options.append({
                     "id": "descargar_catalogo_pyme_pdf",
@@ -276,7 +276,7 @@ class OfertasHandler(BasePymeHandler):
                 "fuente": "pyme_promos_estaticas_v1",
             }
 
-        body_no_ofertas = "Por el momento no tenemos ofertas especiales activas, pero te invito a explorar nuestro catálogo completo donde encontrarás excelentes productos."
+        body_no_ofertas = "Hoy no hay promociones activas. Podés ver todos los productos en el catálogo."
         return {
             "message_body": body_no_ofertas,
             "options_list": options,

@@ -63,7 +63,7 @@ class DerivarHumanoAction(BaseActionHandler):
 
         return {
             "success": True,
-            "message_to_user": "Entendido. He notificado a un agente para que te asista. Se pondrán en contacto contigo a la brevedad.",
+            "message_to_user": "Listo, ya le avisamos al equipo. Te van a responder por este chat.",
             "data": {"status": "derivacion_iniciada", "target_type": target_entity_type}
         }
 
@@ -230,7 +230,7 @@ class MenuPrincipalActionHandler(BaseActionHandler):
 
         return {
             "success": True,
-            "message_to_user": "Aquí tienes el menú principal:",
+            "message_to_user": "Este es el menú principal:",
             "data": main_menu,
             "message_type": "interactive_menu" # A new message type for the formatter
         }

@@ -3466,7 +3466,7 @@ def _build_missing_reclamo_prompt(pending_fields: list[str], datos_actuales: dic
 
     message = f"{base}\n📍 Ahora necesito {fields_text} para registrarlo."
     if "ubicacion" in pending_fields:
-        message += "\n\nPodés enviarla como quieras: ✍️ texto, 🎤 nota de voz, 📸 foto o 📍 ubicación."
+        message += "\n\nPodés mandarla por texto, audio, foto o ubicación."
         message += "\nEj: Don Bosco 55, Junín."
     return message
 
@@ -14949,7 +14949,7 @@ def responder_municipio(
         }
     else:
         final_response_dict = {
-            "message_body": "Lo siento, no pude entender tu consulta. ¿Podrías intentar reformularla?",
+            "message_body": "No llegué a entender tu consulta. ¿Me la contás con otras palabras?",
             "options_list": [],
             "message_type": "text",
             "fuente": "fallback_final"

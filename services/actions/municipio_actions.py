@@ -1368,7 +1368,7 @@ class CrearReclamoActionHandler(MunicipalUnitAction):
             self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
 
             # Mensaje más amigable y botones de acción
-            mensaje = f"Para continuar con tu reclamo, necesito algunos datos más: **{', '.join(campos_faltantes)}**. Por favor, indícamelos."
+            mensaje = f"Para seguir con tu reclamo me faltan estos datos: **{', '.join(campos_faltantes)}**. Escribilos acá."
             botones = [{"texto": f"Ingresar {campo.replace('_', ' ')}", "id_accion": f"ingresar_{campo}"} for campo in campos_faltantes]
             botones.append({"texto": "Cancelar reclamo", "id_accion": "cancelar_reclamo"})
 

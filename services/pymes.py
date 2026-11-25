@@ -383,7 +383,7 @@ def _handle_education_widget_turn(
             }
         )
         return PymeFlowResult(
-            message_body=payload.get("message_body") or "Hola. Soy el asistente del colegio. Elegi una opcion o contame que necesitas.",
+            message_body=payload.get("message_body") or "Hola. Soy el asistente del colegio. Elegí una opción o contame qué necesitás.",
             source="education_widget_menu",
             options_list=options,
             message_type="interactive_buttons",
@@ -1766,7 +1766,7 @@ class CatalogoHandler(BaseHandler):
                     respuesta_texto = structured_text
                 else:
                     respuesta_texto = f"{intro_text}\n\n" + "\n".join(productos_formateados)
-                    respuesta_texto += "\n\nSi quieres alguno, usa los botones o dime (ej: 'quiero 2 [nombre]')."
+                    respuesta_texto += "\n\nSi querés alguno, usá los botones o escribime (ej.: «quiero 2 [nombre]»)."
                 fuente_catalogo = "catalogo_qdrant_con_promos_v2"
         
         if not respuesta_texto:
@@ -1796,7 +1796,7 @@ class CatalogoHandler(BaseHandler):
                     )
                     fuente_catalogo = "catalogo_fallback_web"
                 else:
-                    respuesta_texto = f"No encontré productos para '{pregunta}'. Intenta con otras palabras."
+                    respuesta_texto = f"No encontré productos para «{pregunta}». Probá con otras palabras."
             # No product-specific buttons if nothing found
             botones_catalogo = []
 
@@ -1836,7 +1836,7 @@ class CatalogoHandler(BaseHandler):
         if tiene_archivo_catalogo(self.pyme_id_actual):
             url_cat = url_descargar_catalogo_pyme(self.pyme_id_actual)
             if self.context.get("channel") == "whatsapp":
-                body += f"\n\n📂 También puedes descargar nuestro catálogo completo aquí: {url_cat}"
+                body += f"\n\nTambién podés descargar el catálogo completo acá: {url_cat}"
             else: # For web, add as a URL button
                 options.append({
                     "id": "descargar_catalogo_pyme_pdf",
@@ -1900,7 +1900,7 @@ class OfertasHandler(BaseHandler):
         if promos:
             body = "¡Tenemos estas promociones activas!\n" + "\n".join([f"\n**{p.nombre_promocion}**: {p.descripcion_publica}" for p in promos[:3]])
             if len(promos) > 3: body += f"\n... y {len(promos) - 3} más!"
-            body += "\n\n¿Te interesa alguna o quieres ver productos?"
+            body += "\n\n¿Te interesa alguna o preferís ver el catálogo?"
             return {
                 "message_body": body,
                 "options_list": options,
@@ -1908,7 +1908,7 @@ class OfertasHandler(BaseHandler):
                 "fuente": "pyme_ofertas_con_promos_v2"
             }
 
-        body_no_ofertas = "No tenemos ofertas especiales ahora, pero explora nuestro catálogo."
+        body_no_ofertas = "Hoy no hay promociones activas, pero podés ver el catálogo."
         return {
             "message_body": body_no_ofertas,
             "options_list": options,
@@ -2134,7 +2134,7 @@ class FinalizarPedidoHandler(BaseHandler):
         cart_summary = cart_service.get_cart_summary(self.pyme_carts_data, self.pyme_id_actual, self.cliente_id_actual)
 
         if not cart_summary or not cart_summary.get("items_detalle"):
-            return {"message_to_user": "Tu carrito está vacío. Agrega productos antes de finalizar el pedido.", "fuente": "finalizar_pedido_carrito_vacio"}
+            return {"message_to_user": "Tu carrito está vacío. Sumá al menos un producto antes de confirmar el pedido.", "fuente": "finalizar_pedido_carrito_vacio"}
 
         detalles_pedido = json.dumps(cart_summary.get("items_detalle"))
         monto_total_pedido = cart_summary.get("total_final_con_descuento")
@@ -2187,7 +2187,7 @@ class FinalizarPedidoHandler(BaseHandler):
 
             return {
                 "success": True,
-                "message_body": f"¡Gracias por tu compra! Tu pedido #{nuevo_pedido.nro_pedido} ha sido creado con éxito. Te mantendremos informado sobre el estado.",
+                "message_body": f"Recibimos tu pedido #{nuevo_pedido.nro_pedido}. Te avisamos por acá cuando cambie de estado.",
                 "fuente": "pyme_pedido_finalizado_exitosamente",
                 "data": {"pedido_id": nuevo_pedido.id, "nro_pedido": nuevo_pedido.nro_pedido}
             }

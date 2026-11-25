@@ -286,7 +286,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
 
         product_identifier = action_data.get("nombre_producto_mencionado") or action_data.get("producto_sku")
         if not product_identifier:
-            return {"success": False, "message_to_user": "Por favor, especifica el producto que deseas agregar.", "pedir_info": "nombre_producto_mencionado"}
+            return {"success": False, "message_to_user": "Decime qué producto querés sumar al carrito.", "pedir_info": "nombre_producto_mencionado"}
 
         cantidad_raw = action_data.get("cantidad_producto_mencionado")
         cantidad_fue_explicita = cantidad_raw is not None
@@ -294,7 +294,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
             cantidad = int(cantidad_raw if cantidad_raw is not None else 1)
             if cantidad <= 0: raise ValueError("La cantidad debe ser un número positivo.")
         except (ValueError, TypeError):
-            return {"success": False, "message_to_user": "La cantidad proporcionada no es válida. Por favor, indica un número."}
+            return {"success": False, "message_to_user": "Esa cantidad no sirve. Escribí un número mayor a cero (por ejemplo, 2)."}
 
         pregunta_usuario = str(self.context.get("pregunta_actual_usuario") or "").strip().lower()
         exploratory_patterns = (
@@ -335,7 +335,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
 
         producto_info = self._find_product_details(pyme_id, product_identifier)
         if not producto_info:
-            return {"success": False, "message_to_user": f"No pude encontrar el producto '{product_identifier}'. ¿Quieres que busque otra cosa?"}
+            return {"success": False, "message_to_user": f"No encontré «{product_identifier}» en el catálogo. ¿Querés buscar otro producto?"}
         if producto_info.get("precio_unitario") is None:
             return {"success": False, "message_to_user": f"El producto '{product_identifier}' no tiene un precio definido y no se puede agregar al carrito."}
 
@@ -372,7 +372,7 @@ class CrearPedidoAction(BaseActionHandler):
         current_cart_summary = get_cart_summary(pyme_carts_data, pyme_id, cliente_user_id)
 
         if not current_cart_summary.get("items_detalle"):
-            return {"success": False, "message_to_user": "Tu carrito está vacío. Por favor, agrega productos antes de crear un pedido."}
+            return {"success": False, "message_to_user": "Tu carrito está vacío. Sumá al menos un producto antes de confirmar el pedido."}
 
         # Data validation for customer info
         nombre_cliente = action_data.get("nombre_usuario_detectado") or self.context.get("nombre_usuario_contexto")
@@ -501,7 +501,7 @@ class ConsultarProductoAction(BaseActionHandler):
 
         query = action_data.get("nombre_producto_mencionado") or action_data.get("consulta_producto")
         if not query:
-            return {"success": False, "message_to_user": "Por favor, dime qué producto buscas.", "pedir_info": "nombre_producto_consulta"}
+            return {"success": False, "message_to_user": "Decime qué producto estás buscando.", "pedir_info": "nombre_producto_consulta"}
 
         pyme_user = self.context.get("user_obj")
         rubro_nombre = getattr(pyme_user.rubro, "nombre", "general") if pyme_user and hasattr(pyme_user, "rubro") else "general"
@@ -516,7 +516,7 @@ class ConsultarProductoAction(BaseActionHandler):
         )
 
         if not resultados:
-            return {"success": True, "message_to_user": f"No encontré productos para '{query}'. ¿Intentar otra búsqueda?"}
+            return {"success": True, "message_to_user": f"No encontré productos para «{query}». ¿Querés buscar con otras palabras?"}
 
         respuesta_str = f"Resultados para '{query}':\n"
         productos_info_list = []
@@ -578,7 +578,7 @@ class VerCarritoAction(BaseActionHandler):
         if not cart_summary.get("items_detalle"):
             user_message = "Tu carrito está vacío."
         else:
-            user_message += "\n\n¿Quieres finalizar la compra, seguir agregando productos o modificar algo?"
+            user_message += "\n\n¿Querés confirmar el pedido, sumar algo más o cambiar alguna cantidad?"
 
         return {"success": True, "message_to_user": user_message, "data": {"cart_summary": cart_summary}}
 
@@ -593,7 +593,7 @@ class ModificarCarritoAction(BaseActionHandler):
         accion_especifica = action_data.get("sub_accion_modificar") # "cambiar_cantidad" o "eliminar_item"
 
         if not item_identifier or not accion_especifica:
-            return {"success": False, "message_to_user": "Por favor, dime qué producto modificar y cómo (ej: 'quitar manzanas' o 'cambiar peras a 3')."}
+            return {"success": False, "message_to_user": "Decime qué producto querés cambiar y qué cantidad dejar (ej.: «sacar manzanas» o «dejar 3 peras»)."}
 
         pyme_carts_data = _get_pyme_carts_data_from_context(self.context)
         # Find the catalogo_item_id from the identifier (this is simplified, might need Qdrant/DB lookup)
@@ -622,7 +622,7 @@ class ModificarCarritoAction(BaseActionHandler):
             message = f"'{item_identifier}' eliminado del carrito."
         elif accion_especifica == "cambiar_cantidad":
             if not nueva_cantidad_str:
-                return {"success": False, "message_to_user": f"¿A qué cantidad quieres cambiar '{item_identifier}'?"}
+                return {"success": False, "message_to_user": f"¿Cuántas unidades de «{item_identifier}» querés dejar?"}
             try:
                 nueva_cant_int = int(nueva_cantidad_str)
                 if nueva_cant_int < 0: return {"success": False, "message_to_user": "La cantidad no puede ser negativa."}
@@ -719,7 +719,7 @@ class ConsultarEstadoPedidoAction(BaseActionHandler):
             estado = pedido.estado or "sin_estado"
             return {
                 "success": True,
-                "message_to_user": f"Tu pedido #{pedido.nro_pedido} esta: **{estado}**.",
+                "message_to_user": f"Tu pedido #{pedido.nro_pedido} está en estado **{estado}**.",
                 "data": {
                     "nro_pedido": pedido.nro_pedido,
                     "estado_actual": estado,
