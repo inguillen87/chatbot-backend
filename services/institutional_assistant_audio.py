@@ -22,6 +22,8 @@ AUDIO_READING = {
     'stop': 'Detener', 'loading': 'Preparando audio…',
     'error': 'No se pudo reproducir el audio. La información sigue disponible en texto.',
     'disclosure': 'Voz generada por IA. Se lee la información publicada de esta respuesta.',
+    # Optional control: older clients ignore it and keep reading at 1×.
+    'speed': 'Velocidad de lectura',
 }
 _NODE_ID = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.-]{0,119}')
 _REVISION = re.compile(r'[a-f0-9]{64}')
