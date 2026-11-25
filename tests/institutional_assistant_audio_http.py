@@ -86,7 +86,7 @@ class InstitutionalAudioHTTPTests(unittest.TestCase):
         with patch('services.openai_tts_bridge.synthesize_mp3_bytes', side_effect=AssertionError('not manual')):
             capability = self.app.test_client().get(self.url(True)).get_json()['audio_reading']
         self.assertEqual(set(capability), {'contract_version', 'listen', 'pause', 'resume', 'stop',
-            'loading', 'error', 'disclosure'})
+            'loading', 'error', 'disclosure', 'speed'})
         self.assertEqual(capability['contract_version'], 'chatboc.institutional_audio.v1')
         with patch.dict(os.environ, {'OPENAI_API_KEY': ''}):
             self.assertNotIn('audio_reading', self.app.test_client().get(self.url(True)).get_json())
