@@ -304,6 +304,13 @@ def _compose_menu_answer(parts, buttons):
     if len(reserved) > 4096:
         return None
     complete = "\n\n".join(part for part in (parts["text"], *parts["links"], reserved) if part)
+    acronyms = parts.get("acronyms") or ""
+    if acronyms:
+        # «Siglas» helps reading, but never costs the interactive list (body
+        # up to 1024) nor a complete answer: it is the first part to give way.
+        explained = "\n\n".join(part for part in (parts["text"], acronyms, *parts["links"], reserved) if part)
+        if len(explained) <= (1024 if len(complete) <= 1024 else 4096):
+            return explained
     if len(complete) <= 4096:
         return complete
     # Links are atomic: none can become a partial URL after abbreviation.

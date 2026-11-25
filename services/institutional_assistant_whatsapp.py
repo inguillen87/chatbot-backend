@@ -2,7 +2,7 @@
 from copy import deepcopy
 import re
 
-from services.institutional_assistant import answer, read_state
+from services.institutional_assistant import UI, answer, read_state
 from services.institutional_assistant_content import ContentError
 
 SOURCE_SCOPE = 'institutional_whatsapp_sources'
@@ -62,6 +62,25 @@ def _links(nodes):
     return values
 
 
+def _acronyms(nodes):
+    # Acronyms come already resolved from the published version's own
+    # definitions (materialize_node); the channel only lists them once.
+    values, seen = [], set()
+    for node in nodes:
+        for item in node.get('acronyms') or []:
+            acronym, expansion = item.get('acronym'), item.get('expansion')
+            if (isinstance(acronym, str) and isinstance(expansion, str)
+                    and acronym.strip() and expansion.strip() and acronym not in seen):
+                values.append(acronym.strip() + ': ' + ' '.join(expansion.split()))
+                seen.add(acronym)
+    return values
+
+
+def acronyms_block(nodes):
+    values = _acronyms(nodes)
+    return (UI['acronyms'] + ':\n' + '\n'.join('• ' + value for value in values)) if values else ''
+
+
 def present_answer_parts(result, context, *, tenant_id, tenant_slug):
     """Separate bounded-channel notices from text, without parsing free prose."""
     value = clear_source_scope(context)
@@ -79,7 +98,7 @@ def present_answer_parts(result, context, *, tenant_id, tenant_slug):
     if (not isinstance(nodes, list) or not 1 <= len(nodes) <= 3
             or result.get('knowledge_tenant') != tenant
             or not isinstance(revision, str) or not _REVISION.fullmatch(revision)):
-        return {'text': result['message_body'], 'links': [], 'notices': ''}, value
+        return {'text': result['message_body'], 'links': [], 'notices': '', 'acronyms': ''}, value
     value[SOURCE_SCOPE] = {'tenant': tenant, 'revision': revision,
                           'node_ids': [node['id'] for node in nodes]}
     notices = []
@@ -88,13 +107,13 @@ def present_answer_parts(result, context, *, tenant_id, tenant_slug):
         notices.append(notice)
     notices.append('Para consultar las referencias de esta orientación, escribí FUENTES.')
     return {'text': '\n\n'.join(node['text'] for node in nodes), 'links': _links(nodes),
-            'notices': '\n\n'.join(notices)}, value
+            'notices': '\n\n'.join(notices), 'acronyms': acronyms_block(nodes)}, value
 
 
 def present_answer(result, context, *, tenant_id, tenant_slug):
     """Remove only automatic source metadata, preserving canonical text/links."""
     parts, value = present_answer_parts(result, context, tenant_id=tenant_id, tenant_slug=tenant_slug)
-    return '\n\n'.join(part for part in [parts['text'], *parts['links'], parts['notices']] if part), value
+    return '\n\n'.join(part for part in [parts['text'], parts['acronyms'], *parts['links'], parts['notices']] if part), value
 
 
 def _source_entries(nodes):

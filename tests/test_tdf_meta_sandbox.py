@@ -495,6 +495,36 @@ def test_explicit_sources_keep_current_scope_links_and_numeric_navigation(enviro
     assert CONTACT not in json.dumps(context) and "Documento de prueba" not in json.dumps(context)
 
 
+def test_acronyms_are_explained_without_costing_the_interactive_list(environment, monkeypatch):
+    raw = public_presentation_fixture()
+    raw["nodes"]["start"]["text"] = "Elegí una consulta sobre el Certificado Único de Discapacidad (CUD)."
+    raw["nodes"]["requirements"]["text"] = "Respuesta institucional de prueba: llevá el CUD vigente."
+    publish_presentation_fixture(environment, raw)
+    monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("Explicit menus need no selector"))
+    sent = []
+    def post(url, **kw):
+        sent.append(deepcopy(kw["json"])); return accepted_post()
+    process(document(), post=post)
+    assert "Siglas:" not in sent_body(sent[-1])  # the menu already spells it out
+    process(document(mid="wamid.acronym", content={"type": "text", "text": {"body": "1"}}), post=post)
+    body = sent_body(sent[-1])
+    assert "Siglas:\n• CUD: Certificado Único de Discapacidad" in body
+    assert body.index("llevá el CUD") < body.index("Siglas:") < body.index("https://example.org/contact")
+
+
+def test_acronyms_give_way_before_the_interactive_list_or_the_answer():
+    parts = {"text": "Texto.", "links": [], "notices": "", "acronyms": "Siglas:\n• CUD: Certificado Único de Discapacidad"}
+    buttons = [{"reply_code": "1", "texto": "Opción"}]
+    assert "Siglas:" in pilot._compose_menu_answer(parts, buttons)
+    long_parts = {**parts, "text": "x" * (1024 - 120)}
+    without = pilot._compose_menu_answer({**long_parts, "acronyms": ""}, buttons)
+    assert len(without) <= 1024
+    assert pilot._compose_menu_answer(long_parts, buttons) == without
+    text_only = {**parts, "text": "y" * 2000}
+    assert "Siglas:" in pilot._compose_menu_answer(text_only, buttons)
+    assert pilot._compose_menu_answer({**parts, "text": "z " * 2100}, buttons).count("Siglas:") == 0
+
+
 @pytest.mark.parametrize("visibility", ["private", None])
 def test_sources_never_expose_private_or_unclassified_original_metadata(environment, visibility):
     raw = public_presentation_fixture()
