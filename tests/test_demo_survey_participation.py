@@ -555,7 +555,8 @@ def test_chat_menu_reconciles_durable_preview_participation(demo_app):
     assert participated["results"]["total_respuestas"] == 101
     assert participated["analytics_summary"]["responses"] == 101
     assert participated["verified_citizen_responses"] == 0
-    assert "separa las participaciones interactivas de Preview" in menu["message_body"]
+    assert "encuestas de demostración" in menu["message_body"]
+    assert "http" not in menu["message_body"]
 
 
 def test_committed_demo_vote_emits_v2_events_only_to_tenant_scoped_room(demo_app):
