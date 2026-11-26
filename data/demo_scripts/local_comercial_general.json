@@ -410,5 +410,81 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "campera rompeviento",
+        "keywords": [
+          "campera",
+          "camperas",
+          "rompeviento"
+        ],
+        "price": "$ 89.000",
+        "detail": "Talles del S al XXL, en negro, azul y verde."
+      },
+      {
+        "name": "jean recto",
+        "keywords": [
+          "jean",
+          "jeans",
+          "pantalon",
+          "pantalones"
+        ],
+        "price": "$ 54.000",
+        "detail": "Talles del 38 al 50."
+      },
+      {
+        "name": "remera de algodón",
+        "keywords": [
+          "remera",
+          "remeras"
+        ],
+        "price": "$ 19.500",
+        "detail": "Lisa, en ocho colores. Llevando tres, $ 52.000."
+      },
+      {
+        "name": "zapatillas urbanas",
+        "keywords": [
+          "zapatilla",
+          "zapatillas",
+          "calzado"
+        ],
+        "price": "$ 96.000",
+        "detail": "Del 35 al 45."
+      },
+      {
+        "name": "buzo con capucha",
+        "keywords": [
+          "buzo",
+          "buzos",
+          "hoodie"
+        ],
+        "price": "$ 47.000",
+        "detail": "Frisa de algodón, unisex."
+      },
+      {
+        "name": "tarjeta de regalo",
+        "keywords": [
+          "regalo",
+          "gift"
+        ],
+        "price": "desde $ 20.000",
+        "detail": "Se envía por WhatsApp y vale un año."
+      }
+    ],
+    "shipping": "Enviamos a todo el país en 3 a 5 días y podés retirar gratis en el local. El primer cambio de talle no tiene costo.",
+    "payment": "Podés pagar con transferencia, con 10 % de descuento, o con tarjeta en hasta 3 cuotas sin interés.",
+    "hours": "El local abre de lunes a sábado de 10 a 20.",
+    "buttons": [
+      {
+        "label": "Ver el catálogo",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }

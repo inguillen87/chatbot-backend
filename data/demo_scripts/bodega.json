@@ -508,5 +508,81 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "Malbec Reserva 750 ml",
+        "keywords": [
+          "malbec"
+        ],
+        "price": "$ 18.500",
+        "detail": "Cosecha 2022, 12 meses en roble. Por caja de 6, $ 99.000."
+      },
+      {
+        "name": "Cabernet Franc 750 ml",
+        "keywords": [
+          "cabernet",
+          "franc"
+        ],
+        "price": "$ 21.000",
+        "detail": "Partida limitada de Valle de Uco."
+      },
+      {
+        "name": "Chardonnay 750 ml",
+        "keywords": [
+          "chardonnay",
+          "blanco",
+          "blancos"
+        ],
+        "price": "$ 15.800",
+        "detail": "Sin paso por madera, fresco y frutado."
+      },
+      {
+        "name": "Espumante Extra Brut 750 ml",
+        "keywords": [
+          "espumante",
+          "espumantes",
+          "champagne",
+          "brut"
+        ],
+        "price": "$ 17.200",
+        "detail": "Método tradicional."
+      },
+      {
+        "name": "caja mixta de 6 botellas",
+        "keywords": [
+          "caja mixta",
+          "cajas mixtas"
+        ],
+        "price": "$ 105.000",
+        "detail": "Dos Malbec, dos Cabernet Franc y dos Chardonnay."
+      },
+      {
+        "name": "visita con degustación",
+        "keywords": [
+          "degustacion",
+          "cata",
+          "visita guiada",
+          "visitar la bodega",
+          "visita a la bodega"
+        ],
+        "price": "$ 35.000 por persona",
+        "detail": "De martes a domingo, con reserva previa. Dura una hora y media."
+      }
+    ],
+    "shipping": "Enviamos a todo el país: en Mendoza llega en 48 horas y al resto en 5 a 7 días. El envío es sin cargo desde 6 botellas.",
+    "payment": "Podés pagar con transferencia o tarjeta en hasta 3 cuotas sin interés.",
+    "hours": "La bodega recibe visitas de martes a domingo de 10 a 17, con reserva.",
+    "buttons": [
+      {
+        "label": "Ver el catálogo",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }
