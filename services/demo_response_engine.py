@@ -565,6 +565,22 @@ def maybe_handle_demo_interaction(
                 matched_entry = entry
                 break
 
+    # Nothing scripted fits a typed question: a low-cost model answers it from
+    # what this demo business publishes. Buttons never reach this point.
+    if matched_entry is None and normalized_text and not action_target and not detected_action:
+        from services.demo_assistant import answer_demo_question
+
+        assistant_text = answer_demo_question(user_text, script, demo_metadata)
+        if assistant_text:
+            fallback_entry = script.get("fallback") if isinstance(script.get("fallback"), dict) else {}
+            catalog = script.get("catalog") if isinstance(script.get("catalog"), dict) else {}
+            matched_entry = {
+                "id": "assistant_answer",
+                # Braces would be read as placeholders by the script formatter.
+                "response": assistant_text.replace("{", "(").replace("}", ")"),
+                "buttons": catalog.get("buttons") or fallback_entry.get("buttons") or [],
+            }
+
     if matched_entry is None:
         fallback = script.get("fallback") if isinstance(script.get("fallback"), dict) else None
         if not fallback:
