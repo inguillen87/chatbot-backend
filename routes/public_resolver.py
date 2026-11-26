@@ -2629,15 +2629,25 @@ def landing_experience():
                 require_explicit_slug=bool(tenant_slug),
             )
         except TenantResolutionError as exc:
-            return (
-                jsonify(
-                    {
-                        "contract_version": LANDING_EXPERIENCE_CONTRACT_VERSION,
-                        "error": {"code": 404, "message": str(exc)},
-                    }
-                ),
-                404,
+            # A visitor who tried a demo keeps its token after the demo expires. A
+            # token that no longer resolves is not a request for that organization:
+            # on the platform's own site it must not break the landing.
+            stale_token_on_platform = (
+                not tenant_slug
+                and not whatsapp_destination_number
+                and _is_platform_widget_host()
             )
+            if not stale_token_on_platform:
+                return (
+                    jsonify(
+                        {
+                            "contract_version": LANDING_EXPERIENCE_CONTRACT_VERSION,
+                            "error": {"code": 404, "message": str(exc)},
+                        }
+                    ),
+                    404,
+                )
+            tenant = None
     else:
         try:
             tenant = _landing_host_tenant()
@@ -2690,6 +2700,14 @@ def widget_config():
             require_explicit_slug=bool(tenant_slug),
         )
     except TenantResolutionError as exc:
+        if (
+            not tenant_slug
+            and not whatsapp_destination_number
+            and _is_platform_widget_host()
+        ):
+            # Leftover demo token on the platform's own site: serve the platform widget.
+            response = jsonify(_platform_widget_config_payload())
+            return _log_widget_public_request(response, tenant="chatboc-platform")
         # Try Mock Demos first
         tenant = _try_get_demo_tenant(tenant_slug)
         if not tenant:
