@@ -21,11 +21,13 @@ logger = logging.getLogger(__name__)
 _MAX_QUESTION_CHARS = 400
 _MAX_ANSWER_CHARS = 700
 _MAX_FACT_CHARS = 6000
-_DEFAULT_PROVIDERS = "gemini,huggingface"
+# Free tiers first; the low-cost production-account model only if neither answers.
+_DEFAULT_PROVIDERS = "gemini,huggingface,openai"
 _DEFAULT_HF_MODELS = ("meta-llama/Llama-3.1-8B-Instruct", "openai/gpt-oss-120b")
 
 _budget_lock = threading.Lock()
 _budget_window: List[float] = []
+_hf_blocked_until = 0.0
 
 
 def _int_env(name: str, default: int) -> int:
@@ -49,7 +51,7 @@ def demo_assistant_enabled() -> bool:
 def _take_budget() -> bool:
     """A ceiling per hour and per server instance, so a public demo cannot run up a bill."""
 
-    limit = _int_env("DEMO_LLM_MAX_PER_HOUR", 120)
+    limit = _int_env("DEMO_LLM_MAX_PER_HOUR", 60)
     if limit <= 0:
         return False
     now = time.time()
@@ -63,8 +65,10 @@ def _take_budget() -> bool:
 
 
 def reset_budget_for_tests() -> None:
+    global _hf_blocked_until
     with _budget_lock:
         _budget_window.clear()
+    _hf_blocked_until = 0.0
 
 
 def _business_facts(script: Dict[str, Any], demo_metadata: Dict[str, Any]) -> str:
@@ -117,7 +121,9 @@ def _ask_gemini(system_prompt: str, question: str, timeout: float) -> Optional[s
     if not api_key:
         return None
     genai, types = _get_genai_modules()
-    model = os.getenv("DEMO_GEMINI_MODEL") or os.getenv("GEMINI_FLASH_LITE_MODEL") or "gemini-2.5-flash-lite"
+    from services.gemini_bridge import _gemini_chat_model
+
+    model = os.getenv("DEMO_GEMINI_MODEL") or _gemini_chat_model()
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout * 1000)))
     response = client.models.generate_content(
         model=model,
@@ -142,8 +148,9 @@ def _ask_huggingface(system_prompt: str, question: str, timeout: float) -> Optio
 
     from services.huggingface_inference_service import _api_token
 
+    global _hf_blocked_until
     token = _api_token()
-    if not token:
+    if not token or time.time() < _hf_blocked_until:
         return None
     configured = os.getenv("HUGGINGFACE_DEMO_CHAT_MODEL")
     models = [configured] if configured else list(_DEFAULT_HF_MODELS)
@@ -166,6 +173,10 @@ def _ask_huggingface(system_prompt: str, question: str, timeout: float) -> Optio
         if response.status_code != 200:
             # The status is enough to tell a missing permission from an unknown model.
             logger.warning("[demo_assistant] huggingface model=%s status=%s", model, response.status_code)
+            if response.status_code in (401, 402, 403):
+                # No credits or no permission: asking again would only slow every answer.
+                _hf_blocked_until = time.time() + 3600
+                return None
             continue
         choices = (response.json() or {}).get("choices") or []
         if choices:
@@ -173,9 +184,28 @@ def _ask_huggingface(system_prompt: str, question: str, timeout: float) -> Optio
     return None
 
 
+def _ask_openai(system_prompt: str, question: str, timeout: float) -> Optional[str]:
+    """The account's low-cost model tier, with a short answer cap."""
+
+    from services.openai_bridge import _call_structured_response, _strict_object
+    from services.openai_model_defaults import DEFAULT_OPENAI_TERRA_MODEL
+
+    result = _call_structured_response(
+        app=None,
+        model=os.getenv("DEMO_OPENAI_MODEL") or DEFAULT_OPENAI_TERRA_MODEL,
+        system_prompt=system_prompt,
+        user_prompt=question,
+        schema_name="chatboc_demo_answer",
+        schema=_strict_object({"answer": {"type": "string"}}),
+        max_output_tokens=600,
+    )
+    return str((result or {}).get("answer") or "")
+
+
 _PROVIDERS: Dict[str, Callable[[str, str, float], Optional[str]]] = {
     "gemini": _ask_gemini,
     "huggingface": _ask_huggingface,
+    "openai": _ask_openai,
 }
 
 

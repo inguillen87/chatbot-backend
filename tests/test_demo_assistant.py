@@ -131,3 +131,27 @@ def test_huggingface_router_tries_the_next_model_and_never_logs_the_token(monkey
     assert "router.huggingface.co" in calls[0][0]
     assert "hf_secreto" not in caplog.text
     assert "status=404" in caplog.text
+
+
+def test_free_providers_are_tried_before_the_low_cost_one(monkeypatch):
+    monkeypatch.delenv("DEMO_LLM_PROVIDERS", raising=False)
+    order = []
+
+    def none(name):
+        def provider(*args):
+            order.append(name)
+            return None
+        return provider
+
+    def openai(*args):
+        order.append("openai")
+        return "Te recomiendo el Malbec Reserva para el asado."
+
+    with patch.dict(
+        demo_assistant._PROVIDERS,
+        {"gemini": none("gemini"), "huggingface": none("huggingface"), "openai": openai},
+    ):
+        answer = ask("quiero regalarle algo a mi suegro que le gusta el asado")
+
+    assert order == ["gemini", "huggingface", "openai"]
+    assert "Malbec Reserva" in answer["message_body"]
