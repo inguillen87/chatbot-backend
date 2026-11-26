@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Hola, soy el advisor digital de Inmobiliaria Demo. Elegí proyectos, inversiones, operaciones digitales o posventa y avanzo con vos.",
+      "response": "Hola, soy el asistente de Inmobiliaria Demo. Te cuento sobre proyectos en preventa, inversión y renta, operaciones en línea o posventa.",
       "buttons": [
         {
-          "label": "🏗️ Proyectos en preventa",
+          "label": "Proyectos en preventa",
           "target": "proyectos_en_prevent"
         },
         {
-          "label": "💼 Inversiones & renta",
+          "label": "Inversiones y renta",
           "target": "inversiones_&_renta"
         },
         {
-          "label": "🖥️ Operaciones digitales",
+          "label": "Operaciones digitales",
           "target": "operaciones_digitale"
         },
         {
-          "label": "🤝 Postventa & fidelización",
+          "label": "Postventa y fidelización",
           "target": "postventa_&_fideliza"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Torres residenciales, oficinas AAA y barrios cerrados",
       "buttons": [
         {
-          "label": "🏢 Torres premium",
+          "label": "Torres premium",
           "target": "torres_premium"
         },
         {
-          "label": "🌳 Barrios cerrados",
+          "label": "Barrios cerrados",
           "target": "barrios_cerrados"
         },
         {
-          "label": "🏬 Oficinas AAA",
+          "label": "Oficinas AAA",
           "target": "oficinas_aaa"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "Unidades de renta, landbanking y fondos inmobiliarios",
       "buttons": [
         {
-          "label": "💵 Renta temporaria",
+          "label": "Renta temporaria",
           "target": "renta_temporaria"
         },
         {
-          "label": "🌐 Inversor extranjero",
+          "label": "Inversor extranjero",
           "target": "inversor_extranjero"
         },
         {
-          "label": "📈 Fondos inmobiliarios",
+          "label": "Fondos inmobiliarios",
           "target": "fondos_inmobiliarios"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Reservas online, firma digital y seguimiento documental",
       "buttons": [
         {
-          "label": "📝 Reserva digital",
+          "label": "Reserva digital",
           "target": "reserva_digital"
         },
         {
-          "label": "🔍 Due diligence",
+          "label": "Due diligence",
           "target": "due_diligence"
         },
         {
-          "label": "🔐 Firma y escrituración",
+          "label": "Firma y escrituración",
           "target": "firma_y_escrituració"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "Conserjería, amenities y gestión de alquileres",
       "buttons": [
         {
-          "label": "🏊 Amenities y consorcios",
+          "label": "Amenities y consorcios",
           "target": "amenities_y_consorci"
         },
         {
-          "label": "🛠️ Mantenimiento",
+          "label": "Mantenimiento",
           "target": "mantenimiento"
         },
         {
-          "label": "📞 Gestión de alquiler",
+          "label": "Gestión de alquiler",
           "target": "gestión_de_alquiler"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

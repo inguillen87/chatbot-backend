@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Bienvenido a Fintech Demo. Elegí onboarding digital, cobranzas, riesgo o APIs y te comparto dashboards y próximos pasos.",
+      "response": "Hola, soy el asistente de Fintech Demo. Te muestro el alta de clientes, las cobranzas, el control de riesgo y la conexión con otros sistemas.",
       "buttons": [
         {
-          "label": "🚀 Onboarding & producto",
+          "label": "Onboarding y producto",
           "target": "onboarding_&_product"
         },
         {
-          "label": "💰 Cobranzas & pagos",
+          "label": "Cobranzas y pagos",
           "target": "cobranzas_&_pagos"
         },
         {
-          "label": "🛡️ Riesgo & compliance",
+          "label": "Riesgo y compliance",
           "target": "riesgo_&_compliance"
         },
         {
-          "label": "🤝 Partners & open banking",
+          "label": "Partners y open banking",
           "target": "partners_&_open_bank"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Journeys digitales, upgrades y bundles premium",
       "buttons": [
         {
-          "label": "🆔 Onboarding express",
+          "label": "Onboarding express",
           "target": "onboarding_express"
         },
         {
-          "label": "💳 Upsell tarjetas",
+          "label": "Upsell tarjetas",
           "target": "upsell_tarjetas"
         },
         {
-          "label": "📱 App modular",
+          "label": "App modular",
           "target": "app_modular"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "Armonización de medios, links y recaudos empresariales",
       "buttons": [
         {
-          "label": "🔗 Links dinámicos",
+          "label": "Links dinámicos",
           "target": "links_dinámicos"
         },
         {
-          "label": "🏦 Arqueo y conciliación",
+          "label": "Arqueo y conciliación",
           "target": "arqueo_y_conciliació"
         },
         {
-          "label": "📉 Recupero inteligente",
+          "label": "Recupero inteligente",
           "target": "recupero_inteligente"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Scoring, antifraude y monitoreo regulatorio",
       "buttons": [
         {
-          "label": "📊 Panel de riesgo",
+          "label": "Panel de riesgo",
           "target": "panel_de_riesgo"
         },
         {
-          "label": "🧮 Scoring crediticio",
+          "label": "Scoring crediticio",
           "target": "scoring_crediticio"
         },
         {
-          "label": "🧾 Reporting regulatorio",
+          "label": "Reporting regulatorio",
           "target": "reporting_regulatori"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "Ecosistema de aliados, marketplace y revenue share",
       "buttons": [
         {
-          "label": "🔌 API marketplace",
+          "label": "API marketplace",
           "target": "api_marketplace"
         },
         {
-          "label": "🌍 Cross border",
+          "label": "Cross border",
           "target": "cross_border"
         },
         {
-          "label": "🎯 Programas aliados",
+          "label": "Programas aliados",
           "target": "programas_aliados"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

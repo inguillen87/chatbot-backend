@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Hola, soy el asesor digital de ByM Almacén. Elegí pedidos express, reposiciones mayoristas, logística o integraciones y te comparto la información en segundos.",
+      "response": "Hola, soy el asistente de ByM Almacén. Te ayudo con pedidos y combos, compras mayoristas, zonas de entrega o la conexión con tu sistema. ¿Por dónde empezamos?",
       "buttons": [
         {
-          "label": "🛍️ Pedidos express & combos",
+          "label": "Pedidos express y combos",
           "target": "pedidos_express_&_co"
         },
         {
-          "label": "📦 Reposiciones mayoristas",
+          "label": "Reposiciones mayoristas",
           "target": "reposiciones_mayoris"
         },
         {
-          "label": "🛵 Logística y cobertura",
+          "label": "Logística y cobertura",
           "target": "logística_y_cobertur"
         },
         {
-          "label": "🛠️ Integraciones & soporte",
+          "label": "Integraciones y soporte",
           "target": "integraciones_&_sopo"
         }
       ]
@@ -261,11 +261,11 @@
       "include_faq_preview": 2,
       "buttons": [
         {
-          "label": "📦 Combos sugeridos",
+          "label": "Combos sugeridos",
           "target": "pedidos_express_&_co"
         },
         {
-          "label": "🚚 Reposición y envíos",
+          "label": "Reposición y envíos",
           "target": "logística_y_cobertur"
         }
       ]
@@ -278,15 +278,15 @@
       "response": "Combos familiares, coffee breaks y bandejas ready-to-go",
       "buttons": [
         {
-          "label": "🍱 Combos familiares",
+          "label": "Combos familiares",
           "target": "combos_familiares"
         },
         {
-          "label": "☕ Coffee break corporativo",
+          "label": "Coffee break corporativo",
           "target": "coffee_break_corpora"
         },
         {
-          "label": "🍹 After office y bares",
+          "label": "After office y bares",
           "target": "after_office_y_bares"
         }
       ]
@@ -323,15 +323,15 @@
       "response": "Escalas por categoría, proyección y acuerdos de financiación",
       "buttons": [
         {
-          "label": "💰 Tarifario mayorista",
+          "label": "Tarifario mayorista",
           "target": "tarifario_mayorista"
         },
         {
-          "label": "📊 Forecast de reposición",
+          "label": "Forecast de reposición",
           "target": "forecast_de_reposici"
         },
         {
-          "label": "🤝 Integración con ERP",
+          "label": "Integración con ERP",
           "target": "integración_con_erp"
         }
       ]
@@ -368,15 +368,15 @@
       "response": "Zonas, ventanas express y control de frío",
       "buttons": [
         {
-          "label": "🗺️ Mapa de cobertura",
+          "label": "Mapa de cobertura",
           "target": "mapa_de_cobertura"
         },
         {
-          "label": "🚚 Pedidos mixtos",
+          "label": "Pedidos mixtos",
           "target": "pedidos_mixtos"
         },
         {
-          "label": "🥶 Control de frescos",
+          "label": "Control de frescos",
           "target": "control_de_frescos"
         }
       ]
@@ -413,22 +413,22 @@
       "response": "Medios de pago, analítica y onboarding",
       "buttons": [
         {
-          "label": "💳 Medios de pago & QR",
+          "label": "Medios de pago y QR",
           "target": "medios_de_pago_&_qr"
         },
         {
-          "label": "📈 Panel de analítica",
+          "label": "Panel de analítica",
           "target": "panel_de_analítica"
         },
         {
-          "label": "👨‍🏫 Onboarding y training",
+          "label": "Onboarding y training",
           "target": "onboarding_y_trainin"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

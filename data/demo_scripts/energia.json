@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Hola, soy el hub digital de Energía Demo. Elegí upstream, operaciones, comercial o sostenibilidad y te comparto dashboards y planes.",
+      "response": "Hola, soy el asistente de Energía Demo. Te muestro cómo se siguen las perforaciones, el mantenimiento, la operación comercial y los permisos ambientales.",
       "buttons": [
         {
-          "label": "🛢️ Upstream & drilling",
+          "label": "Upstream y drilling",
           "target": "upstream_&_drilling"
         },
         {
-          "label": "⚙️ Operaciones & mantenimiento",
+          "label": "Operaciones y mantenimiento",
           "target": "operaciones_&_manten"
         },
         {
-          "label": "💼 Comercial & trading",
+          "label": "Comercial y trading",
           "target": "comercial_&_trading"
         },
         {
-          "label": "🌱 Sostenibilidad & licencias",
+          "label": "Sostenibilidad y licencias",
           "target": "sostenibilidad_&_lic"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Planes de perforación, workovers y monitoreo de pozos",
       "buttons": [
         {
-          "label": "📍 Plan de perforación",
+          "label": "Plan de perforación",
           "target": "plan_de_perforación"
         },
         {
-          "label": "📈 KPIs de pozos",
+          "label": "KPIs de pozos",
           "target": "kpis_de_pozos"
         },
         {
-          "label": "🛠️ Planes de workover",
+          "label": "Planes de workover",
           "target": "planes_de_workover"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "Refinería, pipelines y confiabilidad",
       "buttons": [
         {
-          "label": "🏭 Utilización planta",
+          "label": "Utilización planta",
           "target": "utilización_planta"
         },
         {
-          "label": "🧰 Mantenimiento predictivo",
+          "label": "Mantenimiento predictivo",
           "target": "mantenimiento_predic"
         },
         {
-          "label": "🛤️ Oleoductos",
+          "label": "Oleoductos",
           "target": "oleoductos"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Contratos, precios y supply chain",
       "buttons": [
         {
-          "label": "📑 Contratos de suministro",
+          "label": "Contratos de suministro",
           "target": "contratos_de_suminis"
         },
         {
-          "label": "⛽ Logística combustibles",
+          "label": "Logística combustibles",
           "target": "logística_combustibl"
         },
         {
-          "label": "📊 Análisis de precios",
+          "label": "Análisis de precios",
           "target": "análisis_de_precios"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "HSEQ, transición energética y compensaciones",
       "buttons": [
         {
-          "label": "🧾 Licencias ambientales",
+          "label": "Licencias ambientales",
           "target": "licencias_ambientale"
         },
         {
-          "label": "🔋 Proyectos de transición",
+          "label": "Proyectos de transición",
           "target": "proyectos_de_transic"
         },
         {
-          "label": "📉 Compensaciones de CO₂",
+          "label": "Compensaciones de CO₂",
           "target": "compensaciones_de_co"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",
