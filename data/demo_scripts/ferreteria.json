@@ -410,5 +410,96 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "taladro percutor de 13 mm",
+        "keywords": [
+          "taladro",
+          "percutor",
+          "agujereadora"
+        ],
+        "price": "$ 189.000",
+        "detail": "Con maletín y dos años de garantía. Hay stock."
+      },
+      {
+        "name": "cemento por bolsa de 50 kg",
+        "keywords": [
+          "cemento",
+          "portland"
+        ],
+        "price": "$ 11.800",
+        "detail": "Precio por bolsa; por pallet baja a $ 10.900."
+      },
+      {
+        "name": "hierro de 8 mm por barra de 12 m",
+        "keywords": [
+          "hierro",
+          "hierros",
+          "varilla",
+          "varillas"
+        ],
+        "price": "$ 9.400",
+        "detail": "Se corta a medida sin cargo."
+      },
+      {
+        "name": "arena gruesa por metro cúbico",
+        "keywords": [
+          "arena"
+        ],
+        "price": "$ 38.000",
+        "detail": "Se entrega a granel o en bolsón."
+      },
+      {
+        "name": "ladrillo hueco de 12 x 18 x 33",
+        "keywords": [
+          "ladrillo",
+          "ladrillos"
+        ],
+        "price": "$ 620",
+        "detail": "Precio por unidad; el pallet trae 144."
+      },
+      {
+        "name": "pintura látex interior de 20 litros",
+        "keywords": [
+          "pintura",
+          "latex"
+        ],
+        "price": "$ 74.500",
+        "detail": "Blanco mate. Otros colores, a pedido."
+      },
+      {
+        "name": "amoladora angular de 115 mm",
+        "keywords": [
+          "amoladora"
+        ],
+        "price": "$ 96.000",
+        "detail": "820 W, con disco de corte incluido."
+      },
+      {
+        "name": "caño de PVC de 110 mm por 4 m",
+        "keywords": [
+          "cano",
+          "canos",
+          "pvc"
+        ],
+        "price": "$ 21.300",
+        "detail": "Línea reforzada para desagüe."
+      }
+    ],
+    "shipping": "Entregamos en obra en todo el Gran Mendoza: dentro de las 48 horas, o en el día con camión con grúa para cargas grandes.",
+    "payment": "Podés pagar con transferencia, tarjeta en hasta 6 cuotas o cuenta corriente para empresas.",
+    "hours": "Atendemos de lunes a viernes de 8 a 18 y los sábados de 8 a 13.",
+    "buttons": [
+      {
+        "label": "Ver el catálogo",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }

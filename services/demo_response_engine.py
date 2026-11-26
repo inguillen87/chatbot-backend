@@ -130,6 +130,65 @@ def _entry_matches(
     return False
 
 
+_CATALOG_INTENTS = {
+    "shipping": ("envio", "envios", "envian", "envias", "entrega", "entregan", "mandan", "despacho", "llega"),
+    "payment": ("cuota", "cuotas", "tarjeta", "pago", "pagar", "transferencia", "efectivo", "financia"),
+    "hours": ("horario", "horarios", "abren", "abierto", "cierran", "atienden"),
+}
+
+
+def _answer_from_demo_catalog(script: Dict[str, Any], normalized_text: str) -> Optional[Dict[str, Any]]:
+    """Answer a typed question from the script's example catalogue.
+
+    A visitor who writes "¿tienen taladro? ¿hacen envíos?" should get the
+    product, its price and the delivery terms, the way the real assistant
+    answers from a published catalogue. No model is called: the match is on
+    the keywords of each example item.
+    """
+
+    catalog = script.get("catalog")
+    if not isinstance(catalog, dict) or not normalized_text:
+        return None
+
+    padded = f" {normalized_text} "
+    found: List[Dict[str, Any]] = []
+    for item in catalog.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        keywords = [_normalize_text(word) for word in item.get("keywords") or []]
+        if any(word and f" {word} " in padded for word in keywords):
+            found.append(item)
+        if len(found) == 3:
+            break
+
+    asked = [
+        intent
+        for intent, words in _CATALOG_INTENTS.items()
+        if catalog.get(intent) and any(f" {word} " in padded for word in words)
+    ]
+    if not found and not asked:
+        return None
+
+    lines: List[str] = []
+    if len(found) == 1:
+        item = found[0]
+        lines.append(f"Sí, tenemos {item.get('name')}: {item.get('price')}. {item.get('detail') or ''}".strip())
+    elif found:
+        lines.append("De eso tenemos:")
+        lines.extend(f"- {item.get('name')}: {item.get('price')}" for item in found)
+    for intent in asked:
+        lines.append(str(catalog[intent]))
+    if found:
+        lines.append("Los precios son de ejemplo. ¿Te armo el pedido?")
+
+    buttons = catalog.get("buttons")
+    return {
+        "id": "catalog_answer",
+        "response": "\n".join(lines),
+        "buttons": buttons if isinstance(buttons, list) else [],
+    }
+
+
 def _format_text(template: str, context: Dict[str, Any]) -> str:
     if not template:
         return ""
@@ -494,6 +553,11 @@ def maybe_handle_demo_interaction(
             if _entry_matches(entry, normalized_text, action_target):
                 matched_entry = entry
                 break
+
+    # A typed question about a product comes before the scripted keywords: a
+    # message that opens with "hola" is still a question about a drill.
+    if matched_entry is None and not action_target:
+        matched_entry = _answer_from_demo_catalog(script, normalized_text)
 
     if matched_entry is None:
         for entry in _iter_script_entries(script):
