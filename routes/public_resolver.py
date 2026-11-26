@@ -655,9 +655,9 @@ def _platform_widget_config_payload() -> dict:
     onboarding = {
         "contract_version": WIDGET_ONBOARDING_CONTRACT_VERSION,
         "mode": "platform_sector_selector",
-        "title": "Que queres probar?",
-        "subtitle": "Elegi un rubro y el agente abre una demo lista para conversar.",
-        "entry_question": "Que tipo de organizacion queres simular?",
+        "title": "Probá una demo",
+        "subtitle": "Elegí un rubro y conversá con un asistente ya configurado.",
+        "entry_question": "¿Qué tipo de organización querés ver?",
         "required_step": "select_sector",
         "autostart_after_selection": True,
         "selection_endpoint": "/api/v2/demo/session",
