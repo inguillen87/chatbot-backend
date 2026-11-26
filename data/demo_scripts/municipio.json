@@ -9,19 +9,19 @@
         "buenas",
         "saludo"
       ],
-      "response": "🙌 ¡Bienvenido! {demo_name} gestiona reclamos urbanos, turnos municipales y consultas ciudadanas en segundos. ¿Querés iniciar un reclamo o conocer trámites express?",
+      "response": "Hola, soy el asistente de {demo_name}. Puedo tomar un reclamo, contarte cómo hacer un trámite o pasarte con una persona. ¿Qué necesitás?",
       "buttons": [
         {
-          "label": "Iniciar reclamo",
+          "label": "Hacer un reclamo",
           "target": "reclamo"
         },
         {
-          "label": "Guía de trámites",
+          "label": "Consultar un trámite",
           "target": "tramites"
         },
         {
-          "label": "Plan de iluminación",
-          "target": "iluminacion"
+          "label": "Seguir un reclamo",
+          "target": "seguimiento"
         }
       ]
     },
@@ -29,191 +29,89 @@
       "id": "demo_experiencia",
       "keywords": [
         "demo",
+        "demostración",
+        "demostracion",
         "plantilla",
-        "experiencia",
-        "interactivo",
-        "dashboard",
-        "carrito",
-        "catálogo"
+        "experiencia"
       ],
-      "response": "🚀 Bienvenido a la demo de Municipio Inteligente. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
+      "response": "Esta es una demostración para gobiernos. Podés probar un reclamo con foto y ubicación, una encuesta abierta y el seguimiento de un caso.",
       "buttons": [
         {
-          "label": "🛒 Catálogo listo",
-          "target": "catalogo_demo"
+          "label": "Hacer un reclamo",
+          "target": "reclamo"
         },
         {
-          "label": "🗳️ Encuesta en vivo",
+          "label": "Ver una encuesta",
           "target": "encuesta_demo"
         },
         {
-          "label": "📊 Dashboard",
+          "label": "Ver el tablero",
           "target": "dashboard_demo"
         },
         {
-          "label": "📨 Portal del cliente",
+          "label": "Portal ciudadano",
           "target": "portal_demo"
         }
       ]
     },
     {
-      "id": "catalogo_demo",
-      "keywords": [
-        "catálogo demo",
-        "catalogo demo",
-        "productos demo",
-        "ver catálogo"
-      ],
-      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
-      "buttons": [
-        {
-          "label": "🛍️ Ver productos",
-          "target": "catalogo_demo_items"
-        },
-        {
-          "label": "🔗 Compartir catálogo",
-          "target": "catalogo_demo_compartir"
-        }
-      ]
-    },
-    {
-      "id": "catalogo_demo_items",
-      "keywords": [
-        "productos demo",
-        "productos",
-        "items"
-      ],
-      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
-      "include_faq_preview": 1
-    },
-    {
-      "id": "catalogo_demo_compartir",
-      "keywords": [
-        "compartir catálogo",
-        "link catálogo",
-        "qr catálogo"
-      ],
-      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
-      "include_faq_preview": 1
-    },
-    {
       "id": "encuesta_demo",
       "keywords": [
-        "encuesta",
-        "votación",
-        "votacion",
-        "feedback"
+        "feedback",
+        "opinar"
       ],
-      "response": "Encuesta en vivo pensada para Municipio Inteligente: botones de voto, QR para participación masiva y resultados en tiempo real.",
+      "response": "El municipio puede abrir encuestas y votaciones: la gente responde desde el chat, un enlace o un QR, y los resultados se ven a medida que llegan.",
       "buttons": [
         {
-          "label": "✅ Enviar voto",
-          "target": "encuesta_demo_votar"
+          "label": "Ver encuestas",
+          "target": "encuestas"
         },
         {
-          "label": "📈 Ver resultados",
-          "target": "encuesta_demo_resultados"
+          "label": "Consultar un trámite",
+          "target": "tramites"
         }
       ]
-    },
-    {
-      "id": "encuesta_demo_votar",
-      "keywords": [
-        "votar",
-        "vote",
-        "participar"
-      ],
-      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
-      "include_faq_preview": 1
-    },
-    {
-      "id": "encuesta_demo_resultados",
-      "keywords": [
-        "resultados",
-        "dashboard encuesta",
-        "metricas"
-      ],
-      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
-      "include_faq_preview": 1
     },
     {
       "id": "dashboard_demo",
       "keywords": [
-        "dashboard",
+        "tablero",
+        "estadísticas",
+        "estadisticas",
         "analíticas",
         "analytics",
         "mapa de calor"
       ],
-      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
+      "response": "El equipo ve en un tablero los reclamos por zona y categoría, los tiempos de respuesta y los temas más consultados.",
       "buttons": [
         {
-          "label": "📍 Mapa de calor",
-          "target": "dashboard_mapa_calor"
+          "label": "Hacer un reclamo",
+          "target": "reclamo"
         },
         {
-          "label": "🧾 Tickets y pedidos",
-          "target": "dashboard_tickets_pedidos"
+          "label": "Seguir un reclamo",
+          "target": "seguimiento"
         }
       ]
-    },
-    {
-      "id": "dashboard_mapa_calor",
-      "keywords": [
-        "mapa de calor",
-        "heatmap",
-        "flujo usuarios"
-      ],
-      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
-      "include_faq_preview": 1
-    },
-    {
-      "id": "dashboard_tickets_pedidos",
-      "keywords": [
-        "tickets",
-        "reclamos",
-        "pedidos"
-      ],
-      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
-      "include_faq_preview": 1
     },
     {
       "id": "portal_demo",
       "keywords": [
         "portal",
-        "perfil",
-        "usuario"
+        "mis reclamos",
+        "mi cuenta"
       ],
-      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
+      "response": "En el portal ciudadano cada persona ve sus reclamos, el estado de cada uno y las encuestas abiertas.",
       "buttons": [
         {
-          "label": "🔐 Ingresar al portal",
-          "target": "portal_demo_ingreso"
+          "label": "Seguir un reclamo",
+          "target": "seguimiento"
         },
         {
-          "label": "🧾 Ver historial",
-          "target": "portal_demo_historial"
+          "label": "Ver encuestas",
+          "target": "encuestas"
         }
       ]
-    },
-    {
-      "id": "portal_demo_ingreso",
-      "keywords": [
-        "ingresar",
-        "login",
-        "registro"
-      ],
-      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
-      "include_faq_preview": 1
-    },
-    {
-      "id": "portal_demo_historial",
-      "keywords": [
-        "historial",
-        "puntos",
-        "seguimiento"
-      ],
-      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
-      "include_faq_preview": 1
     },
     {
       "id": "reclamo",
@@ -223,15 +121,19 @@
         "reportar",
         "reclamar"
       ],
-      "response": "Podés registrar reclamos de luminaria, higiene, tránsito o arbolado con ubicación y fotos. El bot genera ticket y envía seguimiento en el panel ciudadano.",
+      "response": "Contame qué pasó y dónde: una luminaria apagada, residuos sin retirar, un árbol en riesgo. Podés sumar una foto o tu ubicación, y recibís un número para seguirlo.",
       "buttons": [
         {
-          "label": "Reclamo de luminaria",
+          "label": "Luminaria apagada",
           "target": "iluminacion"
         },
         {
-          "label": "Ver plan de monitoreo",
-          "target": "monitoreo"
+          "label": "Residuos o limpieza",
+          "target": "higiene"
+        },
+        {
+          "label": "Arbolado",
+          "target": "arbolado"
         }
       ]
     },
@@ -245,17 +147,17 @@
         "led",
         "luminaria"
       ],
-      "response": "El municipio reemplaza luminarias por LED y prioriza corredores seguros. Cada reclamo queda geolocalizado y las cuadrillas reciben aviso automático.",
+      "response": "Para una luminaria apagada necesito la calle y altura, o tu ubicación. El reclamo queda marcado en el mapa y lo recibe el área de alumbrado.",
       "resource_tags": [
         "title:Plan de iluminación"
       ],
       "buttons": [
         {
-          "label": "Iniciar reclamo",
+          "label": "Hacer un reclamo",
           "target": "reclamo"
         },
         {
-          "label": "Estado de ticket",
+          "label": "Seguir un reclamo",
           "target": "seguimiento"
         }
       ]
@@ -268,14 +170,14 @@
         "higiene",
         "limpieza"
       ],
-      "response": "Programamos limpiezas especiales, retiro de podas y voluminosos. También podés solicitar contenedores comunitarios y seguimiento fotográfico.",
+      "response": "Podés pedir retiro de podas o residuos voluminosos y avisar de un microbasural. Con la dirección y una foto alcanza para registrarlo.",
       "buttons": [
         {
-          "label": "Iniciar reclamo",
+          "label": "Hacer un reclamo",
           "target": "reclamo"
         },
         {
-          "label": "Guía de trámites",
+          "label": "Consultar un trámite",
           "target": "tramites"
         }
       ]
@@ -288,14 +190,14 @@
         "raiz",
         "arbolado"
       ],
-      "response": "Las podas se coordinan según temporada y prioridad por seguridad. Podés adjuntar foto y ubicación; el bot agenda visita de inspección.",
+      "response": "Para una poda o un árbol en riesgo, mandame foto y ubicación. El área de arbolado lo revisa y te avisa cuándo pasa la inspección.",
       "buttons": [
         {
-          "label": "Seguimiento",
+          "label": "Seguir un reclamo",
           "target": "seguimiento"
         },
         {
-          "label": "Más trámites",
+          "label": "Consultar un trámite",
           "target": "tramites"
         }
       ]
@@ -310,18 +212,18 @@
         "tributo",
         "impuesto"
       ],
-      "response": "Gestionamos turnos para licencias de conducir, tasas municipales, habilitaciones y certificados digitales. También podemos derivar a humano desde el panel.",
+      "response": "Te puedo orientar con licencia de conducir, tasas municipales, habilitaciones comerciales y certificados: requisitos, pasos y dónde se hace cada uno.",
       "resource_tags": [
         "title:Guía de trámites"
       ],
       "buttons": [
         {
-          "label": "Iniciar reclamo",
+          "label": "Hacer un reclamo",
           "target": "reclamo"
         },
         {
-          "label": "Plan de iluminación",
-          "target": "iluminacion"
+          "label": "Hablar con una persona",
+          "target": "contacto"
         }
       ]
     },
@@ -333,15 +235,15 @@
         "ticket",
         "numero"
       ],
-      "response": "Ingresá el número de ticket y el bot muestra estado, cuadrilla asignada y fecha estimada. Podés sumar notas o fotos adicionales.",
+      "response": "Decime el número de tu reclamo y te cuento en qué estado está y qué área lo tiene. También podés agregarle una foto o un comentario.",
       "buttons": [
         {
-          "label": "Guía de trámites",
-          "target": "tramites"
+          "label": "Hacer un reclamo",
+          "target": "reclamo"
         },
         {
-          "label": "Centro de monitoreo",
-          "target": "monitoreo"
+          "label": "Consultar un trámite",
+          "target": "tramites"
         }
       ]
     },
@@ -352,18 +254,18 @@
         "dashboard",
         "panel"
       ],
-      "response": "El centro de monitoreo integra reclamos geolocalizados, KPIs y derivación inmediata a cuadrillas. Podés verlo en pantallas públicas o en la app de inspectores.",
+      "response": "El equipo municipal sigue los reclamos en un mapa, por zona y por área, y ve cuáles están demorados.",
       "resource_tags": [
         "title:Centro de monitoreo"
       ],
       "buttons": [
         {
-          "label": "Iniciar reclamo",
+          "label": "Hacer un reclamo",
           "target": "reclamo"
         },
         {
-          "label": "Plan de iluminación",
-          "target": "iluminacion"
+          "label": "Seguir un reclamo",
+          "target": "seguimiento"
         }
       ]
     },
@@ -376,14 +278,14 @@
         "consulta ciudadana",
         "participacion"
       ],
-      "response": "Podemos lanzar encuestas rápidas para vecinos y mostrar resultados en vivo. El bot genera un QR y link público para votar, registra barrio y dispositivo y arma un dashboard con mapas de calor.",
+      "response": "Hay encuestas y votaciones abiertas para vecinos. Podés participar desde acá y ver los resultados a medida que llegan.",
       "buttons": [
         {
-          "label": "Ver dashboard ciudadano",
+          "label": "Ver el tablero",
           "target": "monitoreo"
         },
         {
-          "label": "Explorar trámites",
+          "label": "Consultar un trámite",
           "target": "tramites"
         }
       ]
@@ -396,29 +298,33 @@
         "llamar",
         "hablar"
       ],
-      "response": "Si necesitás derivar a una persona, el bot captura tus datos y envía aviso a la mesa de ayuda. En la demo podemos simular ese flujo sin costo de IA.",
+      "response": "Si preferís hablar con una persona, dejame tu nombre y un teléfono y el equipo de atención te contacta en su horario.",
       "buttons": [
         {
-          "label": "Iniciar reclamo",
+          "label": "Hacer un reclamo",
           "target": "reclamo"
         },
         {
-          "label": "Guía de trámites",
+          "label": "Consultar un trámite",
           "target": "tramites"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "Este es un recorrido guiado sin llamadas al LLM. Elegí el tema que quieras mostrar en la demo: reclamos, trámites o monitoreo en vivo.",
+    "response": "No llegué a entender eso. Puedo tomar un reclamo, orientarte con un trámite o pasarte con una persona.",
     "buttons": [
       {
-        "label": "Iniciar reclamo",
+        "label": "Hacer un reclamo",
         "target": "reclamo"
       },
       {
-        "label": "Guía de trámites",
+        "label": "Consultar un trámite",
         "target": "tramites"
+      },
+      {
+        "label": "Hablar con una persona",
+        "target": "contacto"
       }
     ],
     "resource_tags": [
