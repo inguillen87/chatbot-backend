@@ -99,3 +99,35 @@ def test_can_be_switched_off(monkeypatch):
 
     with patch.dict(demo_assistant._PROVIDERS, {"gemini": boom}):
         assert "menú" in ask("¿con qué comida me recomendás el vino tinto?")["message_body"]
+
+
+def test_huggingface_router_tries_the_next_model_and_never_logs_the_token(monkeypatch, caplog):
+    import requests
+
+    calls = []
+
+    class Reply:
+        def __init__(self, status, body=None):
+            self.status_code, self._body = status, body or {}
+
+        def json(self):
+            return self._body
+
+    def fake_post(url, headers, json, timeout):
+        calls.append((url, json["model"], headers["Authorization"]))
+        if len(calls) == 1:
+            return Reply(404)
+        return Reply(200, {"choices": [{"message": {"content": "Te recomiendo el Malbec Reserva."}}]})
+
+    monkeypatch.setattr("services.huggingface_inference_service._api_token", lambda: "hf_secreto")
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.delenv("HUGGINGFACE_DEMO_CHAT_MODEL", raising=False)
+
+    with caplog.at_level("WARNING"):
+        answer = demo_assistant._ask_huggingface("sistema", "pregunta", 5.0)
+
+    assert answer == "Te recomiendo el Malbec Reserva."
+    assert len(calls) == 2 and calls[0][1] != calls[1][1]
+    assert "router.huggingface.co" in calls[0][0]
+    assert "hf_secreto" not in caplog.text
+    assert "status=404" in caplog.text
