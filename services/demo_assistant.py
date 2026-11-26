@@ -22,7 +22,7 @@ _MAX_QUESTION_CHARS = 400
 _MAX_ANSWER_CHARS = 700
 _MAX_FACT_CHARS = 6000
 _DEFAULT_PROVIDERS = "gemini,huggingface"
-_DEFAULT_HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+_DEFAULT_HF_MODELS = ("meta-llama/Llama-3.1-8B-Instruct", "openai/gpt-oss-120b")
 
 _budget_lock = threading.Lock()
 _budget_window: List[float] = []
@@ -132,24 +132,45 @@ def _ask_gemini(system_prompt: str, question: str, timeout: float) -> Optional[s
 
 
 def _ask_huggingface(system_prompt: str, question: str, timeout: float) -> Optional[str]:
-    from services.huggingface_inference_service import _get_client, huggingface_configured
+    """Chat completion through Hugging Face's OpenAI-compatible router.
 
-    if not huggingface_configured():
+    The router chooses a serving provider for the model, which the client
+    library's automatic selection could not do for chat models.
+    """
+
+    import requests
+
+    from services.huggingface_inference_service import _api_token
+
+    token = _api_token()
+    if not token:
         return None
-    model = os.getenv("HUGGINGFACE_DEMO_CHAT_MODEL") or _DEFAULT_HF_MODEL
-    client = _get_client(model)
-    completion = client.chat_completion(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": question},
-        ],
-        max_tokens=260,
-        temperature=0.3,
-    )
-    choices = getattr(completion, "choices", None) or []
-    if not choices:
-        return None
-    return str(getattr(choices[0].message, "content", "") or "")
+    configured = os.getenv("HUGGINGFACE_DEMO_CHAT_MODEL")
+    models = [configured] if configured else list(_DEFAULT_HF_MODELS)
+    url = os.getenv("HUGGINGFACE_ROUTER_URL") or "https://router.huggingface.co/v1/chat/completions"
+    for model in models:
+        response = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": question},
+                ],
+                "max_tokens": 260,
+                "temperature": 0.3,
+            },
+            timeout=timeout,
+        )
+        if response.status_code != 200:
+            # The status is enough to tell a missing permission from an unknown model.
+            logger.warning("[demo_assistant] huggingface model=%s status=%s", model, response.status_code)
+            continue
+        choices = (response.json() or {}).get("choices") or []
+        if choices:
+            return str(((choices[0] or {}).get("message") or {}).get("content") or "")
+    return None
 
 
 _PROVIDERS: Dict[str, Callable[[str, str, float], Optional[str]]] = {
