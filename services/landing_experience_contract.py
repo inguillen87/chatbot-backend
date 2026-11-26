@@ -277,7 +277,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "label": "Gobiernos",
             "sector": "gobierno",
             "user_message": "Te mando foto, audio y ubicación de un semáforo caído.",
-            "agent_message": "Recibi la evidencia, clasifique el reclamo, marque la zona y lo deje listo para seguimiento.",
+            "agent_message": "Recibí la evidencia, clasifiqué el reclamo, marqué la zona y lo dejé listo para seguimiento.",
             "inputs": [
                 {
                     "kind": "image",
@@ -287,27 +287,27 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 {
                     "kind": "audio",
                     "label": "Nota de voz",
-                    "detail": "Transcripcion resumida por IA para clasificar el reclamo.",
+                    "detail": "Transcripción resumida para clasificar el reclamo.",
                 },
                 {
                     "kind": "location",
                     "label": "Ubicación",
-                    "address": "Av. San Martin y Rivadavia",
+                    "address": "Av. San Martín y Rivadavia",
                     "lat": -34.6083,
                     "lng": -58.3712,
-                    "detail": "Punto operativo para mapa y derivacion.",
+                    "detail": "Punto en el mapa para derivar al equipo.",
                 },
             ],
             "action": {
                 "label": "Reclamo creado",
-                "detail": "Ticket con categoria, prioridad, zona, evidencia y equipo sugerido.",
+                "detail": "Reclamo con categoría, prioridad, zona, evidencia y equipo sugerido.",
                 "status": "Listo para operar",
                 "creates": "ticket",
                 "fields": [
-                    {"label": "Categoria", "value": "Semaforo"},
+                    {"label": "Categoría", "value": "Semáforo"},
                     {"label": "Prioridad", "value": "Alta"},
-                    {"label": "Equipo sugerido", "value": "Transito"},
-                    {"label": "Seguimiento", "value": "Codigo y PIN"},
+                    {"label": "Equipo sugerido", "value": "Tránsito"},
+                    {"label": "Seguimiento", "value": "Código y PIN"},
                 ],
                 "metadata": {
                     "requires_location": True,
@@ -341,7 +341,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "required_fields": ["nombre", "telefono"],
             },
             "admin_preview_endpoint": "/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio",
-            "highlights": ["mapa operativo", "asignacion sugerida", "seguimiento ciudadano"],
+            "highlights": ["mapa operativo", "asignación sugerida", "seguimiento ciudadano"],
             "workflow_steps": ["Entiende texto y adjuntos", "Crea ticket real", "Sugiere equipo", "Deja seguimiento"],
             "cta": {"label": "Probar reclamo real", "href": "/demo?sector=gobierno"},
         },
@@ -350,7 +350,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             "label": "PyMEs",
             "sector": "empresas",
             "user_message": "Te mando una foto del producto y quiero comprar dos unidades.",
-            "agent_message": "Detecte el producto, prepare el carrito invitado y deje el pedido listo para continuar.",
+            "agent_message": "Detecté el producto, preparé el carrito y dejé el pedido listo para continuar.",
             "inputs": [
                 {
                     "kind": "image",
@@ -361,14 +361,14 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
             ],
             "action": {
                 "label": "Pedido iniciado",
-                "detail": "Carrito invitado con producto, cantidad, contacto pendiente y checkout cuando el tenant lo habilita.",
+                "detail": "Carrito con producto y cantidad; el pago se suma cuando el comercio lo habilita.",
                 "status": "Listo para vender",
                 "creates": "order_or_lead",
                 "fields": [
                     {"label": "Producto", "value": "Detectado desde el catálogo"},
                     {"label": "Cantidad", "value": "2 unidades"},
-                    {"label": "Carrito", "value": "Invitado"},
-                    {"label": "Checkout", "value": "Segun tenant"},
+                    {"label": "Carrito", "value": "Sin registro"},
+                    {"label": "Pago", "value": "Según el comercio"},
                 ],
                 "metadata": {
                     "requires_catalog": True,
@@ -381,7 +381,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     {"label": "Salida operativa", "value": "Carrito invitado o lead comercial"},
                 ],
                 "details": {
-                    "operational_summary": "Consulta comercial convertida en carrito, pedido o lead segun capacidades del tenant.",
+                    "operational_summary": "Consulta comercial convertida en carrito, pedido o contacto de venta.",
                     "panel_target": "marketplace",
                 },
                 "attributes": {
@@ -429,7 +429,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                     {"label": "Trámite", "value": "Certificado"},
                     {"label": "Equipo", "value": "Secretaría"},
                     {"label": "Adjunto", "value": "DNI recibido"},
-                    {"label": "Derivacion", "value": "Administrativa"},
+                    {"label": "Derivación", "value": "Administrativa"},
                 ],
                 "metadata": {
                     "requires_attachment": True,
@@ -463,7 +463,7 @@ def _hero_conversation_demo(kind: str) -> dict[str, Any]:
                 "required_fields": ["nombre", "telefono"],
             },
             "admin_preview_endpoint": "/api/v2/demo/admin-preview?sector=educacion&tenant_slug=colegio-demo",
-            "highlights": ["adjuntos procesados", "derivacion cuidada", "historial escolar"],
+            "highlights": ["adjuntos procesados", "derivación cuidada", "historial escolar"],
             "workflow_steps": ["Reconoce el trámite", "Valida el adjunto", "Crea el caso", "Deriva a secretaría"],
             "cta": {"label": "Probar caso escolar", "href": "/demo?sector=educacion"},
         },

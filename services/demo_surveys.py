@@ -1191,34 +1191,29 @@ def build_demo_survey_chat_menu(
     labels = _sector_labels(contract["sector"])
     normalized_channel = str(channel or "").strip().lower()
     is_whatsapp = normalized_channel in {"wa", "whatsapp", "twilio", "twilio_whatsapp"} or "whatsapp" in normalized_channel
-    lines = [f"*{labels['heading']}*"]
+    # On the web the links travel as buttons under the message, so the text only
+    # says what each survey is about. Bare URLs in a chat bubble read as noise.
+    lines = [f"*{labels['heading']}*" if is_whatsapp else str(labels["heading"])]
     if is_whatsapp:
         lines.append(
             "Elegí una encuesta para votar. Primero registramos tu voto anónimo "
             "y después ves resultados demo."
         )
     else:
-        lines.append(
-            "Cada consulta parte de 100 respuestas sintéticas y separa las "
-            "participaciones interactivas de Preview."
-        )
+        lines.append("Son encuestas de demostración: los resultados que vas a ver son de ejemplo.")
+        lines.append("")
     for index, item in enumerate(contract.get("items") or [], start=1):
         title = item.get("titulo") or item.get("slug")
         public_url = item.get("public_url")
         share_url = item.get("whatsapp_share_url")
         if is_whatsapp:
             lines.append(f"{index}. {title}")
+            if public_url:
+                share_url = f"https://wa.me/?text={quote_plus(str(public_url))}"
+        elif item.get("descripcion"):
+            lines.append(f"{index}. {title}: {str(item['descripcion']).rstrip('.')}.")
         else:
-            lines.append(f"{index}. *{title}*")
-        if item.get("descripcion") and not is_whatsapp:
-            lines.append(f"   {item['descripcion']}")
-        if public_url and not is_whatsapp:
-            lines.append(f"   Abrir: {public_url}")
-        if is_whatsapp and public_url:
-            share_url = f"https://wa.me/?text={quote_plus(str(public_url))}"
-        if share_url and not is_whatsapp:
-            share_label = "Compartir" if is_whatsapp else "Compartir por WhatsApp"
-            lines.append(f"   {share_label}: {share_url}")
+            lines.append(f"{index}. {title}")
 
     if is_whatsapp and contract.get("items"):
         lines.append("")
@@ -1234,14 +1229,14 @@ def build_demo_survey_chat_menu(
                 options.append({"texto": f"📤 Compartir {index}", "action_id": f"chatboc_survey_share::{slug}"})
         else:
             if item.get("public_url"):
-                options.append({"texto": f"Abrir {title}", "url": item["public_url"], "type": "url"})
+                options.append({"texto": f"{index}. {title}", "url": item["public_url"], "type": "url"})
             if item.get("whatsapp_share_url"):
                 options.append({"texto": f"Compartir {title}", "url": item["whatsapp_share_url"], "type": "url"})
 
     if contract.get("previous_action_id"):
         options.append({"texto": "Ver anteriores", "action_id": contract["previous_action_id"]})
     if contract.get("next_action_id"):
-        options.append({"texto": "Ver mas", "action_id": contract["next_action_id"]})
+        options.append({"texto": "Ver más", "action_id": contract["next_action_id"]})
     options.append({"texto": "Volver", "action_id": labels["back_action"]})
 
     if is_whatsapp:

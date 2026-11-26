@@ -1943,9 +1943,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(len(payload.get("demo_surveys") or []), 5)
         survey_contract = (payload.get("data") or {}).get("surveys_votings") or {}
         self.assertEqual(survey_contract.get("total_available"), 6)
-        self.assertIn(f"Abrir: {preview_frontend}/e/", payload.get("message_body") or "")
-        self.assertNotIn("https://www.chatboc.ar/e/", payload.get("message_body") or "")
-        self.assertIn("Compartir por WhatsApp: https://wa.me/", payload.get("message_body") or "")
+        # En la web los enlaces viajan como botones: el texto no lleva URLs sueltas.
+        self.assertNotIn("http", payload.get("message_body") or "")
+        self.assertIn("encuestas de demostración", payload.get("message_body") or "")
         self.assertTrue(
             all(
                 str(item.get("public_url") or "").startswith(f"{preview_frontend}/e/")

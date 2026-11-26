@@ -1517,7 +1517,7 @@ def _short_operational_menu_contract(
     normalized = normalize_demo_sector(sector)
     survey_action = _operational_action(
         label="Encuestas y votaciones",
-        description="Lista encuestas demo con links para participar y compartir por WhatsApp.",
+        description="Participá en una encuesta o votación abierta.",
         action_id="mostrar_menu_encuestas",
         payload={"demo_mode": True, "sector": normalized, "tenant_slug": tenant.slug},
     )
@@ -1560,13 +1560,13 @@ def _short_operational_menu_contract(
             ),
             _operational_action(
                 label="Justificar inasistencia",
-                description="Carga alumno, curso, fecha, motivo y certificado si existe.",
+                description="Avisá la fecha y el motivo; podés adjuntar el certificado.",
                 action_id="justify_absence",
                 payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
             ),
             _operational_action(
                 label="Hablar con secretaría",
-                description="Crea una espera para secretaría o muestra el horario real.",
+                description="Dejá tu consulta para secretaría en su horario.",
                 action_id="talk_secretary",
                 payload={"education_context": {"is_education": True, "tenant_slug": tenant.slug}},
             ),
@@ -1576,23 +1576,23 @@ def _short_operational_menu_contract(
         return [
             _operational_action(
                 label="Crear reclamo",
-                description="Contame qué pasó. Podés adjuntar foto, audio o ubicación.",
+                description="Contá qué pasó; podés sumar foto, audio o ubicación.",
                 action_id="crear_reclamo",
                 payload={"vertical": "municipio"},
             ),
             _operational_action(
                 label="Consultar estado",
-                description="Buscá un reclamo por número o datos de contacto.",
+                description="Seguí un reclamo con su número.",
                 action_id="consultar_estado_reclamo",
             ),
             _operational_action(
                 label="Consultar trámite",
-                description="Respondé desde los trámites publicados por el municipio.",
+                description="Requisitos, pasos y dónde se hace cada trámite.",
                 action_id="consultar_tramite",
             ),
             _operational_action(
                 label="Hablar con una persona",
-                description="Derivá a la mesa de atención si está disponible.",
+                description="Pasá con el equipo de atención en su horario.",
                 action_id="derivar_humano",
             ),
             survey_action,
@@ -1601,22 +1601,22 @@ def _short_operational_menu_contract(
         return [
             _operational_action(
                 label="Consultar producto",
-                description="Busca precio, disponibilidad o detalle publicado por el comercio.",
+                description="Precio, disponibilidad y detalle de un producto.",
                 action_id="consultar_producto",
             ),
             _operational_action(
                 label="Crear pedido",
-                description="Pide datos y confirma el pedido solo con respuesta del backend.",
+                description="Armá tu pedido y recibí la confirmación.",
                 action_id="crear_pedido",
             ),
             _operational_action(
                 label="Cotizar envío",
-                description="Usá la dirección o ubicación enviada por el usuario.",
+                description="Calculá el envío con tu dirección o ubicación.",
                 action_id="cotizar_envio",
             ),
             _operational_action(
                 label="Hablar con ventas",
-                description="Deriva o registra lead comercial.",
+                description="Pasá con el equipo comercial.",
                 action_id="capturar_lead_comercial",
             ),
             survey_action,
@@ -1624,13 +1624,13 @@ def _short_operational_menu_contract(
     return [
         _operational_action(
             label="Registrar consulta",
-            description="Deja una solicitud trazable para el equipo.",
+            description="Dejá tu consulta y el equipo te responde.",
             action_id="registrar_solicitud_operativa",
             payload={"tipo_solicitud": "consulta"},
         ),
         _operational_action(
             label="Hablar con una persona",
-            description="Pide datos de contacto y deriva al equipo.",
+            description="Pasá con el equipo de atención.",
             action_id="derivar_humano",
         ),
     ]
