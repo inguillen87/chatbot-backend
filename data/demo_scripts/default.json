@@ -11,10 +11,10 @@
         "menu"
       ],
       "match_always": false,
-      "response": "¡Hola! 👋 Soy tu asistente virtual. Estoy aquí para ayudarte a mostrar cómo funciona nuestra plataforma. Elige una opción:",
+      "response": "Hola, soy el asistente de demostración de Chatboc. Elegí un rubro y te muestro cómo trabaja.",
       "buttons": [
         {
-          "label": "🏢 Ver demos disponibles",
+          "label": "Ver demos disponibles",
           "target": "demo_menu"
         }
       ]
@@ -30,22 +30,22 @@
         "carrito",
         "catálogo"
       ],
-      "response": "🚀 Bienvenido a la demo de Default. Probá el catálogo, la encuesta en vivo y el portal del cliente con analíticas en tiempo real.",
+      "response": "Esta es una demostración. Podés recorrer el catálogo, responder una encuesta y ver cómo sigue un pedido desde el portal del cliente.",
       "buttons": [
         {
-          "label": "🛒 Catálogo listo",
+          "label": "Ver el catálogo",
           "target": "catalogo_demo"
         },
         {
-          "label": "🗳️ Encuesta en vivo",
+          "label": "Ver una encuesta",
           "target": "encuesta_demo"
         },
         {
-          "label": "📊 Dashboard",
+          "label": "Ver el tablero",
           "target": "dashboard_demo"
         },
         {
-          "label": "📨 Portal del cliente",
+          "label": "Portal del cliente",
           "target": "portal_demo"
         }
       ]
@@ -58,14 +58,14 @@
         "productos demo",
         "ver catálogo"
       ],
-      "response": "Catálogo navegable con precios, imágenes y stock listo para agregar al carrito. Incluye QR y link compartible para que cualquier visitante lo abra desde su móvil.",
+      "response": "El catálogo muestra precios, fotos y stock, y cada producto se puede sumar al carrito. Se comparte con un enlace o un código QR.",
       "buttons": [
         {
-          "label": "🛍️ Ver productos",
+          "label": "Ver productos",
           "target": "catalogo_demo_items"
         },
         {
-          "label": "🔗 Compartir catálogo",
+          "label": "Compartir el catálogo",
           "target": "catalogo_demo_compartir"
         }
       ]
@@ -77,7 +77,7 @@
         "productos",
         "items"
       ],
-      "response": "Ejemplo de ítems listos para sumar al carrito: variantes, combos y precios destacados. Al avanzar, el carrito conserva el progreso y sugiere completar datos o ingresar al portal.",
+      "response": "Cada producto puede tener variantes, combos y precio destacado. El carrito se conserva aunque la persona salga y vuelva.",
       "include_faq_preview": 1
     },
     {
@@ -87,7 +87,7 @@
         "link catálogo",
         "qr catálogo"
       ],
-      "response": "Podés compartir el catálogo por QR, link corto o redes sociales. Cada acceso queda trazado en el panel de analíticas con mapa de calor y conversiones.",
+      "response": "El catálogo se comparte con un enlace, un código QR o en redes. En el panel se ve cuántas visitas y pedidos llegaron por cada vía.",
       "include_faq_preview": 1
     },
     {
@@ -98,14 +98,14 @@
         "votacion",
         "feedback"
       ],
-      "response": "Encuesta en vivo pensada para Default: botones de voto, QR para participación masiva y resultados en tiempo real.",
+      "response": "Podés publicar una encuesta: la gente responde desde el chat, un enlace o un código QR, y los resultados se ven a medida que llegan.",
       "buttons": [
         {
-          "label": "✅ Enviar voto",
+          "label": "Votar",
           "target": "encuesta_demo_votar"
         },
         {
-          "label": "📈 Ver resultados",
+          "label": "Ver resultados",
           "target": "encuesta_demo_resultados"
         }
       ]
@@ -117,7 +117,7 @@
         "vote",
         "participar"
       ],
-      "response": "Botones listos para votar sin salir del chat. También se pueden embeber en el widget o enviar por WhatsApp.",
+      "response": "Se vota con un toque, sin salir del chat. La misma encuesta se puede enviar por WhatsApp.",
       "include_faq_preview": 1
     },
     {
@@ -127,7 +127,7 @@
         "dashboard encuesta",
         "metricas"
       ],
-      "response": "Resultados en vivo con gráficos, tasa de respuesta y segmentación por canal. Exportable y con alertas automáticas.",
+      "response": "Los resultados muestran cuántas personas respondieron y por qué canal, y se pueden exportar.",
       "include_faq_preview": 1
     },
     {
@@ -138,14 +138,14 @@
         "analytics",
         "mapa de calor"
       ],
-      "response": "Dashboard de experiencia digital: mapa de calor de interacciones, conversión por canal, tickets abiertos y estado de pedidos.",
+      "response": "El tablero muestra por dónde entran las consultas, cuántas terminan en pedido y qué reclamos y pedidos siguen abiertos.",
       "buttons": [
         {
-          "label": "📍 Mapa de calor",
+          "label": "Mapa de calor",
           "target": "dashboard_mapa_calor"
         },
         {
-          "label": "🧾 Tickets y pedidos",
+          "label": "Reclamos y pedidos",
           "target": "dashboard_tickets_pedidos"
         }
       ]
@@ -157,7 +157,7 @@
         "heatmap",
         "flujo usuarios"
       ],
-      "response": "Visualizá el mapa de calor con los puntos más clickeados, embebible en la página demo para mostrar dónde interactúan los usuarios.",
+      "response": "El mapa de calor muestra en qué partes de la página hace clic la gente.",
       "include_faq_preview": 1
     },
     {
@@ -167,7 +167,7 @@
         "reclamos",
         "pedidos"
       ],
-      "response": "Vista rápida de reclamos, pedidos y encuestas abiertas por tenant. Permite derivar a humano o seguir el ciclo de compra sin perder el carrito.",
+      "response": "En una sola vista están los reclamos, pedidos y encuestas abiertos, y desde ahí se pasa la conversación a una persona del equipo.",
       "include_faq_preview": 1
     },
     {
@@ -177,14 +177,14 @@
         "perfil",
         "usuario"
       ],
-      "response": "Portal del cliente con historial de compras, puntos, reclamos y encuestas abiertas. Al iniciar sesión, se mantiene el carrito y se pueden reordenar ítems con un clic.",
+      "response": "En el portal, cada cliente ve sus compras, sus puntos y sus reclamos. El carrito se mantiene al iniciar sesión.",
       "buttons": [
         {
-          "label": "🔐 Ingresar al portal",
+          "label": "Ingresar al portal",
           "target": "portal_demo_ingreso"
         },
         {
-          "label": "🧾 Ver historial",
+          "label": "Ver historial",
           "target": "portal_demo_historial"
         }
       ]
@@ -196,7 +196,7 @@
         "login",
         "registro"
       ],
-      "response": "Ingreso rápido con email, WhatsApp o código QR. Se sincroniza con el carrito activo para continuar la compra sin perder productos.",
+      "response": "Se ingresa con email, WhatsApp o un código QR, y el carrito que estaba armado sigue ahí.",
       "include_faq_preview": 1
     },
     {
@@ -206,7 +206,7 @@
         "puntos",
         "seguimiento"
       ],
-      "response": "Historial de pedidos, reclamos y seguimientos, con notificaciones push y trazabilidad de entregas.",
+      "response": "El historial reúne pedidos, reclamos y su seguimiento, con aviso cuando cambia el estado de una entrega.",
       "include_faq_preview": 1
     },
     {
@@ -215,32 +215,32 @@
         "demos",
         "ver demos"
       ],
-      "response": "Tenemos demos preparadas para diferentes industrias. Selecciona una para ver cómo funciona:",
+      "response": "Hay demostraciones armadas para distintos rubros. Elegí una:",
       "buttons": [
         {
-          "label": "🍷 Bodega",
+          "label": "Bodega",
           "action": "switch_demo_bodega"
         },
         {
-          "label": "🛒 Almacén",
+          "label": "Almacén",
           "action": "switch_demo_almacen"
         },
         {
-          "label": "🏗️ Ferretería",
+          "label": "Ferretería",
           "action": "switch_demo_ferreteria"
         },
         {
-          "label": "👗 Tienda Ropa",
+          "label": "Tienda Ropa",
           "action": "switch_demo_ropa"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver las demos disponibles?",
+    "response": "No llegué a entender eso. ¿Querés ver las demostraciones disponibles?",
     "buttons": [
       {
-        "label": "Ver demos",
+        "label": "Ver demostraciones",
         "target": "demo_menu"
       }
     ]
