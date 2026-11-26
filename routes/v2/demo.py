@@ -780,8 +780,10 @@ def _extract_demo_contact(config: dict[str, Any], tenant: TenantProfile) -> dict
         or config.get("telefono")
         or config.get("phone")
         or whatsapp.get("numero")
-        or _demo_whatsapp_number_for_tenant(tenant)
     )
+    # The shared test line is not a way to reach anyone: never show it as a contact.
+    if "".join(ch for ch in str(phone or "") if ch.isdigit()) == "14155238886":
+        phone = ""
     website = (
         contacto.get("web")
         or contacto.get("website")
@@ -791,7 +793,7 @@ def _extract_demo_contact(config: dict[str, Any], tenant: TenantProfile) -> dict
     )
     return {
         "phone": str(phone or "").strip(),
-        "whatsapp": str(whatsapp.get("numero") or phone or "").strip(),
+        "whatsapp": str(phone and (whatsapp.get("numero") or phone) or "").strip(),
         "email": str(contacto.get("email") or config.get("email") or "").strip(),
         "website": str(website or "").strip(),
     }
@@ -921,15 +923,23 @@ def _demo_rubro_tools_contract(
     contact_enabled = any(contact.get(key) for key in ("phone", "whatsapp", "email", "website"))
     hours = _extract_demo_hours(config)
 
+    # A government has procedures and guides, not a catalogue with prices.
+    is_government = sector == "gobierno"
+    if is_government:
+        price_resources = []
+
     tools = [
         _demo_tool_contract(
             key="catalog",
-            label="Catálogo",
-            description="Recursos disponibles para productos, servicios o trámites.",
+            label="Trámites y guías" if is_government else "Catálogo",
+            description=(
+                "Guías y recursos de los trámites y servicios del organismo."
+                if is_government else "Productos y servicios disponibles."
+            ),
             enabled=bool(resources),
             items=resources,
             intent="ver_catalogo",
-            action_label="Abrir catálogo" if resources else None,
+            action_label=("Ver trámites" if is_government else "Abrir catálogo") if resources else None,
             action_url=_first_demo_item_url(resources, "url", "href"),
             tool_mode="downloadable",
             fields=[{"label": "Recursos", "value": len(resources)}] if resources else [],
@@ -937,7 +947,7 @@ def _demo_rubro_tools_contract(
         _demo_tool_contract(
             key="price_list",
             label="Lista de precios",
-            description="Precios, stock o lista descargable cuando el rubro la publica.",
+            description="Precios y stock en una lista para descargar.",
             enabled=bool(price_resources),
             items=price_resources,
             intent="consultar_precios",
@@ -987,7 +997,7 @@ def _demo_rubro_tools_contract(
         _demo_tool_contract(
             key="faq",
             label="Consultas frecuentes",
-            description="Preguntas frecuentes trazables del rubro.",
+            description="Las preguntas más comunes, con su respuesta.",
             enabled=bool(faq_preview),
             items=faq_preview,
             intent="consultar_faq",

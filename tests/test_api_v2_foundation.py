@@ -1719,9 +1719,11 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("location", enabled_tools)
         self.assertIn("contact", enabled_tools)
         self.assertTrue(locations)
-        self.assertEqual(enabled_tools["catalog"].get("label"), "Catálogo")
-        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catálogo")
-        self.assertEqual(enabled_tools["catalog"].get("description"), "Recursos disponibles para productos, servicios o trámites.")
+        self.assertEqual(enabled_tools["catalog"].get("label"), "Trámites y guías")
+        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Ver trámites")
+        self.assertEqual(enabled_tools["catalog"].get("description"), "Guías y recursos de los trámites y servicios del organismo.")
+        # Un gobierno no publica precios ni stock.
+        self.assertNotIn("price_list", enabled_tools)
         self.assertEqual(enabled_tools["location"].get("label"), "Ubicación")
         self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicación")
         self.assertEqual(
