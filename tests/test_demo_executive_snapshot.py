@@ -157,8 +157,8 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
             {"label": "Casos con SLA evaluado", "value": 184},
         )
         self.assertEqual(
-            (metrics_by_id.get("whatsapp_first_response_minutes") or {}).get("denominator"),
-            {"label": "Conversaciones WhatsApp", "value": 326},
+            (metrics_by_id.get("resolved_without_handoff_pct") or {}).get("denominator"),
+            {"label": "Consultas recibidas", "value": 598},
         )
         self.assertEqual(len(payload.get("timeline") or []), 5)
         self.assertEqual(len(payload.get("cases") or []), 5)
