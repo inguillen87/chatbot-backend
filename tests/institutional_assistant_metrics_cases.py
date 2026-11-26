@@ -190,6 +190,7 @@ class QuestionMetricsCases:
         self.assertEqual((data['days'], data['utc_offset_minutes'], data['truncated']), (30, 0, False))
         self.assertEqual(data['totals'], {'answered': 1, 'uncovered': 4, 'typed_navigation': 0, 'sources': 0, 'unavailable': 0})
         self.assertEqual(data['uncovered_rate'], 0.8)
+        self.assertEqual((data['resolution_rate'], data['interpreted']), (0.2, 5))
         self.assertEqual(data['by_channel'], {'web_reader': data['totals']})
         self.assertEqual(len(data['by_day']), 30)
         self.assertEqual(data['by_day'][-1]['date'], data['to'])
@@ -203,7 +204,7 @@ class QuestionMetricsCases:
         # The panel wording travels with the data; every label is non-empty text.
         self.assertEqual(set(data['ui']), {
             'title', 'description', 'period', 'answered', 'uncovered', 'typed_navigation', 'sources',
-            'unavailable', 'uncovered_rate', 'uncovered_by_node', 'answered_by_node', 'node', 'count',
+            'unavailable', 'uncovered_rate', 'resolution_rate', 'resolution_detail', 'uncovered_by_node', 'answered_by_node', 'node', 'count',
             'retired_node', 'empty', 'privacy', 'truncated'})
         self.assertTrue(all(isinstance(text, str) and text.strip() and len(text) <= 200 for text in data['ui'].values()))
         self.assertIn('{days}', data['ui']['period'])
@@ -227,5 +228,6 @@ class QuestionMetricsCases:
         client = self.login(); self.clear_metrics()
         data = self.metrics(client, '?days=1').get_json()
         self.assertIsNone(data['revision']); self.assertIsNone(data['uncovered_rate'])
+        self.assertIsNone(data['resolution_rate']); self.assertEqual(data['interpreted'], 0)
         self.assertEqual(len(data['by_day']), 1)
         self.assertEqual(data['uncovered_by_node'], []); self.assertEqual(data['answered_by_node'], [])
