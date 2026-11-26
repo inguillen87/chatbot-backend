@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Hola, soy tu planner de Moda Urbana. Elegí lookbooks, fidelización, eventos B2B o integraciones y te muestro cómo funciona.",
+      "response": "Hola, soy el asistente de Moda Urbana. Te muestro las colecciones, el programa de puntos, las ventas a comercios o la conexión entre tienda y web.",
       "buttons": [
         {
-          "label": "🧥 Visual & colecciones",
+          "label": "Visual y colecciones",
           "target": "visual_&_colecciones"
         },
         {
-          "label": "🎁 Fidelización & CRM",
+          "label": "Fidelización y CRM",
           "target": "fidelización_&_crm"
         },
         {
-          "label": "🤝 Eventos & B2B",
+          "label": "Eventos y B2B",
           "target": "eventos_&_b2b"
         },
         {
-          "label": "🔗 Integración omnicanal",
+          "label": "Integración omnicanal",
           "target": "integración_omnicana"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Lookbooks digitales, guías de estilo y drops exclusivos",
       "buttons": [
         {
-          "label": "📸 Lookbook interactivo",
+          "label": "Lookbook interactivo",
           "target": "lookbook_interactivo"
         },
         {
-          "label": "🎯 Drops hipersegmentados",
+          "label": "Drops hipersegmentados",
           "target": "drops_hipersegmentad"
         },
         {
-          "label": "🪞 Probadores inteligentes",
+          "label": "Probadores inteligentes",
           "target": "probadores_inteligen"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "Niveles VIP, cashback y campañas automatizadas",
       "buttons": [
         {
-          "label": "⭐ Programa loyalty",
+          "label": "Programa loyalty",
           "target": "programa_loyalty"
         },
         {
-          "label": "📧 Campañas omnicanal",
+          "label": "Campañas omnicanal",
           "target": "campañas_omnicanal"
         },
         {
-          "label": "📊 Dashboard de clientes",
+          "label": "Dashboard de clientes",
           "target": "dashboard_de_cliente"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Styling corporativo, giftcards y alianzas",
       "buttons": [
         {
-          "label": "🥂 Eventos VIP",
+          "label": "Eventos VIP",
           "target": "eventos_vip"
         },
         {
-          "label": "🎟️ Giftcards corporativas",
+          "label": "Giftcards corporativas",
           "target": "giftcards_corporativ"
         },
         {
-          "label": "🧵 Uniformes y cápsulas",
+          "label": "Uniformes y cápsulas",
           "target": "uniformes_y_cápsulas"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "ERP, ecommerce y ship-from-store",
       "buttons": [
         {
-          "label": "🛒 Ecommerce + tienda",
+          "label": "Ecommerce + tienda",
           "target": "ecommerce_+_tienda"
         },
         {
-          "label": "💡 Customer data platform",
+          "label": "Customer data platform",
           "target": "customer_data_platfo"
         },
         {
-          "label": "📦 Logística inversa",
+          "label": "Logística inversa",
           "target": "logística_inversa"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

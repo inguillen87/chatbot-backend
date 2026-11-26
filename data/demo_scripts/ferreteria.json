@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Hola, soy ProObra. Elegí materiales estructurales, logística de obra, servicios técnicos o financiamiento y armamos la propuesta.",
+      "response": "Hola, soy el asistente de ProObra. Te ayudo con materiales, entregas en obra, asesoramiento técnico o financiación.",
       "buttons": [
         {
-          "label": "🧱 Materiales estructurales",
+          "label": "Materiales estructurales",
           "target": "materiales_estructur"
         },
         {
-          "label": "🚛 Logística de obra",
+          "label": "Logística de obra",
           "target": "logística_de_obra"
         },
         {
-          "label": "🧮 Servicios técnicos",
+          "label": "Servicios técnicos",
           "target": "servicios_técnicos"
         },
         {
-          "label": "💳 Financiación & integraciones",
+          "label": "Financiación e integraciones",
           "target": "financiación_&_integ"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Acero, hormigón premoldeado y panelería aislante",
       "buttons": [
         {
-          "label": "🏗️ Acero y perfiles",
+          "label": "Acero y perfiles",
           "target": "acero_y_perfiles"
         },
         {
-          "label": "🧊 Paneles térmicos",
+          "label": "Paneles térmicos",
           "target": "paneles_térmicos"
         },
         {
-          "label": "🪚 Madera laminada",
+          "label": "Madera laminada",
           "target": "madera_laminada"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "Planificación de entregas y montaje en sitio",
       "buttons": [
         {
-          "label": "📅 Cronograma por etapa",
+          "label": "Cronograma por etapa",
           "target": "cronograma_por_etapa"
         },
         {
-          "label": "🪜 Montaje con grúa",
+          "label": "Montaje con grúa",
           "target": "montaje_con_grúa"
         },
         {
-          "label": "🔒 Seguridad industrial",
+          "label": "Seguridad industrial",
           "target": "seguridad_industrial"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Ingeniería de valor y soporte BIM",
       "buttons": [
         {
-          "label": "📐 Cálculo de estructuras",
+          "label": "Cálculo de estructuras",
           "target": "cálculo_de_estructur"
         },
         {
-          "label": "🖥️ Integración BIM",
+          "label": "Integración BIM",
           "target": "integración_bim"
         },
         {
-          "label": "🧯 Plan HSEQ",
+          "label": "Plan HSEQ",
           "target": "plan_hseq"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "Líneas bancarias, acuerdos fintech y APIs",
       "buttons": [
         {
-          "label": "🏦 Líneas bancarias",
+          "label": "Líneas bancarias",
           "target": "líneas_bancarias"
         },
         {
-          "label": "💻 API de pedidos",
+          "label": "API de pedidos",
           "target": "api_de_pedidos"
         },
         {
-          "label": "📊 Dashboard de consumos",
+          "label": "Dashboard de consumos",
           "target": "dashboard_de_consumo"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

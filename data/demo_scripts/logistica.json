@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Bienvenido a Logística Demo. Elegí operaciones, fulfillment, crossborder o analítica y te muestro capacidades y SLA.",
+      "response": "Hola, soy el asistente de Logística Demo. Te muestro el depósito, la preparación de pedidos, los envíos al exterior y los reportes.",
       "buttons": [
         {
-          "label": "🏭 Operaciones 3PL",
+          "label": "Operaciones 3PL",
           "target": "operaciones_3pl"
         },
         {
-          "label": "📦 Fulfillment & inventario",
+          "label": "Fulfillment e inventario",
           "target": "fulfillment_&_invent"
         },
         {
-          "label": "🌐 Crossborder & última milla",
+          "label": "Crossborder y última milla",
           "target": "crossborder_&_última"
         },
         {
-          "label": "📈 Innovación & BI",
+          "label": "Innovación y BI",
           "target": "innovación_&_bi"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Inbound, inventario y cross-docking con torre de control",
       "buttons": [
         {
-          "label": "🚛 Slots y turnos",
+          "label": "Slots y turnos",
           "target": "slots_y_turnos"
         },
         {
-          "label": "🧾 Control documental",
+          "label": "Control documental",
           "target": "control_documental"
         },
         {
-          "label": "🛠️ Mantenimiento flota",
+          "label": "Mantenimiento flota",
           "target": "mantenimiento_flota"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "WMS, picking inteligente y embalajes sustentables",
       "buttons": [
         {
-          "label": "🤖 Picking inteligente",
+          "label": "Picking inteligente",
           "target": "picking_inteligente"
         },
         {
-          "label": "📦 Kitting y personalización",
+          "label": "Kitting y personalización",
           "target": "kitting_y_personaliz"
         },
         {
-          "label": "♻️ Packaging verde",
+          "label": "Packaging verde",
           "target": "packaging_verde"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Operación internacional, couriers y lockers inteligentes",
       "buttons": [
         {
-          "label": "✈️ Export flash",
+          "label": "Export flash",
           "target": "export_flash"
         },
         {
-          "label": "📍 Lockers y pick up",
+          "label": "Lockers y pick up",
           "target": "lockers_y_pick_up"
         },
         {
-          "label": "⚡ Ventanas same-day",
+          "label": "Ventanas same-day",
           "target": "ventanas_same-day"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "Gemelos digitales, analítica predictiva y CO2 dashboard",
       "buttons": [
         {
-          "label": "🛰️ Gemelo digital",
+          "label": "Gemelo digital",
           "target": "gemelo_digital"
         },
         {
-          "label": "📊 KPIs en vivo",
+          "label": "KPIs en vivo",
           "target": "kpis_en_vivo"
         },
         {
-          "label": "🌱 Huella de carbono",
+          "label": "Huella de carbono",
           "target": "huella_de_carbono"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

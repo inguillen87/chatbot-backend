@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Bienvenido a ShieldOne. Elegí programas corporativos, siniestros, analítica o partners y te preparo propuestas inmediatas.",
+      "response": "Hola, soy el asistente de ShieldOne. Te ayudo con seguros para empresas, siniestros, reportes o el trabajo con productores.",
       "buttons": [
         {
-          "label": "🏢 Programas corporativos",
+          "label": "Programas corporativos",
           "target": "programas_corporativ"
         },
         {
-          "label": "🚑 Siniestros & asistencia",
+          "label": "Siniestros y asistencia",
           "target": "siniestros_&_asisten"
         },
         {
-          "label": "📊 Analítica & compliance",
+          "label": "Analítica y compliance",
           "target": "analítica_&_complian"
         },
         {
-          "label": "🤝 Brokers & partnerships",
+          "label": "Brokers y partnerships",
           "target": "brokers_&_partnershi"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Planes combinados, beneficios ejecutivos y compliance",
       "buttons": [
         {
-          "label": "🚗 Flotas inteligentes",
+          "label": "Flotas inteligentes",
           "target": "flotas_inteligentes"
         },
         {
-          "label": "🏢 Property & BI",
+          "label": "Property y BI",
           "target": "property_&_bi"
         },
         {
-          "label": "🧑‍💼 Beneficios ejecutivos",
+          "label": "Beneficios ejecutivos",
           "target": "beneficios_ejecutivo"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "Onboarding digital, triage y seguimiento en vivo",
       "buttons": [
         {
-          "label": "📲 Denuncia mobile",
+          "label": "Denuncia mobile",
           "target": "denuncia_mobile"
         },
         {
-          "label": "🛠️ Red de talleres",
+          "label": "Red de talleres",
           "target": "red_de_talleres"
         },
         {
-          "label": "📞 Mesa ejecutiva",
+          "label": "Mesa ejecutiva",
           "target": "mesa_ejecutiva"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Tableros, reportes SOX y auditorías",
       "buttons": [
         {
-          "label": "📈 KPIs ejecutivos",
+          "label": "KPIs ejecutivos",
           "target": "kpis_ejecutivos"
         },
         {
-          "label": "🧾 Compliance regulatorio",
+          "label": "Compliance regulatorio",
           "target": "compliance_regulator"
         },
         {
-          "label": "🧮 Pricing actuarial",
+          "label": "Pricing actuarial",
           "target": "pricing_actuarial"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "Marketplace de partners, revenue share y APIs",
       "buttons": [
         {
-          "label": "🌐 Brokers aliados",
+          "label": "Brokers aliados",
           "target": "brokers_aliados"
         },
         {
-          "label": "🔗 APIs de pólizas",
+          "label": "APIs de pólizas",
           "target": "apis_de_pólizas"
         },
         {
-          "label": "🎓 Academia risk",
+          "label": "Academia risk",
           "target": "academia_risk"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Bienvenido a Clínica Demo. Elegí turnos, estudios, telemedicina o convenios corporativos y te ayudo al instante.",
+      "response": "Hola, soy el asistente de Clínica Demo. Te ayudo con turnos, estudios, consultas a distancia o convenios con empresas.",
       "buttons": [
         {
-          "label": "📅 Turnos y especialidades",
+          "label": "Turnos y especialidades",
           "target": "turnos_y_especialida"
         },
         {
-          "label": "🧪 Estudios y laboratorio",
+          "label": "Estudios y laboratorio",
           "target": "estudios_y_laborator"
         },
         {
-          "label": "💬 Telemedicina & seguimiento",
+          "label": "Telemedicina y seguimiento",
           "target": "telemedicina_&_segui"
         },
         {
-          "label": "🏢 Convenios corporativos",
+          "label": "Convenios corporativos",
           "target": "convenios_corporativ"
         }
       ]
@@ -253,15 +253,15 @@
       "response": "Disponibilidad por sede, coberturas y derivaciones",
       "buttons": [
         {
-          "label": "🩺 Clínica médica",
+          "label": "Clínica médica",
           "target": "clínica_médica"
         },
         {
-          "label": "👶 Pediatría",
+          "label": "Pediatría",
           "target": "pediatría"
         },
         {
-          "label": "🧾 Turnos derivados",
+          "label": "Turnos derivados",
           "target": "turnos_derivados"
         }
       ]
@@ -298,15 +298,15 @@
       "response": "Preparación, tiempos y resultados online",
       "buttons": [
         {
-          "label": "🩸 Laboratorio general",
+          "label": "Laboratorio general",
           "target": "laboratorio_general"
         },
         {
-          "label": "🧬 Diagnóstico por imágenes",
+          "label": "Diagnóstico por imágenes",
           "target": "diagnóstico_por_imág"
         },
         {
-          "label": "📤 Entrega digital",
+          "label": "Entrega digital",
           "target": "entrega_digital"
         }
       ]
@@ -343,15 +343,15 @@
       "response": "Videoconsultas, receta digital y monitoreo remoto",
       "buttons": [
         {
-          "label": "🖥️ Teleconsulta",
+          "label": "Teleconsulta",
           "target": "teleconsulta"
         },
         {
-          "label": "📈 Seguimiento crónicos",
+          "label": "Seguimiento crónicos",
           "target": "seguimiento_crónicos"
         },
         {
-          "label": "📞 Acompañamiento post alta",
+          "label": "Acompañamiento post alta",
           "target": "acompañamiento_post_"
         }
       ]
@@ -388,22 +388,22 @@
       "response": "Planes preventivos, informes y gestión de beneficios",
       "buttons": [
         {
-          "label": "🧾 Planes preventivos",
+          "label": "Planes preventivos",
           "target": "planes_preventivos"
         },
         {
-          "label": "📊 Reporting ejecutivo",
+          "label": "Reporting ejecutivo",
           "target": "reporting_ejecutivo"
         },
         {
-          "label": "🤝 Beneficios empresas",
+          "label": "Beneficios empresas",
           "target": "beneficios_empresas"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "No entendí tu consulta. ¿Te gustaría ver el menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",

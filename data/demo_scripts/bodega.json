@@ -11,22 +11,22 @@
         "menu"
       ],
       "match_always": false,
-      "response": "Bienvenido al asistente digital de Cuatro Fincas. Elegí portfolio ícono, programas trade, experiencias o logística boutique y te comparto la información al instante.",
+      "response": "Hola, soy el asistente de Cuatro Fincas. Te cuento sobre los vinos y reservas, los programas para comercios, los envíos o las visitas a la bodega.",
       "buttons": [
         {
-          "label": "🍇 Portfolio ícono & reservas",
+          "label": "Portfolio ícono y reservas",
           "target": "portfolio_ícono_&_re"
         },
         {
-          "label": "🤝 Programas trade & incentivos",
+          "label": "Programas trade e incentivos",
           "target": "programas_trade_&_in"
         },
         {
-          "label": "🚚 Logística & export boutique",
+          "label": "Logística y export boutique",
           "target": "logística_&_export_b"
         },
         {
-          "label": "🥂 Experiencias & hospitality",
+          "label": "Experiencias y hospitality",
           "target": "experiencias_&_hospi"
         }
       ]
@@ -233,15 +233,15 @@
       "response": "Mostramos encuestas en vivo para tus visitas o clientes corporativos. El widget genera un QR para votar, muestra resultados en tiempo real y permite compartir el link por WhatsApp o redes.",
       "buttons": [
         {
-          "label": "🍷 Votar: Malbec vs Cabernet",
+          "label": "Votar: Malbec vs Cabernet",
           "target": "gran_malbec_reserva"
         },
         {
-          "label": "🥂 Votar experiencia favorita",
+          "label": "Votar experiencia favorita",
           "target": "barrel_room_experien"
         },
         {
-          "label": "📑 Ver catálogo digital",
+          "label": "Ver catálogo digital",
           "target": "catalogo_pdf"
         }
       ]
@@ -270,11 +270,11 @@
       "include_faq_preview": 2,
       "buttons": [
         {
-          "label": "📦 Pedido mayorista",
+          "label": "Pedido mayorista",
           "target": "programas_trade_&_in"
         },
         {
-          "label": "🚚 Logística boutique",
+          "label": "Logística boutique",
           "target": "logística_&_export_b"
         }
       ]
@@ -294,11 +294,11 @@
       "include_faq_preview": 1,
       "buttons": [
         {
-          "label": "📄 Ver tarifas",
+          "label": "Ver tarifas",
           "target": "presupuesto_corporativo_pdf"
         },
         {
-          "label": "🚚 Envíos fríos",
+          "label": "Envíos fríos",
           "target": "logística_&_export_b"
         }
       ]
@@ -351,15 +351,15 @@
       "response": "Grandes vinos de guarda, vinos de finca y ediciones limitadas",
       "buttons": [
         {
-          "label": "🥇 Gran Malbec Reserva",
+          "label": "Gran Malbec Reserva",
           "target": "gran_malbec_reserva"
         },
         {
-          "label": "🌿 Bonarda Orgánica",
+          "label": "Bonarda Orgánica",
           "target": "bonarda_orgánica"
         },
         {
-          "label": "✨ Línea Vincent HoReCa",
+          "label": "Línea Vincent HoReCa",
           "target": "línea_vincent_horeca"
         }
       ]
@@ -396,15 +396,15 @@
       "response": "Escalas, bonificaciones y soporte a cuentas clave",
       "buttons": [
         {
-          "label": "📦 Escalas mayoristas",
+          "label": "Escalas mayoristas",
           "target": "escalas_mayoristas"
         },
         {
-          "label": "🎓 Training de sommeliers",
+          "label": "Training de sommeliers",
           "target": "training_de_sommelie"
         },
         {
-          "label": "🎁 Kits corporativos",
+          "label": "Kits corporativos",
           "target": "kits_corporativos"
         }
       ]
@@ -430,7 +430,7 @@
       "keywords": [
         "calendario de despachos"
       ],
-      "response": "Salidas lunes, miércoles y viernes\n\n_Mostrame el calendario de despachos semanales para AMBA y interior._",
+      "response": "Salidas lunes, miércoles y viernes\n\n_Mostrame el calendario de despachos semanales para AMBA e interior._",
       "include_faq_preview": 1
     },
     {
@@ -441,15 +441,15 @@
       "response": "Cobertura nacional, cadena de frío y partners LATAM",
       "buttons": [
         {
-          "label": "🧊 Cadena de frío",
+          "label": "Cadena de frío",
           "target": "cadena_de_frío"
         },
         {
-          "label": "✈️ Export LATAM",
+          "label": "Export LATAM",
           "target": "export_latam"
         },
         {
-          "label": "📆 Calendario de despachos",
+          "label": "Calendario de despachos",
           "target": "calendario_de_despac"
         }
       ]
@@ -486,22 +486,22 @@
       "response": "Degustaciones, eventos privados y turismo corporativo",
       "buttons": [
         {
-          "label": "🪵 Barrel Room Experience",
+          "label": "Barrel Room Experience",
           "target": "barrel_room_experien"
         },
         {
-          "label": "🌅 Vendimia corporativa",
+          "label": "Vendimia corporativa",
           "target": "vendimia_corporativa"
         },
         {
-          "label": "🏨 Hospitality en bodega",
+          "label": "Hospitality en bodega",
           "target": "hospitality_en_bodeg"
         }
       ]
     }
   ],
   "fallback": {
-    "response": "Estás en la demo de Bodega. No entendí tu consulta, ¿querés volver al menú principal?",
+    "response": "No llegué a entender eso. Esto es una demo: ¿volvemos al menú principal?",
     "buttons": [
       {
         "label": "Ver menú principal",
