@@ -3801,6 +3801,40 @@ def _pick_last_user_message(historial_chat: list) -> str:
                 return txt or ""
     return ""
 
+
+def _clean_cross_sell_suggestion(raw: Any) -> Optional[str]:
+    """Return the suggestion as plain text, or None when the model had nothing to add.
+
+    The model is asked for ``{"suggestion": ...}``; depending on the provider that
+    JSON can arrive already parsed, as text, or wrapped in a code fence. A person
+    must never be shown the JSON itself.
+    """
+    for _ in range(6):
+        if raw is None:
+            return None
+        if isinstance(raw, dict):
+            raw = raw.get("suggestion")
+            continue
+        text = str(raw).strip()
+        if text.startswith("```"):
+            text = text.strip("`").strip()
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
+        if text.startswith("{") or text.startswith("["):
+            try:
+                raw = json.loads(text)
+            except (TypeError, ValueError):
+                return None
+            if not isinstance(raw, dict):
+                return None
+            continue
+        text = text.strip('"').strip()
+        if not text or text.lower() in {"skip", "null", "none"}:
+            return None
+        return text
+    return None
+
+
 def sugerir_productos_relacionados(
     historial_chat: list,
     pyme_id: int,
@@ -3928,11 +3962,8 @@ Salida JSON:
         elif isinstance(llm_out, str):
             suggestion = llm_out
 
+        suggestion = _clean_cross_sell_suggestion(suggestion)
         if not suggestion:
-            return None
-
-        suggestion = str(suggestion).strip().strip('"').strip()
-        if suggestion.lower() in {"skip", "null", "none"}:
             return None
 
         pyme_ctx["cross_sell_last_turn"] = turns
