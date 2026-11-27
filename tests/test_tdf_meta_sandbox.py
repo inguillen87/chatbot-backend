@@ -1539,3 +1539,18 @@ def test_a_row_from_an_older_message_answers_from_the_published_version(environm
     gone, _, _, _ = pilot._answer(SimpleNamespace(
         content_type="interactive", selection="knowledge:" + "0" * 16 + ":retired-topic"), {})
     assert gone == menu
+
+
+def test_the_opening_menu_tells_how_to_get_news_only_when_enabled(environment):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    menu = lambda text="menu": pilot._answer(SimpleNamespace(content_type="text", text=text), {})[0]
+    plain = menu()
+    assert "NOVEDADES" not in plain
+    from flask import current_app
+    current_app.config[pilot.NEWS_FLAG] = True
+    try:
+        assert menu() == plain + "\n\n" + pilot.NEWS_HINT
+        assert menu("hola").endswith(pilot.NEWS_HINT)
+        assert "NOVEDADES" not in menu("requisitos")
+    finally:
+        current_app.config[pilot.NEWS_FLAG] = False

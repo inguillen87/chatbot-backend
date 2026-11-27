@@ -328,6 +328,7 @@ def _compose_menu_answer(parts, buttons):
 
 
 NEWS_FLAG = "META_TDF_SANDBOX_NEWS_OPT_IN_ENABLED"
+NEWS_HINT = "📣 Para recibir avisos de eventos y trámites, escribí NOVEDADES."
 _NEWS_COMMANDS = {"novedades": "ask", "alta": "opt_in", "baja": "opt_out"}
 
 
@@ -449,6 +450,11 @@ def _answer(event, context, *, audio_text=None):
         return ("No pude mostrar todas las opciones de esta orientación en un solo mensaje. "
                 "Escribí MENÚ para elegir un tema nuevamente.", session.context_data,
                 result.get("context_revision"), ())
+    if (current_app.config.get(NEWS_FLAG) is True and isinstance(question, str)
+            and question.strip().casefold() in {"menu", "menú", "inicio"}
+            and len(body) + len(NEWS_HINT) + 2 <= (1024 if len(body) <= 1024 else 4096)):
+        # Shown on the opening menu only, and never at the cost of the list.
+        body += "\n\n" + NEWS_HINT
     return body, session.context_data, result.get("context_revision"), tuple(buttons)
 
 
