@@ -10,7 +10,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
     ContentError, CONTRACT, MAX_QUESTION_CHARS, normalize_bundle, overview, digest, select_nodes, materialize_node,
-    is_source_navigation, is_menu_command, advertised_choice, bundle_glossary,
+    is_source_navigation, is_menu_command, advertised_choice, bundle_glossary, locality_question,
 )
 from services.institutional_assistant_metrics import note_question_outcome
 from services.institutional_assistant_easy_read import is_easy_read_command
@@ -167,7 +167,7 @@ def _economy_selection(bundle, question, node_id):
         return None
 
 def answer(tenant, command, *, public=False, selector=None, actor=None):
-    if not isinstance(command, dict) or set(command) - {'revision', 'node_id', 'question'}:
+    if not isinstance(command, dict) or set(command) - {'revision', 'node_id', 'question', 'locality'}:
         raise ContentError('knowledge_command_invalid', 400)
     state = read_state(tenant, public=public)
     if state is None or command.get('revision') != state['revision']:
@@ -201,14 +201,15 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     elif chosen is not None:
         nodes = [deepcopy(bundle['nodes'][chosen])]
     elif called:
+        located = locality_question(bundle, question, command.get('locality'))
         economy_ids = None
         if selector is None:
             from services.llm_utils import llamar_llm_para_json_estructurado
             selector = llamar_llm_para_json_estructurado
-            economy_ids = _economy_selection(bundle, question, node_id)
+            economy_ids = _economy_selection(bundle, located, node_id)
         try:
             nodes = ([deepcopy(bundle['nodes'][key]) for key in economy_ids] if economy_ids is not None
-                     else select_nodes(bundle, question, node_id, selector))
+                     else select_nodes(bundle, located, node_id, selector))
         except ContentError as error:
             if error.code == 'knowledge_interpretation_unavailable':
                 note_question_outcome(state['revision'], node_id, 'unavailable')

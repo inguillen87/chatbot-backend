@@ -18,6 +18,7 @@ CONTRACT = 'chatboc.institutional_assistant.v1'
 BUNDLE_CONTRACT = 'chatboc.institutional_guide.composed.v1'
 MAX_BYTES = 1_000_000
 MAX_QUESTION_CHARS = 1800
+MAX_LOCALITIES = 8
 SELECTOR_RETRY_WINDOW_SECONDS = 3
 _ID = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,119}$')
 _HASH = re.compile(r'^[a-f0-9]{64}$')
@@ -232,6 +233,18 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
         bundle['evaluation_only'] = raw['evaluation_only']
     if 'approval_status' in raw:
         bundle['approval_status'] = _text(raw['approval_status'], 120)
+    # Optional: the places the organization serves, each opening its own
+    # published topic. A reader may pick one so answers start from that place.
+    places = raw.get('localities')
+    if places is not None:
+        _require(isinstance(places, list) and 2 <= len(places) <= MAX_LOCALITIES, 'knowledge_localities_invalid')
+        bundle['localities'] = []
+        for place in places:
+            _require(isinstance(place, dict) and place.get('target') in nodes, 'knowledge_localities_invalid')
+            label = _text(place.get('label'), 40)
+            _require(all(label.casefold() != p['label'].casefold() for p in bundle['localities']),
+                     'knowledge_localities_invalid')
+            bundle['localities'].append({'label': label, 'target': place['target']})
     # An import must support any allowed question without exceeding the same
     # selector budget checked at read time. Evidence bytes do not enter it.
     # The reservation covers the largest node-dependent part of a request: the
@@ -245,6 +258,20 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
     _require(len(_selection_request(bundle, '\U0010ffff' * MAX_QUESTION_CHARS, largest_id).encode()) <= 120000,
              'knowledge_context_too_large')
     return bundle
+
+def locality_question(bundle, question, locality):
+    """The question as the selector reads it when the reader picked a place.
+
+    Only a place published in the bundle is used; anything else is ignored. The
+    reader's text is never changed for commands, storage or display."""
+    if not isinstance(locality, str) or not isinstance(question, str):
+        return question
+    match = next((p['label'] for p in bundle.get('localities', [])
+                  if p['label'].casefold() == locality.strip().casefold()), None)
+    if match is None or match.casefold() in question.casefold():
+        return question
+    extended = f'{question.rstrip()} (consulta desde {match})'
+    return extended if len(extended) <= MAX_QUESTION_CHARS else question
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -263,6 +290,7 @@ def overview(bundle, *, public=False):
     topic_root = bundle['nodes'][next(iter(targets))] if len(targets) == 1 else root
     return {'start': bundle['start'], 'node_count': len(bundle['nodes']),
         'topics': [{'id': a['target'], 'label': a['label']} for a in topic_root['actions']],
+        'localities': deepcopy(bundle.get('localities', [])),
         'sources': [_source_projection(source, public=public) for source in bundle['sources'].values()]}
 
 SELECTOR_INSTRUCTIONS = '''Sos el selector de conocimiento de un agente institucional inclusivo.
