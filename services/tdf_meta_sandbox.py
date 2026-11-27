@@ -15,6 +15,7 @@ import json
 import re
 import ssl
 import time
+import unicodedata
 from types import SimpleNamespace
 from urllib.parse import urlencode, urlsplit
 
@@ -29,6 +30,7 @@ from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
 from services.institutional_assistant_content import ContentError, is_source_navigation, nearest_locality
 from services.institutional_assistant_whatsapp import (
+    SOURCE_SCOPE,
     clear_source_scope, present_answer_parts, row_title, short_label, sources_answer, sources_page,
 )
 from services.tenant_provider_credentials import ProviderCredentialError
@@ -446,6 +448,66 @@ def _finish(delivery, status="processed", reason=None):
     db.session.commit()
 
 
+def _handout(context, revision):
+    """The one PDF the last answer hands out, or None.
+
+    Only a single-topic answer at the current published revision, and only a
+    source the organization marked public. Anything else sends no document."""
+    scope = context.get(SOURCE_SCOPE) if isinstance(context, dict) else None
+    if (not revision or not isinstance(scope, dict) or scope.get("revision") != revision
+            or not isinstance(scope.get("node_ids"), list) or len(scope["node_ids"]) != 1):
+        return None
+    tenant = db.session.get(TenantProfile, TENANT_ID)
+    state = read_state(tenant, public=True)
+    if state is None or state["revision"] != revision:
+        return None
+    node = state["bundle"]["nodes"].get(scope["node_ids"][0])
+    for source in (node or {}).get("sources", []):
+        if source.get("document_visibility") == "public" and source.get("format", "pdf") == "pdf":
+            title = " ".join(str(source.get("title", "")).split())
+            name = re.sub(r"[^A-Za-z0-9 ._()-]", "", unicodedata.normalize("NFKD", title)
+                          .encode("ascii", "ignore").decode())[:100].strip(" .") or "documento"
+            return {"link": "https://api.chatboc.ar/api/public/tenants/" + TENANT_SLUG
+                            + "/institutional-assistant/sources/" + source["id"] + "?revision=" + revision,
+                    "filename": name + ".pdf", "caption": title[:1024] or None}
+    return None
+
+
+def _send_handout(event, context, revision, recipient, cfg, contact_key, load, clock, post):
+    """Second message after an accepted reply: the published document itself.
+
+    It has its own ledger row and never changes the outcome of the reply."""
+    item = _handout(context, revision)
+    if item is None:
+        return
+    outbound = cloud.document_payload(recipient=recipient, **item)
+    receipt = MessagingEventLedger(tenant_id=TENANT_ID, provider_connection_id=event.sender.connection_id,
+        provider_sender_id=event.sender.sender_id, channel="whatsapp", direction="outbound",
+        event_type="tdf_sandbox_document", provider=PROVIDER, provider_event_id=event.event_key + ":document",
+        external_status="send_uncertain", request_id=contact_key, payload=None,
+        metadata_json={"contract": CONTRACT})
+    db.session.add(receipt)
+    db.session.commit()
+
+    def policy(sender, payload):
+        live_cfg = settings(current_app.config)
+        return (sender == event.sender and payload == outbound
+                and live_cfg["REPLY_RECIPIENTS"] == cfg["REPLY_RECIPIENTS"]
+                and live_cfg["RECIPIENTS"] == cfg["RECIPIENTS"]
+                and event.contact in live_cfg["RECIPIENTS"]
+                and payload.get("to") == recipient == _reply_recipient(event.contact, live_cfg)
+                and 0 <= clock() - event.timestamp < 24 * 3600
+                and not cutover_writer_fence_enabled(current_app.config)
+                and _knowledge_revision_current(revision)
+                and _handout(context, revision) == item)
+    result = cloud.send_once(binding_loader=load, payload=outbound, now=clock(), policy_check=policy,
+        post=post or (lambda url, **kw: _graph_request("POST", url, **kw)))
+    receipt.external_status = result.state
+    receipt.external_message_sid = result.message_id
+    receipt.error_code = str(result.error_code) if result.error_code is not None else None
+    db.session.commit()
+
+
 def _status(event, delivery, cfg):
     rows = db.session.scalars(select(MessagingEventLedger).where(
         MessagingEventLedger.tenant_id == TENANT_ID,
@@ -566,6 +628,13 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
             _finish(delivery, "processed" if result.state == "accepted" else "failed",
                     None if result.state == "accepted" else "tdf_meta_send_" + result.state)
             accepted += result.state == "accepted"
+            if result.state == "accepted":
+                # The reply is already final. A document that cannot be sent
+                # leaves the conversation exactly as the reply left it.
+                try:
+                    _send_handout(event, context, revision, outbound_recipient, cfg, contact_key, load, clock, post)
+                except Exception:
+                    db.session.rollback()
         except Exception:
             db.session.rollback()
             # Never retry the POST after an exception. Persist only a fixed code.
