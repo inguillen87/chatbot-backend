@@ -42,6 +42,12 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
 
 
+def functional_route_evidence(frontend_deployment):
+    """Declared digest for a deployment whose provider reply carries no route table."""
+    return sha256(canonical({'route_evidence': 'functional_same_origin_probe',
+        'frontend_deployment': frontend_deployment})).hexdigest()
+
+
 def unique_object(pairs):
     value = {}
     for key, item in pairs:
@@ -254,13 +260,21 @@ class VercelDomainAdapter:
         # The provider may omit the route table (the API documents it as nullable). That is
         # missing evidence, not a mismatch: fail closed with its own reason so the operator is
         # not told to fix a digest that cannot be compared. Never derived from vercel.json.
-        require(routes is not None, 'provider_routes_unavailable')
-        require(isinstance(routes, list) and 1 <= len(routes) <= 256
-            and sha256(canonical(routes)).hexdigest() == plan.routes_sha256,
-            'reviewed_route_setup_required')
-        require(any(isinstance(route, dict) and route.get('src') in ('/api/(.*)', '^/api/(.*)$')
-            and route.get('dest') == 'https://api.chatboc.ar/api/$1' for route in routes),
-            'same_origin_backend_proxy_required')
+        if routes is None:
+            # Without a route table there is no digest to compare. The operator may
+            # then declare, for this exact deployment, that the proxy is proven by
+            # function: observe() only succeeds when a fresh nonce requested through
+            # https://<host>/api/ comes back from this backend with its own source.
+            # Any other digest keeps failing closed with the explicit reason.
+            require(plan.routes_sha256 == functional_route_evidence(plan.frontend_deployment),
+                'provider_routes_unavailable')
+        else:
+            require(isinstance(routes, list) and 1 <= len(routes) <= 256
+                and sha256(canonical(routes)).hexdigest() == plan.routes_sha256,
+                'reviewed_route_setup_required')
+            require(any(isinstance(route, dict) and route.get('src') in ('/api/(.*)', '^/api/(.*)$')
+                and route.get('dest') == 'https://api.chatboc.ar/api/$1' for route in routes),
+                'same_origin_backend_proxy_required')
         alias = self.transport('GET', '/v4/aliases/' + plan.host)
         require(type(alias) is Reply and alias.status == 200 and isinstance(alias.data, dict)
             and alias.data.get('alias') == plan.host and alias.data.get('projectId') == plan.project_id
