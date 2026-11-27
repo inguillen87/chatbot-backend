@@ -1511,3 +1511,16 @@ def test_news_sign_up_is_inert_until_enabled_and_then_records_only_explicit_choi
         assert db.session.query(ConsentLedger).count() == 2
     finally:
         current_app.config.pop(pilot.NEWS_FLAG, None)
+
+
+def test_handout_is_found_in_an_answer_that_joins_several_topics(environment):
+    raw = public_presentation_fixture()
+    state = publish_presentation_fixture(environment, raw)
+    from services.institutional_assistant_whatsapp import SOURCE_SCOPE
+    revision = pilot.read_state(db.session.get(TenantProfile, pilot.TENANT_ID), public=True)["revision"]
+    scope = lambda ids: {SOURCE_SCOPE: {"tenant": {"id": pilot.TENANT_ID, "slug": pilot.TENANT_SLUG}, "revision": revision, "node_ids": ids}}
+    single = pilot._handout(scope(["requirements"]), revision)
+    assert single is not None and single["filename"].endswith(".pdf")
+    assert pilot._handout(scope(["start", "requirements"]), revision) == single
+    assert pilot._handout(scope(["start", "requirements", "start", "requirements"]), revision) is None
+    assert pilot._handout(scope(["requirements"]), "0" * 64) is None
