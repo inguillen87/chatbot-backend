@@ -420,14 +420,16 @@ _RESERVE_SYNONYMS = {'curriculum': 'cv', 'curriculo': 'cv', 'celular': 'telefono
                      'empleo': 'trabajo', 'trabajar': 'trabajo', 'electrodependiente': 'electrodependencia',
                      'inscribir': 'inscripcion', 'inscribo': 'inscripcion', 'inscribirme': 'inscripcion',
                      'anotarme': 'inscripcion', 'renovar': 'renovacion', 'renuevo': 'renovacion',
-                     'oficina': 'oficinas', 'requisito': 'requisitos'}
+                     'oficina': 'oficinas', 'requisito': 'requisitos', 'persona': 'contacto',
+                     'humano': 'contacto', 'operador': 'contacto', 'operadora': 'contacto',
+                     'atienda': 'contacto', 'derecho': 'ley', 'app': 'aplicacion', 'aplicacione': 'aplicacion'}
 RESERVE_MIN_COVERAGE = 0.6
 RESERVE_SECOND_RATIO = 0.8
 
 def _reserve_words(text):
     words = []
     for word in _command_text(text or '').split():
-        if len(word) < 2 or word in _RESERVE_STOPWORDS or word.isdigit():
+        if len(word) < 2 or word in _RESERVE_STOPWORDS or (word.isdigit() and len(word) > 4):
             continue
         if len(word) > 4 and word.endswith('es') and word[:-2] not in _RESERVE_STOPWORDS:
             word = word[:-2] if word[-3] not in 'aeiou' else word[:-1]
