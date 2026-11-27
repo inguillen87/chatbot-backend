@@ -410,5 +410,167 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "single_lead": "Sí, atendemos",
+    "list_lead": "Esto es lo que tenemos:",
+    "closing": "Los valores y horarios son de ejemplo. ¿Querés que te busque un turno?",
+    "items": [
+      {
+        "name": "clínica médica",
+        "keywords": [
+          "clinica",
+          "clinico",
+          "medico",
+          "generalista",
+          "chequeo"
+        ],
+        "price": "consulta $ 18.000",
+        "detail": "Próximo turno: mañana a las 9:40. Con obra social solo pagás el coseguro."
+      },
+      {
+        "name": "pediatría",
+        "keywords": [
+          "pediatra",
+          "pediatria",
+          "nene",
+          "nena",
+          "hijo",
+          "hija",
+          "bebe",
+          "chico"
+        ],
+        "price": "consulta $ 20.000",
+        "detail": "Hay turnos el jueves por la tarde. Atendemos demanda espontánea de 8 a 12."
+      },
+      {
+        "name": "cardiología",
+        "keywords": [
+          "cardiologo",
+          "cardiologia",
+          "corazon",
+          "electro",
+          "electrocardiograma"
+        ],
+        "price": "consulta $ 26.000",
+        "detail": "Primer turno disponible: el lunes. El electrocardiograma se hace en la misma visita."
+      },
+      {
+        "name": "ginecología",
+        "keywords": [
+          "ginecologo",
+          "ginecologa",
+          "ginecologia",
+          "pap",
+          "papanicolau"
+        ],
+        "price": "consulta $ 24.000",
+        "detail": "Turnos martes y viernes. El PAP se retira en línea a los 10 días."
+      },
+      {
+        "name": "traumatología",
+        "keywords": [
+          "traumatologo",
+          "traumatologia",
+          "rodilla",
+          "esguince",
+          "hueso",
+          "columna"
+        ],
+        "price": "consulta $ 24.000",
+        "detail": "Turnos el miércoles. Si necesitás radiografía, se hace en el mismo edificio."
+      },
+      {
+        "name": "análisis de laboratorio",
+        "keywords": [
+          "analisis",
+          "laboratorio",
+          "sangre",
+          "orina",
+          "hemograma"
+        ],
+        "price": "rutina completa $ 32.000",
+        "detail": "Extracciones de lunes a sábado de 7 a 10, sin turno. Ayuno de 8 horas."
+      },
+      {
+        "name": "ecografía",
+        "keywords": [
+          "ecografia",
+          "eco",
+          "ecografias"
+        ],
+        "price": "desde $ 28.000",
+        "detail": "Con turno. El informe se entrega en línea el mismo día."
+      },
+      {
+        "name": "teleconsulta",
+        "keywords": [
+          "teleconsulta",
+          "videollamada",
+          "virtual",
+          "online",
+          "distancia"
+        ],
+        "price": "$ 15.000",
+        "detail": "De lunes a viernes de 8 a 20. Recibís el enlace por WhatsApp."
+      }
+    ],
+    "payment": "Podés pagar con tarjeta, transferencia o efectivo en recepción. El coseguro depende de tu cobertura.",
+    "hours": "Atendemos de lunes a viernes de 7 a 20 y los sábados de 8 a 13. La guardia funciona las 24 horas.",
+    "topics": [
+      {
+        "keywords": [
+          "obra",
+          "prepaga",
+          "cobertura",
+          "osde",
+          "pami",
+          "swiss",
+          "coseguro",
+          "mutual"
+        ],
+        "answer": "Trabajamos con las principales obras sociales y prepagas. Decime cuál tenés y te confirmo si la consulta tiene coseguro."
+      },
+      {
+        "keywords": [
+          "resultado",
+          "resultados",
+          "informe",
+          "informes",
+          "retirar",
+          "retiro"
+        ],
+        "answer": "Los resultados se ven en el portal de pacientes con tu DNI. También te avisamos por WhatsApp cuando están listos."
+      },
+      {
+        "keywords": [
+          "cancelar",
+          "cancelo",
+          "reprogramar",
+          "cambiar",
+          "reprogramo"
+        ],
+        "answer": "Podés cancelar o cambiar un turno hasta 4 horas antes, sin costo, respondiendo al recordatorio que te llega por WhatsApp."
+      },
+      {
+        "keywords": [
+          "guardia",
+          "urgencia",
+          "emergencia",
+          "urgente"
+        ],
+        "answer": "Si es una urgencia, la guardia atiende las 24 horas sin turno. Ante una emergencia llamá al 107."
+      }
+    ],
+    "buttons": [
+      {
+        "label": "Ver especialidades",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }

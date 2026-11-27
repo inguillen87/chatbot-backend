@@ -410,5 +410,137 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "single_lead": "Sí, tenemos",
+    "list_lead": "Tenemos estas opciones:",
+    "closing": "Los valores son de ejemplo. ¿Coordinamos una visita?",
+    "items": [
+      {
+        "name": "departamento de 2 ambientes en alquiler",
+        "keywords": [
+          "alquiler",
+          "alquilar",
+          "alquilo",
+          "monoambiente",
+          "ambientes",
+          "depto",
+          "departamento"
+        ],
+        "price": "$ 520.000 por mes",
+        "detail": "48 m², balcón y cochera opcional. Expensas: $ 85.000. Disponible desde el mes que viene."
+      },
+      {
+        "name": "casa de 3 dormitorios en barrio cerrado",
+        "keywords": [
+          "casa",
+          "casas",
+          "barrio",
+          "dormitorios",
+          "jardin",
+          "pileta"
+        ],
+        "price": "USD 185.000",
+        "detail": "210 m² cubiertos, lote de 600 m², pileta y seguridad 24 horas."
+      },
+      {
+        "name": "departamento en preventa, torre nueva",
+        "keywords": [
+          "preventa",
+          "pozo",
+          "torre",
+          "estrenar"
+        ],
+        "price": "desde USD 78.000",
+        "detail": "Anticipo del 30 % y 36 cuotas en pesos ajustadas por índice. Entrega en 18 meses."
+      },
+      {
+        "name": "oficina de 60 m² en el centro",
+        "keywords": [
+          "oficina",
+          "oficinas",
+          "comercial"
+        ],
+        "price": "$ 690.000 por mes",
+        "detail": "Planta libre, dos baños y recepción. Apta profesional."
+      },
+      {
+        "name": "lote de 500 m²",
+        "keywords": [
+          "lote",
+          "lotes",
+          "terreno",
+          "terrenos"
+        ],
+        "price": "USD 42.000",
+        "detail": "Con servicios y escritura inmediata. Financiación propia hasta 24 cuotas."
+      },
+      {
+        "name": "alquiler temporario amoblado",
+        "keywords": [
+          "temporario",
+          "temporal",
+          "amoblado",
+          "turistico"
+        ],
+        "price": "USD 55 por noche",
+        "detail": "Para 4 personas. Mínimo 3 noches; descuento del 15 % por mes completo."
+      }
+    ],
+    "payment": "Para compra aceptamos transferencia, crédito hipotecario y financiación propia en preventa. Para alquiler, el primer mes más depósito.",
+    "hours": "Atendemos de lunes a viernes de 9 a 18 y los sábados de 10 a 13. Las visitas se coordinan con turno.",
+    "topics": [
+      {
+        "keywords": [
+          "requisitos",
+          "garantia",
+          "garantias",
+          "garante",
+          "recibo",
+          "recibos",
+          "caucion"
+        ],
+        "answer": "Para alquilar pedimos recibos de sueldo o constancia de ingresos y una garantía: propietaria, seguro de caución o aval bancario."
+      },
+      {
+        "keywords": [
+          "visita",
+          "visitar",
+          "conocer",
+          "recorrer"
+        ],
+        "answer": "Las visitas son con turno, de lunes a sábado. Decime qué propiedad te interesa y qué día te queda bien."
+      },
+      {
+        "keywords": [
+          "tasacion",
+          "tasar",
+          "tasan",
+          "vender",
+          "vendo",
+          "venta"
+        ],
+        "answer": "Hacemos la tasación sin cargo en 48 horas. Necesitamos la dirección y, si la tenés, la escritura o el plano."
+      },
+      {
+        "keywords": [
+          "mascota",
+          "mascotas",
+          "perro",
+          "gato"
+        ],
+        "answer": "La mayoría de las propiedades en alquiler aceptan mascotas; lo aclaramos en cada ficha."
+      }
+    ],
+    "buttons": [
+      {
+        "label": "Ver propiedades",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }
