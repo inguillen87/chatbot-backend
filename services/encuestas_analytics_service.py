@@ -8,6 +8,8 @@ import json
 import logging
 import math
 import os
+import re
+import unicodedata
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -31,6 +33,7 @@ from services.encuestas_service import (
     compile_survey_visibility,
     get_encuesta,
     get_public_encuesta,
+    public_survey_response_count_contract,
     _parse_datetime,
     _resolve_geo_metadata_for_tenant,
 )
@@ -618,6 +621,289 @@ def _normalize_question_type(raw: Optional[str]) -> str:
     if text in _TEXT_TYPES:
         return "text"
     return text
+
+
+SURVEY_WORD_CLOUD_RESPONSE_LIMIT = 500
+SURVEY_WORD_CLOUD_TERM_LIMIT = 60
+SURVEY_WORD_CLOUD_TERM_MAX_LENGTH = 40
+SURVEY_WORD_CLOUD_MIN_COUNT = 3
+# This list is intentionally short and explicit so product and trust teams can
+# extend it without changing the tokenizer contract.
+SURVEY_WORD_CLOUD_BLOCKED_TERMS = frozenset(
+    {
+        "boluda",
+        "boludo",
+        "forra",
+        "forro",
+        "mierda",
+        "pelotuda",
+        "pelotudo",
+        "puta",
+        "puto",
+    }
+)
+_SURVEY_WORD_CLOUD_STOPWORDS = frozenset(
+    {
+        "a",
+        "aca",
+        "ahi",
+        "al",
+        "algo",
+        "algun",
+        "alguna",
+        "algunas",
+        "alguno",
+        "algunos",
+        "ante",
+        "antes",
+        "aquel",
+        "aquella",
+        "aquellas",
+        "aquello",
+        "aquellos",
+        "aqui",
+        "asi",
+        "aun",
+        "aunque",
+        "bajo",
+        "cada",
+        "casi",
+        "como",
+        "con",
+        "contra",
+        "cual",
+        "cuando",
+        "de",
+        "del",
+        "desde",
+        "donde",
+        "dos",
+        "durante",
+        "e",
+        "el",
+        "ella",
+        "ellas",
+        "ello",
+        "ellos",
+        "en",
+        "entre",
+        "era",
+        "eramos",
+        "es",
+        "esa",
+        "esas",
+        "ese",
+        "eso",
+        "esos",
+        "esta",
+        "estaba",
+        "estaban",
+        "estado",
+        "estamos",
+        "estan",
+        "estar",
+        "estas",
+        "este",
+        "esto",
+        "estos",
+        "fue",
+        "fueron",
+        "ha",
+        "hace",
+        "hacia",
+        "han",
+        "hasta",
+        "hay",
+        "la",
+        "las",
+        "le",
+        "les",
+        "lo",
+        "los",
+        "mas",
+        "me",
+        "mi",
+        "mis",
+        "mismo",
+        "mucha",
+        "muchas",
+        "mucho",
+        "muchos",
+        "muy",
+        "nada",
+        "ni",
+        "no",
+        "nos",
+        "nosotros",
+        "nuestra",
+        "nuestro",
+        "o",
+        "otra",
+        "otras",
+        "otro",
+        "otros",
+        "para",
+        "pero",
+        "poco",
+        "por",
+        "porque",
+        "que",
+        "quien",
+        "se",
+        "sea",
+        "segun",
+        "ser",
+        "si",
+        "sin",
+        "sobre",
+        "son",
+        "su",
+        "sus",
+        "tambien",
+        "te",
+        "tiene",
+        "tienen",
+        "todo",
+        "todos",
+        "tu",
+        "tus",
+        "un",
+        "una",
+        "unas",
+        "uno",
+        "unos",
+        "usted",
+        "ustedes",
+        "vos",
+        "y",
+        "ya",
+        "yo",
+    }
+)
+_SURVEY_WORD_CLOUD_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_SURVEY_WORD_CLOUD_BARE_URL_RE = re.compile(
+    r"\b(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+"
+    r"[A-Z]{2,}(?:/\S*)?",
+    re.IGNORECASE,
+)
+_SURVEY_WORD_CLOUD_IP_URL_RE = re.compile(
+    r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?(?:/\S*)?",
+    re.IGNORECASE,
+)
+_SURVEY_WORD_CLOUD_EMAIL_RE = re.compile(
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+    re.IGNORECASE,
+)
+_SURVEY_WORD_CLOUD_MENTION_RE = re.compile(r"(?<!\w)@[\w.]+", re.UNICODE)
+_SURVEY_WORD_CLOUD_PHONE_RE = re.compile(
+    r"(?<!\w)(?:\+?\d[\d\s().-]{5,}\d)(?!\w)"
+)
+
+
+def _normalize_word_cloud_terms(raw_text: Any) -> set[str]:
+    """Return privacy-safe unique terms from one free-text response."""
+
+    text = str(raw_text or "").strip().lower()
+    if not text:
+        return set()
+    text = _SURVEY_WORD_CLOUD_URL_RE.sub(" ", text)
+    text = _SURVEY_WORD_CLOUD_EMAIL_RE.sub(" ", text)
+    text = _SURVEY_WORD_CLOUD_BARE_URL_RE.sub(" ", text)
+    text = _SURVEY_WORD_CLOUD_IP_URL_RE.sub(" ", text)
+    text = _SURVEY_WORD_CLOUD_MENTION_RE.sub(" ", text)
+    text = _SURVEY_WORD_CLOUD_PHONE_RE.sub(" ", text)
+    folded = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(character)
+    )
+    terms: set[str] = set()
+    for term in re.findall(r"[a-z0-9]+", folded):
+        if any(character.isdigit() for character in term):
+            continue
+        if not 3 <= len(term) <= SURVEY_WORD_CLOUD_TERM_MAX_LENGTH:
+            continue
+        if term in _SURVEY_WORD_CLOUD_STOPWORDS:
+            continue
+        if term in SURVEY_WORD_CLOUD_BLOCKED_TERMS:
+            continue
+        terms.add(term)
+    return terms
+
+
+def _build_word_cloud(
+    *,
+    encuesta: EncEncuesta,
+    pregunta_id: int,
+    responses: Sequence[EncRespuesta],
+    population_size: int,
+) -> Optional[Dict[str, Any]]:
+    """Build a bounded distinct-response term aggregate for one question."""
+
+    count_contract = public_survey_response_count_contract(
+        encuesta,
+        population_size,
+    )
+    if bool(count_contract.get("suppressed")):
+        return None
+
+    minimum_count = max(
+        SURVEY_WORD_CLOUD_MIN_COUNT,
+        int(count_contract.get("minimum_cell_size") or 0),
+    )
+    candidate_responses = list(responses)
+    bounded_responses = candidate_responses[-SURVEY_WORD_CLOUD_RESPONSE_LIMIT:]
+    truncated = (
+        len(candidate_responses) > SURVEY_WORD_CLOUD_RESPONSE_LIMIT
+        or int(population_size or 0) > len(candidate_responses)
+    )
+    counts: Counter[str] = Counter()
+    responses_considered = 0
+    seen_response_keys: set[Tuple[str, int]] = set()
+    for response in bounded_responses:
+        response_id = getattr(response, "id", None)
+        response_key = (
+            ("persisted", int(response_id))
+            if response_id is not None
+            else ("object", id(response))
+        )
+        if response_key in seen_response_keys:
+            continue
+        seen_response_keys.add(response_key)
+        response_terms: set[str] = set()
+        has_text = False
+        for detail in response.detalles:
+            if int(detail.pregunta_id or 0) != int(pregunta_id):
+                continue
+            raw_text = str(detail.texto_libre or "").strip()
+            if not raw_text:
+                continue
+            has_text = True
+            response_terms.update(_normalize_word_cloud_terms(raw_text))
+        if not has_text:
+            continue
+        responses_considered += 1
+        counts.update(response_terms)
+
+    # Disclosing a tiny optional-answer cohort would bypass the survey's
+    # source-anonymous cell floor even if the overall survey cohort is safe.
+    if (
+        count_contract.get("privacy_mode") == "source_anonymous"
+        and responses_considered < minimum_count
+    ):
+        return None
+
+    terms = [
+        {"term": term, "count": count}
+        for term, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        if count >= minimum_count
+    ][:SURVEY_WORD_CLOUD_TERM_LIMIT]
+    return {
+        "terms": terms,
+        "responses_considered": responses_considered,
+        "min_count": minimum_count,
+        "truncated": truncated,
+    }
 
 
 def _as_bool(value: Any) -> Optional[bool]:
@@ -2586,6 +2872,12 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
         elif normalized_tipo == "text":
             muestras = textos_abiertos.get(pregunta.id, [])[:20]
             pregunta_data["muestras_texto"] = muestras
+            pregunta_data["word_cloud"] = _build_word_cloud(
+                encuesta=encuesta,
+                pregunta_id=pregunta.id,
+                responses=respuestas,
+                population_size=total,
+            )
             # Frontend widgets expect ``opciones`` to exist so they can iterate
             # without special casing preguntas de texto libre.
             pregunta_data["opciones"] = []
