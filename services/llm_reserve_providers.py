@@ -21,7 +21,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 _PROVIDERS = {
-    'groq': ('GROQ_API_KEY', 'https://api.groq.com/openai/v1', 'GROQ_RESERVE_MODEL', 'llama-3.3-70b-versatile,openai/gpt-oss-120b,openai/gpt-oss-20b'),
+    'groq': ('GROQ_API_KEY', 'https://api.groq.com/openai/v1', 'GROQ_RESERVE_MODEL', 'openai/gpt-oss-120b,openai/gpt-oss-20b'),
     'gemini': ('GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai',
                'GEMINI_RESERVE_MODEL', 'gemini-3.6-flash'),
     'huggingface': ('HF_TOKEN', 'https://router.huggingface.co/v1', 'HF_RESERVE_MODEL', 'openai/gpt-oss-120b'),
@@ -97,8 +97,8 @@ def generate_reserve_text(system_prompt: str, user_prompt: str, *, temperature: 
                 status = int(getattr(response, 'status_code', 0) or 0)
                 if status != 200:
                     logger.warning('Reserve LLM provider=%s model_position=%s outcome=http_%s', name, position, status)
-                    if status in (400, 404, 413):
-                        continue  # model retired, renamed or too small for this request: try the next one
+                    if status in (400, 404, 413, 429):
+                        continue  # retired, too small for this request or over its own rate limit: try the next model
                     break
                 text = response.json()['choices'][0]['message']['content']
             except Exception as error:
