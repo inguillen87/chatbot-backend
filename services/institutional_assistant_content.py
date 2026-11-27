@@ -513,7 +513,7 @@ def reserve_selection(bundle, question, current_node):
 # Compact selection for low-cost providers: every published node takes part with
 # its title and the start of its text, so the request fits small free-tier limits
 # and costs a fraction of the full one. It only returns ids of published nodes.
-COMPACT_TEXT_CHARS = 110
+COMPACT_TEXT_CHARS = 140
 COMPACT_NOTE = (' Cada tema llega resumido: su título y el comienzo de su texto. Elegí por el sentido de la '
                 'consulta. Respondé sólo con JSON: {"node_ids": [...]} con cero a dos ids de la lista.')
 
@@ -524,6 +524,10 @@ def compact_selection(bundle, question, current_node, generate):
     catalogue = [{'id': n['id'], 'titulo': n['title'], 'texto': ' '.join(n['text'].split())[:COMPACT_TEXT_CHARS]}
                  for n in bundle['nodes'].values() if n['id'] != start]
     request = {'consulta': question, 'temas': catalogue}
+    # The organization's own acronyms, so everyday words reach topics titled with them.
+    glossary = bundle_glossary(bundle)
+    if glossary:
+        request['siglas'] = dict(sorted(glossary.items())[:12])
     if current_node != start and current_node in bundle['nodes']:
         request['tema_actual'] = current_node
     raw = generate(SELECTOR_INSTRUCTIONS + COMPACT_NOTE, json.dumps(request, ensure_ascii=False))

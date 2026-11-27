@@ -16,7 +16,7 @@ class CompactSelectionTest(unittest.TestCase):
 
         self.assertEqual(compact_selection(BUNDLE, '¿Qué necesito para el certificado?', 'start', generate), ['cud'])
         self.assertNotIn('start', [item['id'] for item in seen['user']['temas']])
-        self.assertTrue(all(len(item['texto']) <= 110 for item in seen['user']['temas']))
+        self.assertTrue(all(len(item['texto']) <= 140 for item in seen['user']['temas']))
         self.assertNotIn('tema_actual', seen['user'])
 
     def test_anything_but_published_ids_falls_back_to_the_main_path(self):
