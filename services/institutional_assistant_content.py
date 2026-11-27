@@ -510,6 +510,37 @@ def reserve_selection(bundle, question, current_node):
         chosen.append(ranked[1][1])
     return chosen
 
+# Compact selection for low-cost providers: every published node takes part with
+# its title and the start of its text, so the request fits small free-tier limits
+# and costs a fraction of the full one. It only returns ids of published nodes.
+COMPACT_TEXT_CHARS = 110
+COMPACT_NOTE = (' Cada tema llega resumido: su título y el comienzo de su texto. Elegí por el sentido de la '
+                'consulta. Respondé sólo con JSON: {"node_ids": [...]} con cero a dos ids de la lista.')
+
+def compact_selection(bundle, question, current_node, generate):
+    """Up to two node ids chosen from a compact catalogue, or None when not available."""
+    question = _text(question, MAX_QUESTION_CHARS)
+    start = bundle.get('start')
+    catalogue = [{'id': n['id'], 'titulo': n['title'], 'texto': ' '.join(n['text'].split())[:COMPACT_TEXT_CHARS]}
+                 for n in bundle['nodes'].values() if n['id'] != start]
+    request = {'consulta': question, 'temas': catalogue}
+    if current_node != start and current_node in bundle['nodes']:
+        request['tema_actual'] = current_node
+    raw = generate(SELECTOR_INSTRUCTIONS + COMPACT_NOTE, json.dumps(request, ensure_ascii=False))
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        value = raw.strip()
+        if value.startswith('```'):
+            value = value.strip('`').removeprefix('json').strip()
+        ids = json.loads(value).get('node_ids')
+    except (ValueError, AttributeError):
+        return None
+    if (not isinstance(ids, list) or len(ids) > 3 or len(set(map(str, ids))) != len(ids)
+            or not all(isinstance(k, str) and k in bundle['nodes'] and k != start for k in ids)):
+        return None
+    return ids[:2]
+
 def select_nodes(bundle, question, current_node, selector):
     question = _text(question, MAX_QUESTION_CHARS)
     _require(current_node in bundle['nodes'])
