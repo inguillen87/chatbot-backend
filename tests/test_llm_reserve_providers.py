@@ -36,7 +36,7 @@ class ReserveProvidersTest(unittest.TestCase):
 
         def post(url, **kwargs):
             calls.append((url, kwargs))
-            return _Reply(429) if 'groq' in url else _Reply(200, ' {"node_ids": []} ')
+            return _Reply(500) if 'groq' in url else _Reply(200, ' {"node_ids": []} ')
 
         with _env(GROQ_API_KEY='k1', HF_TOKEN='k2'):
             self.assertTrue(reserve_available())

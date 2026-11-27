@@ -285,7 +285,8 @@ def llamar_llm_para_generacion_texto(
             )
             # A quota, spend-limit or credential rejection is answered before the
             # request is processed: asking a configured reserve provider repeats nothing.
-            if http_status in (401, 403, 429):
+            if (http_status in (401, 403, 429)
+                    and len(str(user_prompt or "")) + len(str(system_prompt_especifico or "")) <= ECONOMY_MAX_PROMPT_CHARS):
                 from services.llm_reserve_providers import generate_reserve_text
                 reserve_text = generate_reserve_text(
                     system_prompt_especifico,
