@@ -76,3 +76,15 @@ def test_conversation_locality_prefers_message_then_opened_topic_then_memory():
     assert conversation_locality(bundle, 'Norte', node_ids=['sur']) == 'Río Sur'
     assert conversation_locality(bundle, 'Norte', node_ids=['inicio']) == 'Norte'
     assert conversation_locality(_bundle(), 'Norte', text='norte') is None
+
+
+def test_localities_may_publish_their_centre():
+    places = [{'label': 'Norte', 'target': 'norte', 'lat': -54.80191, 'lng': -68.30296}, {'label': 'Sur', 'target': 'sur'}]
+    published = overview(_bundle(localities=places), public=True)['localities']
+    assert published == [{'label': 'Norte', 'target': 'norte', 'lat': -54.8019, 'lng': -68.303}, {'label': 'Sur', 'target': 'sur'}]
+
+
+@pytest.mark.parametrize('extra', [{'lat': 1.0}, {'lat': 'a', 'lng': 2}, {'lat': 91, 'lng': 0}, {'lat': 0, 'lng': float('nan')}, {'lat': True, 'lng': 1}])
+def test_invalid_centres_are_rejected(extra):
+    with pytest.raises(ContentError):
+        _bundle(localities=[{'label': 'Norte', 'target': 'norte', **extra}, {'label': 'Sur', 'target': 'sur'}])

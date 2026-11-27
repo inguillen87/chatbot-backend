@@ -244,7 +244,14 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
             label = _text(place.get('label'), 40)
             _require(all(label.casefold() != p['label'].casefold() for p in bundle['localities']),
                      'knowledge_localities_invalid')
-            bundle['localities'].append({'label': label, 'target': place['target']})
+            entry = {'label': label, 'target': place['target']}
+            # Optional centre of the place, so a reader may pick it by location.
+            if 'lat' in place or 'lng' in place:
+                lat, lng = place.get('lat'), place.get('lng')
+                _require(all(type(v) in (int, float) and math.isfinite(v) for v in (lat, lng))
+                         and -90 <= lat <= 90 and -180 <= lng <= 180, 'knowledge_localities_invalid')
+                entry['lat'], entry['lng'] = round(float(lat), 4), round(float(lng), 4)
+            bundle['localities'].append(entry)
     # An import must support any allowed question without exceeding the same
     # selector budget checked at read time. Evidence bytes do not enter it.
     # The reservation covers the largest node-dependent part of a request: the
