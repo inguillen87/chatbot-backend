@@ -23,7 +23,7 @@ from flask import current_app
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from models import db, MessagingEventLedger, TenantProfile, User, WebhookDelivery
+from models import db, ConsentLedger, MessagingEventLedger, TenantProfile, User, WebhookDelivery
 from services import meta_account_events as account_events
 from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
@@ -327,6 +327,45 @@ def _compose_menu_answer(parts, buttons):
     return "\n\n".join(part for part in (text.rstrip(), suffix) if part)
 
 
+NEWS_FLAG = "META_TDF_SANDBOX_NEWS_OPT_IN_ENABLED"
+_NEWS_COMMANDS = {"novedades": "ask", "alta": "opt_in", "baja": "opt_out"}
+
+
+def _news_consent(event, context):
+    """Explicit sign-up and sign-off for news, off unless the organization enables it.
+
+    Only the exact commands count. Signing up is the single point where this
+    pilot keeps a phone number, and only because the person asked to be written
+    to; signing off is honoured at once and recorded the same way."""
+    if current_app.config.get(NEWS_FLAG) is not True or event.content_type != "text":
+        return None
+    command = _NEWS_COMMANDS.get(" ".join(str(event.text or "").split()).casefold().strip(".!¡"))
+    if command is None:
+        return None
+    if command == "ask":
+        return ("Podemos avisarte por WhatsApp sobre eventos y trámites de discapacidad.\n"
+                "Para recibir esos avisos, escribí ALTA. Podés dejar de recibirlos cuando quieras con BAJA.",
+                clear_source_scope(context), None, ())
+    db.session.add(ConsentLedger(tenant_id=TENANT_ID, contact_key=event.contact, channel="whatsapp",
+        status=command, source="tdf_whatsapp_assistant",
+        evidence_payload={"contract": CONTRACT, "event": event.event_key, "command": command}))
+    db.session.commit()
+    if command == "opt_in":
+        return ("Listo. Te vamos a avisar por este WhatsApp sobre eventos y trámites.\n"
+                "Para dejar de recibir avisos, escribí BAJA.", clear_source_scope(context), None, ())
+    return ("Listo. No vas a recibir más avisos. Podés seguir consultando cuando quieras.",
+            clear_source_scope(context), None, ())
+
+
+def news_opted_in(contact):
+    """Whether the latest recorded choice of this number is to receive news."""
+    row = db.session.scalar(select(ConsentLedger).where(
+        ConsentLedger.tenant_id == TENANT_ID, ConsentLedger.channel == "whatsapp",
+        ConsentLedger.source == "tdf_whatsapp_assistant", ConsentLedger.contact_key == contact,
+    ).order_by(ConsentLedger.id.desc()).limit(1))
+    return row is not None and row.status == "opt_in"
+
+
 def _answer(event, context, *, audio_text=None):
     tenant = db.session.get(TenantProfile, TENANT_ID)
     if tenant is None or tenant.slug != TENANT_SLUG or tenant.is_active is not True:
@@ -335,6 +374,9 @@ def _answer(event, context, *, audio_text=None):
     if owner is None:
         raise PilotError("tdf_sandbox_owner_unavailable")
     session = SimpleNamespace(tenant_id=TENANT_ID, context_data=context)
+    news = _news_consent(event, context)
+    if news is not None:
+        return news
     if event.content_type == "location":
         next_context = clear_source_scope(context)
         # The pin only chooses the city of this conversation. Coordinates are

@@ -1487,3 +1487,27 @@ def test_private_original_is_never_sent_as_a_document(environment):
     process(document(mid="wamid.priv2", content={"type": "text", "text": {"body": "1"}}), post=post)
     assert len(sent) == 2 and "document" not in sent
     assert db.session.query(MessagingEventLedger).filter_by(event_type="tdf_sandbox_document").count() == 0
+
+
+def test_news_sign_up_is_inert_until_enabled_and_then_records_only_explicit_choices(environment):
+    from models import ConsentLedger
+    def say(text, mid):
+        return pilot._answer(SimpleNamespace(content_type="text", text=text, contact=CONTACT, event_key="meta:" + mid), {})[0]
+    # Off: the words are ordinary questions and nothing is recorded.
+    say("ALTA", "a0")
+    assert db.session.query(ConsentLedger).count() == 0 and pilot.news_opted_in(CONTACT) is False
+    from flask import current_app
+    current_app.config[pilot.NEWS_FLAG] = True
+    try:
+        assert "escribí ALTA" in say("Novedades", "a1") and db.session.query(ConsentLedger).count() == 0
+        assert "Para dejar de recibir avisos, escribí BAJA." in say(" alta ", "a2")
+        row = db.session.query(ConsentLedger).one()
+        assert (row.contact_key, row.status, row.channel, row.source) == (CONTACT, "opt_in", "whatsapp", "tdf_whatsapp_assistant")
+        assert row.evidence_payload["event"] == "meta:a2" and "text" not in row.evidence_payload
+        assert pilot.news_opted_in(CONTACT) is True
+        assert "No vas a recibir más avisos" in say("BAJA.", "a3")
+        assert pilot.news_opted_in(CONTACT) is False and db.session.query(ConsentLedger).count() == 2
+        say("quiero darme de alta en el registro laboral", "a4")  # a sentence is never a command
+        assert db.session.query(ConsentLedger).count() == 2
+    finally:
+        current_app.config.pop(pilot.NEWS_FLAG, None)
