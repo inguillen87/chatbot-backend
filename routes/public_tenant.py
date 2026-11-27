@@ -561,6 +561,35 @@ def _get_tenant_from_request(slug: str):
     return None
 
 
+def _widget_catalog_switched_off(tenant: TenantProfile) -> bool:
+    """True only when the organization itself turned its widget catalog off.
+
+    Same flags, in the same order, as the resolver that decides whether the
+    widget offers a catalog; a missing flag is not a decision and keeps the
+    behaviour each kind of organization already had.
+    """
+
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    flags = [
+        cfg.get("widget_catalog_enabled"),
+        cfg.get("catalogo_widget_visible"),
+        cfg.get("catalog_widget_visible"),
+    ]
+    catalog_cfg = cfg.get("catalogo") or cfg.get("catalogos")
+    if isinstance(catalog_cfg, dict):
+        flags.extend(
+            [
+                catalog_cfg.get("widget_enabled"),
+                catalog_cfg.get("widget_visible"),
+                catalog_cfg.get("catalogo_widget_visible"),
+            ]
+        )
+    for flag in flags:
+        if isinstance(flag, bool):
+            return flag is False
+    return False
+
+
 def _resolve_catalog_owner(tenant: TenantProfile):
     """Return tenant owner with FK fallback when ORM relationship is stale."""
 
@@ -1506,8 +1535,12 @@ def public_widget_commerce_session():
             .count()
         )
     has_catalog_items = catalog_products_count > 0
+    # An organization that switched its widget catalog off is not presented as
+    # a shop by this session either: no catalog, no cart, no purchase actions.
+    widget_catalog_off = _widget_catalog_switched_off(tenant)
     catalog_enabled = bool(
         owner
+        and not widget_catalog_off
         and (
             (tenant.tipo or "").lower() in {"pyme", "municipio", "gobierno", "government"}
             or tenant.pyme_id
@@ -1596,10 +1629,14 @@ def public_widget_commerce_session():
         },
         "frontend_contract": {
             "render_as": "embedded_tenant_operating_widget",
-            "primary_actions": ["chat", assisted_primary_action, "catalog", "cart", "checkout", "portal"],
+            "primary_actions": (
+                ["chat", "portal"]
+                if widget_catalog_off
+                else ["chat", assisted_primary_action, "catalog", "cart", "checkout", "portal"]
+            ),
             "empty_state_behavior": (
                 "assisted_intake_first"
-                if assisted_intake.get("mode") == "assisted_first"
+                if assisted_intake.get("mode") == "assisted_first" and not widget_catalog_off
                 else "chat_first_catalog_when_enabled"
             ),
             "assisted_intake_anchor_id": "market-assisted-upload",
