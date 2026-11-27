@@ -32,8 +32,11 @@ class ReserveSelectionTest(unittest.TestCase):
         self.assertEqual(reserve_selection(BUNDLE, 'telefono de las oficinas de Rio Grande', 'start'), ['contacts'])
 
     def test_nothing_is_guessed_without_a_clear_match(self):
-        for question in ('hola', 'consulta', 'cuánto sale el dólar', 'quiero hablar con una persona', ''):
+        for question in ('hola', 'consulta', 'cuánto sale el dólar', ''):
             self.assertEqual(reserve_selection(BUNDLE, question, 'start'), [], question)
+
+    def test_asking_for_a_person_lands_on_contacts(self):
+        self.assertEqual(reserve_selection(BUNDLE, 'quiero hablar con una persona', 'start'), ['contacts'])
 
     def test_the_start_menu_is_never_the_answer(self):
         self.assertNotIn('start', reserve_selection(BUNDLE, 'certificado cud trabajo contactos', 'start'))
