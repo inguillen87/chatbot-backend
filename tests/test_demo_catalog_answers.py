@@ -71,3 +71,29 @@ def test_a_topic_alone_is_answered_without_inventing_a_product():
     wholesale = ask("almacen", "venden por bulto para kiosco?")["message_body"]
     assert "lista mayorista" in wholesale
     assert "precios son de ejemplo" not in wholesale
+
+
+def click(key, target):
+    return maybe_handle_demo_interaction(
+        pregunta="",
+        tipo_chat="pyme",
+        demo_metadata={"key": key, "nombre": "Demo", "resources": []},
+        action_id=f"demo_action:{key}:{target}",
+    )
+
+
+def test_a_scripted_leaf_answers_its_own_sample_question():
+    answer = click("medico_general", "pediatría")
+    body = answer["message_body"]
+
+    assert body.startswith("Guardia pediátrica 24/7.")
+    assert "Sí, atendemos pediatría" in body
+    assert "_" not in body
+    assert answer["options_list"]
+
+
+def test_a_leaf_without_catalogue_still_offers_a_way_back():
+    answer = click("energia", "kpis_de_pozos")
+
+    assert "Probá escribirme algo como: «" in answer["message_body"]
+    assert any("menú" in str(option).lower() for option in answer["options_list"])

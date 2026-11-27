@@ -201,6 +201,37 @@ def _answer_from_demo_catalog(script: Dict[str, Any], normalized_text: str) -> O
     }
 
 
+_LEAF_SAMPLE_RE = re.compile(r"^(?P<caption>.*?)\n\s*\n_(?P<sample>[^_\n]{8,300})_\s*$", re.DOTALL)
+
+
+def _open_leaf_step(entry: Dict[str, Any], script: Dict[str, Any]) -> Dict[str, Any]:
+    """Turn a dead-end step (a caption plus a sample question) into an answer.
+
+    Many scripted leaves only show a caption and an example of what a person
+    could ask, with no button to continue. When the demo has an example
+    catalogue the sample question is answered right there; otherwise the step
+    invites the visitor to write it and offers the way back.
+    """
+
+    if entry.get("buttons") or entry.get("resource_tags") or entry.get("resources"):
+        return entry
+    match = _LEAF_SAMPLE_RE.match(str(entry.get("response") or "").strip())
+    if not match:
+        return entry
+    caption = match.group("caption").strip().rstrip(".")
+    sample = match.group("sample").strip()
+    back = [{"label": "Volver al menú", "target": "welcome"}]
+    answered = _answer_from_demo_catalog(script, _normalize_text(sample))
+    opened = dict(entry)
+    if answered:
+        opened["response"] = f"{caption}.\n\nSi alguien escribe «{sample}», el asistente responde:\n\n{answered['response']}"
+        opened["buttons"] = answered.get("buttons") or back
+    else:
+        opened["response"] = f"{caption}.\n\nProbá escribirme algo como: «{sample}»"
+        opened["buttons"] = back
+    return opened
+
+
 def _format_text(template: str, context: Dict[str, Any]) -> str:
     if not template:
         return ""
@@ -598,6 +629,8 @@ def maybe_handle_demo_interaction(
         if not fallback:
             return None
         matched_entry = fallback
+    else:
+        matched_entry = _open_leaf_step(matched_entry, script)
 
     response = _compose_response(matched_entry, script_key, demo_metadata, normalized_text)
     logger.debug(

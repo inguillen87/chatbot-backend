@@ -438,7 +438,9 @@
           "hijo",
           "hija",
           "bebe",
-          "chico"
+          "chico",
+          "pediatrico",
+          "pediatrica"
         ],
         "price": "consulta $ 20.000",
         "detail": "Hay turnos el jueves por la tarde. Atendemos demanda espontánea de 8 a 12."
