@@ -366,6 +366,21 @@ def news_opted_in(contact):
     return row is not None and row.status == "opt_in"
 
 
+def _published_choice(tenant, action):
+    """A row tapped in an older message keeps working after the knowledge is
+    updated: the same topic is answered from the published version, never from
+    the old one. A topic that no longer exists opens the menu."""
+    parts = action.split(":")
+    try:
+        state = read_state(tenant, public=True)
+    except ContentError:
+        return action
+    current = state["revision"][:16]
+    if len(parts) != 3 or parts[1] == current or parts[1] == "sources":
+        return action
+    return "knowledge:" + current + ":" + parts[2] if parts[2] in state["bundle"]["nodes"] else "menu"
+
+
 def _answer(event, context, *, audio_text=None):
     tenant = db.session.get(TenantProfile, TENANT_ID)
     if tenant is None or tenant.slug != TENANT_SLUG or tenant.is_active is not True:
@@ -404,6 +419,8 @@ def _answer(event, context, *, audio_text=None):
     if event.content_type == "interactive" and not question.startswith("knowledge:"):
         # The pilot has no operational dispatch, ticket creation or flow submit.
         return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", clear_source_scope(context), None, ())
+    if event.content_type == "interactive":
+        question = _published_choice(tenant, question)
     page = sources_page(question)
     if page is None and isinstance(question, str) and is_source_navigation(question):
         # Natural-language requests for the references use the pilot's own
