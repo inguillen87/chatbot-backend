@@ -273,6 +273,26 @@ def locality_question(bundle, question, locality):
     extended = f'{question.rstrip()} (consulta desde {match})'
     return extended if len(extended) <= MAX_QUESTION_CHARS else question
 
+def _plain(value):
+    return ''.join(c for c in unicodedata.normalize('NFD', value.casefold()) if unicodedata.category(c) != 'Mn')
+
+def conversation_locality(bundle, remembered=None, *, text=None, node_ids=()):
+    """The place a conversation is about, without asking for it.
+
+    A place named in the message wins, then a place whose own topic was just
+    opened, then the one remembered from earlier turns. Ambiguous mentions (two
+    places in one message) change nothing. Only published places are returned."""
+    places = bundle.get('localities', [])
+    if isinstance(text, str):
+        plain = _plain(text)
+        named = [p['label'] for p in places if re.search(r'(?<!\w)' + re.escape(_plain(p['label'])) + r'(?!\w)', plain)]
+        if len(named) == 1:
+            return named[0]
+    opened = [p['label'] for p in places if p['target'] in node_ids]
+    if len(opened) == 1:
+        return opened[0]
+    return next((p['label'] for p in places if p['label'] == remembered), None)
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 

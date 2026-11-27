@@ -10,7 +10,7 @@ from utils.tenant_admin_access import can_manage_tenant_control_plane
 from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
     ContentError, CONTRACT, MAX_QUESTION_CHARS, normalize_bundle, overview, digest, select_nodes, materialize_node,
-    is_source_navigation, is_menu_command, advertised_choice, bundle_glossary, locality_question,
+    is_source_navigation, is_menu_command, advertised_choice, bundle_glossary, locality_question, conversation_locality,
 )
 from services.institutional_assistant_metrics import note_question_outcome
 from services.institutional_assistant_easy_read import is_easy_read_command
@@ -411,6 +411,11 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
             command['question'] = text
         if known_context and not is_reply_code:
             command['node_id'] = previous['node_id']
+    # The city of this conversation: named in the message or remembered from an
+    # earlier turn. It accompanies a typed question; it is never asked for.
+    locality = conversation_locality(state['bundle'], previous.get('locality'), text=command.get('question'))
+    if locality and command.get('question') is not None:
+        command['locality'] = locality
     try:
         result = answer(tenant, command, public=True)
     except ContentError:
@@ -471,6 +476,9 @@ def maybe_handle_institutional_question(question, owner, session=None, *, audio_
         context = deepcopy(getattr(session, 'context_data', None) or {})
         context['institutional_knowledge'] = {'revision': state['revision'], 'node_id': nodes[-1]['id'],
             'reply_node_id': nodes[0]['id'] if len(nodes) == 1 else None, 'reply_choices': reply_choices}
+        locality = conversation_locality(state['bundle'], locality, node_ids=[n['id'] for n in nodes] if len(nodes) == 1 else ())
+        if locality:
+            context['institutional_knowledge']['locality'] = locality
         session.context_data = context
     buttons = [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target'],
         **({'reply_code': c['code']} if c['code'] in reply_choices else {})} for c in choices]
