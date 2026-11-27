@@ -106,7 +106,9 @@ class AddressPlanTests(unittest.TestCase):
             '*.chatboc.ar', 'site.local', 'foo.onrender.com', 'site\u200b.example.org')]
         invalid += [{'tenant_id': True}, {'tenant_id': 0}, {'tenant_slug': 'Other'},
             {'kind': 'legacy'}, {'revision': 'x'}, {'valid_until': NOW},
-            {'valid_until': True}, {'valid_until': NOW + 604801}, {'project_id': 'prj_other'},
+            {'valid_until': True}, {'valid_until': NOW + 90 * 86400 + 1},
+            {'host': 'citizen.institution.org', 'kind': 'custom', 'valid_until': NOW + 604801},
+            {'project_id': 'prj_other'},
             {'frontend_source': 'main'}, {'backend_source': 'b' * 39},
             {'frontend_deployment': 'production'}, {'routes_sha256': 'bad'},
             {'allowed_aliases': [ALIAS]}, {'allowed_aliases': (ALIAS, ALIAS)},

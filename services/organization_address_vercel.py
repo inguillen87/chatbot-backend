@@ -95,6 +95,16 @@ def validate_address_host(value, kind, allowed_aliases=()):
     return host
 
 
+# A platform subdomain lives on DNS and hosting the platform itself operates, so
+# nothing a customer controls can drift under it. Its binding is re-verified on
+# a longer cycle than a customer's own domain, whose DNS proof can lapse.
+PLATFORM_ACTIVE_TTL = 90 * 86400
+
+
+def active_ttl(kind):
+    return PLATFORM_ACTIVE_TTL if kind == 'platform' else VERIFICATION_TTL
+
+
 @dataclass(frozen=True)
 class AddressPlan:
     host: str
@@ -119,7 +129,7 @@ class AddressPlan:
             'address_binding_scope_invalid')
         require(type(now) is int and now > 0, 'address_clock_invalid')
         require(type(self.valid_until) is int
-            and now < self.valid_until <= now + VERIFICATION_TTL, 'address_binding_expired')
+            and now < self.valid_until <= now + active_ttl(self.kind), 'address_binding_expired')
         require(isinstance(self.frontend_deployment, str)
             and re.fullmatch(r'dpl_[A-Za-z0-9]{8,128}', self.frontend_deployment)
             and all(isinstance(value, str) and re.fullmatch(r'[0-9a-f]{40}', value)
@@ -260,7 +270,7 @@ class AddressVercelAdapter(VercelDomainAdapter):
             require(0 <= finished - now <= 60 and 0 <= finished - started <= 60,
                 'fresh_platform_observation_required')
             return AddressObservation(plan_digest(plan), plan.host, plan.kind, plan.project_id,
-                finished, min(plan.valid_until, finished + VERIFICATION_TTL))
+                finished, min(plan.valid_until, finished + active_ttl(plan.kind)))
         except ProvisioningError as exc:
             if len(exc.args) == 1 and isinstance(exc.args[0], str) and exc.args[0] in _EXPLICIT_ERRORS:
                 raise
