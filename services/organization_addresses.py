@@ -111,8 +111,8 @@ _OPERATOR_GUIDANCE = {
     },
     'blocking': {
         'provider_routes_unavailable': {
-            'message': 'El proveedor no informa las rutas de esta publicación. Sin esa evidencia el servidor no puede comparar la huella revisada y no activa la vinculación.',
-            'action': 'Conservá la solicitud. No cargues una huella calculada fuera del proveedor: escalá el caso a la operación de la plataforma para definir una evidencia verificable.'},
+            'message': 'El proveedor no informa las rutas de esta publicación, así que no hay huella de rutas para comparar.',
+            'action': 'Conservá la solicitud. La operación de la plataforma puede cargar la huella de prueba funcional de esta publicación: con ella el servidor activa sólo si una consulta hecha a través de la dirección vuelve desde este mismo servidor.'},
         'reviewed_route_setup_required': {
             'message': 'La huella de rutas no coincide con la publicación actual en Producción.',
             'action': 'Copiá la huella de la publicación revisada que está en Producción y prepará la revisión de nuevo.'},

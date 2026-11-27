@@ -139,3 +139,23 @@ def test_current_policy_caps_active_platform_validity_at_the_request_deadline(ht
             backend_source='b' * 40, config=http.app.config, now=deadline - 60)
     assert refused.value.code == 'address_platform_not_ready'
     db.session.remove()
+
+
+def test_missing_route_table_accepts_only_the_declared_functional_proof():
+    from services.organization_domain_vercel import functional_route_evidence
+    base = plan()
+    declared = plan(routes_sha256=functional_route_evidence(base.frontend_deployment))
+    provider = Provider(declared)
+    provider.deployment['routes'] = None
+    observation = AddressVercelAdapter(provider, https_probe=probe(declared), clock=lambda: NOW).observe(declared)
+    assert observation.host == declared.host
+    # The declaration alone activates nothing: the nonce must come back through the host.
+    with pytest.raises(ProvisioningError):
+        AddressVercelAdapter(provider, https_probe=_raise('public_https_unavailable'), clock=lambda: NOW).observe(declared)
+    # It is bound to one deployment and never replaces a route table the provider does report.
+    other = plan(routes_sha256=functional_route_evidence('dpl_otra'))
+    with pytest.raises(ProvisioningError, match='^provider_routes_unavailable$'):
+        AddressVercelAdapter(provider, https_probe=probe(other), clock=lambda: NOW).observe(other)
+    reported = Provider(declared)
+    with pytest.raises(ProvisioningError, match='^reviewed_route_setup_required$'):
+        AddressVercelAdapter(reported, https_probe=probe(declared), clock=lambda: NOW).observe(declared)
