@@ -1416,3 +1416,16 @@ def test_operational_command_in_the_pilot_answers_without_failing_the_delivery(e
     assert result["accepted"] == 1
     assert "no corresponde al menú de esta prueba" in sent_body(sent[-1])
     assert "Escribí MENÚ" in sent_body(sent[-1])
+
+
+def test_location_pin_chooses_the_conversation_city_without_keeping_coordinates(environment, monkeypatch):
+    bundle = {"localities": [{"label": "Norte", "target": "a", "lat": -53.7877, "lng": -67.7095},
+                             {"label": "Sur", "target": "b", "lat": -54.8019, "lng": -68.303}]}
+    monkeypatch.setattr(pilot, "read_state", lambda tenant, public=False: {"bundle": bundle})
+    body, context, revision, buttons = pilot._answer(
+        SimpleNamespace(content_type="location", location=(-54.79, -68.31)), {"institutional_knowledge": {"node_id": "x"}})
+    assert "estás cerca de Sur" in body and "No la guardo" in body and revision is None and buttons == ()
+    assert context["institutional_knowledge"] == {"node_id": "x", "locality": "Sur"}
+    assert "-54" not in repr(context)
+    body, context, _, _ = pilot._answer(SimpleNamespace(content_type="location", location=(-34.6, -58.38)), {})
+    assert "¿En qué ciudad necesitás orientación" in body and "institutional_knowledge" not in context
