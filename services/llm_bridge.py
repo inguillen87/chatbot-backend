@@ -255,6 +255,18 @@ def llamar_llm_para_generacion_texto(
                 error_code,
                 provider_error_type,
             )
+            # A quota, spend-limit or credential rejection is answered before the
+            # request is processed: asking a configured reserve provider repeats nothing.
+            if http_status in (401, 403, 429):
+                from services.llm_reserve_providers import generate_reserve_text
+                reserve_text = generate_reserve_text(
+                    system_prompt_especifico,
+                    user_prompt,
+                    temperature=temperature,
+                    json_output=json_output,
+                )
+                if reserve_text:
+                    return reserve_text
             raise LLMProviderRequestUncertainError("openai_request_failed") from None
         _validate_completed_response(response)
         result = _response_output_text(response)
