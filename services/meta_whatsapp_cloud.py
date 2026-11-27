@@ -177,6 +177,32 @@ def media_payload(*, recipient: str, kind: str, media_id: str) -> dict:
                 type=kind, **{kind: {"id": meta_id(media_id)}})
 
 
+# A document is delivered by link, and only from the platform's own public
+# source route: tenant, published source and exact published revision.
+_DOCUMENT_LINK = re.compile(
+    r"https://api\.chatboc\.ar/api/public/tenants/[a-z0-9][a-z0-9-]{0,79}/institutional-assistant/"
+    r"sources/[A-Za-z0-9][A-Za-z0-9._-]{0,119}\?revision=[a-f0-9]{64}")
+_DOCUMENT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()-]{0,116}\.pdf")
+
+
+def document_payload(*, recipient: str, link: str, filename: str, caption: str | None = None) -> dict:
+    """One PDF the organization published, fetched by Meta from its public route.
+
+    No arbitrary URLs, no media upload and no other formats. Whether the source
+    is public at that revision is the caller's fence, re-checked by the route."""
+    if (not isinstance(recipient, str) or not _RECIPIENT.fullmatch(recipient)
+            or not isinstance(link, str) or not _DOCUMENT_LINK.fullmatch(link)
+            or not isinstance(filename, str) or not _DOCUMENT_NAME.fullmatch(filename)
+            or (caption is not None and (not isinstance(caption, str) or not caption.strip()
+                                         or len(caption) > 1024 or any(ord(c) < 32 for c in caption)))):
+        raise MetaContractError("meta_document_payload_invalid")
+    document = {"link": link, "filename": filename}
+    if caption is not None:
+        document["caption"] = caption
+    return dict(messaging_product="whatsapp", recipient_type="individual", to=recipient,
+                type="document", document=document)
+
+
 def template_payload(*, recipient: str, name: str, language: str,
                      body_parameters: tuple[str, ...] = ()) -> dict:
     """Text-body templates only; approval/consent are separately required to send."""
@@ -240,6 +266,10 @@ def send_once(*, binding_loader: Callable[[], VerifiedMetaBinding], payload: dic
         elif payload.get("type") in {"image", "sticker"}:
             kind = payload["type"]
             safe = media_payload(recipient=payload["to"], kind=kind, media_id=payload[kind]["id"])
+        elif payload.get("type") == "document":
+            item = payload["document"]
+            safe = document_payload(recipient=payload["to"], link=item["link"],
+                                    filename=item["filename"], caption=item.get("caption"))
         elif payload.get("type") == "template":
             tpl = payload["template"]
             parts = tpl.get("components", [])

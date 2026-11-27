@@ -471,7 +471,10 @@ def test_explicit_sources_keep_current_scope_links_and_numeric_navigation(enviro
     monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("No selector for FUENTES"))
     sent = []
     def post(url, **kw):
-        sent.append(deepcopy(kw["json"])); return accepted_post()
+        # Published documents travel as a second message with their own test.
+        if kw["json"]["type"] != "document":
+            sent.append(deepcopy(kw["json"]))
+        return accepted_post()
     process(document(), post=post)
     process(document(mid="wamid.choose", content={"type": "text", "text": {"body": "1"}}), post=post)
     assert "Respuesta institucional de prueba" in sent_body(sent[-1])
@@ -488,7 +491,7 @@ def test_explicit_sources_keep_current_scope_links_and_numeric_navigation(enviro
     assert process(source_doc, post=lambda *a, **k: pytest.fail("Sources replay must not POST"))["replayed"] == 1
     process(document(mid="wamid.return", content={"type": "text", "text": {"body": "9"}}), post=post)
     assert "Elegí una consulta." in sent_body(sent[-1]) and "1. Requisitos" in sent_body(sent[-1])
-    context = db.session.query(MessagingEventLedger).order_by(MessagingEventLedger.id.desc()).first().metadata_json["knowledge_context"]
+    context = db.session.query(MessagingEventLedger).filter_by(event_type="tdf_sandbox_reply").order_by(MessagingEventLedger.id.desc()).first().metadata_json["knowledge_context"]
     from services.institutional_assistant_whatsapp import SOURCE_SCOPE
     assert context[SOURCE_SCOPE] == {"tenant": {"id": 46, "slug": pilot.TENANT_SLUG},
                                     "revision": environment.state["revision"], "node_ids": ["start"]}
@@ -503,7 +506,10 @@ def test_acronyms_are_explained_without_costing_the_interactive_list(environment
     monkeypatch.setattr("services.institutional_assistant.select_nodes", lambda *a: pytest.fail("Explicit menus need no selector"))
     sent = []
     def post(url, **kw):
-        sent.append(deepcopy(kw["json"])); return accepted_post()
+        # Published documents travel as a second message with their own test.
+        if kw["json"]["type"] != "document":
+            sent.append(deepcopy(kw["json"]))
+        return accepted_post()
     process(document(), post=post)
     assert "Siglas:" not in sent_body(sent[-1])  # the menu already spells it out
     process(document(mid="wamid.acronym", content={"type": "text", "text": {"body": "1"}}), post=post)
@@ -1384,7 +1390,10 @@ def test_uncovered_topic_keeps_its_sources_and_natural_source_requests_use_the_p
     sent = []
 
     def post(url, **kw):
-        sent.append(deepcopy(kw["json"])); return accepted_post()
+        # Published documents travel as a second message with their own test.
+        if kw["json"]["type"] != "document":
+            sent.append(deepcopy(kw["json"]))
+        return accepted_post()
 
     def send(mid, text):
         assert process(document(mid=mid, content={"type": "text", "text": {"body": text}}), post=post)["accepted"] == 1
@@ -1410,7 +1419,10 @@ def test_operational_command_in_the_pilot_answers_without_failing_the_delivery(e
     sent = []
 
     def post(url, **kw):
-        sent.append(deepcopy(kw["json"])); return accepted_post()
+        # Published documents travel as a second message with their own test.
+        if kw["json"]["type"] != "document":
+            sent.append(deepcopy(kw["json"]))
+        return accepted_post()
 
     result = process(document(mid="wamid.claim", content={"type": "text", "text": {"body": "iniciar un reclamo"}}), post=post)
     assert result["accepted"] == 1
@@ -1429,3 +1441,49 @@ def test_location_pin_chooses_the_conversation_city_without_keeping_coordinates(
     assert "-54" not in repr(context)
     body, context, _, _ = pilot._answer(SimpleNamespace(content_type="location", location=(-34.6, -58.38)), {})
     assert "¿En qué ciudad necesitás orientación" in body and "institutional_knowledge" not in context
+
+
+def test_published_pdf_follows_the_reply_as_a_document_and_private_ones_never_do(environment):
+    raw = public_presentation_fixture()
+    publish_presentation_fixture(environment, raw)
+    sent = []
+    def post(url, **kw):
+        sent.append(deepcopy(kw["json"])); return accepted_post()
+    process(document(mid="wamid.doc1", content={"type": "text", "text": {"body": "menu"}}), post=post)
+    process(document(mid="wamid.doc2", content={"type": "text", "text": {"body": "1"}}), post=post)
+    sent = sent[1 + (len(sent) > 2 and sent[1]["type"] == "document"):]  # keep the topic answer and what followed it
+    revision = pilot.read_state(db.session.get(TenantProfile, pilot.TENANT_ID), public=True)["revision"]
+    documents = [item for item in sent if item["type"] == "document"]
+    assert sent[0]["type"] in ("interactive", "text")
+    if True:
+        assert len(documents) >= 1 and sent[1]["type"] == "document"
+        link = documents[0]["document"]["link"]
+        assert link.startswith("https://api.chatboc.ar/api/public/tenants/" + pilot.TENANT_SLUG + "/institutional-assistant/sources/")
+        assert link.endswith("?revision=" + revision) and documents[0]["document"]["filename"].endswith(".pdf")
+        rows = db.session.query(MessagingEventLedger).filter_by(event_type="tdf_sandbox_document").all()
+        assert rows and all(row.external_status == "accepted" and "knowledge_context" not in (row.metadata_json or {}) for row in rows)
+
+
+def test_document_payload_accepts_only_the_platform_public_source_route():
+    good = dict(recipient=CONTACT, filename="Planilla RECS 01.pdf",
+                link="https://api.chatboc.ar/api/public/tenants/demo/institutional-assistant/sources/form-1?revision=" + "a" * 64)
+    payload = cloud.document_payload(**good, caption="Planilla")
+    assert payload["type"] == "document" and payload["document"] == {"link": good["link"], "filename": good["filename"], "caption": "Planilla"}
+    for change in ({"link": "https://example.org/x.pdf"}, {"link": good["link"] + "&x=1"}, {"link": good["link"].replace("https", "http")},
+                   {"link": good["link"].replace("/public/", "/admin/")}, {"filename": "x.exe"}, {"filename": "../x.pdf"}):
+        with pytest.raises(cloud.MetaContractError):
+            cloud.document_payload(**{**good, **change})
+
+
+def test_private_original_is_never_sent_as_a_document(environment):
+    raw = public_presentation_fixture()
+    raw["sources"]["a"]["document_visibility"] = "private"
+    raw["sources"]["a"].pop("official_url", None)
+    publish_presentation_fixture(environment, raw)
+    sent = []
+    def post(url, **kw):
+        sent.append(kw["json"]["type"]); return accepted_post()
+    process(document(mid="wamid.priv1", content={"type": "text", "text": {"body": "menu"}}), post=post)
+    process(document(mid="wamid.priv2", content={"type": "text", "text": {"body": "1"}}), post=post)
+    assert len(sent) == 2 and "document" not in sent
+    assert db.session.query(MessagingEventLedger).filter_by(event_type="tdf_sandbox_document").count() == 0
