@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock
 
 from services.institutional_assistant_content import (
-    CONTRACT, ContentError, bundle_glossary, materialize_node, normalize_bundle, overview,
+    CONTRACT, ContentError, bundle_glossary, conversation_locality, materialize_node, normalize_bundle, overview,
 )
 from tests.test_institutional_assistant_content import sample
 
@@ -29,6 +29,7 @@ def producer_functions():
         or isinstance(item, ast.FunctionDef) and item.name in functions)]
     namespace = dict(deepcopy=deepcopy, CONTRACT=CONTRACT, ContentError=ContentError,
                      materialize_node=materialize_node, overview=overview, bundle_glossary=bundle_glossary,
+                     conversation_locality=conversation_locality,
                      _active_operational_context=lambda context: False)
     exec(compile(ast.Module(body=selected, type_ignores=[]), str(path), 'exec'), namespace)
     return namespace

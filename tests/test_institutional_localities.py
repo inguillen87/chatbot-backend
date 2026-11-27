@@ -62,3 +62,17 @@ def test_selector_question_names_the_chosen_place_only_when_published():
     long = 'a' * MAX_QUESTION_CHARS
     assert locality_question(bundle, long, 'Sur') == long
     assert locality_question(_bundle(), 'Hola', 'Sur') == 'Hola'
+
+
+def test_conversation_locality_prefers_message_then_opened_topic_then_memory():
+    from services.institutional_assistant_content import conversation_locality
+    bundle = _bundle(localities=[{'label': 'Norte', 'target': 'norte'}, {'label': 'Río Sur', 'target': 'sur'}])
+    assert conversation_locality(bundle) is None
+    assert conversation_locality(bundle, 'Norte') == 'Norte'
+    assert conversation_locality(bundle, 'Oeste') is None
+    assert conversation_locality(bundle, 'Norte', text='vivo en rio sur') == 'Río Sur'
+    assert conversation_locality(bundle, 'Norte', text='norte o río sur') == 'Norte'
+    assert conversation_locality(bundle, None, text='el nortecito') is None
+    assert conversation_locality(bundle, 'Norte', node_ids=['sur']) == 'Río Sur'
+    assert conversation_locality(bundle, 'Norte', node_ids=['inicio']) == 'Norte'
+    assert conversation_locality(_bundle(), 'Norte', text='norte') is None
