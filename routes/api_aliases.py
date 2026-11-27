@@ -39,6 +39,7 @@ from routes.auth import (
     me_perfil as perfil_view,
     google_login,
     admin_login,
+    confirm_password_reset,
     demo_catalog,
     login_demo,
 )
@@ -173,6 +174,12 @@ def admin_login_alias():
     except Exception as exc:  # pragma: no cover - defensive fallback
         current_app.logger.warning("[api_aliases] /auth/admin/login alias failed: %s", exc)
         return jsonify({"error": "Servicio de autenticación temporalmente no disponible", "reason_code": "auth_service_unavailable"}), 503
+
+
+@api_aliases_bp.route("/auth/password/reset/confirm", methods=["POST"], strict_slashes=False)
+def confirm_password_reset_alias():
+    """Same-origin path used by the public "choose a new password" page."""
+    return confirm_password_reset()
 
 
 @api_aliases_bp.route("/productos", methods=["GET", "OPTIONS"], strict_slashes=False)

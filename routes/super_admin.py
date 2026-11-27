@@ -41,7 +41,12 @@ from services.demo_tenant_scope import (
     build_demo_tenant_scope_diagnostic,
     repair_demo_tenant_scope,
 )
-from services.user_service import assign_whatsapp_numbers
+from services.user_service import (
+    PASSWORD_RESET_TOKEN_TTL_SECONDS,
+    assign_whatsapp_numbers,
+    create_password_reset_request,
+)
+from utils.auth_helpers import is_clerk_managed_user, is_demo_user_account, is_user_auth_disabled
 from services.native_admin_membership import (
     NativeAdminMembershipError, list_native_admin_memberships,
     normalize_native_admin_membership, read_native_admin_membership,
@@ -49,6 +54,7 @@ from services.native_admin_membership import (
 from utils.tenant_admin_access import resolve_consistent_user_tenant
 from utils.roles import (
     canonical_role,
+    is_super_admin_role,
     normalize_tenant_type,
     role_for_tenant_type,
     tenant_owner_field_for_tipo,
@@ -1759,6 +1765,106 @@ def reset_tenant_password(current_user, slug):
     _log_admin_action(current_user.id, "reset_password", slug, {"target_user_id": owner.id})
     db.session.commit()
     return jsonify({"message": "Contraseña actualizada correctamente"})
+
+
+def _tenant_support_users(tenant):
+    """Accounts that sign in to this organization's panel: owner first, then staff."""
+
+    owner = tenant.municipio or tenant.pyme
+    users = []
+    seen = set()
+    if owner is not None:
+        users.append(owner)
+        seen.add(owner.id)
+    staff = (
+        User.query.filter(User.tenant_slug == tenant.slug)
+        .order_by(User.id.asc())
+        .limit(200)
+        .all()
+    )
+    for user in staff:
+        if user.id in seen:
+            continue
+        if canonical_role(getattr(user, "rol", None)) not in {"admin", "empleado"}:
+            continue
+        seen.add(user.id)
+        users.append(user)
+    return owner, users
+
+
+def _support_reset_block_reason(user):
+    """Why a one-time access link cannot be issued for this account, if any."""
+
+    if is_super_admin_role(getattr(user, "rol", None)):
+        return "platform_account"
+    if is_clerk_managed_user(user):
+        return "external_sign_in"
+    if is_demo_user_account(user):
+        return "demo_account"
+    return None
+
+
+@super_admin_bp.route('/tenants/<string:slug>/access-support/users', methods=['GET'])
+@token_requerido
+@super_admin_required
+def list_access_support_users(current_user, slug):
+    """Who can sign in to an organization, for support. No credential is returned."""
+
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    owner, users = _tenant_support_users(tenant)
+    response = jsonify({
+        "contract_version": "access_support.users.v1",
+        "tenant": {"id": tenant.id, "slug": tenant.slug, "nombre": tenant.nombre},
+        "link_minutes": PASSWORD_RESET_TOKEN_TTL_SECONDS // 60,
+        "users": [
+            {
+                "id": user.id,
+                "name": user.name,
+                "email": user.email,
+                "role": canonical_role(getattr(user, "rol", None)),
+                "is_owner": bool(owner is not None and user.id == owner.id),
+                "sign_in_disabled": bool(is_user_auth_disabled(user)),
+                "link_block_reason": _support_reset_block_reason(user),
+            }
+            for user in users
+        ],
+    })
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@super_admin_bp.route('/tenants/<string:slug>/access-support/users/<int:user_id>/reset-link', methods=['POST'])
+@token_requerido
+@super_admin_required
+def issue_access_support_reset_link(current_user, slug, user_id):
+    """Issue a one-time link so the person chooses a new password themselves.
+
+    Support never learns or types the password. The token is returned once, is
+    not stored in clear and is not written to the audit log.
+    """
+
+    tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
+    _owner, users = _tenant_support_users(tenant)
+    user = next((candidate for candidate in users if candidate.id == user_id), None)
+    if user is None:
+        return jsonify({"error": "La cuenta no pertenece a esta organización.", "reason_code": "user_not_in_tenant"}), 404
+
+    reason = _support_reset_block_reason(user)
+    if reason:
+        return jsonify({"error": "Esta cuenta no admite un enlace de acceso.", "reason_code": reason}), 409
+
+    token = create_password_reset_request(user, commit=False)
+    _log_admin_action(current_user.id, "issue_access_reset_link", slug, {"target_user_id": user.id})
+    db.session.commit()
+    response = jsonify({
+        "contract_version": "access_support.reset_link.v1",
+        "user_id": user.id,
+        "token": token,
+        "expires_in_minutes": PASSWORD_RESET_TOKEN_TTL_SECONDS // 60,
+        "single_use": True,
+    })
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 def _native_admin_membership_response(payload, status=200):
