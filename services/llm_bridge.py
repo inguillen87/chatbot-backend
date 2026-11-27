@@ -187,6 +187,9 @@ def llamar_llm(
     return respuesta
 
 
+ECONOMY_MAX_PROMPT_CHARS = 20000
+
+
 def llamar_llm_para_generacion_texto(
     system_prompt_especifico: str,
     user_prompt: str,
@@ -215,7 +218,9 @@ def llamar_llm_para_generacion_texto(
     # Economy first: with LLM_ECONOMY_FIRST on, this short-text path asks the
     # configured low-cost providers before the primary one. A missing, empty or
     # (for JSON) unparseable answer simply continues to the primary provider.
-    if str(os.getenv("LLM_ECONOMY_FIRST") or "").strip().lower() in {"1", "true", "yes", "on"}:
+    # Free tiers accept small requests only: a long prompt would just add a wait.
+    if (str(os.getenv("LLM_ECONOMY_FIRST") or "").strip().lower() in {"1", "true", "yes", "on"}
+            and len(str(user_prompt or "")) + len(str(system_prompt_especifico or "")) <= ECONOMY_MAX_PROMPT_CHARS):
         try:
             from services.llm_reserve_providers import generate_reserve_text
 

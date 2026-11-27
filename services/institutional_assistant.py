@@ -150,6 +150,22 @@ def save_state(tenant, actor, command):
         db.session.rollback()
         raise ContentError('knowledge_write_unconfirmed', 503) from error
 
+
+def _economy_selection(bundle, question, node_id):
+    """Low-cost providers first, when the operator turned that on. None means: use the main path."""
+    import os
+    if str(os.getenv('LLM_ECONOMY_FIRST') or '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        return None
+    try:
+        from services.institutional_assistant_content import compact_selection
+        from services.llm_reserve_providers import generate_reserve_text, reserve_available
+        if not reserve_available():
+            return None
+        return compact_selection(bundle, question, node_id, lambda system, user: generate_reserve_text(
+            system, user, temperature=0.1, json_output=True, timeout_seconds=7))
+    except Exception:
+        return None
+
 def answer(tenant, command, *, public=False, selector=None, actor=None):
     if not isinstance(command, dict) or set(command) - {'revision', 'node_id', 'question'}:
         raise ContentError('knowledge_command_invalid', 400)
@@ -185,11 +201,14 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     elif chosen is not None:
         nodes = [deepcopy(bundle['nodes'][chosen])]
     elif called:
+        economy_ids = None
         if selector is None:
             from services.llm_utils import llamar_llm_para_json_estructurado
             selector = llamar_llm_para_json_estructurado
+            economy_ids = _economy_selection(bundle, question, node_id)
         try:
-            nodes = select_nodes(bundle, question, node_id, selector)
+            nodes = ([deepcopy(bundle['nodes'][key]) for key in economy_ids] if economy_ids is not None
+                     else select_nodes(bundle, question, node_id, selector))
         except ContentError as error:
             if error.code == 'knowledge_interpretation_unavailable':
                 note_question_outcome(state['revision'], node_id, 'unavailable')
