@@ -212,6 +212,29 @@ def llamar_llm_para_generacion_texto(
         or os.getenv("OPENAI_CHAT_MODEL_DEFAULT")
         or DEFAULT_CHAT_MODEL
     )
+    # Economy first: with LLM_ECONOMY_FIRST on, this short-text path asks the
+    # configured low-cost providers before the primary one. A missing, empty or
+    # (for JSON) unparseable answer simply continues to the primary provider.
+    if str(os.getenv("LLM_ECONOMY_FIRST") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from services.llm_reserve_providers import generate_reserve_text
+
+            economy_text = generate_reserve_text(
+                system_prompt_especifico,
+                user_prompt,
+                temperature=temperature,
+                json_output=json_output,
+            )
+            if economy_text and json_output:
+                candidate = economy_text.strip()
+                if candidate.startswith("```"):
+                    candidate = candidate.strip("`").removeprefix("json").strip()
+                json.loads(candidate)
+                economy_text = candidate
+            if economy_text:
+                return economy_text
+        except Exception as economy_error:
+            logger.warning("Economy LLM path skipped error_type=%s", type(economy_error).__name__)
     try:
         openai_client = _get_openai_responses_client(None)
         responses_api = getattr(openai_client, "responses", None)
