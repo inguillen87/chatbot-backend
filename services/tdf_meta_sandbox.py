@@ -27,7 +27,7 @@ from services import meta_account_events as account_events
 from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
-from services.institutional_assistant_content import is_source_navigation
+from services.institutional_assistant_content import ContentError, is_source_navigation, nearest_locality
 from services.institutional_assistant_whatsapp import (
     clear_source_scope, present_answer_parts, row_title, short_label, sources_answer, sources_page,
 )
@@ -334,8 +334,25 @@ def _answer(event, context, *, audio_text=None):
         raise PilotError("tdf_sandbox_owner_unavailable")
     session = SimpleNamespace(tenant_id=TENANT_ID, context_data=context)
     if event.content_type == "location":
-        return ("📍 Recibí tu ubicación. No la guardaré en esta prueba.\n"
-                "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", clear_source_scope(context), None, ())
+        next_context = clear_source_scope(context)
+        # The pin only chooses the city of this conversation. Coordinates are
+        # compared here and dropped; the context keeps the city's name.
+        place = None
+        position = getattr(event, "location", None)
+        if position is not None:
+            try:
+                state = read_state(tenant, public=True)
+                place = nearest_locality(state["bundle"], *position) if state else None
+            except ContentError:
+                place = None
+        if place is None:
+            return ("📍 Recibí tu ubicación. No la guardo.\n"
+                    "¿En qué ciudad necesitás orientación: Ushuaia, Río Grande o Tolhuin?", next_context, None, ())
+        knowledge = next_context.get("institutional_knowledge")
+        next_context["institutional_knowledge"] = {**(knowledge if isinstance(knowledge, dict) else {}), "locality": place}
+        return ("📍 Recibí tu ubicación: estás cerca de " + place + ". No la guardo.\n"
+                "Te voy a mostrar primero lo de esa ciudad. Escribí tu consulta o MENÚ para ver los temas.",
+                next_context, None, ())
     question = audio_text if event.content_type == "audio" else (
         event.selection if event.content_type == "interactive" else event.text)
     if event.content_type == "audio" and not isinstance(audio_text, str):

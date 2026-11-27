@@ -300,6 +300,25 @@ def conversation_locality(bundle, remembered=None, *, text=None, node_ids=()):
         return opened[0]
     return next((p['label'] for p in places if p['label'] == remembered), None)
 
+LOCALITY_MAX_DISTANCE_KM = 60
+
+def nearest_locality(bundle, latitude, longitude):
+    """The published place closest to a position, when one is close enough.
+
+    Only places that published their centre take part. The position itself is
+    never stored: callers keep the place's label, nothing else."""
+    best = None
+    for place in bundle.get('localities', []):
+        if 'lat' not in place or 'lng' not in place:
+            continue
+        a, b = math.radians(latitude), math.radians(place['lat'])
+        h = (math.sin((b - a) / 2) ** 2
+             + math.cos(a) * math.cos(b) * math.sin(math.radians(place['lng'] - longitude) / 2) ** 2)
+        km = 12742 * math.asin(math.sqrt(h))
+        if best is None or km < best[0]:
+            best = (km, place['label'])
+    return best[1] if best and best[0] <= LOCALITY_MAX_DISTANCE_KM else None
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 

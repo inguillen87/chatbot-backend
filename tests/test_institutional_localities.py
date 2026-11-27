@@ -88,3 +88,15 @@ def test_localities_may_publish_their_centre():
 def test_invalid_centres_are_rejected(extra):
     with pytest.raises(ContentError):
         _bundle(localities=[{'label': 'Norte', 'target': 'norte', **extra}, {'label': 'Sur', 'target': 'sur'}])
+
+
+def test_nearest_locality_uses_only_published_centres_within_reach():
+    from services.institutional_assistant_content import nearest_locality
+    bundle = _bundle(localities=[{'label': 'Norte', 'target': 'norte', 'lat': -53.7877, 'lng': -67.7095},
+                                 {'label': 'Sur', 'target': 'sur', 'lat': -54.8019, 'lng': -68.303}])
+    assert nearest_locality(bundle, -54.79, -68.31) == 'Sur'
+    assert nearest_locality(bundle, -53.80, -67.70) == 'Norte'
+    assert nearest_locality(bundle, -34.60, -58.38) is None
+    plain = _bundle(localities=[{'label': 'Norte', 'target': 'norte'}, {'label': 'Sur', 'target': 'sur'}])
+    assert nearest_locality(plain, -54.79, -68.31) is None
+    assert nearest_locality(_bundle(), -54.79, -68.31) is None
