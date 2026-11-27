@@ -16,7 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from services import organization_domain_binding as legacy
 from services.organization_address_vercel import (
-    AddressObservation, AddressPlan, plan_digest, validate_address_host,
+    AddressObservation, AddressPlan, active_ttl, plan_digest, validate_address_host,
 )
 from services.organization_domain_vercel import ProvisioningError, canonical, FRONTEND_PROJECT
 from services.plan_access import (
@@ -107,7 +107,7 @@ _OPERATOR_GUIDANCE = {
     'messages': {
         'pending_window': 'La solicitud tiene un plazo fijo. Si vence antes de activar la vinculación, hay que revocarla y volver a pedirla.',
         'expired_action': 'Revocá la solicitud vencida y volvé a pedir la dirección para iniciar un plazo nuevo. Hasta entonces la dirección no se publica.',
-        'active_expiry': 'La vinculación activa deja de publicarse al vencer su vigencia. Todavía no hay renovación: después hay que revocarla, pedirla de nuevo y verificarla otra vez, y la dirección no se publica mientras tanto.',
+        'active_expiry': 'La vinculación activa deja de publicarse al vencer su vigencia. Un subdominio de la plataforma dura 90 días y un dominio propio, 7. Todavía no hay renovación: después hay que revocarla, pedirla de nuevo y verificarla otra vez.',
     },
     'blocking': {
         'provider_routes_unavailable': {
@@ -275,7 +275,7 @@ def read_store(tenant):
             _require(row['platform_verified_at'] is not None and row['platform_valid_until'] is not None
                 and row['requested_at'] <= row['platform_verified_at'] < deadline
                 and (kind == 'platform' or row['dns_verified_at'] <= row['platform_verified_at'])
-                and row['platform_verified_at'] < row['platform_valid_until'] <= row['platform_verified_at'] + legacy.VERIFICATION_TTL,
+                and row['platform_verified_at'] < row['platform_valid_until'] <= row['platform_verified_at'] + active_ttl(kind),
                 'address_storage_invalid', 409)
         else:
             _require(row['platform_verified_at'] is None and row['platform_valid_until'] is None,
@@ -552,6 +552,11 @@ def prepare_plan(tenant, *, kind, expected_revision, frontend_deployment,
     valid_until = pending_deadline(kind, row, source)
     _require(type(valid_until) is int and row['requested_at'] <= now < valid_until
         and (kind == 'platform' or row['dns_verified_at'] <= now), 'address_verification_expired', 409)
+    if kind == 'platform':
+        # The request window only bounds when activation may happen. Once active,
+        # the binding runs for the platform cycle, counted from the request so
+        # the reviewed plan and the activation agree on the same instant.
+        valid_until = row['requested_at'] + active_ttl(kind)
     plan = AddressPlan(row['host'], tenant.id, tenant.slug, kind, expected_revision,
         valid_until, frontend_deployment, frontend_source, backend_source, routes_sha256,
         aliases_for(tenant, config) if kind == 'platform' else ())
@@ -575,7 +580,7 @@ def activate_address(session, tenant_model, user_model, audit_model, *, actor_id
             and observation.host == plan.host and observation.kind == plan.kind
             and observation.project_id == FRONTEND_PROJECT and type(observation.observed_at) is int
             and 0 <= current_time - observation.observed_at <= 60 and type(observation.valid_until) is int
-            and current_time < observation.valid_until <= min(plan.valid_until, current_time + legacy.VERIFICATION_TTL),
+            and current_time < observation.valid_until <= min(plan.valid_until, current_time + active_ttl(plan.kind)),
             'address_platform_not_verified', 409)
         row, source = slots(tenant)[plan.kind]
         assert_available(session, tenant_model, tenant, 'legacy_v1' if source == 'legacy_v1' else plan.kind, plan.host)
