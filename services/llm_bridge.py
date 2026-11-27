@@ -203,6 +203,7 @@ def llamar_llm_para_generacion_texto(
         _model_for_openai_transport,
         _reasoning_for_model,
         _response_output_text,
+        _safe_openai_error_fields,
         _validate_completed_response,
     )
 
@@ -243,7 +244,17 @@ def llamar_llm_para_generacion_texto(
 
         try:
             response = responses_api.create(**request)
-        except Exception:
+        except Exception as request_error:
+            error_class, http_status, error_code, provider_error_type = _safe_openai_error_fields(request_error)
+            logger.error(
+                "OpenAI text generation request failed model=%s error_type=%s "
+                "http_status=%s error_code=%s provider_error_type=%s",
+                _safe_log_identifier(provider_model),
+                error_class,
+                http_status,
+                error_code,
+                provider_error_type,
+            )
             raise LLMProviderRequestUncertainError("openai_request_failed") from None
         _validate_completed_response(response)
         result = _response_output_text(response)
