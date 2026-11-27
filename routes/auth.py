@@ -6,6 +6,7 @@ from flask import Blueprint, current_app, g, jsonify, make_response, request, ur
 from flask_cors import cross_origin
 from werkzeug.exceptions import RequestEntityTooLarge
 from services.rubro_classification import es_rubro_publico, normalizar_rubro
+import hashlib
 import os
 import re
 import unicodedata
@@ -4173,10 +4174,29 @@ def admin_login():
             }), 400
         requested_scope = raw_scope.strip().lower()
 
-    user = _user_query().filter_by(email=email.strip().lower()).first()
+    normalized_email = str(email).strip().lower()
+    user = _user_query().filter_by(email=normalized_email).first()
+    if not user:
+        # Accounts created with capitals or stray spaces must still sign in.
+        # Only an unambiguous match is accepted.
+        candidates = (
+            _user_query()
+            .filter(func.lower(func.trim(User.email)) == normalized_email)
+            .limit(2)
+            .all()
+        )
+        if len(candidates) == 1:
+            user = candidates[0]
 
     if not user:
-        current_app.logger.warning("[admin_login] Invalid credentials")
+        # Support needs to tell "no such account" from "wrong password" without
+        # logging the address: a short digest and the shape of the input.
+        current_app.logger.warning(
+            "[admin_login] Invalid credentials reason=unknown_identity digest=%s length=%s ascii=%s",
+            hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:8],
+            len(normalized_email),
+            normalized_email.isascii(),
+        )
         return jsonify({"error": "Credenciales inválidas"}), 401
 
     if is_demo_user_account(user):
@@ -4205,7 +4225,8 @@ def admin_login():
 
     if is_user_auth_disabled(user) or not user.check_password(password):
         current_app.logger.warning(
-            "[admin_login] Invalid credentials user_id=%s",
+            "[admin_login] Invalid credentials reason=%s user_id=%s",
+            "auth_disabled" if is_user_auth_disabled(user) else "password_mismatch",
             user.id,
         )
         return jsonify({"error": "Credenciales inválidas"}), 401
