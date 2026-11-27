@@ -1524,3 +1524,18 @@ def test_handout_is_found_in_an_answer_that_joins_several_topics(environment):
     assert pilot._handout(scope(["start", "requirements"]), revision) == single
     assert pilot._handout(scope(["start", "requirements", "start", "requirements"]), revision) is None
     assert pilot._handout(scope(["requirements"]), "0" * 64) is None
+
+
+def test_a_row_from_an_older_message_answers_from_the_published_version(environment):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    current, _, revision, _ = pilot._answer(SimpleNamespace(
+        content_type="interactive", selection="knowledge:" + "0" * 16 + ":requirements"), {})
+    expected, _, same, _ = pilot._answer(SimpleNamespace(
+        content_type="interactive", selection="knowledge:" + pilot.read_state(
+            db.session.get(TenantProfile, pilot.TENANT_ID), public=True)["revision"][:16] + ":requirements"), {})
+    assert current == expected and revision == same and revision
+    assert "No se pudo completar" not in current
+    menu, _, _, _ = pilot._answer(SimpleNamespace(content_type="text", text="menu"), {})
+    gone, _, _, _ = pilot._answer(SimpleNamespace(
+        content_type="interactive", selection="knowledge:" + "0" * 16 + ":retired-topic"), {})
+    assert gone == menu
