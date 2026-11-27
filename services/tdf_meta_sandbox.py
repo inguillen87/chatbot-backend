@@ -493,18 +493,21 @@ def _finish(delivery, status="processed", reason=None):
 def _handout(context, revision):
     """The one PDF the last answer hands out, or None.
 
-    Only a single-topic answer at the current published revision, and only a
-    source the organization marked public. Anything else sends no document."""
+    The answer may join up to three topics (a question in the person's own
+    words often does); the first published PDF among them is the one sent.
+    Only the current published revision, and only a source the organization
+    marked public. Anything else sends no document."""
     scope = context.get(SOURCE_SCOPE) if isinstance(context, dict) else None
     if (not revision or not isinstance(scope, dict) or scope.get("revision") != revision
-            or not isinstance(scope.get("node_ids"), list) or len(scope["node_ids"]) != 1):
+            or not isinstance(scope.get("node_ids"), list) or not 1 <= len(scope["node_ids"]) <= 3):
         return None
     tenant = db.session.get(TenantProfile, TENANT_ID)
     state = read_state(tenant, public=True)
     if state is None or state["revision"] != revision:
         return None
-    node = state["bundle"]["nodes"].get(scope["node_ids"][0])
-    for source in (node or {}).get("sources", []):
+    sources = [source for node_id in scope["node_ids"]
+               for source in (state["bundle"]["nodes"].get(node_id) or {}).get("sources", [])]
+    for source in sources:
         if source.get("document_visibility") == "public" and source.get("format", "pdf") == "pdf":
             title = " ".join(str(source.get("title", "")).split())
             name = re.sub(r"[^A-Za-z0-9 ._()-]", "", unicodedata.normalize("NFKD", title)
