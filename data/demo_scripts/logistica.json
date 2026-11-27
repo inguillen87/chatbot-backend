@@ -410,5 +410,130 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "single_lead": "Sí, hacemos",
+    "list_lead": "Estos son los servicios:",
+    "closing": "Las tarifas son de ejemplo. ¿Te armo una cotización con tus bultos?",
+    "items": [
+      {
+        "name": "envío de paquetería dentro de la ciudad",
+        "keywords": [
+          "paquete",
+          "paquetes",
+          "paqueteria",
+          "envio",
+          "envios",
+          "encomienda",
+          "encomiendas"
+        ],
+        "price": "desde $ 4.200",
+        "detail": "Hasta 5 kg, entrega en 24 horas con seguimiento en línea."
+      },
+      {
+        "name": "entrega en el día",
+        "keywords": [
+          "urgente",
+          "express"
+        ],
+        "price": "desde $ 7.900",
+        "detail": "Retiro antes de las 12 y entrega antes de las 20."
+      },
+      {
+        "name": "envío por pallet a otra provincia",
+        "keywords": [
+          "pallet",
+          "pallets",
+          "palet",
+          "provincia",
+          "interior",
+          "carga"
+        ],
+        "price": "desde $ 96.000",
+        "detail": "Entre 48 y 96 horas según destino. Seguro incluido."
+      },
+      {
+        "name": "almacenamiento en depósito",
+        "keywords": [
+          "deposito",
+          "almacenamiento",
+          "guardar",
+          "almacenar",
+          "stock",
+          "posicion"
+        ],
+        "price": "$ 18.500 por posición por mes",
+        "detail": "Incluye control de stock y reporte semanal."
+      },
+      {
+        "name": "preparación de pedidos",
+        "keywords": [
+          "picking",
+          "preparacion",
+          "preparar",
+          "fulfillment",
+          "armado"
+        ],
+        "price": "$ 950 por pedido",
+        "detail": "Hasta 3 productos por pedido; embalaje incluido."
+      },
+      {
+        "name": "retiro en punto de entrega",
+        "keywords": [
+          "locker",
+          "lockers",
+          "pickup",
+          "retiro",
+          "retirar"
+        ],
+        "price": "sin cargo",
+        "detail": "Más de 40 puntos. El paquete espera 5 días."
+      }
+    ],
+    "payment": "Se factura por quincena con pago por transferencia. Para envíos sueltos aceptamos tarjeta y QR.",
+    "hours": "El depósito recibe de lunes a viernes de 7 a 17. Atención a clientes de 8 a 20.",
+    "topics": [
+      {
+        "keywords": [
+          "seguimiento",
+          "rastreo",
+          "rastrear",
+          "tracking"
+        ],
+        "answer": "Pasame el código de seguimiento y te digo dónde está el paquete y cuándo llega. También te avisamos por WhatsApp en cada cambio de estado."
+      },
+      {
+        "keywords": [
+          "roto",
+          "dano",
+          "danado",
+          "perdido",
+          "perdio",
+          "reclamo",
+          "no llego"
+        ],
+        "answer": "Para un reclamo necesito el código de seguimiento y una foto si hubo daño. Queda registrado con número de caso y respuesta en 48 horas."
+      },
+      {
+        "keywords": [
+          "exterior",
+          "exportar",
+          "exportacion",
+          "internacional",
+          "aduana"
+        ],
+        "answer": "Hacemos envíos al exterior puerta a puerta. Para cotizar necesito destino, peso, medidas y qué mercadería es."
+      }
+    ],
+    "buttons": [
+      {
+        "label": "Ver servicios",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }

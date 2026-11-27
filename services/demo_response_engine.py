@@ -166,20 +166,32 @@ def _answer_from_demo_catalog(script: Dict[str, Any], normalized_text: str) -> O
         for intent, words in _CATALOG_INTENTS.items()
         if catalog.get(intent) and any(f" {word} " in padded for word in words)
     ]
-    if not found and not asked:
+    # Rubro-specific answers (coverage plans, visiting hours, requirements…).
+    topics = [
+        str(topic.get("answer"))
+        for topic in catalog.get("topics") or []
+        if isinstance(topic, dict) and topic.get("answer")
+        and any(
+            word and f" {word} " in padded
+            for word in (_normalize_text(word) for word in topic.get("keywords") or [])
+        )
+    ][:2]
+    if not found and not asked and not topics:
         return None
 
     lines: List[str] = []
     if len(found) == 1:
         item = found[0]
-        lines.append(f"Sí, tenemos {item.get('name')}: {item.get('price')}. {item.get('detail') or ''}".strip())
+        lead = str(catalog.get("single_lead") or "Sí, tenemos")
+        lines.append(f"{lead} {item.get('name')}: {item.get('price')}. {item.get('detail') or ''}".strip())
     elif found:
-        lines.append("De eso tenemos:")
+        lines.append(str(catalog.get("list_lead") or "De eso tenemos:"))
         lines.extend(f"- {item.get('name')}: {item.get('price')}" for item in found)
     for intent in asked:
         lines.append(str(catalog[intent]))
+    lines.extend(topics)
     if found:
-        lines.append("Los precios son de ejemplo. ¿Te armo el pedido?")
+        lines.append(str(catalog.get("closing") or "Los precios son de ejemplo. ¿Te armo el pedido?"))
 
     buttons = catalog.get("buttons")
     return {

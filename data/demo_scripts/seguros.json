@@ -410,5 +410,148 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "single_lead": "Sí, ofrecemos",
+    "list_lead": "Tenemos estas coberturas:",
+    "closing": "Los valores son de ejemplo. ¿Te preparo una cotización con tus datos?",
+    "items": [
+      {
+        "name": "seguro de auto contra todo riesgo",
+        "keywords": [
+          "auto",
+          "autos",
+          "coche",
+          "vehiculo",
+          "camioneta",
+          "todo riesgo"
+        ],
+        "price": "desde $ 68.000 por mes",
+        "detail": "Con franquicia fija, auxilio mecánico y auto de reemplazo por 10 días."
+      },
+      {
+        "name": "seguro de auto contra terceros completo",
+        "keywords": [
+          "terceros",
+          "tercero",
+          "responsabilidad"
+        ],
+        "price": "desde $ 34.000 por mes",
+        "detail": "Incluye robo, incendio, granizo y cristales."
+      },
+      {
+        "name": "seguro de moto",
+        "keywords": [
+          "moto",
+          "motos",
+          "motocicleta"
+        ],
+        "price": "desde $ 14.500 por mes",
+        "detail": "Responsabilidad civil y robo total. Auxilio hasta 150 km."
+      },
+      {
+        "name": "seguro de hogar",
+        "keywords": [
+          "hogar",
+          "casa",
+          "vivienda",
+          "departamento",
+          "incendio"
+        ],
+        "price": "desde $ 12.000 por mes",
+        "detail": "Incendio, robo, daños por agua y responsabilidad civil. Urgencias domiciliarias incluidas."
+      },
+      {
+        "name": "seguro para comercio",
+        "keywords": [
+          "comercio",
+          "local",
+          "negocio",
+          "pyme",
+          "integral"
+        ],
+        "price": "desde $ 29.000 por mes",
+        "detail": "Incendio, robo de mercadería, cristales y responsabilidad civil."
+      },
+      {
+        "name": "seguro de vida",
+        "keywords": [
+          "vida",
+          "sepelio"
+        ],
+        "price": "desde $ 9.800 por mes",
+        "detail": "Capital a elección. Se contrata con una declaración de salud."
+      },
+      {
+        "name": "seguro de flota",
+        "keywords": [
+          "flota",
+          "flotas",
+          "camion",
+          "camiones",
+          "utilitarios"
+        ],
+        "price": "cotización a medida",
+        "detail": "Desde 5 unidades, con reporte mensual de siniestros por vehículo."
+      }
+    ],
+    "payment": "Se paga por débito automático o tarjeta de crédito. Con pago anual hay 10 % de descuento.",
+    "hours": "Atendemos de lunes a viernes de 9 a 18. La asistencia y las denuncias funcionan las 24 horas.",
+    "topics": [
+      {
+        "keywords": [
+          "siniestro",
+          "siniestros",
+          "choque",
+          "choco",
+          "chocaron",
+          "denuncia",
+          "denunciar",
+          "robo",
+          "robaron",
+          "accidente"
+        ],
+        "answer": "Para denunciar un siniestro necesito el número de póliza o la patente, la fecha, el lugar y fotos. Te doy el número de denuncia en el momento y el seguimiento llega por WhatsApp."
+      },
+      {
+        "keywords": [
+          "grua",
+          "auxilio",
+          "remolque",
+          "asistencia"
+        ],
+        "answer": "El auxilio mecánico se pide por este mismo chat, las 24 horas: compartí tu ubicación y te decimos en cuánto llega la grúa."
+      },
+      {
+        "keywords": [
+          "poliza",
+          "polizas",
+          "tarjeta",
+          "comprobante",
+          "certificado"
+        ],
+        "answer": "Te mando la póliza y la tarjeta de circulación en PDF por este chat; solo necesito tu DNI o la patente."
+      },
+      {
+        "keywords": [
+          "cotizar",
+          "cotizacion",
+          "cotizo",
+          "presupuesto",
+          "precio"
+        ],
+        "answer": "Para cotizar un auto necesito marca, modelo, año y código postal. En dos minutos tenés tres opciones para comparar."
+      }
+    ],
+    "buttons": [
+      {
+        "label": "Ver coberturas",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }

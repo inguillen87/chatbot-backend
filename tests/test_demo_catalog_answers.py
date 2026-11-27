@@ -46,3 +46,28 @@ def test_a_word_inside_another_word_is_not_a_match():
 
 def test_payment_question_alone_is_answered():
     assert "cuotas" in ask("bodega", "¿aceptan tarjeta?")["message_body"]
+
+
+def test_service_rubros_answer_in_their_own_words():
+    clinic = ask("medico_general", "necesito un turno con el pediatra, atienden con obra social?")["message_body"]
+    assert clinic.startswith("Sí, atendemos pediatría")
+    assert "obras sociales y prepagas" in clinic
+    assert "¿Querés que te busque un turno?" in clinic
+    assert "pedido" not in clinic
+
+    insurance = ask("seguros", "me chocaron el auto, como hago la denuncia?")["message_body"]
+    assert "número de póliza o la patente" in insurance
+
+    homes = ask("inmobiliaria", "busco alquiler, que requisitos piden?")["message_body"]
+    assert "$ 520.000 por mes" in homes
+    assert "seguro de caución" in homes
+    assert "¿Coordinamos una visita?" in homes
+
+
+def test_a_topic_alone_is_answered_without_inventing_a_product():
+    body = ask("logistica", "quiero hacer el seguimiento de mi paquete")["message_body"]
+    assert "código de seguimiento" in body
+
+    wholesale = ask("almacen", "venden por bulto para kiosco?")["message_body"]
+    assert "lista mayorista" in wholesale
+    assert "precios son de ejemplo" not in wholesale

@@ -435,5 +435,114 @@
         "target": "welcome"
       }
     ]
+  },
+  "catalog": {
+    "items": [
+      {
+        "name": "yerba mate de 1 kg",
+        "keywords": [
+          "yerba",
+          "mate"
+        ],
+        "price": "$ 4.900",
+        "detail": "Por bulto de 10 unidades baja a $ 4.450."
+      },
+      {
+        "name": "aceite de girasol de 1,5 l",
+        "keywords": [
+          "aceite",
+          "girasol"
+        ],
+        "price": "$ 3.650",
+        "detail": "Caja de 12 botellas: $ 41.000."
+      },
+      {
+        "name": "harina 000 de 1 kg",
+        "keywords": [
+          "harina"
+        ],
+        "price": "$ 980",
+        "detail": "Bolsa de 25 kg para panaderías: $ 21.500."
+      },
+      {
+        "name": "azúcar de 1 kg",
+        "keywords": [
+          "azucar"
+        ],
+        "price": "$ 1.250",
+        "detail": "Fardo de 10 kg: $ 11.800."
+      },
+      {
+        "name": "fideos secos de 500 g",
+        "keywords": [
+          "fideos",
+          "fideo",
+          "pasta"
+        ],
+        "price": "$ 1.100",
+        "detail": "Tallarines, mostachol o tirabuzón."
+      },
+      {
+        "name": "gaseosa cola de 2,25 l",
+        "keywords": [
+          "gaseosa",
+          "gaseosas",
+          "cola",
+          "bebida",
+          "bebidas"
+        ],
+        "price": "$ 2.900",
+        "detail": "Pack de 6: $ 16.200."
+      },
+      {
+        "name": "combo familiar de la semana",
+        "keywords": [
+          "combo",
+          "combos",
+          "promo",
+          "promos",
+          "oferta",
+          "ofertas"
+        ],
+        "price": "$ 28.500",
+        "detail": "Yerba, aceite, fideos, arroz, azúcar y galletitas."
+      },
+      {
+        "name": "queso cremoso por kilo",
+        "keywords": [
+          "queso",
+          "fiambre",
+          "fiambres"
+        ],
+        "price": "$ 9.800",
+        "detail": "Se corta en el momento."
+      }
+    ],
+    "shipping": "Repartimos en el día si pedís antes de las 14. El envío es gratis desde $ 40.000; por debajo cuesta $ 2.500.",
+    "payment": "Podés pagar en efectivo, con transferencia, QR o tarjeta de débito. A comercios les ofrecemos cuenta corriente semanal.",
+    "hours": "Abrimos de lunes a sábado de 8 a 21 y los domingos de 9 a 13.",
+    "topics": [
+      {
+        "keywords": [
+          "mayorista",
+          "mayoristas",
+          "bulto",
+          "bultos",
+          "reventa",
+          "kiosco"
+        ],
+        "answer": "Para comercios hay lista mayorista desde 10 bultos surtidos, con reparto fijo dos veces por semana."
+      }
+    ],
+    "buttons": [
+      {
+        "label": "Ver el catálogo",
+        "target": "catalogo_demo"
+      },
+      {
+        "label": "Volver al menú",
+        "target": "welcome"
+      }
+    ]
   }
 }
