@@ -4,11 +4,15 @@ from datetime import datetime, timezone
 import hashlib
 import ipaddress
 import json
+import logging
+import math
 import re
 import time
 import unicodedata
 from urllib.parse import urlsplit
 from werkzeug.utils import secure_filename
+
+logger = logging.getLogger(__name__)
 
 CONTRACT = 'chatboc.institutional_assistant.v1'
 BUNDLE_CONTRACT = 'chatboc.institutional_guide.composed.v1'
@@ -401,6 +405,109 @@ def _selection_request(bundle, question, current_node):
         request['current_topic'] = current_topic(bundle, current_node)
     return json.dumps(request, ensure_ascii=False)
 
+# Reserve selection for when the interpreter does not answer (provider down,
+# quota, timeout). It never writes text: it only points at published nodes,
+# and only when the words of the question clearly land on one of them.
+# Otherwise the caller still reports that the question could not be read.
+_RESERVE_STOPWORDS = frozenset('''a al algo alguien algun alguna ante aqui asi aun cada como con cual cuales
+cuando de del desde donde dos el ella ellos en entre era es esa ese eso esta estan estar este esto estoy fue ha hace
+hacer hago hay hola la las le les lo los mas me mi mis mucho muy necesito no nos o otra otro para pero por porque puedo
+puede pueden que quien quiero quisiera saber se ser si sin sobre son soy su sus tambien te tengo tiene tienen todo todos
+tu tus un una uno unos usted y ya yo buenas buenos dias tardes gracias favor consulta consultar informacion info
+tramite tramites tramitar tramito'''.split())
+_RESERVE_SYNONYMS = {'curriculum': 'cv', 'curriculo': 'cv', 'celular': 'telefono', 'numero': 'telefono',
+                     'whatsapp': 'telefono', 'mail': 'correo', 'email': 'correo', 'laburo': 'trabajo',
+                     'empleo': 'trabajo', 'trabajar': 'trabajo', 'electrodependiente': 'electrodependencia',
+                     'inscribir': 'inscripcion', 'inscribo': 'inscripcion', 'inscribirme': 'inscripcion',
+                     'anotarme': 'inscripcion', 'renovar': 'renovacion', 'renuevo': 'renovacion',
+                     'oficina': 'oficinas', 'requisito': 'requisitos'}
+RESERVE_MIN_COVERAGE = 0.6
+RESERVE_SECOND_RATIO = 0.8
+
+def _reserve_words(text):
+    words = []
+    for word in _command_text(text or '').split():
+        if len(word) < 2 or word in _RESERVE_STOPWORDS or word.isdigit():
+            continue
+        if len(word) > 4 and word.endswith('es') and word[:-2] not in _RESERVE_STOPWORDS:
+            word = word[:-2] if word[-3] not in 'aeiou' else word[:-1]
+        elif len(word) > 3 and word.endswith('s'):
+            word = word[:-1]
+        words.append(word)
+    return words
+
+def reserve_selection(bundle, question, current_node):
+    """Up to two published nodes whose own words match the question, or none."""
+    asked = _reserve_words(question)
+    asked = list(dict.fromkeys(asked))
+    if not asked or len(asked) > 24:
+        return []
+    start = bundle.get('start')
+    strong, weak = {}, {}
+    for key, node in bundle['nodes'].items():
+        strong[key] = set(_reserve_words(node.get('title', '')))
+        weak[key] = set(_reserve_words(node.get('text', '')))
+    for node in bundle['nodes'].values():
+        for action in node.get('actions', []):
+            target = action.get('target')
+            label = action.get('label', '')
+            if target in strong and not _command_text(label).startswith('volver') and not is_menu_command(label):
+                strong[target].update(_reserve_words(label))
+    total = len(bundle['nodes'])
+
+    def variants(word):
+        other = _RESERVE_SYNONYMS.get(word)
+        return (word, other) if other else (word,)
+
+    def weight(word):
+        seen = sum(1 for key in strong if any(v in strong[key] or v in weak[key] for v in variants(word)))
+        return math.log((total + 1) / (seen + 1)) + 0.2 if seen else 0.0
+
+    weights = {word: weight(word) for word in asked}
+    known = sum(weights.values())
+    if known <= 0:
+        return []
+    near = {a.get('target') for a in bundle['nodes'][current_node].get('actions', [])} | {current_node}
+    # Steps from the start menu: with equal words, the topic's entry node is a
+    # safer landing than one of its details.
+    depth, frontier = {start: 0}, [start]
+    while frontier:
+        following = []
+        for key in frontier:
+            for action in bundle['nodes'].get(key, {}).get('actions', []):
+                target = action.get('target')
+                if target in bundle['nodes'] and target not in depth:
+                    depth[target] = depth[key] + 1
+                    following.append(target)
+        frontier = following
+    ranked = []
+    for key in bundle['nodes']:
+        if key == start:
+            continue
+        score = covered = 0.0
+        titled = False
+        for word in asked:
+            if any(v in strong[key] for v in variants(word)):
+                score += 3 * weights[word]
+                covered += weights[word]
+                titled = True
+            elif any(v in weak[key] for v in variants(word)):
+                score += weights[word]
+                covered += weights[word]
+        if not titled or covered / known < RESERVE_MIN_COVERAGE:
+            continue
+        score /= 1 + 0.08 * depth.get(key, 6)
+        if current_node != start and key in near:
+            score *= 1.15
+        ranked.append((score, key))
+    if not ranked:
+        return []
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    chosen = [ranked[0][1]]
+    if len(ranked) > 1 and ranked[1][0] >= ranked[0][0] * RESERVE_SECOND_RATIO:
+        chosen.append(ranked[1][1])
+    return chosen
+
 def select_nodes(bundle, question, current_node, selector):
     question = _text(question, MAX_QUESTION_CHARS)
     _require(current_node in bundle['nodes'])
@@ -420,7 +527,11 @@ def select_nodes(bundle, question, current_node, selector):
         if result is not None or attempt or time.monotonic() - started > SELECTOR_RETRY_WINDOW_SECONDS:
             break
     if result is None:
-        raise ContentError('knowledge_interpretation_unavailable', 503) from failure
+        reserve = reserve_selection(bundle, question, current_node)
+        if not reserve:
+            raise ContentError('knowledge_interpretation_unavailable', 503) from failure
+        logger.warning('Knowledge selector unavailable; reserve word match used nodes=%s', len(reserve))
+        return [deepcopy(bundle['nodes'][key]) for key in reserve]
     _require(isinstance(result, dict) and set(result) == {'node_ids'}, 'knowledge_selection_invalid')
     ids = result['node_ids']
     _require(isinstance(ids, list) and len(ids) <= 3 and all(isinstance(k, str) for k in ids))
