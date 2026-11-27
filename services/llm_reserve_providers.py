@@ -6,7 +6,7 @@ configured in the environment, so nothing is sent anywhere by default.
 
 Environment:
   LLM_RESERVE_PROVIDERS     order, default "groq,gemini,huggingface,custom"
-  GROQ_API_KEY              GROQ_RESERVE_MODEL (default llama-3.3-70b-versatile)
+  GROQ_API_KEY              GROQ_RESERVE_MODEL (comma-separated; the next one is tried when a model is not found)
   GEMINI_API_KEY            GEMINI_RESERVE_MODEL (default gemini-3.6-flash)
   HF_TOKEN                  HF_RESERVE_MODEL (default openai/gpt-oss-120b)
   LLM_RESERVE_CUSTOM_API_KEY, LLM_RESERVE_CUSTOM_BASE_URL, LLM_RESERVE_CUSTOM_MODEL
@@ -21,7 +21,7 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 _PROVIDERS = {
-    'groq': ('GROQ_API_KEY', 'https://api.groq.com/openai/v1', 'GROQ_RESERVE_MODEL', 'llama-3.3-70b-versatile'),
+    'groq': ('GROQ_API_KEY', 'https://api.groq.com/openai/v1', 'GROQ_RESERVE_MODEL', 'openai/gpt-oss-120b,llama-3.3-70b-versatile,openai/gpt-oss-20b'),
     'gemini': ('GEMINI_API_KEY', 'https://generativelanguage.googleapis.com/v1beta/openai',
                'GEMINI_RESERVE_MODEL', 'gemini-3.6-flash'),
     'huggingface': ('HF_TOKEN', 'https://router.huggingface.co/v1', 'HF_RESERVE_MODEL', 'openai/gpt-oss-120b'),
@@ -76,26 +76,34 @@ def generate_reserve_text(system_prompt: str, user_prompt: str, *, temperature: 
     system = system_prompt or 'Sos un asistente util.'
     if json_output:
         system += ' Devuelve un unico objeto JSON valido.'
-    for name, key, base, model in providers:
-        body = {'model': model, 'messages': [{'role': 'system', 'content': system},
-                                             {'role': 'user', 'content': str(user_prompt or '')}]}
-        if temperature is not None:
-            body['temperature'] = float(temperature)
-        if json_output and name in _JSON_MODE:
-            body['response_format'] = {'type': 'json_object'}
-        try:
-            response = post(base + '/chat/completions', json=body, timeout=timeout,
-                            headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
-            status = int(getattr(response, 'status_code', 0) or 0)
-            if status != 200:
-                logger.warning('Reserve LLM provider=%s outcome=http_%s', name, status)
-                continue
-            text = response.json()['choices'][0]['message']['content']
-        except Exception as error:
-            logger.warning('Reserve LLM provider=%s outcome=%s', name, type(error).__name__)
-            continue
-        if isinstance(text, str) and text.strip():
-            logger.info('Reserve LLM provider=%s outcome=answered', name)
-            return text.strip()[:MAX_OUTPUT_CHARS]
-        logger.warning('Reserve LLM provider=%s outcome=empty', name)
+    for name, key, base, models in providers:
+        candidates = [m.strip() for m in models.split(',') if m.strip()][:4]
+        for position, model in enumerate(candidates):
+            body = {'model': model, 'messages': [{'role': 'system', 'content': system},
+                                                 {'role': 'user', 'content': str(user_prompt or '')}]}
+            if temperature is not None:
+                body['temperature'] = float(temperature)
+            if json_output and name in _JSON_MODE:
+                body['response_format'] = {'type': 'json_object'}
+            if name == 'gemini':
+                # Short selection and extraction tasks: keep the model's thinking brief.
+                body['reasoning_effort'] = 'low'
+            try:
+                response = post(base + '/chat/completions', json=body, timeout=timeout,
+                                headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+                status = int(getattr(response, 'status_code', 0) or 0)
+                if status != 200:
+                    logger.warning('Reserve LLM provider=%s model_position=%s outcome=http_%s', name, position, status)
+                    if status in (400, 404):
+                        continue  # model retired or renamed: try the next configured one
+                    break
+                text = response.json()['choices'][0]['message']['content']
+            except Exception as error:
+                logger.warning('Reserve LLM provider=%s outcome=%s', name, type(error).__name__)
+                break
+            if isinstance(text, str) and text.strip():
+                logger.info('Reserve LLM provider=%s model_position=%s outcome=answered', name, position)
+                return text.strip()[:MAX_OUTPUT_CHARS]
+            logger.warning('Reserve LLM provider=%s outcome=empty', name)
+            break
     return ''
