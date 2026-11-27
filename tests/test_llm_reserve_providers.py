@@ -63,6 +63,17 @@ class ReserveProvidersTest(unittest.TestCase):
         self.assertEqual(calls, [('https://llm.example.test/v1/chat/completions', 'm'),
                                  ('https://api.groq.com/openai/v1/chat/completions', 'otro')])
 
+    def test_a_retired_model_moves_to_the_next_configured_model(self):
+        calls = []
+
+        def post(url, **kwargs):
+            calls.append(kwargs['json']['model'])
+            return _Reply(404) if len(calls) == 1 else _Reply(200, 'ok')
+
+        with _env(GROQ_API_KEY='k', GROQ_RESERVE_MODEL='viejo, nuevo'):
+            self.assertEqual(generate_reserve_text('s', 'u', post=post), 'ok')
+        self.assertEqual(calls, ['viejo', 'nuevo'])
+
     def test_custom_endpoint_must_be_https(self):
         with _env(LLM_RESERVE_CUSTOM_API_KEY='c', LLM_RESERVE_CUSTOM_BASE_URL='http://llm.example.test/v1',
                   LLM_RESERVE_CUSTOM_MODEL='m'):
