@@ -49,7 +49,7 @@ def test_one_time_link_lets_the_person_choose_the_password(client):
     assert token not in str(audit.details)
 
     confirmed = client.post(
-        "/auth/password/reset/confirm", json={"token": token, "new_password": "NuevaClave2026"}
+        "/api/auth/password/reset/confirm", json={"token": token, "new_password": "NuevaClave2026"}
     )
     assert confirmed.status_code == 200, confirmed.json
     db.session.refresh(owner)
