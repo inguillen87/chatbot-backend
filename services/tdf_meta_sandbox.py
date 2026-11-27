@@ -29,7 +29,7 @@ from services import meta_whatsapp_webhook as webhook
 from services.institutional_assistant import maybe_handle_institutional_question, read_state
 from services.institutional_assistant_content import is_source_navigation
 from services.institutional_assistant_whatsapp import (
-    clear_source_scope, present_answer_parts, short_label, sources_answer, sources_page,
+    clear_source_scope, present_answer_parts, row_title, short_label, sources_answer, sources_page,
 )
 from services.tenant_provider_credentials import ProviderCredentialError
 from cutover_writer_fence import cutover_writer_fence_enabled
@@ -392,7 +392,7 @@ def _reply_payload(recipient, body, buttons, revision):
             if len(prefix) >= 24:
                 return cloud.text_payload(recipient=recipient, body=body)
             title = prefix + label
-            row = {"id": action, "title": prefix + short_label(label, 24 - len(prefix))}
+            row = {"id": action, "title": row_title(prefix, label)}
             if row["title"] in titles:
                 # The complete numbered body remains unambiguous when two
                 # unnumbered labels shorten to the same title.

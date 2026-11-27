@@ -199,6 +199,23 @@ def sources_answer(tenant, context, page):
     return body, context, scope['revision']
 
 
+# One short symbol before the words (a pictogram, an arrow), never a run of them.
+_LEADING_PICTOGRAM = re.compile(r'^[^\w\s¿¡(«"\']{1,4}\s+(?=\S)', re.UNICODE)
+
+def row_title(prefix, label, limit=24):
+    """Title of a WhatsApp list row, which holds very few characters.
+
+    A leading pictogram is kept when the whole label fits. When it does not,
+    the words matter more than the picture: the title drops the pictogram
+    before it drops words. The complete label stays in the row description."""
+    text = ' '.join(label.split())
+    room = limit - len(prefix)
+    if len(text) > room:
+        words = _LEADING_PICTOGRAM.sub('', text, count=1)
+        if words and words != text:
+            text = words
+    return prefix + short_label(text, room)
+
 def short_label(value, limit):
     """Whole-word elision avoids cutting Unicode combining/emoji sequences."""
     text = ' '.join(value.split())
