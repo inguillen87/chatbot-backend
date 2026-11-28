@@ -4102,7 +4102,7 @@ def marketplace_templates_list(current_user, slug):
         return jsonify({"error": "Tenant not found"}), 404
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
-    response = jsonify({"contract_version": templates.CONTRACT, "templates": templates.catalog()})
+    response = jsonify({"contract_version": templates.CONTRACT, "templates": templates.catalog(tenant)})
     response.headers["Cache-Control"] = "no-store"
     return response
 

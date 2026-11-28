@@ -170,7 +170,10 @@ def test_store_whatsapp_flow_is_built_from_the_published_catalog(client):  # noq
 def test_benefits_template_loads_once_and_feeds_the_whatsapp_store(client):  # noqa: F811
     _, tenant, headers = _create_admin_tenant(plan="free")
     listed = client.get(f"/api/admin/tenants/{tenant.slug}/marketplace/templates", headers=headers).get_json()
-    assert listed["templates"][0]["key"] == "beneficios_ciudadanos"
+    # A business sees its own pack first; every pack stays available.
+    assert listed["templates"][0]["key"] == "comercio_local" and listed["templates"][0]["recommended"] is True
+    assert {entry["key"] for entry in listed["templates"]} == {
+        "beneficios_ciudadanos", "beneficios_empleados", "comercio_local"}
     first = client.post(f"/api/admin/tenants/{tenant.slug}/marketplace/templates/beneficios_ciudadanos/apply",
                         headers=headers).get_json()
     assert first["created"] == first["items"] == 20 and first["updated"] == 0
@@ -187,8 +190,8 @@ def test_benefits_template_loads_once_and_feeds_the_whatsapp_store(client):  # n
     assert labels["Donar útiles escolares"] == "Donación"
     assert labels["Rifa solidaria del hospital"] == "$ 2.000"
     assert labels["Sumá puntos al comedor"] == "Donás 200 puntos"
-    texts = [child.get("text") for child in flow["flow_json"]["screens"][0]["layout"]["children"]]
-    assert any("canjear tus puntos, anotarte o donar" in (text or "") for text in texts)
+    home = flow["flow_json"]["screens"][0]["layout"]["children"][0]
+    assert home["type"] == "NavigationList" and "canjear tus puntos, anotarte o donar" in home["description"]
 
 
 def test_admin_catalog_lists_redemptions_and_donations_as_such(client):  # noqa: F811
@@ -218,3 +221,15 @@ def test_reloading_a_template_hides_items_it_no_longer_offers(client):  # noqa: 
     assert result["retired"] == 1
     db.session.refresh(old); db.session.refresh(mine)
     assert old.disponible is False and mine.disponible is True
+
+
+def test_each_kind_of_organization_gets_its_pack():  # noqa: F811
+    from types import SimpleNamespace
+    from services import marketplace_templates as templates
+    assert templates.recommended_template(SimpleNamespace(tipo="municipio")) == "beneficios_ciudadanos"
+    assert templates.recommended_template(SimpleNamespace(tipo="pyme", vertical="empresa")) == "beneficios_empleados"
+    assert templates.recommended_template(SimpleNamespace(tipo="pyme", vertical="gastronomia")) == "comercio_local"
+    for template in templates.TEMPLATES.values():
+        skus = [item.sku for item in template["items"]]
+        assert len(skus) == len(set(skus)) and all(sku.startswith("tpl-") for sku in skus)
+        assert len({item.categoria for item in template["items"]}) <= 10

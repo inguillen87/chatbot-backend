@@ -89,11 +89,18 @@ def answer(event, context, contact_key, clear):
             order = market.add_choice(tenant_id=tenant.id, pseudonym=contact_key,
                                       product_id=choice[0], quantity=choice[1])
         except market.MarketplaceChoiceError as error:
-            lead = ("No hay stock suficiente para esa cantidad." if str(error) == "marketplace_stock_insufficient"
-                    else "Esa opción ya no está disponible.")
+            lead = {
+                "marketplace_stock_insufficient": "No hay stock suficiente para esa cantidad.",
+                "marketplace_limit_reached": "Ya tenés el máximo permitido por persona de esa opción.",
+            }.get(str(error), "Esa opción ya no está disponible.")
             body, buttons = _open(tenant, lead)
             return body, clear(context), None, buttons
-        lead = "✅ Agregado. Tu pedido:\n" + _with_cart(order) + "\n\nEscribí LISTO para enviarlo, o sumá algo más."
+        line = next((item for item in order.items if int(item.product_id or 0) == choice[0]), None)
+        capped = line is not None and int(line.quantity or 0) < choice[1]
+        note = "Es uno por persona, así que lo dejamos así.\n" if capped and int(line.quantity or 0) == 1 else (
+            f"Hasta {int(line.quantity)} por persona, así que lo dejamos así.\n" if capped else "")
+        lead = ("✅ Agregado. " + note + "Tu pedido:\n" + _with_cart(order)
+                + "\n\nEscribí LISTO para enviarlo, o sumá algo más.")
         body, buttons = _open(tenant, lead)
         return body, clear(context), None, buttons
     if event.content_type != "text":
