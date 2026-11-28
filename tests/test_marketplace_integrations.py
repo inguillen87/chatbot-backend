@@ -186,6 +186,7 @@ def test_benefits_template_loads_once_and_feeds_the_whatsapp_store(client):  # n
     assert labels["Charla: primeros años de crianza"] == "Gratis · inscripción"
     assert labels["Donar útiles escolares"] == "Donación"
     assert labels["Rifa solidaria del hospital"] == "$ 2.000"
+    assert labels["Sumá puntos al comedor"] == "Donás 200 puntos"
     texts = [child.get("text") for child in flow["flow_json"]["screens"][0]["layout"]["children"]]
     assert any("canjear tus puntos, anotarte o donar" in (text or "") for text in texts)
 
@@ -203,3 +204,17 @@ def test_admin_catalog_lists_redemptions_and_donations_as_such(client):  # noqa:
             client.get(f"/api/admin/tenants/{tenant.slug}/catalog/items", headers=headers).get_json()}
     assert rows["Kit escolar"]["modalidad"] == "canje" and rows["Kit escolar"]["precio_puntos"] == 1500
     assert rows["Árbol"]["modalidad"] == "donacion"
+
+
+def test_reloading_a_template_hides_items_it_no_longer_offers(client):  # noqa: F811
+    owner, tenant, headers = _create_admin_tenant(plan="free")
+    old = CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Pase pileta", sku="tpl-benef-pase-pileta",
+                       modalidad="canje", precio_puntos=1000, disponible=True,
+                       extra_metadata={"template": "beneficios_ciudadanos"})
+    mine = CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Propio", sku="tpl-mio", disponible=True)
+    db.session.add_all([old, mine]); db.session.commit()
+    result = client.post(f"/api/admin/tenants/{tenant.slug}/marketplace/templates/beneficios_ciudadanos/apply",
+                         headers=headers).get_json()
+    assert result["retired"] == 1
+    db.session.refresh(old); db.session.refresh(mine)
+    assert old.disponible is False and mine.disponible is True

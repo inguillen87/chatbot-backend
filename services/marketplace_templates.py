@@ -71,8 +71,8 @@ BENEFICIOS_CIUDADANOS: tuple[TemplateItem, ...] = (
     # Local commerce and sport
     TemplateItem("tpl-benef-voucher-comercio", "Voucher para comercios locales", "Comercio local", "canje",
                  "Voucher para gastar en comercios adheridos del barrio.", puntos=2000, cupos=500),
-    TemplateItem("tpl-benef-pase-pileta", "Pase de temporada a la pileta", "Deporte", "canje",
-                 "Pase para la pileta municipal durante toda la temporada.", puntos=1000, cupos=200),
+    TemplateItem("tpl-benef-comedor-puntos", "Sumá puntos al comedor", "Solidaridad", "donacion",
+                 "Tus puntos se convierten en viandas para el comedor comunitario del barrio.", puntos=200, cupos=5000),
     # Solidarity
     TemplateItem("tpl-benef-rifa-hospital", "Rifa solidaria del hospital", "Solidaridad", "venta",
                  "Número para la rifa a beneficio del hospital público. Se sortea en vivo.", precio="2000", cupos=1000),
@@ -138,6 +138,15 @@ def apply_template(tenant: Any, key: str, *, fallback_owner_id: int | None = Non
         metadata["template"] = key
         metadata["kind"] = entry.modalidad
         row.extra_metadata = metadata
+    # Items this template loaded before and no longer offers are hidden, never deleted.
+    current = {entry.sku for entry in template["items"]}
+    retired = 0
+    for row in CatalogoItem.query.filter(CatalogoItem.tenant_id == tenant.id,
+                                         CatalogoItem.sku.like("tpl-%")).all():
+        metadata = row.extra_metadata if isinstance(row.extra_metadata, dict) else {}
+        if metadata.get("template") == key and row.sku not in current and row.disponible is not False:
+            row.disponible = False
+            retired += 1
     db.session.commit()
     return {"contract_version": CONTRACT, "template": key, "created": created, "updated": updated,
-            "items": len(template["items"])}
+            "retired": retired, "items": len(template["items"])}
