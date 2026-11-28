@@ -4060,6 +4060,45 @@ def _marketplace_error(exc):
     return response
 
 
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/marketplace/templates', methods=['GET'])
+@token_requerido
+@require_role("admin", "super_admin")
+@require_tenant
+def marketplace_templates_list(current_user, slug):
+    from services import marketplace_templates as templates
+
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+    response = jsonify({"contract_version": templates.CONTRACT, "templates": templates.catalog()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/marketplace/templates/<key>/apply', methods=['POST'])
+@token_requerido
+@require_role("admin", "super_admin")
+@require_tenant
+def marketplace_template_apply(current_user, slug, key):
+    """Load a ready-made catalog (for example «Beneficios ciudadanos»). Idempotent by SKU."""
+    from services import marketplace_templates as templates
+
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+    try:
+        result = templates.apply_template(tenant, key, fallback_owner_id=getattr(current_user, "id", None))
+    except templates.TemplateError as error:
+        return jsonify({"error": str(error)}), 404 if str(error) == "template_not_found" else 409
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/marketplace/whatsapp-flow', methods=['GET'])
 @token_requerido
 @require_role("admin", "super_admin")

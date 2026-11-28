@@ -33,6 +33,8 @@ _PRODUCT_ID = re.compile(r"p([1-9][0-9]{0,9})")
 MONEY_MODES = {"venta", "compra", "pago", "precio"}
 POINTS_MODES = {"canje", "puntos"}
 DONATION_MODES = {"donacion", "donación", "donar"}
+FREE_MODES = {"inscripcion", "inscripción", "gratis", "turno"}
+FREE_PRICE_WORDS = {"gratis", "sin cargo", "gratuito", "gratuita", "libre"}
 
 
 def _plain(value: Any) -> str:
@@ -85,7 +87,7 @@ class Offer:
     id: int
     name: str
     category: str
-    mode: str  # "money" | "points" | "donation" | "quote"
+    mode: str  # "money" | "points" | "donation" | "free" | "quote"
     price: Decimal | None
     points: int | None
     stock: int | None
@@ -101,6 +103,8 @@ class Offer:
             return format_money(self.price)
         if self.mode == "donation":
             return "Donación"
+        if self.mode == "free":
+            return "Gratis · inscripción"
         return "Precio a confirmar"
 
 
@@ -116,6 +120,8 @@ def _mode(item: Any) -> tuple[str, Decimal | None, int | None]:
             price = None
     if modality in DONATION_MODES:
         return "donation", None, None
+    if modality in FREE_MODES or (price is None and _plain(getattr(item, "precio", "")) in FREE_PRICE_WORDS):
+        return "free", None, None
     if modality in POINTS_MODES:
         return ("points", None, points) if points else ("quote", None, None)
     if price is not None:
@@ -161,6 +167,8 @@ def _intro(offers: Sequence[Offer]) -> str:
         verbs.append("comprar")
     if "points" in modes:
         verbs.append("canjear tus puntos")
+    if "free" in modes:
+        verbs.append("anotarte")
     if "donation" in modes:
         verbs.append("donar")
     if not verbs:
@@ -265,6 +273,8 @@ def cart_text(order: Any) -> str:
             lines.append(f"• {quantity} x {name} · {format_money(subtotal)}")
         elif (line.modalidad or "") == "donacion":
             lines.append(f"• {quantity} x {name} · Donación")
+        elif (line.modalidad or "") == "inscripcion":
+            lines.append(f"• {quantity} x {name} · Inscripción gratis")
         else:
             lines.append(f"• {quantity} x {name} · Precio a confirmar")
     if not lines:
@@ -278,7 +288,7 @@ def cart_text(order: Any) -> str:
     return text + ("\nTotal: " + " + ".join(totals) if totals else "")
 
 
-_MODALIDAD = {"money": "venta", "quote": "venta", "points": "canje", "donation": "donacion"}
+_MODALIDAD = {"money": "venta", "quote": "venta", "points": "canje", "donation": "donacion", "free": "inscripcion"}
 
 
 def add_choice(*, tenant_id: int, pseudonym: str, product_id: int, quantity: int) -> Any:
