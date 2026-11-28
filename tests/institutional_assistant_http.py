@@ -73,6 +73,21 @@ class KnowledgeHTTPTests(ExistingResponderCases, QuestionMetricsCases, unittest.
         with self.app.app_context():
             self.assertEqual(TenantConfig.query.filter_by(tenant_id=self.accounts['acceptance-a']['tenant_id'],key='institutional_assistant').one().json_value,before)
             self.assertEqual(AuditEvent.query.count(),audit_before)
+    def test_whatsapp_flow_is_built_from_the_published_pack_for_its_own_admins_only(self):
+        client=self.login();state=self.seed(client)
+        self.assertEqual(client.get(self.url()+'/whatsapp-flow').status_code,404)
+        state=self.put(client,'publish',state['revision']).get_json()
+        response=client.get(self.url()+'/whatsapp-flow')
+        self.assertEqual(response.status_code,200,response.get_json())
+        payload=response.get_json()
+        self.assertEqual(payload['contract_version'],'chatboc.institutional_whatsapp_flow.v1')
+        self.assertEqual(payload['revision'],state['revision'])
+        screen=payload['flow_json']['screens'][0]
+        names=[c.get('name') for c in screen['layout']['children'] if c['type']=='RadioButtonsGroup']
+        self.assertIn('tema',names)
+        self.assertEqual(response.headers['Cache-Control'],'private, no-store')
+        self.assertEqual(self.app.test_client().get(self.url()+'/whatsapp-flow').status_code,401)
+        self.assertEqual(client.get('/api/admin/tenants/acceptance-b/institutional-assistant/whatsapp-flow').status_code,403)
     def test_canonical_get_rejects_noncanonical_queries_and_foreign_private_access(self):
         client=self.login();state=self.seed(client);path=self.node_url(state['revision'])
         for suffix in ('&question=consulta','&revision='+state['revision'],'&node_id=start','&unknown=1','&tenant=acceptance-b'):

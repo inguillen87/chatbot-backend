@@ -124,6 +124,37 @@ def private_question_metrics(actor, slug):
     offset = _bounded_integer('utc_offset_minutes', 0, -MAX_UTC_OFFSET_MINUTES, MAX_UTC_OFFSET_MINUTES)
     return _reply(question_metrics(tenant, read_state(tenant), days=days, utc_offset_minutes=offset))
 
+@institutional_assistant_bp.route('/api/admin/tenants/<slug>/institutional-assistant/whatsapp-flow', methods=['GET'])
+@limiter.limit('30 per minute')
+@token_requerido
+@auth_sin_escrituras_implicitas
+def private_whatsapp_flow(actor, slug):
+    """The «Encontrá tu trámite» WhatsApp Flow built from the published pack."""
+    _origin()
+    if request.content_length:
+        raise ContentError('knowledge_command_invalid', 400)
+    from services.institutional_consult_flow import build_consult_flow, consult_flow_summary, consult_options
+
+    tenant = _tenant(slug, actor)
+    published = workspace(tenant, read_state(tenant, public=True), public=True)
+    knowledge = published.get('knowledge') if isinstance(published, dict) else None
+    if not isinstance(knowledge, dict):
+        raise ContentError('knowledge_not_published', 409)
+    organization = str((published.get('tenant') or {}).get('name') or getattr(tenant, 'nombre', '') or tenant.slug)
+    try:
+        artifact = build_consult_flow(organization=organization, knowledge=knowledge)
+    except ValueError:
+        raise ContentError('knowledge_pack_without_topics', 409)
+    import json as _json_module
+    topics, localities = consult_options(knowledge)
+    return _reply({
+        'contract_version': 'chatboc.institutional_whatsapp_flow.v1',
+        'revision': published.get('revision'),
+        'name': f'{organization[:40]} - Encontrá tu trámite',
+        'flow_json': _json_module.loads(artifact.as_bytes()),
+        'summary': consult_flow_summary(topics, localities),
+    })
+
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant', methods=['GET'])
 def public_workspace(slug):
     tenant = _tenant(slug)
