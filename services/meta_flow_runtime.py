@@ -527,12 +527,16 @@ class MetaFlowRuntime:
         if payload.get("screen") != "ORDER_DETAILS":
             raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
         _validate_order_input(data)
+        method, address, payment = _order_delivery_and_payment(data)
         order = self._load_order_context(endpoint, invocation)
+        delivery_display = ORDER_DELIVERY_METHODS[method] + (f" · {address}" if method == "envio" and address else "")
         return {
             "screen": "ORDER_CONFIRM",
             "data": {
                 "order_summary": _order_summary(order),
                 "total_display": _order_total_display(order),
+                "delivery_display": delivery_display[:120],
+                "payment_display": ORDER_PAYMENT_METHODS.get(payment or "", "A coordinar"),
             },
         }
 
@@ -1360,11 +1364,7 @@ def _apply_order_completion(
     phone = _required_string(answers.get("phone"), "phone_invalid", 40)
     if len("".join(character for character in phone if character.isdigit())) < 8:
         raise _action_error("phone_invalid", "Order input is invalid.", 400)
-    delivery_address = _required_string(
-        answers.get("delivery_address"),
-        "delivery_address_invalid",
-        240,
-    )
+    delivery_method, delivery_address, payment_method = _order_delivery_and_payment(answers)
     delivery_notes = _optional_completion_text(
         answers.get("delivery_notes"),
         code="delivery_notes_invalid",
@@ -1387,7 +1387,8 @@ def _apply_order_completion(
         order.buyer_phone = phone
         order.buyer_notes = delivery_notes or order.buyer_notes
         address_payload = dict(order.delivery_address or {})
-        address_payload.update({"address": delivery_address, "source": "whatsapp_flow"})
+        address_payload.update({"address": delivery_address, "source": "whatsapp_flow",
+                                "method": delivery_method, "payment_method": payment_method})
         order.delivery_address = address_payload
         if str(order.status or "").lower() in {"created", "pending", "pendiente"}:
             order.status = "confirmed"
@@ -1400,7 +1401,9 @@ def _apply_order_completion(
         order_metadata["delivery_address"] = {
             "address": delivery_address,
             "source": "whatsapp_flow",
+            "method": delivery_method,
         }
+        order_metadata["payment_method"] = payment_method
         order.metadata_payload = order_metadata
         if str(order.status or "").lower() in {"created", "pending", "pendiente"}:
             order.status = "confirmed"
@@ -1411,7 +1414,9 @@ def _apply_order_completion(
                 type="whatsapp_flow_confirmed",
                 payload={
                     "interaction_id": interaction.id,
+                    "delivery_method": delivery_method,
                     "delivery_address": delivery_address,
+                    "payment_method": payment_method,
                     "delivery_notes": delivery_notes,
                 },
             )
@@ -1428,7 +1433,9 @@ def _apply_order_completion(
                 type="whatsapp_flow_confirmed",
                 payload={
                     "interaction_id": interaction.id,
+                    "delivery_method": delivery_method,
                     "delivery_address": delivery_address,
+                    "payment_method": payment_method,
                     "delivery_notes": delivery_notes,
                 },
             )
@@ -1445,6 +1452,8 @@ def _apply_order_completion(
         )
         order_metadata["contact"] = contact
         order_metadata["delivery_notes"] = delivery_notes
+        order_metadata["delivery_method"] = delivery_method
+        order_metadata["payment_method"] = payment_method
         order_metadata["confirmed_via"] = "whatsapp_flow"
         order_metadata["confirmed_interaction_id"] = interaction.id
         order.metadata_payload = order_metadata
@@ -1457,8 +1466,10 @@ def _apply_order_completion(
     db.session.add(order)
     return {
         "message_body": (
-            "Pedido confirmado. Guardamos los datos de entrega y lo dejamos listo para continuar "
-            "con pago, preparacion o seguimiento segun corresponda."
+            "¡Listo! Recibimos tu pedido. "
+            + ("Te avisamos cuando esté listo para retirar." if delivery_method == "retiro"
+               else "Te avisamos cuando salga para tu domicilio.")
+            + " Podés consultar su estado cuando quieras."
         ),
         "options_list": [
             {"texto": "Ver pedido", "action_id": "consultar_estado_pedido"},
@@ -2891,12 +2902,41 @@ def _pin_matches(stored: Any, supplied: str) -> bool:
     return bool(stored_value) and hmac.compare_digest(stored_value, supplied)
 
 
+ORDER_DELIVERY_METHODS = {"retiro": "Retiro en el local", "envio": "Envío a domicilio"}
+ORDER_PAYMENT_METHODS = {"efectivo": "Efectivo", "transferencia": "Transferencia", "mercado_pago": "Mercado Pago"}
+
+
+def _order_delivery_and_payment(data: Mapping[str, Any]) -> tuple[str, str | None, str | None]:
+    """Delivery method, address and payment method of an order form.
+
+    Earlier versions of the form had no method fields: no method means delivery
+    with an address, as before. The address is required only for delivery."""
+    method = data.get("delivery_method")
+    if method in (None, ""):
+        method = "envio"
+    if method not in ORDER_DELIVERY_METHODS:
+        raise _action_error("delivery_method_invalid", "Order input is invalid.", 400)
+    address = data.get("delivery_address")
+    if method == "envio":
+        address = _required_string(address, "delivery_address_invalid", 240)
+    elif address not in (None, ""):
+        address = _required_string(address, "delivery_address_invalid", 240)
+    else:
+        address = None
+    payment = data.get("payment_method")
+    if payment in (None, ""):
+        payment = None
+    elif payment not in ORDER_PAYMENT_METHODS:
+        raise _action_error("payment_method_invalid", "Order input is invalid.", 400)
+    return method, address, payment
+
+
 def _validate_order_input(data: Mapping[str, Any]) -> None:
     _required_string(data.get("full_name"), "full_name_invalid", 120)
     phone = _required_string(data.get("phone"), "phone_invalid", 40)
     if len("".join(character for character in phone if character.isdigit())) < 8:
         raise _action_error("phone_invalid", "Order input is invalid.", 400)
-    _required_string(data.get("delivery_address"), "delivery_address_invalid", 240)
+    _order_delivery_and_payment(data)
     notes = data.get("delivery_notes")
     if notes not in (None, ""):
         _required_string(notes, "delivery_notes_invalid", 500)

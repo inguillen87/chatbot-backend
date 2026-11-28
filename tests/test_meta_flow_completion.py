@@ -316,6 +316,9 @@ def test_order_completion_uses_server_order_and_preserves_financial_authority(cl
     assert order.delivery_address == {
         "address": "Calle 123, Junin",
         "source": "whatsapp_flow",
+        # A form from before delivery and payment choices means delivery, payment to coordinate.
+        "method": "envio",
+        "payment_method": None,
     }
     assert order.total == 25000
     assert order.status == "confirmed"
@@ -779,3 +782,15 @@ def test_survey_completion_rejects_missing_staged_answers(client):
         tenant_id=tenant.id,
         event_name="vote_submitted",
     ).count() == 0
+
+
+def test_order_form_delivery_and_payment_rules():
+    from services.meta_flow_runtime import MetaFlowActionError, _order_delivery_and_payment
+    assert _order_delivery_and_payment({"delivery_method": "retiro", "payment_method": "efectivo"}) == ("retiro", None, "efectivo")
+    assert _order_delivery_and_payment({"delivery_method": "envio", "delivery_address": "San Martín 123",
+                                        "payment_method": "mercado_pago"}) == ("envio", "San Martín 123", "mercado_pago")
+    assert _order_delivery_and_payment({"delivery_address": "Calle 1"}) == ("envio", "Calle 1", None)
+    for bad in ({"delivery_method": "envio"}, {"delivery_method": "drone", "delivery_address": "x"},
+                {"delivery_method": "retiro", "payment_method": "bitcoin"}, {}):
+        with pytest.raises(MetaFlowActionError):
+            _order_delivery_and_payment(bad)

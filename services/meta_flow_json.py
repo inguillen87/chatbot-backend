@@ -1702,7 +1702,12 @@ def build_claim_evidence_blueprint() -> FlowBlueprint:
 
 
 def build_order_checkout_blueprint() -> FlowBlueprint:
-    """Build an endpoint-driven order review with explicit user confirmation."""
+    """Build an endpoint-driven order review with explicit user confirmation.
+
+    Short steps, like a bank form: who receives it, pickup or delivery, how to
+    pay, then a summary that must be confirmed. The address is asked for only
+    when the person chooses delivery.
+    """
 
     return FlowBlueprint(
         name="order_checkout",
@@ -1720,26 +1725,47 @@ def build_order_checkout_blueprint() -> FlowBlueprint:
                     "children": [
                         {
                             "type": "TextHeading",
-                            "text": "Completa la entrega",
+                            "text": "Completá tu pedido",
                         },
                         {
                             "type": "TextInput",
                             "name": "full_name",
-                            "label": "Nombre completo",
+                            "label": "Nombre y apellido",
                             "required": True,
                         },
                         {
                             "type": "TextInput",
                             "name": "phone",
-                            "label": "Telefono",
+                            "label": "Teléfono",
                             "required": True,
                             "input-type": "phone",
                         },
                         {
+                            "type": "RadioButtonsGroup",
+                            "name": "delivery_method",
+                            "label": "¿Cómo lo recibís?",
+                            "required": True,
+                            "data-source": [
+                                {"id": "retiro", "title": "Retiro en el local"},
+                                {"id": "envio", "title": "Envío a domicilio"},
+                            ],
+                        },
+                        {
                             "type": "TextInput",
                             "name": "delivery_address",
-                            "label": "Direccion de entrega",
+                            "label": "Dirección (solo para envío)",
+                            "required": False,
+                        },
+                        {
+                            "type": "RadioButtonsGroup",
+                            "name": "payment_method",
+                            "label": "¿Cómo pagás?",
                             "required": True,
+                            "data-source": [
+                                {"id": "efectivo", "title": "Efectivo"},
+                                {"id": "transferencia", "title": "Transferencia"},
+                                {"id": "mercado_pago", "title": "Mercado Pago"},
+                            ],
                         },
                         {
                             "type": "TextArea",
@@ -1755,7 +1781,9 @@ def build_order_checkout_blueprint() -> FlowBlueprint:
                                 "payload": {
                                     "full_name": "${form.full_name}",
                                     "phone": "${form.phone}",
+                                    "delivery_method": "${form.delivery_method}",
                                     "delivery_address": "${form.delivery_address}",
+                                    "payment_method": "${form.payment_method}",
                                     "delivery_notes": "${form.delivery_notes}",
                                 },
                             },
@@ -1777,6 +1805,14 @@ def build_order_checkout_blueprint() -> FlowBlueprint:
                         "type": "string",
                         "__example__": "$ 25.000",
                     },
+                    "delivery_display": {
+                        "type": "string",
+                        "__example__": "Retiro en el local",
+                    },
+                    "payment_display": {
+                        "type": "string",
+                        "__example__": "Transferencia",
+                    },
                 },
                 "layout": {
                     "type": "SingleColumnLayout",
@@ -1787,6 +1823,14 @@ def build_order_checkout_blueprint() -> FlowBlueprint:
                             "text": "Total: ${data.total_display}",
                         },
                         {
+                            "type": "TextBody",
+                            "text": "Entrega: ${data.delivery_display}",
+                        },
+                        {
+                            "type": "TextBody",
+                            "text": "Pago: ${data.payment_display}",
+                        },
+                        {
                             "type": "OptIn",
                             "name": "confirm_order",
                             "label": "Confirmo los datos y el pedido",
@@ -1794,13 +1838,15 @@ def build_order_checkout_blueprint() -> FlowBlueprint:
                         },
                         {
                             "type": "Footer",
-                            "label": "Confirmar",
+                            "label": "Confirmar pedido",
                             "on-click-action": {
                                 "name": "complete",
                                 "payload": {
                                     "full_name": "${screen.ORDER_DETAILS.form.full_name}",
                                     "phone": "${screen.ORDER_DETAILS.form.phone}",
+                                    "delivery_method": "${screen.ORDER_DETAILS.form.delivery_method}",
                                     "delivery_address": "${screen.ORDER_DETAILS.form.delivery_address}",
+                                    "payment_method": "${screen.ORDER_DETAILS.form.payment_method}",
                                     "delivery_notes": "${screen.ORDER_DETAILS.form.delivery_notes}",
                                     "confirm_order": "${form.confirm_order}",
                                 },

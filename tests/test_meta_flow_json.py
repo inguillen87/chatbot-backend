@@ -253,7 +253,9 @@ def test_example_complete_payloads_are_minimal_declared_form_fields_only(builder
         assert set(payload) == {
             "full_name",
             "phone",
+            "delivery_method",
             "delivery_address",
+            "payment_method",
             "delivery_notes",
             "confirm_order",
         }
