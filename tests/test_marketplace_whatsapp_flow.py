@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -35,24 +36,36 @@ def test_each_offer_speaks_its_own_terms():
     assert offers[5].unit_label() == "Precio a confirmar"
 
 
-def test_form_is_static_and_says_what_people_can_do():
+def test_several_categories_browse_first_then_one_screen_each():
     offers = market.offers_from_items(MUNICIPAL)
     flow = json.loads(market.build_marketplace_flow(store_name="Municipalidad de Junín", offers=offers).as_bytes())
-    screen = flow["screens"][0]
-    assert screen["id"] == "TIENDA" and screen["terminal"] is True and "data_api_version" not in flow
-    texts = [child.get("text") for child in screen["layout"]["children"]]
-    assert "Elegí qué querés comprar, canjear tus puntos o donar. Lo sumamos a tu pedido en este chat." in texts
-    radio = next(child for child in screen["layout"]["children"] if child["type"] == "RadioButtonsGroup")
-    assert radio["data-source"][0]["id"].startswith("p") and all(len(o["title"]) <= 30 for o in radio["data-source"])
-    footer = screen["layout"]["children"][-1]
-    assert footer["on-click-action"]["payload"] == {"producto": "${form.producto}", "cantidad": "${form.cantidad}"}
+    assert "data_api_version" not in flow and "routing_model" not in flow
+    home, *categories = flow["screens"]
+    assert home["id"] == "TIENDA" and not home.get("terminal")
+    assert [child["type"] for child in home["layout"]["children"]] == ["NavigationList"]
+    nav = home["layout"]["children"][0]
+    assert nav["label"] == "Municipalidad de Junín"
+    assert nav["description"] == "Elegí qué querés comprar, canjear tus puntos o donar. Lo sumamos a tu pedido en este chat."
+    by_title = {item["main-content"]["title"]: item for item in nav["list-items"]}
+    assert by_title["Educación"]["main-content"]["description"] == "2 opciones"
+    assert by_title["Educación"]["main-content"]["metadata"] == "Desde 1.500 puntos"
+    assert by_title["Producción local"]["main-content"]["metadata"] == "Desde $ 3.500"
+    assert {item["on-click-action"]["next"]["name"] for item in nav["list-items"]} == {screen["id"] for screen in categories}
+    assert all(re.fullmatch(r"[A-Z_]+", screen["id"]) for screen in flow["screens"])
+    for screen in categories:
+        assert screen["terminal"] is True
+        footer = screen["layout"]["children"][-1]
+        assert footer["on-click-action"]["payload"] == {"producto": "${form.producto}", "cantidad": "${form.cantidad}"}
 
 
-def test_form_refuses_an_empty_catalog_and_caps_options():
+def test_one_category_keeps_the_single_screen_form():
+    offers = market.offers_from_items([item(i, f"Producto {i}", "Almacén", precio="10") for i in range(1, 40)])
+    flow = json.loads(market.build_marketplace_flow(store_name="Almacén", offers=offers).as_bytes())
+    assert len(flow["screens"]) == 1 and flow["screens"][0]["terminal"] is True
+    radio = next(child for child in flow["screens"][0]["layout"]["children"] if child["type"] == "RadioButtonsGroup")
+    assert len(radio["data-source"]) == market.MAX_OPTIONS
     with pytest.raises(ValueError):
         market.build_marketplace_flow(store_name="Vacía", offers=[])
-    many = [item(i, f"Producto {i}", "Almacén", precio="10") for i in range(1, 40)]
-    assert len(market.offers_from_items(many)) == market.MAX_OPTIONS
 
 
 @pytest.mark.parametrize("chosen,expected", [
@@ -72,3 +85,16 @@ def test_prices_follow_argentine_notation():
     assert market.parse_price("1.850,50") == Decimal("1850.50")
     assert market.parse_price("gratis") is None
     assert market.format_money(Decimal("1850.50")) == "$ 1.850,50"
+
+
+def test_validator_refuses_a_navigation_list_with_company():
+    from services.meta_flow_json import FlowBlueprint, FlowJsonValidationError, compile_flow_blueprint
+    nav = {"type": "NavigationList", "name": "x", "list-items": [{"id": "a", "main-content": {"title": "A"},
+           "on-click-action": {"name": "navigate", "next": {"type": "screen", "name": "FIN"}, "payload": {}}}]}
+    end = {"id": "FIN", "title": "Fin", "terminal": True, "success": True, "data": {}, "layout": {
+        "type": "SingleColumnLayout", "children": [{"type": "Footer", "label": "Listo",
+                                                   "on-click-action": {"name": "complete", "payload": {}}}]}}
+    home = {"id": "INICIO", "title": "Inicio", "data": {}, "layout": {"type": "SingleColumnLayout",
+            "children": [{"type": "TextHeading", "text": "Hola"}, nav]}}
+    with pytest.raises(FlowJsonValidationError, match="NAVIGATION_LIST_NOT_ALONE"):
+        compile_flow_blueprint(FlowBlueprint(name="x", endpoint_driven=False, screens=(home, end)))
