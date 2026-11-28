@@ -11,7 +11,7 @@ from services.institutional_assistant import workspace, read_state, save_state, 
 from services.institutional_assistant_content import ContentError, MAX_BYTES
 from services.institutional_assistant_metrics import (
     DEFAULT_DAYS, MAX_DAYS, MAX_UTC_OFFSET_MINUTES, observe_question_outcomes,
-    question_metrics, record_question_outcomes,
+    question_metrics, record_answer_feedback, record_question_outcomes,
 )
 institutional_assistant_bp = Blueprint('institutional_assistant', __name__)
 
@@ -144,6 +144,20 @@ def public_answer(slug):
             # only). Best effort: it never changes the response or its status.
             record_question_outcomes(tenant_id, tenant_type, 'web_reader', outcomes)
     return _reply(result)
+
+@institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/feedback', methods=['POST'])
+@limiter.limit('20 per minute')
+def public_answer_feedback(slug):
+    # «¿Te sirvió esta respuesta?»: a yes/no about one published topic. No
+    # comment field exists, and no session or caller identity is read.
+    tenant, command = _tenant(slug), _json()
+    state = read_state(tenant, public=True)
+    if (set(command) != {'revision', 'node_id', 'helpful'} or command['revision'] != state['revision']
+            or not isinstance(command['node_id'], str) or command['node_id'] not in state['bundle']['nodes']
+            or type(command['helpful']) is not bool):
+        raise ContentError('knowledge_command_invalid', 400)
+    record_answer_feedback(tenant.id, tenant.tipo, 'web_reader', state['revision'], command['node_id'], command['helpful'])
+    return _reply({'received': True})
 
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/nodes/<node_id>', methods=['GET'])
 @limiter.limit('20 per minute')

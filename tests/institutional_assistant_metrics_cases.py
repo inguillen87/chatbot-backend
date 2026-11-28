@@ -21,6 +21,7 @@ class QuestionMetricsCases:
         from models import AnalyticsEventV2
         with self.app.app_context():
             AnalyticsEventV2.query.filter_by(event_name='institutional_assistant.question').delete()
+            AnalyticsEventV2.query.filter_by(event_name='institutional_assistant.feedback').delete()
             db.session.commit()
             # These cases ask many public questions from one address; leave the
             # shared per-address budget as the other cases of the suite expect it.
@@ -205,7 +206,8 @@ class QuestionMetricsCases:
         self.assertEqual(set(data['ui']), {
             'title', 'description', 'period', 'answered', 'uncovered', 'typed_navigation', 'sources',
             'unavailable', 'uncovered_rate', 'resolution_rate', 'resolution_detail', 'uncovered_by_node', 'answered_by_node', 'node', 'count',
-            'retired_node', 'empty', 'privacy', 'truncated'})
+            'retired_node', 'empty', 'privacy', 'truncated', 'feedback_title', 'feedback_description',
+            'feedback_helpful', 'feedback_unhelpful', 'feedback_rate', 'feedback_by_node', 'feedback_empty'})
         self.assertTrue(all(isinstance(text, str) and text.strip() and len(text) <= 200 for text in data['ui'].values()))
         self.assertIn('{days}', data['ui']['period'])
         # The administration workspace names the panel before any metric is requested.
@@ -231,3 +233,40 @@ class QuestionMetricsCases:
         self.assertIsNone(data['resolution_rate']); self.assertEqual(data['interpreted'], 0)
         self.assertEqual(len(data['by_day']), 1)
         self.assertEqual(data['uncovered_by_node'], []); self.assertEqual(data['answered_by_node'], [])
+
+    def feedback_events(self):
+        from models import AnalyticsEventV2
+        with self.app.app_context():
+            return [(row.channel, dict(row.metadata_payload), row.user_id) for row in AnalyticsEventV2.query.filter_by(
+                tenant_id=self.accounts['acceptance-a']['tenant_id'],
+                event_name='institutional_assistant.feedback').order_by(AnalyticsEventV2.ts).all()]
+
+    def mark(self, published, node='requirements', helpful=True, **extra):
+        body = {'revision': published['revision'], 'node_id': node, 'helpful': helpful, **extra}
+        return self.app.test_client().post(self.url(True) + '/feedback', json=body)
+
+    def test_answer_feedback_keeps_only_topic_and_yes_or_no(self):
+        client, published = self.published()
+        self.assertEqual(self.mark(published).get_json(), {'received': True})
+        self.assertEqual(self.mark(published, helpful=False).status_code, 200)
+        self.assertEqual(self.mark(published, helpful=False).status_code, 200)
+        self.assertEqual(self.feedback_events(), [
+            ('web_reader', {'node': 'requirements', 'revision': published['revision'][:16], 'helpful': value}, None)
+            for value in (True, False, False)])
+        data = self.metrics(client).get_json()
+        self.assertEqual(data['feedback'], {'helpful': 1, 'unhelpful': 2, 'helpful_rate': 0.3333,
+            'unhelpful_by_node': [{'node_id': 'requirements', 'count': 2, 'title': 'Requisitos', 'is_start': False}]})
+        self.assertEqual(self.metrics_events(), [])
+
+    def test_answer_feedback_rejects_comments_stale_versions_and_unknown_topics(self):
+        _, published = self.published()
+        for response in (self.mark(published, comment=SECRET), self.mark(published, helpful='yes'),
+                         self.mark(published, helpful=1), self.mark(published, node='no-such-topic'),
+                         self.mark({'revision': '0' * 64})):
+            self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertEqual(self.feedback_events(), [])
+
+    def test_metrics_report_no_feedback_before_anyone_marks_an_answer(self):
+        client, _ = self.published()
+        self.assertEqual(self.metrics(client).get_json()['feedback'],
+                         {'helpful': 0, 'unhelpful': 0, 'helpful_rate': None, 'unhelpful_by_node': []})
