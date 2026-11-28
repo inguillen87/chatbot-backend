@@ -1338,6 +1338,8 @@ def test_order_confirmation_uses_server_context_and_has_no_side_effects(client):
         "data": {
             "order_summary": "3 productos en 2 renglones",
             "total_display": "$ 25.000,00",
+            "delivery_display": "Envío a domicilio · Direccion informada por el cliente",
+            "payment_display": "A coordinar",
         },
     }
     assert order.status == before.status
