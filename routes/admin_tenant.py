@@ -4060,6 +4060,39 @@ def _marketplace_error(exc):
     return response
 
 
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/marketplace/whatsapp-flow', methods=['GET'])
+@token_requerido
+@require_role("admin", "super_admin")
+@require_tenant
+def marketplace_whatsapp_flow(current_user, slug):
+    """The «Tienda» WhatsApp Flow built from this tenant's published catalog.
+
+    Works the same for a pyme and a municipality: buy, redeem points or donate."""
+    import json as _json_module
+    from services import marketplace_whatsapp_flow as market_flow
+
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+    offers = market_flow.tenant_offers(tenant.id)
+    if not offers:
+        return jsonify({"error": "catalog_without_offers",
+                        "message": "Publicá al menos un producto, canje o donación disponible."}), 409
+    store_name = str(getattr(tenant, "nombre", "") or tenant.slug)
+    artifact = market_flow.build_marketplace_flow(store_name=store_name, offers=offers)
+    response = jsonify({
+        "contract_version": market_flow.CONTRACT,
+        "name": f"{store_name[:40]} - Tienda",
+        "screen": market_flow.SCREEN_ID,
+        "flow_json": _json_module.loads(artifact.as_bytes()),
+        "summary": market_flow.flow_summary(offers),
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/marketplaces', methods=['GET'])
 @token_requerido
 @require_role("admin", "super_admin")
