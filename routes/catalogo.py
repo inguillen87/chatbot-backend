@@ -206,6 +206,10 @@ def _fallback_image_for_item(imagen_url: str | None, data: dict, categoria_norma
 
     # A product without its own photo shows the store's neutral placeholder,
     # never an unrelated stock photo that a shopper could take for the product.
+    metadata = data.get("extra_metadata") if isinstance(data.get("extra_metadata"), dict) else {}
+    if metadata.get("template"):
+        # Ready-made catalog items (a scholarship, a talk) have no photo of their own.
+        return None
     return _CATEGORY_FALLBACK_IMAGES.get(categoria_normalizada.lower())
 
 
