@@ -334,7 +334,7 @@ def test_public_market_catalog_contract_for_empty_catalog_promotes_assisted_inta
     assert payload["data_state"] == "catalog_not_configured"
     assert payload["contains_synthetic_demo_data"] is False
     assert payload["synthetic_demo_product_count"] == 0
-    assert payload["heroSubtitle"] == "Marketplace asistido para pedidos, boletas y documentos sin registro."
+    assert payload["heroSubtitle"] == "Mandanos tu pedido, una foto o un documento y te respondemos, sin registrarte."
     assert payload["assisted_intake"]["mode"] == "assisted_first"
     assert payload["assisted_intake"]["show_on_empty_catalog"] is True
     assert payload["assisted_intake"]["empty_state"]["primary_cta"] == "Subir pedido o documento"

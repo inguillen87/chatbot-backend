@@ -154,7 +154,7 @@ def _public_market_analytics_contract(tenant: TenantProfile) -> dict[str, Any]:
             "order_tracking_opened",
         ],
         "funnel": [
-            {"stage": "catalog", "event": "catalog_viewed", "label": "Catalogo visto"},
+            {"stage": "catalog", "event": "catalog_viewed", "label": "Catálogo visto"},
             {"stage": "assist", "event": "assisted_upload_submitted", "label": "Pedido asistido"},
             {"stage": "cart", "event": "cart_started", "label": "Carrito iniciado"},
             {"stage": "checkout", "event": "checkout_session_created", "label": "Checkout creado"},
@@ -306,7 +306,7 @@ def _promotion_badge(promo: Promocion) -> str:
     if "COMPRA_X_LLEVA_Y" in kind and promo.cantidad_condicion_x and promo.cantidad_resultado_y:
         return f"{promo.cantidad_resultado_y}x{promo.cantidad_condicion_x}"
     if promo.codigo_promocion:
-        return f"Codigo {promo.codigo_promocion}"
+        return f"Código {promo.codigo_promocion}"
     return "Promo"
 
 
@@ -341,11 +341,11 @@ def _scope_product_ids(scopes: list[Any], catalog_items: list[CatalogoItem]) -> 
 def _promotion_terms_short(promo: Promocion) -> str:
     parts = []
     if promo.monto_minimo_carrito:
-        parts.append(f"Compra minima ${promo.monto_minimo_carrito:g}")
+        parts.append(f"Compra mínima ${promo.monto_minimo_carrito:g}")
     if promo.cantidad_minima_aplicable:
         parts.append(f"Desde {promo.cantidad_minima_aplicable} unidades")
     if promo.codigo_promocion:
-        parts.append(f"Codigo {promo.codigo_promocion}")
+        parts.append(f"Código {promo.codigo_promocion}")
     return ". ".join(parts) or "Sujeto a disponibilidad"
 
 
@@ -440,7 +440,7 @@ def public_catalog_promotions(
                 "product_name": product.nombre,
                 "category": product.categoria,
                 "priority": 60,
-                "terms_short": "Promo destacada del catalogo",
+                "terms_short": "Promo destacada del catálogo",
                 "countdown": {"enabled": False, "seconds_remaining": None, "ends_at": None},
             }
         )
@@ -475,31 +475,31 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
     is_education = any(token in vertical_text for token in ("colegio", "escuela", "educacion", "education"))
 
     if is_government:
-        title = "Subi boletas, certificados, reclamos o notas y el municipio las responde con seguimiento"
+        title = "Subí boletas, certificados, reclamos o notas y el municipio las responde con seguimiento"
         summary = (
             "Para vecinos que no quieren navegar formularios: Chatboc recibe una foto, PDF o texto, "
             "clasifica si es boleta, certificado, reclamo, pedido o consulta y deja seguimiento publico."
         )
         examples = [
             "Boleta de tasa municipal o comprobante",
-            "Certificado, permiso o tramite",
-            "Reclamo con direccion o foto",
+            "Certificado, permiso o trámite",
+            "Reclamo con dirección o foto",
             "Pedido escrito para cuadrilla, compras o mesa de entrada",
         ]
         use_cases = [
             {
                 "id": "service_request",
                 "title": "Reclamo vecinal",
-                "description": "Direccion, foto o descripcion para generar seguimiento del municipio.",
+                "description": "Dirección, foto o descripción para generar seguimiento del municipio.",
             },
             {
                 "id": "tax_bill",
                 "title": "Boleta o comprobante",
-                "description": "Cuenta, padron, periodo, vencimiento o pago para derivar al area correcta.",
+                "description": "Cuenta, padrón, periodo, vencimiento o pago para derivar al área correcta.",
             },
             {
                 "id": "certificate",
-                "title": "Certificado o tramite",
+                "title": "Certificado o trámite",
                 "description": "Documento, permiso o constancia para que mesa de entrada responda.",
             },
             {
@@ -519,7 +519,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
                 "id": "gov_certificate",
                 "label": "Certificado",
                 "document_type": "certificate",
-                "text": "Necesito validar un certificado de libre deuda para el padron 12345",
+                "text": "Necesito validar un certificado de libre deuda para el padrón 12345",
             },
             {
                 "id": "gov_order_note",
@@ -535,14 +535,14 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             },
         ]
     elif is_education:
-        title = "Subi comprobantes, certificados o pedidos y el colegio los recibe ordenados"
+        title = "Subí comprobantes, certificados o pedidos y el colegio los recibe ordenados"
         summary = (
-            "El portal acepta documentos de familias, proveedores o administracion y crea un caso trazable "
+            "El portal acepta documentos de familias, proveedores o administración y crea un caso trazable "
             "para responder desde el panel sin exigir registro previo."
         )
         examples = [
             "Comprobante de cuota o transferencia",
-            "Certificado medico o autorizacion",
+            "Certificado médico o autorización",
             "Pedido de uniforme o materiales",
             "Nota escrita por la familia",
         ]
@@ -554,13 +554,13 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             },
             {
                 "id": "certificate",
-                "title": "Certificado o autorizacion",
-                "description": "Documentacion de alumnos, asistencia, permisos o constancias.",
+                "title": "Certificado o autorización",
+                "description": "Documentación de alumnos, asistencia, permisos o constancias.",
             },
             {
                 "id": "order_note",
                 "title": "Pedido de materiales",
-                "description": "Uniformes, libreria, comedor o solicitudes de proveedores.",
+                "description": "Uniformes, librería, comedor o solicitudes de proveedores.",
             },
             {
                 "id": "family_note",
@@ -579,7 +579,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
                 "id": "school_certificate",
                 "label": "Certificado",
                 "document_type": "certificate",
-                "text": "Certificado medico para justificar inasistencia del dia 15/06",
+                "text": "Certificado médico para justificar inasistencia del día 15/06",
             },
             {
                 "id": "school_order",
@@ -589,7 +589,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             },
         ]
     else:
-        title = "Subi una nota, foto o pedido y Chatboc la deja lista para responder"
+        title = "Subí una nota, foto o pedido y Chatboc la deja lista para responder"
         summary = (
             "Para clientes que no quieren cargar un carrito: pegan una lista, suben una foto "
             "de papel o adjuntan un documento y el equipo recibe items, faltantes, contacto y seguimiento publico."
@@ -639,7 +639,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
                 "id": "drinks_order",
                 "label": "Bebidas",
                 "document_type": "order_note",
-                "text": "2 cajas de Malbec reserva\n1 caja degustacion\nConsultar envio",
+                "text": "2 cajas de Malbec reserva\n1 caja degustación\nConsultar envío",
             },
         ]
 
@@ -702,7 +702,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             {"id": "quote_request", "label": "Cotizacion", "supports_catalog_matching": True},
             {"id": "receipt", "label": "Factura / recibo", "supports_catalog_matching": False},
             {"id": "tax_bill", "label": "Boleta / impuesto", "supports_catalog_matching": False},
-            {"id": "certificate", "label": "Certificado / tramite", "supports_catalog_matching": False},
+            {"id": "certificate", "label": "Certificado / trámite", "supports_catalog_matching": False},
             {"id": "service_request", "label": "Reclamo / solicitud vecinal", "supports_catalog_matching": False},
         ],
         "pipeline": [
@@ -714,7 +714,7 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             {
                 "id": "ai_parse",
                 "label": "Datos ordenados",
-                "description": "Lectura del documento, rubro probable, articulos/cantidades y candidatos de catalogo.",
+                "description": "Lectura del documento, rubro probable, articulos/cantidades y candidatos de catálogo.",
             },
             {
                 "id": "crm_handoff",
@@ -724,19 +724,19 @@ def public_market_assisted_intake(tenant: TenantProfile, *, total_products: int)
             {
                 "id": "public_follow_up",
                 "label": "Seguimiento publico",
-                "description": "Link seguro para estado del pedido, reclamo o tramite y continuidad por WhatsApp.",
+                "description": "Link seguro para estado del pedido, reclamo o trámite y continuidad por WhatsApp.",
             },
         ],
         "crm_receives": [
             "Archivo o texto original",
-            "Resumen con articulos, cantidades, rubro o tramite detectado",
-            "Cruce con catalogo, candidatos y articulos faltantes",
+            "Resumen con articulos, cantidades, rubro o trámite detectado",
+            "Cruce con catálogo, candidatos y articulos faltantes",
             "Contacto y canal preferido",
             "Respuesta sugerida para WhatsApp, email o llamada",
             "Link publico de seguimiento",
         ],
         "empty_state": {
-            "title": "Catalogo sin productos visibles, solicitud asistida activa",
+            "title": "Catálogo sin productos visibles, solicitud asistida activa",
             "description": (
                 "Aunque todavia no haya productos publicados, el usuario puede subir una nota, manuscrito, "
                 "boleta, certificado o reclamo para que quede ordenado y el equipo responda desde el panel."
@@ -813,7 +813,7 @@ def build_public_market_catalog_contract(
 
     base_web = base_web_url.rstrip("/")
     public_url = f"{base_web}/t/{tenant.slug}/market"
-    share_text = f"Catalogo de {tenant.nombre or tenant.slug}: {public_url}"
+    share_text = f"Catálogo de {tenant.nombre or tenant.slug}: {public_url}"
     assisted_intake = public_market_assisted_intake(tenant, total_products=len(all_products))
     public_api = public_market_api_contract(tenant, assisted_intake)
     synthetic_count = sum(1 for product in all_products if product.get("synthetic_demo") is True)
@@ -852,9 +852,9 @@ def build_public_market_catalog_contract(
         "public_cart_url": f"{base_web}/t/{tenant.slug}/cart",
         "whatsappShareUrl": f"https://wa.me/?text={quote_plus(share_text)}",
         "heroSubtitle": (
-            "Catalogo actualizado con promociones y disponibilidad operativa."
+            "Precios y stock actualizados. Elegí, sumá al carrito y te confirmamos el pedido."
             if all_products
-            else "Marketplace asistido para pedidos, boletas y documentos sin registro."
+            else "Mandanos tu pedido, una foto o un documento y te respondemos, sin registrarte."
         ),
         "frontend_contract": {
             "render_as": "marketplace_catalog",
