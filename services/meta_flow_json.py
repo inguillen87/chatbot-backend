@@ -544,6 +544,18 @@ class _Validator:
                 f"{path}.children",
                 "A screen layout must contain at least one component.",
             )
+        navigation_lists = [
+            child for child in children
+            if isinstance(child, Mapping) and child.get("type") == "NavigationList"
+        ]
+        if navigation_lists and (len(navigation_lists) > 2 or len(navigation_lists) != len(children)):
+            # Meta rejects the screen otherwise ("Only up to 2 NavigationList
+            # components can be used per screen. Please remove other components.").
+            self.add(
+                "NAVIGATION_LIST_NOT_ALONE",
+                f"{path}.children",
+                "A screen with a NavigationList may hold only one or two NavigationLists.",
+            )
         self._validate_component_list(children, f"{path}.children", info)
 
     def _validate_component_list(

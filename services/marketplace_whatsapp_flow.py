@@ -24,6 +24,7 @@ from typing import Any, Mapping, Sequence
 from services.meta_flow_json import FlowBlueprint, FlowJsonArtifact, compile_flow_blueprint
 
 MAX_OPTIONS = 20
+MAX_CATEGORIES_TOTAL = 10
 MAX_QUANTITY = 10
 TITLE_MAX = 30
 SCREEN_ID = "TIENDA"
@@ -149,7 +150,7 @@ def offers_from_items(items: Sequence[Any]) -> list[Offer]:
         offers.append(Offer(id=int(item.id), name=name, category=_title(getattr(item, "categoria", "") or "Otros", 40),
                             mode=mode, price=price, points=points, stock=_stock(item)))
     offers.sort(key=lambda offer: (_plain(offer.category), _plain(offer.name)))
-    return offers[:MAX_OPTIONS]
+    return offers[:MAX_OPTIONS * MAX_CATEGORIES_TOTAL]
 
 
 def tenant_offers(tenant_id: int) -> list[Offer]:
@@ -177,11 +178,98 @@ def _intro(offers: Sequence[Offer]) -> str:
     return f"Elegí qué querés {joined}. Lo sumamos a tu pedido en este chat."
 
 
+MAX_CATEGORIES = 10
+NAV_TITLE_MAX = 30
+NAV_DESCRIPTION_MAX = 20
+NAV_METADATA_MAX = 80
+
+
+def _category_hint(offers: Sequence[Offer]) -> str:
+    """«Desde 400 puntos», «Gratis», «Desde $ 2.000», or the mix, for one category."""
+    points = [offer.points for offer in offers if offer.mode == "points" and offer.points]
+    prices = [offer.price for offer in offers if offer.mode == "money" and offer.price is not None]
+    parts = []
+    if points:
+        parts.append(f"Desde {format_points(min(points))}")
+    if prices:
+        parts.append(f"Desde {format_money(min(prices))}")
+    if any(offer.mode == "free" for offer in offers):
+        parts.append("Gratis")
+    if any(offer.mode == "donation" for offer in offers):
+        parts.append("Donaciones")
+    return _title(" · ".join(parts), NAV_METADATA_MAX)
+
+
+def _product_children(title: str, offers: Sequence[Offer], intro: str) -> list[dict[str, Any]]:
+    options = [{"id": offer.option_id, "title": _title(offer.name),
+                "description": _title(offer.unit_label(), 72)} for offer in offers[:MAX_OPTIONS]]
+    quantities = [{"id": str(n), "title": str(n)} for n in range(1, MAX_QUANTITY + 1)]
+    return [
+        {"type": "TextHeading", "text": _title(title, 80)},
+        {"type": "TextBody", "text": intro},
+        {"type": "RadioButtonsGroup", "name": "producto", "label": "¿Qué elegís?", "required": True,
+         "data-source": options},
+        {"type": "Dropdown", "name": "cantidad", "label": "Cantidad", "required": True, "data-source": quantities},
+        {"type": "TextCaption", "text": "Podés sumar más cosas después. No hace falta compartir datos personales."},
+        {"type": "Footer", "label": "Agregar al pedido",
+         "on-click-action": {"name": "complete",
+                             "payload": {"producto": "${form.producto}", "cantidad": "${form.cantidad}"}}},
+    ]
+
+
 def build_marketplace_blueprint(*, store_name: str, offers: Sequence[Offer]) -> FlowBlueprint:
+    """Several categories: a first screen to browse them, one screen per category.
+
+    Same completion payload either way ({producto, cantidad}), so the chat side
+    does not change. A single category keeps the one-screen form."""
     if not offers:
         raise ValueError("catalog_without_offers")
+    groups: dict[str, list[Offer]] = {}
+    for offer in offers:
+        groups.setdefault(offer.category, []).append(offer)
+    if 1 < len(groups) <= MAX_CATEGORIES:
+        slug = re.sub(r"[^a-z0-9]+", "_", _plain(store_name)).strip("_")[:40] or "tienda"
+        items, screens = [], []
+        for index, (category, members) in enumerate(groups.items(), start=1):
+            # Meta screen ids take letters and underscores only.
+            screen_id = f"CATEGORIA_{chr(ord('A') + index - 1)}"
+            count = len(members)
+            items.append({
+                "id": f"c{index}",
+                "main-content": {
+                    "title": _title(category, NAV_TITLE_MAX),
+                    "description": _title(f"{count} opci{'ón' if count == 1 else 'ones'}", NAV_DESCRIPTION_MAX),
+                    "metadata": _category_hint(members),
+                },
+                "on-click-action": {"name": "navigate", "next": {"type": "screen", "name": screen_id}, "payload": {}},
+            })
+            screens.append({
+                "id": screen_id,
+                "title": _title(category) or "Opciones",
+                "terminal": True,
+                "success": True,
+                "data": {},
+                "layout": {"type": "SingleColumnLayout",
+                           "children": _product_children(category, members, "Elegí una opción y la cantidad.")},
+            })
+        home = {
+            "id": SCREEN_ID,
+            "title": _title(store_name) or "Tienda",
+            "data": {},
+            # Meta: a screen with a NavigationList holds nothing else, so the
+            # heading and the intro travel as the list's own label and description.
+            "layout": {"type": "SingleColumnLayout", "children": [
+                {"type": "NavigationList", "name": "categorias", "label": _title(store_name, 80) or "Tienda",
+                 "description": _intro(offers)[:300], "list-items": items},
+            ]},
+        }
+        return FlowBlueprint(name=f"tienda_{slug}", endpoint_driven=False, screens=(home, *screens))
+    return _single_screen_blueprint(store_name=store_name, offers=offers)
+
+
+def _single_screen_blueprint(*, store_name: str, offers: Sequence[Offer]) -> FlowBlueprint:
     options = [{"id": offer.option_id, "title": _title(offer.name),
-                "description": _title(f"{offer.unit_label()} · {offer.category}", 72)} for offer in offers]
+                "description": _title(f"{offer.unit_label()} · {offer.category}", 72)} for offer in offers[:MAX_OPTIONS]]
     quantities = [{"id": str(n), "title": str(n)} for n in range(1, MAX_QUANTITY + 1)]
     children: list[dict[str, Any]] = [
         {"type": "TextHeading", "text": _title(store_name, 80) or "Tienda"},
