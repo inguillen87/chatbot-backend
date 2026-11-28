@@ -53,6 +53,23 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
+    def test_redemptions_and_donations_are_published_as_such(self):
+        db.session.add_all([
+            CatalogoItem(user_id=self.owner.id, tenant_id=self.tenant.id, nombre="Kit escolar",
+                         categoria="Educación", modalidad="canje", precio_puntos=1500, disponible=True),
+            CatalogoItem(user_id=self.owner.id, tenant_id=self.tenant.id, nombre="Árbol nativo",
+                         categoria="Ambiente", modalidad="donacion", disponible=True),
+            CatalogoItem(user_id=self.owner.id, tenant_id=self.tenant.id, nombre="Rifa",
+                         categoria="Solidaridad", modalidad="venta", precio="2000", disponible=True),
+        ])
+        db.session.commit()
+        rows = {row["nombre"]: row for row in
+                self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}").get_json()}
+        self.assertEqual(rows["Kit escolar"]["modalidad"], "canje")
+        self.assertEqual(rows["Kit escolar"]["precio_puntos"], 1500)
+        self.assertEqual(rows["Árbol nativo"]["modalidad"], "donacion")
+        self.assertEqual(rows["Rifa"]["modalidad"], "compra")
+
     def test_empty_real_tenant_catalog_get_is_side_effect_free(self):
         response = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(response.status_code, 200)
