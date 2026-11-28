@@ -1650,3 +1650,37 @@ def test_the_flow_opens_on_first_contact_and_its_choice_answers_the_topic(enviro
         assert "no corresponde" not in unknown
     finally:
         current_app.config["META_TDF_SANDBOX_FLOW_ID"] = ""
+
+
+def test_number_is_kept_with_notice_and_erased_on_borrar_only_when_enabled(environment):
+    from datetime import datetime, timezone
+    from flask import current_app
+    from models import ConsentLedger, WhatsAppContactState
+    cfg = {"APP_SECRET": "s" * 32}
+    now = datetime(2026, 11, 28, tzinfo=timezone.utc)
+    event = lambda text="hola": SimpleNamespace(content_type="text", text=text, contact=CONTACT, event_key="meta:n")
+    assert pilot._keep_number(event(), "Hola", (), cfg, now) == "Hola"
+    assert db.session.query(WhatsAppContactState).count() == 0
+    current_app.config[pilot.KEEP_NUMBER_FLAG] = True
+    try:
+        first = pilot._keep_number(event(), "Hola", (), cfg, now)
+        assert first.startswith(pilot.NUMBER_NOTICE) and first.endswith("Hola")
+        assert db.session.query(WhatsAppContactState).one().recipient == CONTACT
+        assert pilot._keep_number(event(), "Hola", (), cfg, now) == "Hola"  # notice only once
+        # A long interactive body that cannot carry the notice is sent plainly; nothing new is kept.
+        db.session.query(WhatsAppContactState).delete(); db.session.commit()
+        assert pilot._keep_number(event(), "x" * 1000, ("row",), cfg, now) == "x" * 1000
+        assert db.session.query(WhatsAppContactState).count() == 0
+        pilot._keep_number(event(), "Hola", (), cfg, now)
+        db.session.add(ConsentLedger(tenant_id=pilot.TENANT_ID, contact_key=CONTACT, status="opt_in"))
+        db.session.commit()
+        reply = pilot._erase_number(event(" Borrar. "), {}, cfg)
+        assert "Borramos tu número" in reply[0]
+        assert db.session.query(WhatsAppContactState).count() == 0
+        rows = db.session.query(ConsentLedger).all()
+        assert [row.status for row in rows] == ["no_store"] and CONTACT not in rows[0].contact_key
+        assert pilot._keep_number(event(), "Hola", (), cfg, now) == "Hola"  # never kept again
+        assert db.session.query(WhatsAppContactState).count() == 0
+        assert pilot._erase_number(event("quiero borrar mi reclamo"), {}, cfg) is None
+    finally:
+        current_app.config.pop(pilot.KEEP_NUMBER_FLAG, None)
