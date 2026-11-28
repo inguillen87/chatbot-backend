@@ -44,7 +44,7 @@ def test_vouchers_are_issued_shown_and_used_once(client):  # noqa: F811
 
     page = client.get(f"/api/public/vouchers/{issued[0]['display'].lower()}").get_json()
     assert page["status"] == "valid" and page["name"] == "Kit escolar completo" and page["points"] == 1500
-    assert client.get("/api/public/vouchers/K7MQ4XPZ2R").status_code == 404
+    assert client.get("/api/public/vouchers/K7MQ4XPZ2R").status_code == 422
     qr = client.get(f"/api/public/vouchers/{code}/qr.svg")
     assert qr.status_code == 200 and qr.mimetype == "image/svg+xml" and b"<svg" in qr.data
     assert client.get("/api/public/vouchers/K7MQ4XPZ2R/qr.svg").status_code == 404

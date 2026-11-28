@@ -67,8 +67,9 @@ def public_voucher(code):
 
     view = vouchers.public_view(code)
     if view is None:
+        # 422, not 404: the web app retries a 404 on another API origin.
         response = jsonify({"error": "voucher_not_found"})
-        response.status_code = 404
+        response.status_code = 422
     else:
         response = jsonify(view)
     response.headers["Cache-Control"] = "no-store"
