@@ -26,6 +26,32 @@ MAX_BODY_BYTES = 1024 * 1024
 MAX_EVENTS = 100
 
 
+_FLOW_FIELD = re.compile(r"[a-z][a-z0-9_]{0,31}")
+_FLOW_VALUE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+
+
+def flow_reply_selection(reply):
+    """A completed static Flow, reduced to its chosen option ids.
+
+    Only short lowercase field names and option ids survive (no free text, no
+    token): the result is «flow:» plus canonical JSON, at most 256 characters."""
+    raw = reply.get("response_json") if isinstance(reply, dict) else None
+    if not isinstance(raw, str) or not 2 <= len(raw) <= 2048:
+        raise ValueError
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError
+    chosen = {key: value for key, value in data.items() if key != "flow_token"}
+    if (not 1 <= len(chosen) <= 4
+            or not all(isinstance(k, str) and _FLOW_FIELD.fullmatch(k) and isinstance(v, str)
+                       and _FLOW_VALUE.fullmatch(v) for k, v in chosen.items())):
+        raise ValueError
+    selection = "flow:" + json.dumps(chosen, sort_keys=True, separators=(",", ":"))
+    if len(selection) > 256:
+        raise ValueError
+    return selection
+
+
 @dataclass(frozen=True)
 class MetaContactIdentity:
     """Signed identity association returned only by a trusted context adapter.
@@ -205,9 +231,12 @@ def parse_webhook(*, raw_body: bytes, signature: str, app_secret: str,
                             elif allow_sandbox_content is True and content_type == "interactive":
                                 interactive = item["interactive"]
                                 subtype = interactive["type"]
-                                if subtype not in {"button_reply", "list_reply"}:
+                                if subtype == "nfm_reply":
+                                    selection = flow_reply_selection(interactive["nfm_reply"])
+                                elif subtype not in {"button_reply", "list_reply"}:
                                     raise ValueError
-                                selection = interactive[subtype]["id"]
+                                else:
+                                    selection = interactive[subtype]["id"]
                                 if not isinstance(selection, str) or not 1 <= len(selection) <= 256:
                                     raise ValueError
                             elif allow_sandbox_content is True and content_type == "location":

@@ -328,6 +328,37 @@ def _compose_menu_answer(parts, buttons):
 
 
 NEWS_FLAG = "META_TDF_SANDBOX_NEWS_OPT_IN_ENABLED"
+FLOW_MENU = {"tdf_flow": "CONSULTA"}
+FLOW_SCREEN = "CONSULTA"
+FLOW_CTA = "Elegir ciudad y tema"
+
+
+def _slug(value):
+    from services.institutional_assistant_content import _plain
+    return re.sub(r"[^a-z0-9]+", "-", _plain(value)).strip("-")
+
+
+def _flow_choice(tenant, selection, context):
+    """City and topic chosen in the Flow, checked against the published knowledge."""
+    try:
+        chosen = json.loads(selection[len("flow:"):])
+        state = read_state(tenant, public=True)
+    except (ValueError, ContentError):
+        return "menu", clear_source_scope(context)
+    if not isinstance(chosen, dict) or not state:
+        return "menu", clear_source_scope(context)
+    next_context = dict(context) if isinstance(context, dict) else {}
+    place = next((item["label"] for item in state["bundle"].get("localities") or []
+                  if _slug(item["label"]) == chosen.get("ciudad")), None)
+    if place is not None:
+        knowledge = next_context.get("institutional_knowledge")
+        next_context["institutional_knowledge"] = {**(knowledge if isinstance(knowledge, dict) else {}), "locality": place}
+    topic = chosen.get("tema")
+    if not isinstance(topic, str) or topic not in state["bundle"]["nodes"]:
+        return "menu", next_context
+    return "knowledge:" + state["revision"][:16] + ":" + topic, next_context
+
+
 FEEDBACK_HINT = "¿Te sirvió esta respuesta? Respondé SÍ o NO."
 FEEDBACK_PENDING = "institutional_feedback_pending"
 
@@ -477,7 +508,10 @@ def _answer(event, context, *, audio_text=None):
         event.selection if event.content_type == "interactive" else event.text)
     if event.content_type == "audio" and not isinstance(audio_text, str):
         raise PilotError("tdf_audio_unavailable")
-    if event.content_type == "interactive" and not question.startswith("knowledge:"):
+    if event.content_type == "interactive" and question.startswith("flow:"):
+        question, context = _flow_choice(tenant, question, context)
+        session.context_data = context
+    if event.content_type == "interactive" and not question.startswith("knowledge:") and question != "menu":
         # The pilot has no operational dispatch, ticket creation or flow submit.
         return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", clear_source_scope(context), None, ())
     if event.content_type == "interactive":
@@ -519,6 +553,12 @@ def _answer(event, context, *, audio_text=None):
             and len(body) + len(NEWS_HINT) + 2 <= (1024 if len(body) <= 1024 else 4096)):
         # Shown on the opening menu only, and never at the cost of the list.
         body += "\n\n" + NEWS_HINT
+    knowledge = session.context_data.get("institutional_knowledge")
+    flow_id = current_app.config.get("META_TDF_SANDBOX_FLOW_ID") or ""
+    if (flow_id and isinstance(question, str) and question.strip().casefold() in {"menu", "menú", "inicio"}
+            and not (isinstance(knowledge, dict) and knowledge.get("locality")) and len(body) <= 1024):
+        # First contact: city and topic in one screen. The numbered text keeps working.
+        buttons = [FLOW_MENU]
     session.context_data.pop(FEEDBACK_PENDING, None)
     scope = session.context_data.get(SOURCE_SCOPE)
     if (isinstance(question, str) and question.strip().casefold() not in {"menu", "menú", "inicio"}
@@ -536,6 +576,14 @@ def _reply_payload(recipient, body, buttons, revision):
 
     Long/multi-page menus remain text rather than silently hiding options.
     """
+    if tuple(buttons) == (FLOW_MENU,):
+        flow_id = current_app.config.get("META_TDF_SANDBOX_FLOW_ID") or ""
+        try:
+            return cloud.flow_payload(recipient=recipient, body=body, flow_id=flow_id, cta=FLOW_CTA,
+                token="tdf-consulta", screen=FLOW_SCREEN,
+                draft=current_app.config.get("META_TDF_SANDBOX_FLOW_DRAFT") is True)
+        except cloud.MetaContractError:
+            return cloud.text_payload(recipient=recipient, body=body)
     rows, titles = [], set()
     if revision and 0 < len(buttons) <= 10 and len(body) <= 1024:
         for choice in buttons:
