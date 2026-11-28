@@ -693,8 +693,11 @@ def get_content(tenant_slug):
         "enabled": True # Feature flag
     }
     if user:
+        from services.participation_tiers import earned_points, tier_for
+
         loyalty_summary["points"] = recompensas_service().obtener_saldo(user)
         loyalty_summary["claimsFiled"] = TenantTicket.query.filter_by(user_id=user.id, tenant_id=tenant.id).count()
+        loyalty_summary.update(tier_for(earned_points(user.id, tenant.id)))
 
     # 5. Activities (Recent tickets)
     activities = []
@@ -1966,9 +1969,33 @@ def get_loyalty_info(tenant_slug):
             "detalle": (t.metadata_payload or {}).get("detalle", t.tipo)
         })
 
+    from services.participation_tiers import earned_points, tier_for
+
+    tier = tier_for(earned_points(user.id, tenant.id))
+    portal_transactions = [
+        {
+            "id": str(t.id),
+            "description": str((t.metadata_payload or {}).get("detalle")
+                               or (t.metadata_payload or {}).get("reward_label") or t.tipo),
+            "points": abs(int(t.delta or 0)),
+            "date": t.created_at.isoformat() if t.created_at else None,
+            "type": "earned" if (t.delta or 0) > 0 else "redeemed",
+        }
+        for t in history
+    ]
     return jsonify({
+        # Portal contract (PortalLoyaltySummary)
+        "points": balance,
+        **tier,
+        "surveysCompleted": PointsTransaction.query.filter(
+            PointsTransaction.user_id == user.id, PointsTransaction.tenant_id == tenant.id,
+            PointsTransaction.delta > 0, PointsTransaction.tipo.ilike("%encuesta%")).count(),
+        "suggestionsShared": 0,
+        "claimsFiled": TenantTicket.query.filter_by(user_id=user.id, tenant_id=tenant.id).count(),
+        "transactions": portal_transactions,
+        # Previous fields, kept for older clients
         "current_points": balance,
-        "transactions": transactions
+        "movements": transactions,
     })
 
 @portal_api_bp.route('/surveys/<slug>/responses', methods=['POST'])

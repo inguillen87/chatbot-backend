@@ -102,7 +102,7 @@ class Offer:
         if self.mode == "money" and self.price is not None:
             return format_money(self.price)
         if self.mode == "donation":
-            return "Donación"
+            return f"Donás {format_points(self.points)}" if self.points else "Donación"
         if self.mode == "free":
             return "Gratis · inscripción"
         return "Precio a confirmar"
@@ -119,7 +119,7 @@ def _mode(item: Any) -> tuple[str, Decimal | None, int | None]:
         except Exception:  # deferred column missing in an old schema
             price = None
     if modality in DONATION_MODES:
-        return "donation", None, None
+        return "donation", None, points
     if modality in FREE_MODES or (price is None and _plain(getattr(item, "precio", "")) in FREE_PRICE_WORDS):
         return "free", None, None
     if modality in POINTS_MODES:
@@ -266,7 +266,8 @@ def cart_text(order: Any) -> str:
         if line.price_points:
             subtotal = int(line.price_points) * quantity
             points += subtotal
-            lines.append(f"• {quantity} x {name} · {format_points(subtotal)}")
+            verb = "Donás " if (line.modalidad or "") == "donacion" else ""
+            lines.append(f"• {quantity} x {name} · {verb}{format_points(subtotal)}")
         elif line.price_monetary:
             subtotal = Decimal(str(line.price_monetary)) * quantity
             money += subtotal

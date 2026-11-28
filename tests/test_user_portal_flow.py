@@ -375,3 +375,33 @@ def test_portal_settings_preserve_and_persist_existing_preferences(
     reloaded = client.get(endpoint, headers=headers)
     assert reloaded.status_code == 200
     assert reloaded.json["preferences"] == expected
+
+
+def test_loyalty_returns_the_portal_contract_with_a_real_level(client, viewer_user, owner_user):
+    from services.participation_tiers import tier_for
+
+    tenant = TenantProfile(slug="portal-loyalty-levels", nombre="Ciudad Niveles", tipo="municipio",
+                           municipio_id=owner_user.id)
+    db.session.add(tenant)
+    db.session.commit()
+    viewer_user.saldo_puntos = 400
+    db.session.add_all([
+        PointsTransaction(user_id=viewer_user.id, tenant_id=tenant.id, tipo="encuesta_respondida", delta=600,
+                          saldo_final=600, metadata_payload={"detalle": "Encuesta de la plaza"}),
+        PointsTransaction(user_id=viewer_user.id, tenant_id=tenant.id, tipo="reward_redeem", delta=-200,
+                          saldo_final=400, metadata_payload={"reward_label": "Entrada a recital"}),
+    ])
+    db.session.commit()
+    token = issue_token({"user_id": viewer_user.id, "exp": datetime.now(timezone.utc) + timedelta(hours=1)})
+    body = client.get(f"/api/v1/portal/{tenant.slug}/loyalty", headers={"Authorization": f"Bearer {token}"}).json
+    # Balance 400, but 600 earned: redeeming does not lower the level.
+    assert body["points"] == 400 and body["current_points"] == 400
+    assert body["level"] == "Vecino activo" and body["next_level"] == "Referente del barrio"
+    assert body["points_to_next_level"] == 1400 and body["surveysCompleted"] == 1
+    kinds = {row["description"]: (row["type"], row["points"]) for row in body["transactions"]}
+    assert kinds == {"Encuesta de la plaza": ("earned", 600), "Entrada a recital": ("redeemed", 200)}
+
+    assert tier_for(0)["level"] == "Vecino" and tier_for(0)["level_progress"] == 0
+    assert tier_for(1250)["level_progress"] == 50
+    assert tier_for(9000) == {**tier_for(9000), "level": "Embajador", "next_level": None, "points_to_next_level": 0,
+                              "level_progress": 100}

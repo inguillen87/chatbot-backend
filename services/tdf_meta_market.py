@@ -114,7 +114,7 @@ def answer(event, context, contact_key, clear):
             codes = "\n\n🎟️ Tus códigos (mostralos al retirar o al llegar):\n" + "\n".join(
                 f"• {item['name']}: {item['display']}\n  {VOUCHER_URL}{item['code']}" for item in issued)
         body = (f"📦 Enviamos tu pedido #{order.id} a {_store_name(tenant)}:\n" + _with_cart(order) + codes
-                + ("\n\nLos canjes se validan con tus puntos de participación del portal ciudadano." if has_points else "")
+                + ("\n\nLos puntos se validan con tu cuenta de participación del portal ciudadano." if has_points else "")
                 + "\n\nEscribí PEDIDO para ver cómo sigue.")
         return body[:4096], clear(context), None, ()
     if command in _STATUS:
