@@ -4060,6 +4060,31 @@ def _marketplace_error(exc):
     return response
 
 
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/vouchers/redeem', methods=['POST'])
+@token_requerido
+@require_role("admin", "super_admin", "empleado")
+@require_tenant
+def voucher_redeem(current_user, slug):
+    """The venue checks a voucher: valid once, then «ya usado»."""
+    from services import market_vouchers as vouchers
+
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+    body = request.get_json(silent=True) or {}
+    outcome, view = vouchers.redeem(tenant, body.get("code"), staff_user_id=getattr(current_user, "id", None))
+    if outcome == "invalid":
+        response = jsonify({"result": "invalid"})
+        response.status_code = 404
+    else:
+        response = jsonify({"result": outcome, "voucher": view})
+        response.status_code = 409 if outcome == "used" else 200
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/marketplace/templates', methods=['GET'])
 @token_requerido
 @require_role("admin", "super_admin")

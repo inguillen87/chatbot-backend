@@ -15,6 +15,7 @@ import unicodedata
 from flask import current_app
 
 from models import TenantProfile
+from services import market_vouchers as vouchers
 from services import marketplace_whatsapp_flow as market
 
 FLOW_ID_KEY = "META_TDF_SANDBOX_MARKET_FLOW_ID"
@@ -22,6 +23,7 @@ TENANT_KEY = "META_TDF_SANDBOX_MARKET_TENANT_SLUG"
 DRAFT_KEY = "META_TDF_SANDBOX_MARKET_FLOW_DRAFT"
 FLOW_MARKER = {"tdf_market": market.SCREEN_ID}
 FLOW_CTA = "Abrir la tienda"
+VOUCHER_URL = "https://www.chatboc.ar/v/"
 MENU_HINT = "🛍️ Escribí TIENDA para comprar, canjear tus puntos o donar."
 
 _OPEN = {"tienda", "catalogo", "donar", "donacion", "donaciones", "canjear", "canje", "puntos", "comprar"}
@@ -106,7 +108,12 @@ def answer(event, context, contact_key, clear):
             body, buttons = _open(tenant, "Todavía no sumaste nada a tu pedido.")
             return body, clear(context), None, buttons
         has_points = any(line.price_points for line in order.items)
-        body = (f"📦 Enviamos tu pedido #{order.id} a {_store_name(tenant)}:\n" + _with_cart(order)
+        issued = vouchers.issue_for_order(order)
+        codes = ""
+        if issued:
+            codes = "\n\n🎟️ Tus códigos (mostralos al retirar o al llegar):\n" + "\n".join(
+                f"• {item['name']}: {item['display']}\n  {VOUCHER_URL}{item['code']}" for item in issued)
+        body = (f"📦 Enviamos tu pedido #{order.id} a {_store_name(tenant)}:\n" + _with_cart(order) + codes
                 + ("\n\nLos canjes se validan con tus puntos de participación del portal ciudadano." if has_points else "")
                 + "\n\nEscribí PEDIDO para ver cómo sigue.")
         return body[:4096], clear(context), None, ()

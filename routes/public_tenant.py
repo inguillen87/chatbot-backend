@@ -7,6 +7,7 @@ import re
 import uuid
 
 from flask import Blueprint, request, jsonify, g, current_app, send_file
+from extensions import limiter
 from sqlalchemy import false, func, or_
 
 from cutover_writer_fence import cutover_writer_view
@@ -56,6 +57,23 @@ from services.tenant_resolver import (
 from services.user_merge import merge_anon_into_user
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
+
+
+@public_tenant_bp.route('/api/public/vouchers/<code>', methods=['GET'])
+@limiter.limit('30 per minute')
+def public_voucher(code):
+    """A person's voucher page: the code is the key, nothing else is exposed."""
+    from services import market_vouchers as vouchers
+
+    view = vouchers.public_view(code)
+    if view is None:
+        response = jsonify({"error": "voucher_not_found"})
+        response.status_code = 404
+    else:
+        response = jsonify(view)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Robots-Tag"] = "noindex"
+    return response
 
 
 @public_tenant_bp.route('/api/public/host-resolution', methods=['GET'])
