@@ -572,6 +572,9 @@ def public_catalog():
                 "moneda": item.moneda,
                 "precio_float": item.precio_monetario,
                 "extra_metadata": item.extra_metadata,
+                # Without these, redemptions and donations were published as plain sales.
+                "modalidad": item.modalidad,
+                "precio_puntos": item.precio_puntos,
             }
         )
         prod["catalogo_item_id"] = item.id
