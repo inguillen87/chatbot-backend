@@ -4079,8 +4079,10 @@ def voucher_redeem(current_user, slug):
     body = request.get_json(silent=True) or {}
     outcome, view = vouchers.redeem(tenant, body.get("code"), staff_user_id=getattr(current_user, "id", None))
     if outcome == "invalid":
+        # 422, not 404: the web app treats a 404 as a missing proxy and retries
+        # the write on another API origin without the panel session.
         response = jsonify({"result": "invalid"})
-        response.status_code = 404
+        response.status_code = 422
     else:
         response = jsonify({"result": outcome, "voucher": view})
         response.status_code = 409 if outcome == "used" else 200
