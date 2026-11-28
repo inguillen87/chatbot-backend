@@ -367,6 +367,34 @@ def news_opted_in(contact):
     return row is not None and row.status == "opt_in"
 
 
+_CLAIM_STATUS = re.compile(r"\b(estado|seguimiento|seguir|c[oó]mo (va|sigue|viene)|novedad(es)? (de|del|sobre)|"
+                           r"consultar|ver|respuesta (de|del|a))\b", re.IGNORECASE)
+_CLAIM_NUMBER = re.compile(r"\b(?:[ms]-?)?(\d{5,12})\b", re.IGNORECASE)
+CLAIM_TRACKING_URL = "https://tdf.chatboc.ar/tracking/claim"
+
+
+def _claim_tracking(text):
+    """Where to follow a complaint already filed.
+
+    Only a message about «reclamo» that asks for its status or gives its
+    number: how to file one stays a knowledge question. The status itself is
+    never shown in the chat; the page asks for the PIN the person received."""
+    if not isinstance(text, str) or len(text) > 160 or not re.search(r"\breclamos?\b", text, re.IGNORECASE):
+        return None
+    number = _CLAIM_NUMBER.search(text)
+    if number is None and not _CLAIM_STATUS.search(text):
+        return None
+    if re.search(r"\b(hacer|iniciar|cargar|presentar|nuevo|d[oó]nde)\b", text, re.IGNORECASE) and number is None:
+        return None
+    link = CLAIM_TRACKING_URL + ("/" + number.group(1) if number else "")
+    opening = ("Para ver cómo va el reclamo N.º " + number.group(1) + ", abrí este enlace:" if number
+               else "Para ver cómo va tu reclamo, abrí este enlace y escribí el número que recibiste al cargarlo:")
+    return (opening + "\n" + link + "\n\n"
+            "Te va a pedir el PIN que recibiste junto con el número. "
+            "Por tu privacidad, el estado no se muestra en este chat.\n\n"
+            "Escribí MENÚ para volver a los temas.")
+
+
 def _published_choice(tenant, action):
     """A row tapped in an older message keeps working after the knowledge is
     updated: the same topic is answered from the published version, never from
@@ -422,6 +450,10 @@ def _answer(event, context, *, audio_text=None):
         return ("Esa opción no corresponde al menú de esta prueba. Escribí MENÚ para volver a empezar.", clear_source_scope(context), None, ())
     if event.content_type == "interactive":
         question = _published_choice(tenant, question)
+    if event.content_type == "text":
+        tracking = _claim_tracking(question)
+        if tracking is not None:
+            return tracking, clear_source_scope(context), None, ()
     page = sources_page(question)
     if page is None and isinstance(question, str) and is_source_navigation(question):
         # Natural-language requests for the references use the pilot's own
