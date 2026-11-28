@@ -23,7 +23,7 @@ from flask import current_app
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from models import db, ConsentLedger, MessagingEventLedger, TenantProfile, User, WebhookDelivery
+from models import db, ConsentLedger, MessagingEventLedger, TenantProfile, User, WebhookDelivery, WhatsAppContactState
 from services import meta_account_events as account_events
 from services import meta_whatsapp_cloud as cloud
 from services import meta_whatsapp_webhook as webhook
@@ -383,6 +383,73 @@ def _answer_feedback(event, context, tenant):
     return ("Gracias por avisarnos. Lo vamos a revisar.\n"
             "Si necesitás hablar con una oficina, escribí 0 para ver los contactos por ciudad, o MENÚ para volver a los temas.",
             next_context, None, ())
+
+
+KEEP_NUMBER_FLAG = "META_TDF_SANDBOX_KEEP_NUMBER_ENABLED"
+NUMBER_NOTICE = ("🔒 Guardamos tu número de WhatsApp para poder responderte y mejorar este servicio. "
+                 "Si preferís que lo borremos, escribí BORRAR.")
+_ERASE_COMMANDS = {"borrar", "borrar mi numero", "borrar mi número"}
+_INTERACTIVE_BODY_MAX = 1024
+
+
+def _erase_key(event, cfg):
+    return "no_store:" + _pseudonym(str(event.contact), cfg)
+
+
+def _number_kept_off(event, cfg):
+    return db.session.scalar(select(ConsentLedger.id).where(
+        ConsentLedger.tenant_id == TENANT_ID, ConsentLedger.contact_key == _erase_key(event, cfg),
+        ConsentLedger.status == "no_store").limit(1)) is not None
+
+
+def _erase_number_requested(event):
+    return (current_app.config.get(KEEP_NUMBER_FLAG) is True
+            and " ".join(str(event.text or "").split()).casefold().strip(".!¡") in _ERASE_COMMANDS)
+
+
+def _erase_number(event, context, cfg):
+    """BORRAR: forget the number now and never keep it again for this pilot.
+
+    Removes the stored number and any news sign-up for it, and records the
+    choice under a keyed pseudonym so the number itself is not kept to honour it."""
+    if current_app.config.get(KEEP_NUMBER_FLAG) is not True or event.content_type != "text":
+        return None
+    if " ".join(str(event.text or "").split()).casefold().strip(".!¡") not in _ERASE_COMMANDS:
+        return None
+    WhatsAppContactState.query.filter_by(tenant_id=TENANT_ID, recipient=str(event.contact)).delete(
+        synchronize_session=False)
+    ConsentLedger.query.filter_by(tenant_id=TENANT_ID, contact_key=str(event.contact)).delete(
+        synchronize_session=False)
+    if not _number_kept_off(event, cfg):
+        db.session.add(ConsentLedger(tenant_id=TENANT_ID, contact_key=_erase_key(event, cfg), channel="whatsapp",
+            status="no_store", source="tdf_whatsapp_assistant",
+            evidence_payload={"contract": CONTRACT, "command": "borrar"}))
+    db.session.commit()
+    return ("Listo. Borramos tu número y no lo vamos a guardar. Podés seguir consultando cuando quieras.",
+            clear_source_scope(context), None, ())
+
+
+def _keep_number(event, body, buttons, cfg, now):
+    """Keep the number (for statistics and to reach the person back), with notice.
+
+    The first time, the reply carries the notice and how to erase it; the number
+    is stored only once that notice is actually sent with the reply."""
+    if current_app.config.get(KEEP_NUMBER_FLAG) is not True or _number_kept_off(event, cfg):
+        return body
+    row = WhatsAppContactState.query.filter_by(tenant_id=TENANT_ID, provider_sender_id=None,
+                                               recipient=str(event.contact)).first()
+    if row is not None:
+        row.last_inbound_at = now
+        db.session.add(row)
+        db.session.commit()
+        return body
+    noticed = f"{NUMBER_NOTICE}\n\n{body}"
+    if buttons and len(noticed) > _INTERACTIVE_BODY_MAX:
+        return body
+    db.session.add(WhatsAppContactState(tenant_id=TENANT_ID, provider_sender_id=None,
+                                        recipient=str(event.contact), last_inbound_at=now))
+    db.session.commit()
+    return noticed
 
 
 NEWS_HINT = "📣 Para recibir avisos de eventos y trámites, escribí NOVEDADES."
@@ -785,7 +852,11 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
                     if revision != audio_revision:
                         raise PilotError("tdf_audio_knowledge_changed")
             else:
-                body, context, revision, buttons = _answer(event, previous)
+                erased = _erase_number(event, previous, cfg)
+                body, context, revision, buttons = erased or _answer(event, previous)
+            if not (event.content_type == "text" and _erase_number_requested(event)):
+                body = _keep_number(event, body, buttons, cfg,
+                                    datetime.fromtimestamp(clock(), tz=timezone.utc))
             outbound_recipient = _reply_recipient(event.contact, cfg)
             outbound = _reply_payload(outbound_recipient, body, buttons, revision)
             # This intent is durable before I/O, and remains uncertain on interruption.
