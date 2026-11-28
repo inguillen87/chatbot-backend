@@ -55,7 +55,7 @@ def test_vouchers_are_issued_shown_and_used_once(client):  # noqa: F811
     assert again.status_code == 409 and again.get_json()["voucher"]["used_at"]
     assert client.get(f"/api/public/vouchers/{code}").get_json()["status"] == "used"
     bad = client.post(f"/api/admin/tenants/{tenant.slug}/vouchers/redeem", json={"code": "nope"}, headers=headers)
-    assert bad.status_code == 404
+    assert bad.status_code == 422 and bad.get_json()["result"] == "invalid"
 
 
 def test_another_organization_cannot_redeem_my_voucher(client):  # noqa: F811
