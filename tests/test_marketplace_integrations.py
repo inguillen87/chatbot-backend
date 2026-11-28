@@ -165,3 +165,26 @@ def test_store_whatsapp_flow_is_built_from_the_published_catalog(client):  # noq
     assert body["contract_version"] == "chatboc.marketplace_whatsapp_flow.v1" and body["screen"] == "TIENDA"
     assert [offer["label"] for offer in body["summary"]["offers"]] == ["1.500 puntos", "$ 500"]
     assert body["flow_json"]["screens"][0]["id"] == "TIENDA"
+
+
+def test_benefits_template_loads_once_and_feeds_the_whatsapp_store(client):  # noqa: F811
+    _, tenant, headers = _create_admin_tenant(plan="free")
+    listed = client.get(f"/api/admin/tenants/{tenant.slug}/marketplace/templates", headers=headers).get_json()
+    assert listed["templates"][0]["key"] == "beneficios_ciudadanos"
+    first = client.post(f"/api/admin/tenants/{tenant.slug}/marketplace/templates/beneficios_ciudadanos/apply",
+                        headers=headers).get_json()
+    assert first["created"] == first["items"] == 20 and first["updated"] == 0
+    again = client.post(f"/api/admin/tenants/{tenant.slug}/marketplace/templates/beneficios_ciudadanos/apply",
+                        headers=headers).get_json()
+    assert again["created"] == 0 and again["updated"] == 20
+    assert CatalogoItem.query.filter_by(tenant_id=tenant.id).count() == 20
+    missing = client.post(f"/api/admin/tenants/{tenant.slug}/marketplace/templates/nope/apply", headers=headers)
+    assert missing.status_code == 404
+    flow = client.get(f"/api/admin/tenants/{tenant.slug}/marketplace/whatsapp-flow", headers=headers).get_json()
+    labels = {offer["name"]: offer["label"] for offer in flow["summary"]["offers"]}
+    assert labels["Kit escolar completo"] == "1.500 puntos"
+    assert labels["Charla: primeros años de crianza"] == "Gratis · inscripción"
+    assert labels["Donar útiles escolares"] == "Donación"
+    assert labels["Rifa solidaria del hospital"] == "$ 2.000"
+    texts = [child.get("text") for child in flow["flow_json"]["screens"][0]["layout"]["children"]]
+    assert any("canjear tus puntos, anotarte o donar" in (text or "") for text in texts)
