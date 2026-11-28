@@ -10,3 +10,8 @@ def test_own_photos_and_curated_demo_images_are_kept():
     assert _fallback_image_for_item("https://example.test/taza.jpg", {}, "Bazar") == "https://example.test/taza.jpg"
     assert _fallback_image_for_item(None, {"sku": "kit-escolar-1"}, "") .startswith("https://images.unsplash.com/")
     assert _fallback_image_for_item(None, {"nombre": "Ítem"}, "Salud").startswith("https://images.unsplash.com/")
+
+
+def test_template_items_show_the_neutral_placeholder():
+    data = {"nombre": "Beca de apoyo al estudio", "extra_metadata": {"template": "beneficios_ciudadanos"}}
+    assert _fallback_image_for_item(None, data, "Educación") is None
