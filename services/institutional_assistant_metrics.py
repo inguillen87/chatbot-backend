@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 CONTRACT = 'chatboc.institutional_assistant_metrics.v1'
 EVENT_NAME = 'institutional_assistant.question'
+FEEDBACK_EVENT = 'institutional_assistant.feedback'
 OUTCOMES = ('answered', 'uncovered', 'typed_navigation', 'sources', 'unavailable')
 CHANNELS = ('web_reader',)
 DEFAULT_DAYS, MAX_DAYS, MAX_EVENTS, MAX_RANKING = 30, 90, 20000, 20
@@ -38,6 +39,12 @@ UI = {
     'privacy': ('Se registra el resultado y el tema de cada consulta. '
                 'No se guarda el texto ni datos de quien consulta.'),
     'truncated': 'Hay más consultas de las que se muestran; se usaron las más recientes.',
+    'feedback_title': 'Valoración de las respuestas',
+    'feedback_description': 'Lo que marcaron las personas al leer una respuesta en el lector público.',
+    'feedback_helpful': 'Les sirvió', 'feedback_unhelpful': 'No les sirvió',
+    'feedback_rate': 'Respuestas que sirvieron',
+    'feedback_by_node': 'Temas con más respuestas que no sirvieron',
+    'feedback_empty': 'Todavía nadie valoró una respuesta en este período.',
 }
 _NODE_ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,119}')
 _REVISION_PREFIX = re.compile(r'[a-f0-9]{16}')
@@ -113,6 +120,61 @@ def record_question_outcomes(tenant_id, tenant_type, channel, outcomes):
         return 0
 
 
+def record_answer_feedback(tenant_id, tenant_type, channel, revision, node_id, helpful):
+    """Persist one anonymous «did this help» mark. Best effort, never raises.
+
+    Only the topic, the knowledge revision prefix and yes/no are kept: no
+    comment, no text and no caller identity exist in this record."""
+    try:
+        if (channel not in CHANNELS or type(tenant_id) is not int or tenant_id < 1 or type(helpful) is not bool
+                or not isinstance(node_id, str) or not _NODE_ID.fullmatch(node_id)
+                or not isinstance(revision, str) or not _REVISION_PREFIX.fullmatch(revision[:16])):
+            return False
+        from flask import current_app
+        from cutover_writer_fence import cutover_writer_fence_enabled
+        if cutover_writer_fence_enabled(current_app.config):
+            return False
+        from services.analytics.ingestor import analytics_ingestor
+        return analytics_ingestor.track(tenant_id, FEEDBACK_EVENT, {
+            'node': node_id, 'revision': revision[:16], 'helpful': helpful},
+            channel=channel, tenant_type=tenant_type) is not None
+    except Exception:
+        logger.warning('institutional_answer_feedback_not_recorded channel=%s', channel, exc_info=True)
+        try:
+            from models import db
+            db.session.rollback()
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return False
+
+
+def _feedback(tenant, since, by_day_keys, offset, ranking):
+    from models import db, AnalyticsEventV2
+    rows = (db.session.query(AnalyticsEventV2.ts, AnalyticsEventV2.channel, AnalyticsEventV2.metadata_payload)
+            .filter(AnalyticsEventV2.tenant_id == tenant.id, AnalyticsEventV2.event_name == FEEDBACK_EVENT,
+                    AnalyticsEventV2.ts >= since)
+            .order_by(AnalyticsEventV2.ts.desc()).limit(MAX_EVENTS).all())
+    helpful, unhelpful, by_node = 0, 0, Counter()
+    for ts, channel, stored in rows:
+        if (channel not in CHANNELS or ts is None or not isinstance(stored, dict)
+                or type(stored.get('helpful')) is not bool or not isinstance(stored.get('node'), str)
+                or not _NODE_ID.fullmatch(stored['node'])):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if (ts.astimezone(timezone.utc) + offset).date() not in by_day_keys:
+            continue
+        if stored['helpful']:
+            helpful += 1
+        else:
+            unhelpful += 1
+            by_node[stored['node']] += 1
+    total = helpful + unhelpful
+    return {'helpful': helpful, 'unhelpful': unhelpful,
+            'helpful_rate': round(helpful / total, 4) if total else None,
+            'unhelpful_by_node': ranking(by_node)}
+
+
 def question_metrics(tenant, state, *, days=DEFAULT_DAYS, utc_offset_minutes=0, now=None):
     """Read-only aggregates of the recorded outcomes for one tenant."""
     from models import db, AnalyticsEventV2
@@ -172,5 +234,6 @@ def question_metrics(tenant, state, *, days=DEFAULT_DAYS, utc_offset_minutes=0, 
         'by_channel': {channel: counts(counter) for channel, counter in by_channel.items()},
         'by_day': [{'date': day.isoformat(), **counts(counter)} for day, counter in sorted(by_day.items())],
         'uncovered_by_node': ranking(uncovered), 'answered_by_node': ranking(asked),
+        'feedback': _feedback(tenant, since, by_day, offset, ranking),
         'ui': dict(UI),
     }
