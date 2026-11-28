@@ -1596,3 +1596,57 @@ def test_an_answer_asks_if_it_helped_and_counts_one_yes_or_no(environment, monke
     assert recorded == [(pilot.TENANT_ID, "municipio", "whatsapp", revision, context[pilot.FEEDBACK_PENDING]["node_id"], False)]
     again, _, _, _ = pilot._answer(SimpleNamespace(content_type="text", text="no"), after)
     assert len(recorded) == 1 and "Lo vamos a revisar" not in again
+
+
+def test_flow_reply_keeps_only_chosen_option_ids():
+    from services.meta_whatsapp_webhook import flow_reply_selection
+    reply = {"response_json": json.dumps({"flow_token": "tdf-consulta", "ciudad": "rio-grande", "tema": "rupe"}), "name": "flow"}
+    assert flow_reply_selection(reply) == 'flow:{"ciudad":"rio-grande","tema":"rupe"}'
+    for bad in ({}, {"response_json": "[]"}, {"response_json": json.dumps({"tema": "Texto libre con espacios"})},
+                {"response_json": json.dumps({"flow_token": "x"})}, {"response_json": json.dumps({"tema": 3})},
+                {"response_json": json.dumps({k: "a" for k in "abcde"})}, {"response_json": "{" * 3000}):
+        with pytest.raises((ValueError, TypeError)):
+            flow_reply_selection(bad)
+
+
+def test_flow_payload_is_static_and_survives_send_validation():
+    payload = cloud.flow_payload(recipient="5492901000000", body="Elegí un tema", flow_id="1168278078982203",
+                                 cta=pilot.FLOW_CTA, token="tdf-consulta", screen="CONSULTA", draft=True)
+    assert payload["interactive"]["action"]["parameters"] == {
+        "flow_message_version": "3", "flow_token": "tdf-consulta", "flow_id": "1168278078982203",
+        "flow_cta": "Elegir ciudad y tema", "flow_action": "navigate",
+        "flow_action_payload": {"screen": "CONSULTA"}, "mode": "draft"}
+    with pytest.raises(cloud.MetaContractError):
+        cloud.send_once(binding_loader=lambda: None, now=0, policy_check=lambda *a: True, post=lambda *a, **k: None,
+                        payload={**payload, "interactive": {**payload["interactive"], "action": {"name": "flow", "parameters": {
+                            **payload["interactive"]["action"]["parameters"], "flow_action_payload": {"screen": "X", "data": {"a": 1}}}}}})
+    for bad in ({"flow_id": "abc"}, {"cta": "x" * 21}, {"token": "con espacio"}, {"screen": "consulta"}):
+        with pytest.raises(cloud.MetaContractError):
+            cloud.flow_payload(**{"recipient": "5492901000000", "body": "b", "flow_id": "1168278078982203", "cta": "c",
+                                  "token": "t", "screen": "CONSULTA", **bad})
+
+
+def test_the_flow_opens_on_first_contact_and_its_choice_answers_the_topic(environment):
+    from flask import current_app
+    raw = public_presentation_fixture()
+    raw["localities"] = [{"label": "Río Grande", "target": "requirements"}, {"label": "Ushuaia", "target": "requirements"}]
+    publish_presentation_fixture(environment, raw)
+    plain_menu, _, _, list_buttons = pilot._answer(SimpleNamespace(content_type="text", text="menu"), {})
+    assert list_buttons and list_buttons != (pilot.FLOW_MENU,)
+    current_app.config["META_TDF_SANDBOX_FLOW_ID"] = "1168278078982203"
+    try:
+        body, context, revision, buttons = pilot._answer(SimpleNamespace(content_type="text", text="menu"), {})
+        assert list(buttons) == [pilot.FLOW_MENU] and body == plain_menu
+        payload = pilot._reply_payload("5492901000000", body, buttons, revision)
+        assert payload["interactive"]["type"] == "flow"
+        chosen = 'flow:{"ciudad":"rio-grande","tema":"requirements"}'
+        answer, after, same, _ = pilot._answer(SimpleNamespace(content_type="interactive", selection=chosen), context)
+        expected, _, _, _ = pilot._answer(SimpleNamespace(content_type="interactive", selection="knowledge:" + revision[:16] + ":requirements"), {})
+        assert answer.split("\n\n")[0] == expected.split("\n\n")[0] and same == revision
+        assert after["institutional_knowledge"]["locality"] == "Río Grande"
+        again, _, _, again_buttons = pilot._answer(SimpleNamespace(content_type="text", text="menu"), after)
+        assert list(again_buttons) != [pilot.FLOW_MENU]
+        unknown, _, _, _ = pilot._answer(SimpleNamespace(content_type="interactive", selection='flow:{"tema":"nope"}'), {})
+        assert "no corresponde" not in unknown
+    finally:
+        current_app.config["META_TDF_SANDBOX_FLOW_ID"] = ""

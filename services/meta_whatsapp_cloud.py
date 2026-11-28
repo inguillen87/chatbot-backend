@@ -164,6 +164,32 @@ def list_payload(*, recipient: str, body: str, rows: tuple[dict, ...],
             "action": {"button": button, "sections": [{"title": section, "rows": safe_rows}]}})
 
 
+_FLOW_ID = re.compile(r"[0-9]{6,32}")
+_FLOW_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_FLOW_SCREEN = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+
+def flow_payload(*, recipient: str, body: str, flow_id: str, cta: str, token: str,
+                 screen: str, draft: bool = False) -> dict:
+    """A static WhatsApp Flow opened on its first screen. No data endpoint, no URLs."""
+    if (not isinstance(recipient, str) or not _RECIPIENT.fullmatch(recipient)
+            or not isinstance(body, str) or not body.strip() or len(body) > 1024
+            or not isinstance(flow_id, str) or not _FLOW_ID.fullmatch(flow_id)
+            or not isinstance(cta, str) or not cta.strip() or len(cta) > 20 or any(ord(c) < 32 for c in cta)
+            or not isinstance(token, str) or not _FLOW_TOKEN.fullmatch(token)
+            or not isinstance(screen, str) or not _FLOW_SCREEN.fullmatch(screen)
+            or type(draft) is not bool):
+        raise MetaContractError("meta_flow_payload_invalid")
+    parameters = {"flow_message_version": "3", "flow_token": token, "flow_id": flow_id,
+                  "flow_cta": cta, "flow_action": "navigate",
+                  "flow_action_payload": {"screen": screen}}
+    if draft:
+        parameters["mode"] = "draft"
+    return dict(messaging_product="whatsapp", recipient_type="individual", to=recipient,
+        type="interactive", interactive={"type": "flow", "body": {"text": body},
+            "action": {"name": "flow", "parameters": parameters}})
+
+
 def media_payload(*, recipient: str, kind: str, media_id: str) -> dict:
     """Native media ID only; asset authority is a separate server/outbox fence.
 
@@ -257,12 +283,18 @@ def send_once(*, binding_loader: Callable[[], VerifiedMetaBinding], payload: dic
             safe = text_payload(recipient=payload["to"], body=payload["text"]["body"])
         elif payload.get("type") == "interactive":
             item = payload["interactive"]
-            sections = item["action"]["sections"]
-            if len(sections) != 1 or item["type"] != "list":
-                raise ValueError
-            safe = list_payload(recipient=payload["to"], body=item["body"]["text"],
-                rows=tuple(sections[0]["rows"]), button=item["action"]["button"],
-                section=sections[0]["title"])
+            if item["type"] == "flow":
+                params = item["action"]["parameters"]
+                safe = flow_payload(recipient=payload["to"], body=item["body"]["text"],
+                    flow_id=params["flow_id"], cta=params["flow_cta"], token=params["flow_token"],
+                    screen=params["flow_action_payload"]["screen"], draft=params.get("mode") == "draft")
+            else:
+                sections = item["action"]["sections"]
+                if len(sections) != 1 or item["type"] != "list":
+                    raise ValueError
+                safe = list_payload(recipient=payload["to"], body=item["body"]["text"],
+                    rows=tuple(sections[0]["rows"]), button=item["action"]["button"],
+                    section=sections[0]["title"])
         elif payload.get("type") in {"image", "sticker"}:
             kind = payload["type"]
             safe = media_payload(recipient=payload["to"], kind=kind, media_id=payload[kind]["id"])

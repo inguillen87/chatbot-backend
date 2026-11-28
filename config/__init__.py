@@ -1594,6 +1594,9 @@ class Config:
     META_TDF_SANDBOX_GRAPH_VERSION = os.getenv("META_TDF_SANDBOX_GRAPH_VERSION", "v25.0")
     # News sign-up (ALTA/BAJA) in the assistant: the organization turns it on.
     META_TDF_SANDBOX_NEWS_OPT_IN_ENABLED = os.getenv("META_TDF_SANDBOX_NEWS_OPT_IN_ENABLED", "").lower() == "true"
+    # Static WhatsApp Flow «Encontrá tu trámite» (city + topic). Empty = the list menu.
+    META_TDF_SANDBOX_FLOW_ID = (os.getenv("META_TDF_SANDBOX_FLOW_ID") or "").strip()
+    META_TDF_SANDBOX_FLOW_DRAFT = (os.getenv("META_TDF_SANDBOX_FLOW_DRAFT") or "").strip().lower() == "true"
     # Optional explicit, provider-proven owner association for Meta's test list.
     # Keep raw JSON for strict duplicate-key/shape validation in the pilot.
     META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON = os.getenv("META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON")
