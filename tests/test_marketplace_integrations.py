@@ -188,3 +188,18 @@ def test_benefits_template_loads_once_and_feeds_the_whatsapp_store(client):  # n
     assert labels["Rifa solidaria del hospital"] == "$ 2.000"
     texts = [child.get("text") for child in flow["flow_json"]["screens"][0]["layout"]["children"]]
     assert any("canjear tus puntos, anotarte o donar" in (text or "") for text in texts)
+
+
+def test_admin_catalog_lists_redemptions_and_donations_as_such(client):  # noqa: F811
+    owner, tenant, headers = _create_admin_tenant(plan="free")
+    db.session.add_all([
+        CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Kit escolar", categoria="Educación",
+                     modalidad="canje", precio_puntos=1500, disponible=True),
+        CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Árbol", categoria="Ambiente",
+                     modalidad="donacion", disponible=True),
+    ])
+    db.session.commit()
+    rows = {row["nombre"]: row for row in
+            client.get(f"/api/admin/tenants/{tenant.slug}/catalog/items", headers=headers).get_json()}
+    assert rows["Kit escolar"]["modalidad"] == "canje" and rows["Kit escolar"]["precio_puntos"] == 1500
+    assert rows["Árbol"]["modalidad"] == "donacion"

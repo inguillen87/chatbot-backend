@@ -2616,6 +2616,9 @@ def admin_tenant_catalog(current_user, slug):
                 "moneda": item.moneda,
                 "precio_float": item.precio_monetario,
                 "extra_metadata": item.extra_metadata,
+                # Without these, redemptions and donations looked like items without a price.
+                "modalidad": item.modalidad,
+                "precio_puntos": item.precio_puntos,
             }
         )
         prod["catalogo_item_id"] = item.id
