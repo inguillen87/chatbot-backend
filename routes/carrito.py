@@ -528,9 +528,9 @@ def _db_cart_summary(cart: MarketCart, owner: User, *, event: Optional[str] = No
             "payment_required": payment_required,
             "requires_contact_or_auth": payment_required and not has_contact,
             "gateway_hint": (
-                "Mercado Pago configurado para este tenant"
+                "Pago online seguro con Mercado Pago."
                 if mercadopago_ready
-                else "Mercado Pago pendiente de configurar para este tenant"
+                else "El pago online todavía no está disponible. Confirmamos tu pedido y te contamos cómo pagar."
             ),
             "points_enabled": total_points > 0,
         },
