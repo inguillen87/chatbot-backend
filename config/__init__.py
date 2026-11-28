@@ -947,6 +947,17 @@ class Config:
     # Dedicated rotation boundary for one-time WhatsApp Flow correlation tokens.
     # Native Flows stay disabled when this value is missing or too short.
     WHATSAPP_FLOW_TOKEN_KEY_V1 = os.getenv("WHATSAPP_FLOW_TOKEN_KEY_V1", "")
+    # Marketplace connections (Full plan).  The key signs one-time OAuth state and
+    # seals provider tokens; no fallback, connections stay off without it.
+    INTEGRATIONS_OAUTH_KEY_V1 = os.getenv("INTEGRATIONS_OAUTH_KEY_V1", "")
+    INTEGRATIONS_CALLBACK_BASE_URL = os.getenv("INTEGRATIONS_CALLBACK_BASE_URL", "https://api.chatboc.ar")
+    INTEGRATIONS_RETURN_BASE_URL = os.getenv("INTEGRATIONS_RETURN_BASE_URL", "https://www.chatboc.ar")
+    MERCADOLIBRE_CLIENT_ID = os.getenv("MERCADOLIBRE_CLIENT_ID", "")
+    MERCADOLIBRE_CLIENT_SECRET = os.getenv("MERCADOLIBRE_CLIENT_SECRET", "")
+    TIENDANUBE_APP_ID = os.getenv("TIENDANUBE_APP_ID", "")
+    TIENDANUBE_CLIENT_SECRET = os.getenv("TIENDANUBE_CLIENT_SECRET", "")
+    SHOPIFY_CLIENT_ID = os.getenv("SHOPIFY_CLIENT_ID", "")
+    SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "")
     WHATSAPP_FLOW_TOKEN_TTL_SECONDS = int(
         os.getenv("WHATSAPP_FLOW_TOKEN_TTL_SECONDS", str(48 * 60 * 60))
     )

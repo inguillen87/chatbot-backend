@@ -1,4 +1,4 @@
-from flask import Blueprint, current_app, jsonify, g
+from flask import Blueprint, current_app, jsonify, g, redirect, request
 from utils.auth_helpers import token_requerido
 from models import IntegrationAccount, TenantProfile
 from services.plan_access import (
@@ -208,3 +208,26 @@ def preview_integration(current_user, provider):
             "connect_enabled": bool(access.get("enabled")),
         },
     })
+
+
+@integrations_bp.route('/oauth/<provider>/callback', methods=['GET'])
+def marketplace_oauth_callback(provider):
+    """Signed, one-time OAuth return for Mercado Libre, Tiendanube and Shopify.
+
+    The tenant comes only from the server-side state record, never from the
+    query string.  The browser always lands back on the store's admin page.
+    """
+    from services.integrations import marketplace_oauth as market
+
+    query = {key: value for key, value in request.args.items()}
+    try:
+        tenant = market.complete_connection(provider, query)
+    except market.IntegrationError as exc:
+        current_app.logger.info("marketplace oauth rejected provider=%s reason=%s", provider, exc.reason)
+        response = jsonify({"error": exc.reason, "retryable": exc.reason in {"oauth_state_expired", "provider_unreachable"}})
+        response.status_code = exc.status
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    response = redirect(market.return_url(tenant.slug, conectado=provider), code=302)
+    response.headers["Cache-Control"] = "no-store"
+    return response

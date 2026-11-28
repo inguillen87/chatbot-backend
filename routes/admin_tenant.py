@@ -4042,6 +4042,96 @@ def list_ticket_categories_by_slug(current_user, slug):
 
     return jsonify(items)
 
+def _marketplace_admin_tenant(current_user, slug):
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return None, (jsonify({"error": "Tenant not found"}), 404)
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return None, (jsonify({'error': 'Unauthorized'}), 403)
+    if not _plan_allows_integrations(tenant):
+        return None, _integration_plan_required_response(tenant, "marketplace_sync")
+    return tenant, None
+
+
+def _marketplace_error(exc):
+    response = jsonify({"error": exc.reason})
+    response.status_code = exc.status
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/marketplaces', methods=['GET'])
+@token_requerido
+@require_role("admin", "super_admin")
+@require_tenant
+def marketplace_integrations_status(current_user, slug):
+    from services.integrations import marketplace_oauth as market
+
+    tenant, denied = _marketplace_admin_tenant(current_user, slug)
+    if denied:
+        return denied
+    response = jsonify(market.status(tenant))
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/marketplaces/<provider>/connect', methods=['POST'])
+@token_requerido
+@require_role("admin", "super_admin")
+@require_tenant
+def marketplace_integration_connect(current_user, slug, provider):
+    from services.integrations import marketplace_oauth as market
+
+    tenant, denied = _marketplace_admin_tenant(current_user, slug)
+    if denied:
+        return denied
+    body = request.get_json(silent=True) or {}
+    try:
+        url = market.begin_connection(tenant, provider, user_id=getattr(current_user, "id", None),
+                                      shop=body.get("shop") if isinstance(body, dict) else None)
+    except market.IntegrationError as exc:
+        return _marketplace_error(exc)
+    response = jsonify({"authorize_url": url, "expires_in": market.STATE_TTL_SECONDS})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/marketplaces/<provider>/import', methods=['POST'])
+@token_requerido
+@require_role("admin", "super_admin")
+@require_tenant
+def marketplace_integration_import(current_user, slug, provider):
+    from services.integrations import marketplace_oauth as market
+
+    tenant, denied = _marketplace_admin_tenant(current_user, slug)
+    if denied:
+        return denied
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run")) if isinstance(body, dict) else False
+    try:
+        result = market.import_catalog(tenant, provider, dry_run=dry_run)
+    except market.IntegrationError as exc:
+        return _marketplace_error(exc)
+    return jsonify(result)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/marketplaces/<provider>/disconnect', methods=['POST'])
+@token_requerido
+@require_role("admin", "super_admin")
+@require_tenant
+def marketplace_integration_disconnect(current_user, slug, provider):
+    from services.integrations import marketplace_oauth as market
+
+    tenant, denied = _marketplace_admin_tenant(current_user, slug)
+    if denied:
+        return denied
+    try:
+        removed = market.disconnect(tenant, provider)
+    except market.IntegrationError as exc:
+        return _marketplace_error(exc)
+    return jsonify({"disconnected": removed})
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/sync', methods=['POST'])
 @token_requerido
 @require_tenant
