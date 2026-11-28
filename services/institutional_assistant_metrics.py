@@ -18,6 +18,7 @@ EVENT_NAME = 'institutional_assistant.question'
 FEEDBACK_EVENT = 'institutional_assistant.feedback'
 OUTCOMES = ('answered', 'uncovered', 'typed_navigation', 'sources', 'unavailable')
 CHANNELS = ('web_reader',)
+FEEDBACK_CHANNELS = ('web_reader', 'whatsapp')
 DEFAULT_DAYS, MAX_DAYS, MAX_EVENTS, MAX_RANKING = 30, 90, 20000, 20
 MAX_UTC_OFFSET_MINUTES = 14 * 60
 # Wording of the administration panel. The client renders it as received.
@@ -126,7 +127,7 @@ def record_answer_feedback(tenant_id, tenant_type, channel, revision, node_id, h
     Only the topic, the knowledge revision prefix and yes/no are kept: no
     comment, no text and no caller identity exist in this record."""
     try:
-        if (channel not in CHANNELS or type(tenant_id) is not int or tenant_id < 1 or type(helpful) is not bool
+        if (channel not in FEEDBACK_CHANNELS or type(tenant_id) is not int or tenant_id < 1 or type(helpful) is not bool
                 or not isinstance(node_id, str) or not _NODE_ID.fullmatch(node_id)
                 or not isinstance(revision, str) or not _REVISION_PREFIX.fullmatch(revision[:16])):
             return False
@@ -156,7 +157,7 @@ def _feedback(tenant, since, by_day_keys, offset, ranking):
             .order_by(AnalyticsEventV2.ts.desc()).limit(MAX_EVENTS).all())
     helpful, unhelpful, by_node = 0, 0, Counter()
     for ts, channel, stored in rows:
-        if (channel not in CHANNELS or ts is None or not isinstance(stored, dict)
+        if (channel not in FEEDBACK_CHANNELS or ts is None or not isinstance(stored, dict)
                 or type(stored.get('helpful')) is not bool or not isinstance(stored.get('node'), str)
                 or not _NODE_ID.fullmatch(stored['node'])):
             continue

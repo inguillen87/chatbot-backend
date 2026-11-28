@@ -328,6 +328,32 @@ def _compose_menu_answer(parts, buttons):
 
 
 NEWS_FLAG = "META_TDF_SANDBOX_NEWS_OPT_IN_ENABLED"
+FEEDBACK_HINT = "¿Te sirvió esta respuesta? Respondé SÍ o NO."
+FEEDBACK_PENDING = "institutional_feedback_pending"
+
+
+def _answer_feedback(event, context, tenant):
+    """A SÍ or NO right after an answer that asked for it: counted once, anonymously.
+
+    Only the topic, the knowledge revision and yes/no are kept (as on the web)."""
+    pending = context.get(FEEDBACK_PENDING) if isinstance(context, dict) else None
+    if event.content_type != "text" or not isinstance(pending, dict):
+        return None
+    word = " ".join(str(event.text or "").split()).casefold().strip(".!¡")
+    helpful = {"si": True, "sí": True, "no": False}.get(word)
+    if helpful is None:
+        return None
+    from services.institutional_assistant_metrics import record_answer_feedback
+    record_answer_feedback(tenant.id, tenant.tipo, "whatsapp", pending.get("revision"), pending.get("node_id"), helpful)
+    next_context = dict(context)
+    next_context.pop(FEEDBACK_PENDING, None)
+    if helpful:
+        return "Gracias por avisarnos. Escribí MENÚ para ver otros temas.", next_context, None, ()
+    return ("Gracias por avisarnos. Lo vamos a revisar.\n"
+            "Si necesitás hablar con una oficina, escribí 0 para ver los contactos por ciudad, o MENÚ para volver a los temas.",
+            next_context, None, ())
+
+
 NEWS_HINT = "📣 Para recibir avisos de eventos y trámites, escribí NOVEDADES."
 _NEWS_COMMANDS = {"novedades": "ask", "alta": "opt_in", "baja": "opt_out"}
 
@@ -421,6 +447,9 @@ def _answer(event, context, *, audio_text=None):
     if owner is None:
         raise PilotError("tdf_sandbox_owner_unavailable")
     session = SimpleNamespace(tenant_id=TENANT_ID, context_data=context)
+    feedback = _answer_feedback(event, context, tenant)
+    if feedback is not None:
+        return feedback
     news = _news_consent(event, context)
     if news is not None:
         return news
@@ -490,6 +519,15 @@ def _answer(event, context, *, audio_text=None):
             and len(body) + len(NEWS_HINT) + 2 <= (1024 if len(body) <= 1024 else 4096)):
         # Shown on the opening menu only, and never at the cost of the list.
         body += "\n\n" + NEWS_HINT
+    session.context_data.pop(FEEDBACK_PENDING, None)
+    scope = session.context_data.get(SOURCE_SCOPE)
+    if (isinstance(question, str) and question.strip().casefold() not in {"menu", "menú", "inicio"}
+            and isinstance(scope, dict) and scope.get("node_ids") and result.get("context_revision")
+            and scope.get("revision") == result.get("context_revision")
+            and len(body) + len(FEEDBACK_HINT) + 2 <= (1024 if len(body) <= 1024 else 4096)):
+        # The question goes last, and never at the cost of the list or the answer.
+        body += "\n\n" + FEEDBACK_HINT
+        session.context_data[FEEDBACK_PENDING] = {"revision": scope["revision"], "node_id": scope["node_ids"][0]}
     return body, session.context_data, result.get("context_revision"), tuple(buttons)
 
 

@@ -1578,3 +1578,21 @@ def test_complaint_tracking_answers_before_the_knowledge(environment):
     publish_presentation_fixture(environment, public_presentation_fixture())
     body, context, revision, buttons = pilot._answer(SimpleNamespace(content_type="text", text="estado del reclamo 123456"), {})
     assert pilot.CLAIM_TRACKING_URL + "/123456" in body and revision is None and buttons == ()
+
+
+def test_an_answer_asks_if_it_helped_and_counts_one_yes_or_no(environment, monkeypatch):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    recorded = []
+    import services.institutional_assistant_metrics as metrics
+    monkeypatch.setattr(metrics, "record_answer_feedback", lambda *args: recorded.append(args) or True)
+    menu, context, _, _ = pilot._answer(SimpleNamespace(content_type="text", text="menu"), {})
+    assert pilot.FEEDBACK_HINT not in menu and pilot.FEEDBACK_PENDING not in context
+    action = next(b["action_id"] for b in pilot._answer(SimpleNamespace(content_type="text", text="menu"), {})[3])
+    body, context, revision, _ = pilot._answer(SimpleNamespace(content_type="interactive", selection=action), context)
+    assert body.endswith(pilot.FEEDBACK_HINT)
+    assert context[pilot.FEEDBACK_PENDING]["revision"] == revision
+    thanks, after, _, buttons = pilot._answer(SimpleNamespace(content_type="text", text="No"), context)
+    assert "Lo vamos a revisar" in thanks and buttons == () and pilot.FEEDBACK_PENDING not in after
+    assert recorded == [(pilot.TENANT_ID, "municipio", "whatsapp", revision, context[pilot.FEEDBACK_PENDING]["node_id"], False)]
+    again, _, _, _ = pilot._answer(SimpleNamespace(content_type="text", text="no"), after)
+    assert len(recorded) == 1 and "Lo vamos a revisar" not in again
