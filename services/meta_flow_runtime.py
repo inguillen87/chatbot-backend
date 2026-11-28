@@ -19,8 +19,10 @@ from werkzeug.datastructures import FileStorage
 
 from models import (
     AuditEvent,
+    CatalogoItem,
     EncEncuesta,
     MarketOrder,
+    MarketOrderItem,
     MunicipioTicket,
     Order,
     OrderEvent,
@@ -66,8 +68,9 @@ CLAIM_FLOW_ID = "claim_tracking_helpdesk"
 CLAIM_EVIDENCE_FLOW_ID = "claim_evidence"
 ORDER_FLOW_ID = "order_checkout"
 SURVEY_FLOW_ID = "survey_vote"
+CATALOG_FLOW_ID = "catalog_order"
 SUPPORTED_FLOW_IDS = frozenset(
-    {CLAIM_FLOW_ID, CLAIM_EVIDENCE_FLOW_ID, ORDER_FLOW_ID, SURVEY_FLOW_ID}
+    {CLAIM_FLOW_ID, CLAIM_EVIDENCE_FLOW_ID, ORDER_FLOW_ID, SURVEY_FLOW_ID, CATALOG_FLOW_ID}
 )
 
 _ENDPOINT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -89,6 +92,7 @@ _CLAIM_EVIDENCE_SCREENS = frozenset(
     }
 )
 _ORDER_SCREENS = frozenset({"ORDER_DETAILS", "ORDER_CONFIRM"})
+_CATALOG_SCREENS = frozenset({"CATALOG_CATEGORY", "CATALOG_PRODUCT", "CATALOG_CART"})
 _SURVEY_QUESTION_SCREENS = (
     "SURVEY_QUESTION_ONE",
     "SURVEY_QUESTION_TWO",
@@ -420,6 +424,9 @@ class MetaFlowRuntime:
         invocation: _VerifiedInvocation,
     ) -> Mapping[str, Any]:
         _validate_screen(payload.get("screen"), invocation.flow_id, optional=True)
+        if invocation.flow_id == CATALOG_FLOW_ID:
+            self._load_catalog_interaction(endpoint, invocation)
+            return _catalog_category_response(endpoint.tenant)
         if invocation.flow_id == ORDER_FLOW_ID:
             self._load_order_context(endpoint, invocation)
             return {"screen": "ORDER_DETAILS", "data": {}}
@@ -444,6 +451,9 @@ class MetaFlowRuntime:
         invocation: _VerifiedInvocation,
     ) -> Mapping[str, Any]:
         _validate_screen(payload.get("screen"), invocation.flow_id, optional=False)
+        if invocation.flow_id == CATALOG_FLOW_ID:
+            self._load_catalog_interaction(endpoint, invocation)
+            return _catalog_category_response(endpoint.tenant)
         if invocation.flow_id == ORDER_FLOW_ID:
             self._load_order_context(endpoint, invocation)
             return {"screen": "ORDER_DETAILS", "data": {}}
@@ -523,6 +533,9 @@ class MetaFlowRuntime:
                 endpoint,
                 invocation,
             )
+
+        if invocation.flow_id == CATALOG_FLOW_ID:
+            return self._handle_catalog_data_exchange(payload, data, endpoint, invocation)
 
         if payload.get("screen") != "ORDER_DETAILS":
             raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
@@ -670,6 +683,47 @@ class MetaFlowRuntime:
                 404,
             )
         return order
+
+    def _load_catalog_interaction(
+        self,
+        endpoint: _ResolvedEndpoint,
+        invocation: _VerifiedInvocation,
+    ) -> WhatsAppFlowInteraction:
+        interaction = WhatsAppFlowInteraction.query.filter_by(
+            id=invocation.interaction_id,
+            tenant_id=int(endpoint.tenant.id),
+            provider_sender_id=invocation.provider_sender_id,
+        ).first()
+        if interaction is None or interaction.status not in _READY_INTERACTION_STATES:
+            raise _action_error("catalog_unavailable", "This message is no longer available.", 409)
+        if interaction.flow_id != CATALOG_FLOW_ID:
+            raise _action_error("catalog_scope_mismatch", "This message is no longer available.", 403)
+        return interaction
+
+    def _handle_catalog_data_exchange(
+        self,
+        payload: Mapping[str, Any],
+        data: Mapping[str, Any],
+        endpoint: _ResolvedEndpoint,
+        invocation: _VerifiedInvocation,
+    ) -> Mapping[str, Any]:
+        interaction = self._load_catalog_interaction(endpoint, invocation)
+        tenant = endpoint.tenant
+        screen = str(payload.get("screen") or "")
+        if screen == "CATALOG_CATEGORY":
+            category = _required_string(data.get("category"), "catalog_category_required", 80)
+            return _catalog_product_response(tenant, category)
+        if screen == "CATALOG_PRODUCT":
+            item, quantity = _catalog_selection(tenant, data)
+            metadata = dict(interaction.metadata_json or {})
+            metadata["catalog_selection"] = {"product_id": int(item.id), "quantity": quantity}
+            interaction.metadata_json = metadata
+            db.session.add(interaction)
+            db.session.commit()
+            draft = _catalog_draft_order(int(tenant.id), interaction.recipient_hash)
+            lines = _catalog_cart_lines(draft, (item, quantity))
+            return {"screen": "CATALOG_CART", "data": lines}
+        raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
 
     def _load_survey_context(
         self,
@@ -920,6 +974,12 @@ def apply_whatsapp_flow_completion(
             interaction=interaction,
             answers=answers,
             actor_user_id=actor_user_id,
+        )
+    elif interaction.flow_id == CATALOG_FLOW_ID:
+        result = _apply_catalog_completion(
+            tenant_id=normalized_tenant_id,
+            interaction=interaction,
+            answers=answers,
         )
     else:
         result = _apply_survey_completion(
@@ -2756,6 +2816,8 @@ def _validate_screen(value: Any, flow_id: str, *, optional: bool) -> str | None:
         allowed = _CLAIM_EVIDENCE_SCREENS
     elif flow_id == ORDER_FLOW_ID:
         allowed = _ORDER_SCREENS
+    elif flow_id == CATALOG_FLOW_ID:
+        allowed = _CATALOG_SCREENS
     else:
         allowed = _SURVEY_SCREENS
     if screen not in allowed:
@@ -3011,6 +3073,185 @@ def _canonical_order_kind(value: str) -> str | None:
     if kind in {"conversational", "pedidoconversacional", "pedido_conversacional"}:
         return "conversational"
     return None
+
+
+_CATALOG_MAX_OPTIONS = 20
+_CATALOG_MAX_QUANTITY = 10
+
+
+def _catalog_slug(value: Any) -> str:
+    import unicodedata
+
+    text = unicodedata.normalize("NFD", str(value or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")[:60] or "otros"
+
+
+def _catalog_price(item: Any) -> Decimal | None:
+    raw = str(getattr(item, "precio", "") or "").strip()
+    digits = re.sub(r"[^0-9,.]", "", raw)
+    if not digits:
+        return None
+    # Argentine notation first: dots group thousands, a comma marks cents.
+    if "," in digits:
+        digits = digits.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"\d{1,3}(\.\d{3})+", digits):
+        digits = digits.replace(".", "")
+    try:
+        value = Decimal(digits).quantize(Decimal("0.01"))
+    except (InvalidOperation, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _catalog_stock(item: Any) -> int | None:
+    raw = str(getattr(item, "cantidad", "") or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def _catalog_sellable_items(tenant_id: int) -> list[Any]:
+    """Published products a customer can buy here: available, priced and not out of stock."""
+    items = (CatalogoItem.query.filter_by(tenant_id=int(tenant_id), disponible=True)
+             .order_by(CatalogoItem.nombre).limit(500).all())
+    return [item for item in items if _catalog_price(item) is not None and _catalog_stock(item) != 0]
+
+
+def _catalog_store_name(tenant: Any) -> str:
+    return str(getattr(tenant, "nombre", "") or "Catálogo")[:80]
+
+
+def _catalog_category_response(tenant: Any) -> dict[str, Any]:
+    counts: dict[str, list[Any]] = {}
+    for item in _catalog_sellable_items(int(tenant.id)):
+        label = str(item.categoria or "Otros").strip()[:30] or "Otros"
+        counts.setdefault(label, []).append(item)
+    if not counts:
+        raise _action_error("catalog_empty", "There are no products to show right now.", 409)
+    categories = [
+        {"id": _catalog_slug(label), "title": label,
+         "description": f"{len(items)} producto" + ("" if len(items) == 1 else "s")}
+        for label, items in sorted(counts.items(), key=lambda entry: entry[0].lower())
+    ][:_CATALOG_MAX_OPTIONS]
+    return {"screen": "CATALOG_CATEGORY", "data": {"store_name": _catalog_store_name(tenant), "categories": categories}}
+
+
+def _catalog_product_response(tenant: Any, category: str) -> dict[str, Any]:
+    chosen = [item for item in _catalog_sellable_items(int(tenant.id))
+              if _catalog_slug(item.categoria or "Otros") == category]
+    if not chosen:
+        raise _action_error("catalog_category_invalid", "This category has no products right now.", 400)
+    title = str(chosen[0].categoria or "Otros")[:60]
+    products = [
+        {"id": str(item.id), "title": str(item.nombre)[:30],
+         "description": _format_money(_catalog_price(item), "ARS")}
+        for item in chosen[:_CATALOG_MAX_OPTIONS]
+    ]
+    return {"screen": "CATALOG_PRODUCT", "data": {"category_title": title, "products": products}}
+
+
+def _catalog_selection(tenant: Any, data: Mapping[str, Any]) -> tuple[Any, int]:
+    product = _required_string(data.get("product"), "catalog_product_required", 20)
+    quantity_raw = _required_string(data.get("quantity"), "catalog_quantity_required", 4)
+    if not product.isdigit() or not quantity_raw.isdigit():
+        raise _action_error("catalog_selection_invalid", "Product selection is invalid.", 400)
+    quantity = int(quantity_raw)
+    item = next((entry for entry in _catalog_sellable_items(int(tenant.id)) if int(entry.id) == int(product)), None)
+    if item is None or not 1 <= quantity <= _CATALOG_MAX_QUANTITY:
+        raise _action_error("catalog_selection_invalid", "Product selection is invalid.", 400)
+    stock = _catalog_stock(item)
+    if stock is not None and quantity > stock:
+        raise _action_error("catalog_stock_insufficient", "There is not enough stock for that quantity.", 409)
+    return item, quantity
+
+
+def _catalog_contact_key(recipient_hash: str) -> str:
+    return f"wa_flow:{recipient_hash}"[:160]
+
+
+def _catalog_draft_order(tenant_id: int, recipient_hash: str) -> Any:
+    return (MarketOrder.query.filter_by(tenant_id=int(tenant_id), status="draft",
+                                        contact_key=_catalog_contact_key(recipient_hash), channel="whatsapp")
+            .order_by(MarketOrder.id.desc()).first())
+
+
+def _catalog_cart_lines(draft: Any, extra: tuple[Any, int] | None = None) -> dict[str, str]:
+    rows: list[tuple[str, int, Decimal]] = []
+    for line in (draft.items if draft is not None else []):
+        rows.append((str(line.name_snapshot or "Producto"), int(line.quantity or 1), Decimal(str(line.price_monetary or 0))))
+    if extra is not None:
+        item, quantity = extra
+        rows.append((str(item.nombre), quantity, _catalog_price(item) or Decimal("0")))
+    total = sum((price * quantity for _, quantity, price in rows), Decimal("0"))
+    text = "\n".join(f"{quantity} x {name[:40]} · {_format_money(price * quantity, 'ARS')}" for name, quantity, price in rows)
+    return {"cart_lines": text[:1000] or "Tu carrito está vacío.", "total_display": _format_money(total, "ARS")}
+
+
+def _apply_catalog_completion(
+    *,
+    tenant_id: int,
+    interaction: WhatsAppFlowInteraction,
+    answers: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add the chosen product to this contact's WhatsApp cart; finish it if asked.
+
+    The cart is a draft MarketOrder bound to the contact's recipient hash, so a
+    new catalog form keeps adding to it. Prices come from the catalog, never
+    from the submission."""
+    next_step = answers.get("next_step")
+    if next_step not in {"agregar", "finalizar"}:
+        raise _action_error("catalog_next_step_invalid", "Catalog input is invalid.", 400)
+    metadata = interaction.metadata_json if isinstance(interaction.metadata_json, Mapping) else {}
+    selection = metadata.get("catalog_selection")
+    if not isinstance(selection, Mapping):
+        raise _action_error("catalog_selection_missing", "Choose a product first.", 409)
+    tenant = db.session.get(TenantProfile, int(tenant_id))
+    item, quantity = _catalog_selection(tenant, {"product": str(selection.get("product_id")),
+                                                 "quantity": str(selection.get("quantity"))})
+    price = _catalog_price(item)
+    order = _catalog_draft_order(int(tenant_id), interaction.recipient_hash)
+    if order is None:
+        order = MarketOrder(tenant_id=int(tenant_id), status="draft", channel="whatsapp", currency="ARS",
+                            contact_key=_catalog_contact_key(interaction.recipient_hash),
+                            metadata_payload={"source": "whatsapp_catalog_flow"})
+        db.session.add(order)
+        db.session.flush()
+    existing = next((line for line in order.items if int(line.product_id or 0) == int(item.id)), None)
+    if existing is not None:
+        existing.quantity = min(_CATALOG_MAX_QUANTITY * 5, int(existing.quantity or 0) + quantity)
+        existing.price_monetary = price
+    else:
+        db.session.add(MarketOrderItem(order_id=order.id, product_id=int(item.id), quantity=quantity,
+                                       price_monetary=price, currency="ARS", modalidad="venta",
+                                       name_snapshot=str(item.nombre)[:255]))
+    db.session.flush()
+    db.session.refresh(order)
+    order.total_monetary = sum((Decimal(str(line.price_monetary or 0)) * int(line.quantity or 1) for line in order.items), Decimal("0"))
+    lines = _catalog_cart_lines(order)
+    if next_step == "finalizar":
+        order.status = "pending"
+        order_metadata = dict(order.metadata_payload or {})
+        order_metadata["ready_for_checkout"] = True
+        order_metadata["finished_interaction_id"] = interaction.id
+        order.metadata_payload = order_metadata
+        db.session.add(OrderEvent(market_order_id=order.id, type="whatsapp_catalog_cart_finished",
+                                  payload={"interaction_id": interaction.id, "items": len(order.items)}))
+        body = ("¡Listo! Armaste tu pedido:\n" + lines["cart_lines"] + "\nTotal: " + lines["total_display"]
+                + "\n\nEl comercio lo revisa y te confirma por acá cómo lo recibís y cómo pagás.")
+        options = [{"texto": "Ver pedido", "action_id": "consultar_estado_pedido"},
+                   {"texto": "Menú", "action_id": "menu_principal"}]
+    else:
+        body = ("Agregado. Tu carrito:\n" + lines["cart_lines"] + "\nTotal: " + lines["total_display"]
+                + "\n\nAbrí el catálogo otra vez para sumar más productos; tu carrito se guarda.")
+        options = [{"texto": "Ver catálogo", "action_id": "ver_catalogo_pyme"},
+                   {"texto": "Menú", "action_id": "menu_principal"}]
+    db.session.add(order)
+    return {
+        "message_body": body,
+        "options_list": options,
+        "message_type": "interactive_buttons",
+        "fuente": "whatsapp_flow_catalog_completed",
+        "generar_audio": False,
+        "entity": {"kind": "market", "id": order.id},
+    }
 
 
 def _order_summary(order: Any) -> str:

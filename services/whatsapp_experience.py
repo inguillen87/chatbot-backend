@@ -45,6 +45,7 @@ from services.meta_flow_json import (
     SURVEY_VOTE_DATA_CONTRACT,
     build_claim_evidence_flow,
     build_claim_tracking_flow,
+    build_catalog_order_flow,
     build_order_checkout_flow,
     build_survey_vote_flow,
 )
@@ -95,6 +96,7 @@ FIXED_MENU_AUDIO_SCOPES = [
 ]
 
 META_FLOW_JSON_BUILDERS = {
+    "catalog_order": build_catalog_order_flow,
     "claim_evidence": build_claim_evidence_flow,
     "claim_tracking_helpdesk": build_claim_tracking_flow,
     "order_checkout": build_order_checkout_flow,

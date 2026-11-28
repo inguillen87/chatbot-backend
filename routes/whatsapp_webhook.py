@@ -114,6 +114,7 @@ from services.meta_flow_data_exchange import MetaFlowActionError
 from services.meta_flow_runtime import (
     CLAIM_EVIDENCE_FLOW_ID,
     CLAIM_FLOW_ID,
+    CATALOG_FLOW_ID,
     ORDER_FLOW_ID,
     SURVEY_FLOW_ID,
     apply_whatsapp_flow_completion,
@@ -6367,6 +6368,7 @@ def whatsapp_webhook():
         (((safe_flow_submission or {}).get("flow") or {}).get("id")) or ""
     ).strip()
     replayable_flow_completion = completed_flow_id in {
+        CATALOG_FLOW_ID,
         CLAIM_EVIDENCE_FLOW_ID,
         CLAIM_FLOW_ID,
         ORDER_FLOW_ID,
