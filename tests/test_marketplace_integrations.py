@@ -148,3 +148,20 @@ def test_reconnect_needed_when_store_revokes_access(client):  # noqa: F811
     with patch.object(market.requests, "get", return_value=denied):
         response = client.post(f"/api/admin/tenants/{tenant.slug}/integrations/marketplaces/shopify/import", headers=headers)
     assert response.status_code == 409 and response.get_json()["error"] == "integration_reconnect_required"
+
+
+def test_store_whatsapp_flow_is_built_from_the_published_catalog(client):  # noqa: F811
+    owner, tenant, headers = _create_admin_tenant(plan="free")
+    empty = client.get(f"/api/admin/tenants/{tenant.slug}/marketplace/whatsapp-flow", headers=headers)
+    assert empty.status_code == 409 and empty.get_json()["error"] == "catalog_without_offers"
+    db.session.add_all([
+        CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Kit escolar", categoria="Educación",
+                     modalidad="canje", precio_puntos=1500, disponible=True),
+        CatalogoItem(user_id=owner.id, tenant_id=tenant.id, nombre="Rifa solidaria", categoria="Eventos",
+                     precio="500", disponible=True),
+    ])
+    db.session.commit()
+    body = client.get(f"/api/admin/tenants/{tenant.slug}/marketplace/whatsapp-flow", headers=headers).get_json()
+    assert body["contract_version"] == "chatboc.marketplace_whatsapp_flow.v1" and body["screen"] == "TIENDA"
+    assert [offer["label"] for offer in body["summary"]["offers"]] == ["1.500 puntos", "$ 500"]
+    assert body["flow_json"]["screens"][0]["id"] == "TIENDA"

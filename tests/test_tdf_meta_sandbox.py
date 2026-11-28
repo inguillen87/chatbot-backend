@@ -1684,3 +1684,78 @@ def test_number_is_kept_with_notice_and_erased_on_borrar_only_when_enabled(envir
         assert pilot._erase_number(event("quiero borrar mi reclamo"), {}, cfg) is None
     finally:
         current_app.config.pop(pilot.KEEP_NUMBER_FLAG, None)
+
+
+def _store(environment):
+    from flask import current_app
+    from models import CatalogoItem
+    store = TenantProfile(slug="junin-demo", nombre="Municipalidad de Junín", tipo="municipio",
+                          municipio_id=environment.owner.id, is_active=True)
+    db.session.add(store); db.session.flush()
+    rows = [CatalogoItem(user_id=environment.owner.id, tenant_id=store.id, nombre="Kit escolar solidario",
+                         categoria="Educación", modalidad="canje", precio_puntos=1500, disponible=True),
+            CatalogoItem(user_id=environment.owner.id, tenant_id=store.id, nombre="Bolsón saludable",
+                         categoria="Producción local", modalidad="compra", precio="3.500", cantidad="4", disponible=True),
+            CatalogoItem(user_id=environment.owner.id, tenant_id=store.id, nombre="Árbol nativo",
+                         categoria="Ambiente", modalidad="donacion", disponible=True)]
+    db.session.add_all(rows); db.session.commit()
+    current_app.config.update(META_TDF_SANDBOX_MARKET_FLOW_ID="2233445566778899",
+                              META_TDF_SANDBOX_MARKET_TENANT_SLUG="junin-demo")
+    return store, {row.nombre: row.id for row in rows}
+
+
+def test_store_is_off_until_its_flow_and_catalog_are_configured(environment):
+    from services import tdf_meta_market as store
+    event = SimpleNamespace(content_type="text", text="TIENDA")
+    assert store.answer(event, {}, "pseudo", pilot.clear_source_scope) is None
+    menu, _, _, _ = pilot._answer(SimpleNamespace(content_type="text", text="menu"), {})
+    assert store.MENU_HINT not in menu
+
+
+def test_store_opens_adds_finishes_and_tracks_without_storing_the_number(environment):
+    from models import MarketOrder
+    from services import tdf_meta_market as store
+    _, ids = _store(environment)
+    clear = pilot.clear_source_scope
+    menu, _, _, _ = pilot._answer(SimpleNamespace(content_type="text", text="menu"), {})
+    assert menu.endswith(store.MENU_HINT)
+
+    body, _, _, buttons = store.answer(SimpleNamespace(content_type="text", text="Canjear"), {}, "pseudo-1", clear)
+    payload = pilot._reply_payload("5492901000000", body, buttons, None)
+    assert payload["interactive"]["type"] == "flow"
+    parameters = payload["interactive"]["action"]["parameters"]
+    assert parameters["flow_id"] == "2233445566778899" and parameters["flow_action_payload"] == {"screen": "TIENDA"}
+
+    kit = 'flow:{"cantidad":"2","producto":"p%d"}' % ids["Kit escolar solidario"]
+    body, _, _, buttons = store.answer(SimpleNamespace(content_type="interactive", selection=kit), {}, "pseudo-1", clear)
+    assert "2 x Kit escolar solidario · 3.000 puntos" in body and buttons == (store.FLOW_MARKER,)
+    bolson = 'flow:{"cantidad":"5","producto":"p%d"}' % ids["Bolsón saludable"]
+    body, _, _, _ = store.answer(SimpleNamespace(content_type="interactive", selection=bolson), {}, "pseudo-1", clear)
+    assert "No hay stock suficiente" in body
+    arbol = 'flow:{"cantidad":"1","producto":"p%d"}' % ids["Árbol nativo"]
+    store.answer(SimpleNamespace(content_type="interactive", selection=arbol), {}, "pseudo-1", clear)
+
+    body, _, _, buttons = store.answer(SimpleNamespace(content_type="text", text="listo"), {}, "pseudo-1", clear)
+    order = MarketOrder.query.one()
+    assert order.status == "pending" and order.contact_key == "wa_flow:pseudo-1" and buttons == ()
+    assert f"pedido #{order.id}" in body and "1 x Árbol nativo · Donación" in body and "portal ciudadano" in body
+    assert CONTACT not in json.dumps(order.metadata_payload or {})
+    status, _, _, _ = store.answer(SimpleNamespace(content_type="text", text="Pedido"), {}, "pseudo-1", clear)
+    assert "lo están revisando" in status
+    # Another person has their own cart; a consult form is not a store choice.
+    other, _, _, _ = store.answer(SimpleNamespace(content_type="text", text="pedido"), {}, "pseudo-2", clear)
+    assert "Todavía no tenés pedidos" in other
+    assert store.answer(SimpleNamespace(content_type="interactive", selection='flow:{"tema":"x"}'), {}, "pseudo-1", clear) is None
+    assert store.answer(SimpleNamespace(content_type="text", text="hola"), {}, "pseudo-1", clear) is None
+
+
+def test_store_choice_arrives_through_the_signed_webhook(environment):
+    from models import MarketOrder
+    _, ids = _store(environment)
+    reply = {"type": "interactive", "interactive": {"type": "nfm_reply", "nfm_reply": {
+        "name": "flow", "body": "Sent", "response_json": json.dumps(
+            {"flow_token": "tdf-tienda", "producto": "p%d" % ids["Kit escolar solidario"], "cantidad": "1"})}}}
+    sent = []
+    process(document(content=reply), post=lambda *a, **k: sent.append(k.get("json") or (a[1] if len(a) > 1 else None)) or accepted_post())
+    order = MarketOrder.query.one()
+    assert order.status == "draft" and order.items[0].price_points == 1500

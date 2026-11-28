@@ -1608,6 +1608,10 @@ class Config:
     # Static WhatsApp Flow «Encontrá tu trámite» (city + topic). Empty = the list menu.
     META_TDF_SANDBOX_FLOW_ID = (os.getenv("META_TDF_SANDBOX_FLOW_ID") or "").strip()
     META_TDF_SANDBOX_FLOW_DRAFT = (os.getenv("META_TDF_SANDBOX_FLOW_DRAFT") or "").strip().lower() == "true"
+    # «Tienda» on the Conversa test number: the published Flow and whose catalog it shows.
+    META_TDF_SANDBOX_MARKET_FLOW_ID = (os.getenv("META_TDF_SANDBOX_MARKET_FLOW_ID") or "").strip()
+    META_TDF_SANDBOX_MARKET_TENANT_SLUG = (os.getenv("META_TDF_SANDBOX_MARKET_TENANT_SLUG") or "").strip()
+    META_TDF_SANDBOX_MARKET_FLOW_DRAFT = (os.getenv("META_TDF_SANDBOX_MARKET_FLOW_DRAFT") or "").strip().lower() == "true"
     # Optional explicit, provider-proven owner association for Meta's test list.
     # Keep raw JSON for strict duplicate-key/shape validation in the pilot.
     META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON = os.getenv("META_TDF_SANDBOX_REPLY_RECIPIENTS_JSON")

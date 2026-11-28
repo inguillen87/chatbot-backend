@@ -37,6 +37,7 @@ from services.tenant_provider_credentials import ProviderCredentialError
 from cutover_writer_fence import cutover_writer_fence_enabled
 from services.tdf_meta_audio import TdfAudioError, audio_error_message, transcribe_meta_voice_note
 from services.tdf_meta_contact_identity import owner_contact_resolver
+from services import tdf_meta_market as market_store
 
 TENANT_ID, TENANT_SLUG = 46, "tierra-del-fuego"
 # Exact Meta test resources observed on 2026-10-10; never the JUNI/shared WABA.
@@ -620,6 +621,10 @@ def _answer(event, context, *, audio_text=None):
             and len(body) + len(NEWS_HINT) + 2 <= (1024 if len(body) <= 1024 else 4096)):
         # Shown on the opening menu only, and never at the cost of the list.
         body += "\n\n" + NEWS_HINT
+    if (isinstance(question, str) and question.strip().casefold() in {"menu", "menú", "inicio"}
+            and market_store.enabled()
+            and len(body) + len(market_store.MENU_HINT) + 2 <= (1024 if len(body) <= 1024 else 4096)):
+        body += "\n\n" + market_store.MENU_HINT
     knowledge = session.context_data.get("institutional_knowledge")
     flow_id = current_app.config.get("META_TDF_SANDBOX_FLOW_ID") or ""
     if (flow_id and isinstance(question, str) and question.strip().casefold() in {"menu", "menú", "inicio"}
@@ -643,6 +648,13 @@ def _reply_payload(recipient, body, buttons, revision):
 
     Long/multi-page menus remain text rather than silently hiding options.
     """
+    if tuple(buttons) == (market_store.FLOW_MARKER,):
+        try:
+            return cloud.flow_payload(recipient=recipient, body=body, flow_id=market_store.flow_id(),
+                cta=market_store.FLOW_CTA, token="tdf-tienda", screen=market_store.market.SCREEN_ID,
+                draft=current_app.config.get(market_store.DRAFT_KEY) is True)
+        except cloud.MetaContractError:
+            return cloud.text_payload(recipient=recipient, body=body)
     if tuple(buttons) == (FLOW_MENU,):
         flow_id = current_app.config.get("META_TDF_SANDBOX_FLOW_ID") or ""
         try:
@@ -853,7 +865,8 @@ def process(raw_body, signature, *, config=None, now=None, authority=None, post=
                         raise PilotError("tdf_audio_knowledge_changed")
             else:
                 erased = _erase_number(event, previous, cfg)
-                body, context, revision, buttons = erased or _answer(event, previous)
+                store = None if erased else market_store.answer(event, previous, contact_key, clear_source_scope)
+                body, context, revision, buttons = erased or store or _answer(event, previous)
             if not (event.content_type == "text" and _erase_number_requested(event)):
                 body = _keep_number(event, body, buttons, cfg,
                                     datetime.fromtimestamp(clock(), tz=timezone.utc))
