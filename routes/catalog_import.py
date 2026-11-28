@@ -187,6 +187,8 @@ def _apply_column_map(rows: list[dict], column_map: dict) -> list[dict]:
 
 _IMAGE_KEYS = (
     "imagen_url",
+    "imagen",
+    "image",
     "image_url",
     "foto",
     "foto_url",
@@ -280,7 +282,7 @@ def _guess_catalog_column_type(key: str, values: list) -> str:
     normalized = str(key or "").strip().lower()
     if normalized in {"precio", "price", "precio_monetario", "stock"}:
         return "number"
-    if normalized in {"imagen_url", "image_url", "foto", "gallery_urls", "imagenes", "images"}:
+    if normalized in {"imagen_url", "imagen", "image", "image_url", "foto", "gallery_urls", "imagenes", "images"}:
         return "image"
     if normalized in {"external_url", "url", "link"}:
         return "url"
