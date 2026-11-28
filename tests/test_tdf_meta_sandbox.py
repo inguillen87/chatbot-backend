@@ -1728,7 +1728,11 @@ def test_store_opens_adds_finishes_and_tracks_without_storing_the_number(environ
 
     kit = 'flow:{"cantidad":"2","producto":"p%d"}' % ids["Kit escolar solidario"]
     body, _, _, buttons = store.answer(SimpleNamespace(content_type="interactive", selection=kit), {}, "pseudo-1", clear)
-    assert "2 x Kit escolar solidario · 3.000 puntos" in body and buttons == (store.FLOW_MARKER,)
+    # A benefit is one per person: asking for two leaves one, and says so.
+    assert "1 x Kit escolar solidario · 1.500 puntos" in body and "uno por persona" in body
+    assert buttons == (store.FLOW_MARKER,)
+    again, _, _, _ = store.answer(SimpleNamespace(content_type="interactive", selection=kit), {}, "pseudo-1", clear)
+    assert "máximo permitido por persona" in again
     bolson = 'flow:{"cantidad":"5","producto":"p%d"}' % ids["Bolsón saludable"]
     body, _, _, _ = store.answer(SimpleNamespace(content_type="interactive", selection=bolson), {}, "pseudo-1", clear)
     assert "No hay stock suficiente" in body

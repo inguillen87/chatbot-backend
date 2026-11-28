@@ -92,6 +92,9 @@ class Offer:
     price: Decimal | None
     points: int | None
     stock: int | None
+    # How many one person may take. Benefits (points, free sign-ups) default to
+    # one, so a family cannot empty the school-kit stock; sales are unlimited.
+    max_per_person: int | None = None
 
     @property
     def option_id(self) -> str:
@@ -107,6 +110,12 @@ class Offer:
         if self.mode == "free":
             return "Gratis · inscripción"
         return "Precio a confirmar"
+
+    def option_label(self) -> str:
+        label = self.unit_label()
+        if self.max_per_person:
+            label += f" · máx. {self.max_per_person} por persona"
+        return label
 
 
 def _mode(item: Any) -> tuple[str, Decimal | None, int | None]:
@@ -137,6 +146,22 @@ def _stock(item: Any) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
+LIMITED_BY_DEFAULT = {"points", "free"}
+
+
+def _max_per_person(item: Any, mode: str) -> int | None:
+    metadata = getattr(item, "extra_metadata", None)
+    raw = metadata.get("max_per_person") if isinstance(metadata, dict) else None
+    if isinstance(raw, bool):
+        raw = None
+    if isinstance(raw, str) and raw.strip().isdigit():
+        raw = int(raw.strip())
+    if isinstance(raw, int):
+        return None if raw <= 0 else min(raw, MAX_QUANTITY)
+    modality = _plain(getattr(item, "modalidad", "") or "")
+    return 1 if mode in LIMITED_BY_DEFAULT or modality in POINTS_MODES | FREE_MODES else None
+
+
 def offers_from_items(items: Sequence[Any]) -> list[Offer]:
     """Published, available items, at most twenty, grouped by category."""
     offers: list[Offer] = []
@@ -148,7 +173,8 @@ def offers_from_items(items: Sequence[Any]) -> list[Offer]:
             continue
         mode, price, points = _mode(item)
         offers.append(Offer(id=int(item.id), name=name, category=_title(getattr(item, "categoria", "") or "Otros", 40),
-                            mode=mode, price=price, points=points, stock=_stock(item)))
+                            mode=mode, price=price, points=points, stock=_stock(item),
+                            max_per_person=_max_per_person(item, mode)))
     offers.sort(key=lambda offer: (_plain(offer.category), _plain(offer.name)))
     return offers[:MAX_OPTIONS * MAX_CATEGORIES_TOTAL]
 
@@ -200,20 +226,37 @@ def _category_hint(offers: Sequence[Offer]) -> str:
     return _title(" · ".join(parts), NAV_METADATA_MAX)
 
 
-def _product_children(title: str, offers: Sequence[Offer], intro: str) -> list[dict[str, Any]]:
+def _screen_quantity_limit(offers: Sequence[Offer]) -> int:
+    """The largest quantity anyone may pick on a screen (unlimited items allow the maximum)."""
+    limits = [offer.max_per_person or MAX_QUANTITY for offer in offers[:MAX_OPTIONS]]
+    return max(limits) if limits else MAX_QUANTITY
+
+
+def _product_children(title: str, offers: Sequence[Offer], intro: str, *,
+                      with_category: bool = False) -> list[dict[str, Any]]:
+    shown = list(offers[:MAX_OPTIONS])
     options = [{"id": offer.option_id, "title": _title(offer.name),
-                "description": _title(offer.unit_label(), 72)} for offer in offers[:MAX_OPTIONS]]
-    quantities = [{"id": str(n), "title": str(n)} for n in range(1, MAX_QUANTITY + 1)]
+                "description": _title(f"{offer.option_label()} · {offer.category}" if with_category
+                                      else offer.option_label(), 72)} for offer in shown]
+    top = _screen_quantity_limit(shown)
+    quantity_children: list[dict[str, Any]] = []
+    payload = {"producto": "${form.producto}"}
+    if top > 1:
+        payload["cantidad"] = "${form.cantidad}"
+        quantities = [{"id": str(n), "title": str(n)} for n in range(1, top + 1)]
+        quantity_children = [{"type": "Dropdown", "name": "cantidad", "label": "Cantidad", "required": True,
+                              "data-source": quantities}]
+    # One each: no quantity to ask, and the completion carries only the choice.
     return [
         {"type": "TextHeading", "text": _title(title, 80)},
         {"type": "TextBody", "text": intro},
         {"type": "RadioButtonsGroup", "name": "producto", "label": "¿Qué elegís?", "required": True,
          "data-source": options},
-        {"type": "Dropdown", "name": "cantidad", "label": "Cantidad", "required": True, "data-source": quantities},
+        *quantity_children,
         {"type": "TextCaption", "text": "Podés sumar más cosas después. No hace falta compartir datos personales."},
         {"type": "Footer", "label": "Agregar al pedido",
          "on-click-action": {"name": "complete",
-                             "payload": {"producto": "${form.producto}", "cantidad": "${form.cantidad}"}}},
+                             "payload": payload}},
     ]
 
 
@@ -250,7 +293,10 @@ def build_marketplace_blueprint(*, store_name: str, offers: Sequence[Offer]) -> 
                 "success": True,
                 "data": {},
                 "layout": {"type": "SingleColumnLayout",
-                           "children": _product_children(category, members, "Elegí una opción y la cantidad.")},
+                           "children": _product_children(
+                               category, members,
+                               "Elegí una opción y la cantidad." if _screen_quantity_limit(members) > 1
+                               else "Elegí una opción.")},
             })
         home = {
             "id": SCREEN_ID,
@@ -268,20 +314,7 @@ def build_marketplace_blueprint(*, store_name: str, offers: Sequence[Offer]) -> 
 
 
 def _single_screen_blueprint(*, store_name: str, offers: Sequence[Offer]) -> FlowBlueprint:
-    options = [{"id": offer.option_id, "title": _title(offer.name),
-                "description": _title(f"{offer.unit_label()} · {offer.category}", 72)} for offer in offers[:MAX_OPTIONS]]
-    quantities = [{"id": str(n), "title": str(n)} for n in range(1, MAX_QUANTITY + 1)]
-    children: list[dict[str, Any]] = [
-        {"type": "TextHeading", "text": _title(store_name, 80) or "Tienda"},
-        {"type": "TextBody", "text": _intro(offers)},
-        {"type": "RadioButtonsGroup", "name": "producto", "label": "¿Qué elegís?", "required": True,
-         "data-source": options},
-        {"type": "Dropdown", "name": "cantidad", "label": "Cantidad", "required": True, "data-source": quantities},
-        {"type": "TextCaption", "text": "Podés sumar más cosas después. No hace falta compartir datos personales."},
-        {"type": "Footer", "label": "Agregar al pedido",
-         "on-click-action": {"name": "complete",
-                             "payload": {"producto": "${form.producto}", "cantidad": "${form.cantidad}"}}},
-    ]
+    children = _product_children(store_name or "Tienda", offers, _intro(offers), with_category=True)
     slug = re.sub(r"[^a-z0-9]+", "_", _plain(store_name)).strip("_")[:40] or "tienda"
     return FlowBlueprint(
         name=f"tienda_{slug}",
@@ -310,8 +343,8 @@ def flow_summary(offers: Sequence[Offer]) -> dict[str, Any]:
 
 
 def parse_choice(chosen: Mapping[str, Any]) -> tuple[int, int] | None:
-    """``{"producto": "p168", "cantidad": "2"}`` → (168, 2); anything else → None."""
-    product, quantity = chosen.get("producto"), chosen.get("cantidad")
+    """``{"producto": "p168", "cantidad": "2"}`` → (168, 2); without a quantity it is one."""
+    product, quantity = chosen.get("producto"), chosen.get("cantidad", "1")
     if not isinstance(product, str) or not isinstance(quantity, str):
         return None
     match = _PRODUCT_ID.fullmatch(product)
@@ -380,6 +413,24 @@ def cart_text(order: Any) -> str:
 _MODALIDAD = {"money": "venta", "quote": "venta", "points": "canje", "donation": "donacion", "free": "inscripcion"}
 
 
+LIMIT_IGNORED_STATUSES = ("draft", "cancelled", "rejected", "expired")
+
+
+def _already_taken(tenant_id: int, pseudonym: str, product_id: int, *, exclude: int | None = None) -> int:
+    """Units of this item the same contact already ordered (sent orders that were not cancelled)."""
+    from sqlalchemy import func
+    from models import db, MarketOrder, MarketOrderItem
+
+    query = (db.session.query(func.coalesce(func.sum(MarketOrderItem.quantity), 0))
+             .join(MarketOrder, MarketOrder.id == MarketOrderItem.order_id)
+             .filter(MarketOrder.tenant_id == int(tenant_id), MarketOrder.contact_key == _contact_key(pseudonym),
+                     MarketOrderItem.product_id == int(product_id),
+                     ~MarketOrder.status.in_(LIMIT_IGNORED_STATUSES)))
+    if exclude is not None:
+        query = query.filter(MarketOrder.id != int(exclude))
+    return int(query.scalar() or 0)
+
+
 def add_choice(*, tenant_id: int, pseudonym: str, product_id: int, quantity: int) -> Any:
     """Add a catalog choice to this contact's WhatsApp cart (a draft MarketOrder)."""
     from models import db, MarketOrder, MarketOrderItem
@@ -395,7 +446,13 @@ def add_choice(*, tenant_id: int, pseudonym: str, product_id: int, quantity: int
         db.session.add(order)
         db.session.flush()
     existing = next((line for line in order.items if int(line.product_id or 0) == offer.id), None)
-    total_quantity = int(quantity) + (int(existing.quantity or 0) if existing is not None else 0)
+    in_cart = int(existing.quantity or 0) if existing is not None else 0
+    if offer.max_per_person:
+        allowed = offer.max_per_person - in_cart - _already_taken(tenant_id, pseudonym, offer.id, exclude=order.id)
+        if allowed <= 0:
+            raise MarketplaceChoiceError("marketplace_limit_reached")
+        quantity = min(int(quantity), allowed)
+    total_quantity = int(quantity) + in_cart
     if offer.stock is not None and total_quantity > offer.stock:
         raise MarketplaceChoiceError("marketplace_stock_insufficient")
     if existing is not None:

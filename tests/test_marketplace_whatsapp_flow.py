@@ -52,10 +52,32 @@ def test_several_categories_browse_first_then_one_screen_each():
     assert by_title["Producción local"]["main-content"]["metadata"] == "Desde $ 3.500"
     assert {item["on-click-action"]["next"]["name"] for item in nav["list-items"]} == {screen["id"] for screen in categories}
     assert all(re.fullmatch(r"[A-Z_]+", screen["id"]) for screen in flow["screens"])
+    by_id = {screen["id"]: screen for screen in categories}
+    screen_of = {item["main-content"]["title"]: by_id[item["on-click-action"]["next"]["name"]]
+                 for item in nav["list-items"]}
     for screen in categories:
         assert screen["terminal"] is True
-        footer = screen["layout"]["children"][-1]
-        assert footer["on-click-action"]["payload"] == {"producto": "${form.producto}", "cantidad": "${form.cantidad}"}
+    # Selling asks for a quantity; benefits are one per person, so no quantity at all.
+    sale = screen_of["Producción local"]["layout"]["children"]
+    assert sale[-1]["on-click-action"]["payload"] == {"producto": "${form.producto}", "cantidad": "${form.cantidad}"}
+    benefit = screen_of["Educación"]["layout"]["children"]
+    assert "Dropdown" not in [child["type"] for child in benefit]
+    assert benefit[-1]["on-click-action"]["payload"] == {"producto": "${form.producto}"}
+    radio = next(child for child in benefit if child["type"] == "RadioButtonsGroup")
+    kit = next(option for option in radio["data-source"] if option["id"] == "p3")
+    assert kit["description"] == "1.500 puntos · máx. 1 por persona"
+
+
+def test_the_organization_can_raise_or_lift_the_limit():
+    raised = SimpleNamespace(**vars(item(7, "Entrada recital", "Cultura", modalidad="canje", puntos=600)),
+                             extra_metadata={"max_per_person": 4})
+    lifted = SimpleNamespace(**vars(item(8, "Charla", "Cultura", modalidad="inscripcion")),
+                             extra_metadata={"max_per_person": 0})
+    offers = {offer.id: offer for offer in market.offers_from_items([raised, lifted])}
+    assert offers[7].max_per_person == 4 and offers[8].max_per_person is None
+    children = market._product_children("Cultura", list(offers.values()), "x")
+    dropdown = next(child for child in children if child["type"] == "Dropdown")
+    assert [option["id"] for option in dropdown["data-source"]] == [str(n) for n in range(1, market.MAX_QUANTITY + 1)]
 
 
 def test_one_category_keeps_the_single_screen_form():
@@ -70,6 +92,7 @@ def test_one_category_keeps_the_single_screen_form():
 
 @pytest.mark.parametrize("chosen,expected", [
     ({"producto": "p12", "cantidad": "3"}, (12, 3)),
+    ({"producto": "p12"}, (12, 1)),
     ({"producto": "12", "cantidad": "3"}, None),
     ({"producto": "p12", "cantidad": "0"}, None),
     ({"producto": "p12", "cantidad": "11"}, None),
