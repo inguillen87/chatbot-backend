@@ -63,8 +63,8 @@ def test_versioned_vertical_packs_have_valid_rendered_previews():
 
     assert catalog["contract_version"] == "whatsapp.template_pack.catalog.v1"
     assert catalog["provider_calls_performed"] is False
-    assert catalog["summary"]["packs"] == 3
-    assert catalog["summary"]["templates"] == 15
+    assert catalog["summary"]["packs"] == 6
+    assert catalog["summary"]["templates"] == 30
     assert set(catalog["lifecycle_states"]) == {
         "local_draft",
         "content_created",
@@ -74,7 +74,7 @@ def test_versioned_vertical_packs_have_valid_rendered_previews():
         "stale",
     }
     packs = {pack["vertical"]: pack for pack in catalog["packs"]}
-    assert set(packs) == {"municipio", "colegio", "empresa"}
+    assert set(packs) == {"municipio", "colegio", "empresa", "comercio", "gastronomia", "servicios"}
     for pack in packs.values():
         assert pack["pack_version"] == "1.0.0"
         assert {item["intent"] for item in pack["templates"]} == {
@@ -98,10 +98,10 @@ def test_tdf_catalog_requires_authorized_tenant_slug_and_keeps_generic_packs():
         assert all(pack["vertical"] != "tdf" for pack in whatsapp_template_pack_catalog(tenant_slug=slug)["packs"])
 
     catalog = whatsapp_template_pack_catalog(tenant_slug="tierra-del-fuego")
-    assert catalog["summary"]["packs"] == 4
-    assert catalog["summary"]["templates"] == 20
+    assert catalog["summary"]["packs"] == 7
+    assert catalog["summary"]["templates"] == 35
     generic = whatsapp_template_pack_catalog()
-    assert catalog["packs"][:3] == generic["packs"]
+    assert catalog["packs"][:6] == generic["packs"]
     pack = next(item for item in catalog["packs"] if item["vertical"] == "tdf")
     assert pack["pack_version"] == "1.0.0"
     assert pack["scope"]["tenant_slug"] == "tierra-del-fuego"
