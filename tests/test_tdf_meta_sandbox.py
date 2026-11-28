@@ -1558,7 +1558,8 @@ def test_the_opening_menu_tells_how_to_get_news_only_when_enabled(environment):
 
 @pytest.mark.parametrize("text,code", [
     ("estado de mi reclamo", None), ("como va mi reclamo?", None), ("Reclamo 123456", "123456"),
-    ("quiero ver el seguimiento del reclamo M-0045871", "0045871"), ("cómo sigue el reclamo 98765", "98765")])
+    ("quiero ver el seguimiento del reclamo M-0045871", "0045871"), ("cómo sigue el reclamo 98765", "98765"),
+    ("reclamo T-12", "T-12"), ("estado del reclamo t 7", "T-7"), ("mi reclamo es T-204 cómo va", "T-204")])
 def test_a_filed_complaint_is_followed_on_its_page_never_in_the_chat(text, code):
     reply = pilot._claim_tracking(text)
     assert reply is not None and "PIN" in reply and "no se muestra en este chat" in reply

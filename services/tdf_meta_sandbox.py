@@ -370,6 +370,8 @@ def news_opted_in(contact):
 _CLAIM_STATUS = re.compile(r"\b(estado|seguimiento|seguir|c[oó]mo (va|sigue|viene)|novedad(es)? (de|del|sobre)|"
                            r"consultar|ver|respuesta (de|del|a))\b", re.IGNORECASE)
 _CLAIM_NUMBER = re.compile(r"\b(?:[ms]-?)?(\d{5,12})\b", re.IGNORECASE)
+# The portal's own form hands out «T-12»: the letter is part of the code.
+_CLAIM_RECEIPT = re.compile(r"\bT[-\s]?(\d{1,10})\b", re.IGNORECASE)
 CLAIM_TRACKING_URL = "https://tdf.chatboc.ar/tracking/claim"
 
 
@@ -381,13 +383,14 @@ def _claim_tracking(text):
     never shown in the chat; the page asks for the PIN the person received."""
     if not isinstance(text, str) or len(text) > 160 or not re.search(r"\breclamos?\b", text, re.IGNORECASE):
         return None
-    number = _CLAIM_NUMBER.search(text)
-    if number is None and not _CLAIM_STATUS.search(text):
+    receipt, number = _CLAIM_RECEIPT.search(text), _CLAIM_NUMBER.search(text)
+    code = "T-" + receipt.group(1) if receipt else number.group(1) if number else None
+    if code is None and not _CLAIM_STATUS.search(text):
         return None
-    if re.search(r"\b(hacer|iniciar|cargar|presentar|nuevo|d[oó]nde)\b", text, re.IGNORECASE) and number is None:
+    if re.search(r"\b(hacer|iniciar|cargar|presentar|nuevo|d[oó]nde)\b", text, re.IGNORECASE) and code is None:
         return None
-    link = CLAIM_TRACKING_URL + ("/" + number.group(1) if number else "")
-    opening = ("Para ver cómo va el reclamo N.º " + number.group(1) + ", abrí este enlace:" if number
+    link = CLAIM_TRACKING_URL + ("/" + code if code else "")
+    opening = ("Para ver cómo va el reclamo " + code + ", abrí este enlace:" if code
                else "Para ver cómo va tu reclamo, abrí este enlace y escribí el número que recibiste al cargarlo:")
     return (opening + "\n" + link + "\n\n"
             "Te va a pedir el PIN que recibiste junto con el número. "
