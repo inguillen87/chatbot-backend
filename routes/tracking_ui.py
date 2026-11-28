@@ -669,6 +669,52 @@ def send_public_claim_tracking_message(ticket_id):
 
     return _tracking_json(_persist_public_claim_tracking_message(ticket, mensaje), 201)
 
+@tracking_ui_bp.route('/api/public/tracking/claims/<int:ticket_id>/satisfaction', methods=['POST'])
+@limiter.limit(
+    _tracking_subject_failure_rate_limit,
+    key_func=_tracking_failure_subject_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+@limiter.limit(
+    _tracking_failure_rate_limit,
+    key_func=_tracking_failure_rate_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+def rate_public_claim(ticket_id):
+    """One rating (1 to 5) for a finished claim, by whoever holds its PIN. No comment field."""
+    import hmac
+    from models import TicketSatisfaccion
+    from services.tracking_experience import CLAIM_SATISFACTION_SCALE, claim_is_finished, claim_satisfaction_state
+
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or set(data) - {"pin", "rating"}:
+        return _tracking_error("Solo se acepta la calificación.", 400, "satisfaction_invalid", "send_pin_and_rating")
+    rating = data.get("rating")
+    if type(rating) is not int or not 1 <= rating <= CLAIM_SATISFACTION_SCALE:
+        return _tracking_error("La calificación va de 1 a 5.", 400, "satisfaction_invalid", "send_rating_1_to_5")
+    pin = _tracking_pin(data)
+    if not pin:
+        return _tracking_error("pin requerido.", 400, "tracking_pin_required", "send_pin")
+    ticket = db.session.get(MunicipioTicket, ticket_id)
+    stored_pin = str(getattr(ticket, "consulta_pin", "") or "") if ticket is not None else ""
+    if not stored_pin or not hmac.compare_digest(stored_pin, pin):
+        return _tracking_error("Reclamo no encontrado.", 404, "claim_not_found", "check_code_and_pin")
+    if not claim_is_finished(ticket):
+        return _tracking_error("El reclamo todavía no terminó.", 409, "satisfaction_not_available", "wait_until_resolved")
+    locked = db.session.get(MunicipioTicket, ticket_id, populate_existing=True, with_for_update={"of": MunicipioTicket})
+    exists = (db.session.query(TicketSatisfaccion.id)
+              .filter_by(ticket_id=locked.id, tipo="municipio").limit(1).scalar())
+    if exists is None:
+        encuesta = servicio_tickets.guardar_encuesta(locked.id, "municipio", rating * 2, None)
+        if encuesta is None:
+            db.session.rollback()
+            return _tracking_error("No se pudo guardar.", 503, "satisfaction_unavailable", "retry_later", retryable=True)
+    db.session.commit()
+    return _tracking_json({"satisfaction": claim_satisfaction_state(locked)}, 201 if exists is None else 200)
+
+
 @tracking_ui_bp.route('/tracking/order/<nro_pedido>')
 def tracking_page(nro_pedido):
     response = make_response(

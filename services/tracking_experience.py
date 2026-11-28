@@ -1048,6 +1048,38 @@ def _order_snapshot(order: Any) -> dict[str, Any]:
     }
 
 
+CLAIM_SATISFACTION_SCALE = 5
+CLAIM_SATISFACTION_ENDPOINT = "/api/public/tracking/claims/{ticket_id}/satisfaction"
+
+
+def claim_is_finished(ticket: Any) -> bool:
+    stage = _CLAIM_STATUS_TO_STAGE.get(str(getattr(ticket, "estado", "") or "").strip().lower())
+    return stage in {"resuelto", "cerrado"}
+
+
+def claim_satisfaction_state(ticket: Any) -> dict[str, Any]:
+    """Whether the person can rate a finished claim (1 to 5), and their rating if given.
+
+    Stored on the platform's 0-10 satisfaction scale as rating x 2."""
+    from models import TicketSatisfaccion
+
+    rated = None
+    if has_app_context() and isinstance(ticket, MunicipioTicket) and ticket.id is not None:
+        rated = (TicketSatisfaccion.query.filter_by(ticket_id=ticket.id, tipo="municipio")
+                 .order_by(TicketSatisfaccion.id).first())
+    rating = None
+    if rated is not None and isinstance(rated.puntuacion, int) and 0 <= rated.puntuacion <= 10:
+        rating = max(1, min(CLAIM_SATISFACTION_SCALE, round(rated.puntuacion / 2)))
+    return {
+        "available": claim_is_finished(ticket) and rated is None,
+        "submitted": rated is not None,
+        "rating": rating,
+        "scale": CLAIM_SATISFACTION_SCALE,
+        "endpoint": CLAIM_SATISFACTION_ENDPOINT.format(ticket_id=getattr(ticket, "id", 0)),
+        "requires": ["pin", "rating"],
+    }
+
+
 def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfile | None = None) -> dict[str, Any]:
     location = {
         "address": getattr(ticket, "direccion", None),
@@ -1090,6 +1122,7 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
     return {
         "contract_version": TRACKING_EXPERIENCE_CONTRACT_VERSION,
         "kind": "claim",
+        "satisfaction": claim_satisfaction_state(ticket),
         "tenant": _tenant_ref(tenant),
         "resource": {
             "id": ticket.id,
