@@ -122,7 +122,7 @@ def callback_url(item: Provider) -> str:
 def return_url(slug: str, **params: str) -> str:
     base = _cfg("INTEGRATIONS_RETURN_BASE_URL", "https://www.chatboc.ar").rstrip("/")
     query = f"?{urlencode(params)}" if params else ""
-    return f"{base}/t/{slug}/admin/integraciones{query}"
+    return f"{base}/t/{slug}/integracion{query}"
 
 
 # --- token sealing -----------------------------------------------------------

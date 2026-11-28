@@ -65,7 +65,7 @@ def test_mercadolibre_connect_is_one_time_and_tokens_are_sealed(client):  # noqa
     with patch.object(market.requests, "post", return_value=_ok(token)) as post:
         response = client.get(f"/api/integrations/oauth/mercadolibre/callback?code=TG-code&state={state}")
     assert response.status_code == 302 and response.headers["Location"].endswith(
-        f"/t/{tenant.slug}/admin/integraciones?conectado=mercadolibre")
+        f"/t/{tenant.slug}/integracion?channel=mercadolibre&conectado=1")
     assert post.call_args.kwargs["data"]["code"] == "TG-code"
     account = IntegrationAccount.query.filter_by(tenant_id=tenant.id, type="MercadoLibre").one()
     assert "APP_USR-secret" not in str(account.credentials)

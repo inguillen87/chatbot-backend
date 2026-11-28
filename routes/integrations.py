@@ -228,6 +228,6 @@ def marketplace_oauth_callback(provider):
         response.status_code = exc.status
         response.headers["Cache-Control"] = "no-store"
         return response
-    response = redirect(market.return_url(tenant.slug, conectado=provider), code=302)
+    response = redirect(market.return_url(tenant.slug, channel=provider, conectado="1"), code=302)
     response.headers["Cache-Control"] = "no-store"
     return response
