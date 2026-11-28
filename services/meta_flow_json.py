@@ -2154,6 +2154,157 @@ def build_claim_evidence_flow() -> FlowJsonArtifact:
     return compile_flow_blueprint(build_claim_evidence_blueprint())
 
 
+_CATALOG_OPTION_ITEMS = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "title": {"type": "string"},
+            "description": {"type": "string"},
+        },
+    },
+}
+
+
+def build_catalog_order_blueprint() -> FlowBlueprint:
+    """Browse a store's published catalog and build a cart inside WhatsApp.
+
+    Rubro, product and quantity, then the cart: keep shopping (a new form keeps the
+    same cart) or finish, after which delivery and payment are asked for.
+    Every option and price comes from the server; the person only chooses ids.
+    """
+
+    quantities = [{"id": str(n), "title": str(n)} for n in range(1, 11)]
+    return FlowBlueprint(
+        name="catalog_order",
+        endpoint_driven=True,
+        routing_model={
+            "CATALOG_CATEGORY": ("CATALOG_PRODUCT",),
+            "CATALOG_PRODUCT": ("CATALOG_CART",),
+            "CATALOG_CART": (),
+        },
+        screens=(
+            {
+                "id": "CATALOG_CATEGORY",
+                "title": "Catálogo",
+                "data": {
+                    "store_name": {"type": "string", "__example__": "Mercado Demo"},
+                    "categories": {**_CATALOG_OPTION_ITEMS, "__example__": [
+                        {"id": "almacen", "title": "Almacén", "description": "8 productos"},
+                        {"id": "bebidas", "title": "Bebidas", "description": "4 productos"},
+                    ]},
+                },
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [
+                        {"type": "TextHeading", "text": "${data.store_name}"},
+                        {"type": "TextBody", "text": "Elegí un rubro para ver los productos."},
+                        {
+                            "type": "RadioButtonsGroup",
+                            "name": "category",
+                            "label": "Rubro",
+                            "data-source": "${data.categories}",
+                            "required": True,
+                        },
+                        {
+                            "type": "Footer",
+                            "label": "Ver productos",
+                            "on-click-action": {
+                                "name": "data_exchange",
+                                "payload": {"category": "${form.category}"},
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "CATALOG_PRODUCT",
+                "title": "Productos",
+                "data": {
+                    "category_title": {"type": "string", "__example__": "Almacén"},
+                    "products": {**_CATALOG_OPTION_ITEMS, "__example__": [
+                        {"id": "168", "title": "Aceite de girasol 900 ml", "description": "$ 2.900"},
+                        {"id": "169", "title": "Arroz largo fino 1 kg", "description": "$ 1.850"},
+                    ]},
+                },
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [
+                        {"type": "TextHeading", "text": "${data.category_title}"},
+                        {
+                            "type": "RadioButtonsGroup",
+                            "name": "product",
+                            "label": "Producto",
+                            "data-source": "${data.products}",
+                            "required": True,
+                        },
+                        {
+                            "type": "Dropdown",
+                            "name": "quantity",
+                            "label": "Cantidad",
+                            "data-source": quantities,
+                            "required": True,
+                        },
+                        {
+                            "type": "Footer",
+                            "label": "Agregar al carrito",
+                            "on-click-action": {
+                                "name": "data_exchange",
+                                "payload": {
+                                    "product": "${form.product}",
+                                    "quantity": "${form.quantity}",
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "CATALOG_CART",
+                "title": "Tu carrito",
+                "terminal": True,
+                "success": True,
+                "data": {
+                    "cart_lines": {"type": "string", "__example__": "1 x Aceite de girasol 900 ml · $ 2.900"},
+                    "total_display": {"type": "string", "__example__": "$ 2.900"},
+                },
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [
+                        {"type": "TextHeading", "text": "Tu carrito"},
+                        {"type": "TextBody", "text": "${data.cart_lines}"},
+                        {"type": "TextSubheading", "text": "Total: ${data.total_display}"},
+                        {
+                            "type": "RadioButtonsGroup",
+                            "name": "next_step",
+                            "label": "¿Qué querés hacer?",
+                            "required": True,
+                            "data-source": [
+                                {"id": "agregar", "title": "Seguir comprando"},
+                                {"id": "finalizar", "title": "Terminar y pedir"},
+                            ],
+                        },
+                        {"type": "TextCaption", "text": "Al terminar te pedimos cómo lo recibís y cómo pagás."},
+                        {
+                            "type": "Footer",
+                            "label": "Continuar",
+                            "on-click-action": {
+                                "name": "complete",
+                                "payload": {"next_step": "${form.next_step}"},
+                            },
+                        },
+                    ],
+                },
+            },
+        ),
+    )
+
+
+def build_catalog_order_flow() -> FlowJsonArtifact:
+    return compile_flow_blueprint(build_catalog_order_blueprint())
+
+
 def build_order_checkout_flow() -> FlowJsonArtifact:
     return compile_flow_blueprint(build_order_checkout_blueprint())
 
