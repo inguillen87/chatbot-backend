@@ -185,11 +185,6 @@ _DEMO_IMAGE_FALLBACKS: dict[str, str] = {
     "canje-electronicos": "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&w=900&q=80",
 }
 
-_GENERIC_PRODUCT_PLACEHOLDER = (
-    "https://images.unsplash.com/photo-1503602642458-232111445657?auto=format&fit=crop&w=900&q=80"
-)
-
-
 def _fallback_image_for_item(imagen_url: str | None, data: dict, categoria_normalizada: str) -> str | None:
     """Return a resilient image URL for demo assets even when legacy CDN links fail."""
 
@@ -209,7 +204,9 @@ def _fallback_image_for_item(imagen_url: str | None, data: dict, categoria_norma
             if demo_key in key:
                 return demo_url
 
-    return _CATEGORY_FALLBACK_IMAGES.get(categoria_normalizada.lower()) or _GENERIC_PRODUCT_PLACEHOLDER
+    # A product without its own photo shows the store's neutral placeholder,
+    # never an unrelated stock photo that a shopper could take for the product.
+    return _CATEGORY_FALLBACK_IMAGES.get(categoria_normalizada.lower())
 
 
 def _moneda_desde_texto(precio_str: str | None) -> str | None:
