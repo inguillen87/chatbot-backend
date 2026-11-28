@@ -337,14 +337,12 @@ def payment_capabilities(tenant: Any) -> dict[str, Any]:
     if not mercadopago_ready:
         missing.append("mercadopago_access_token")
 
+    # Shown to buyers: no plan names or setup jargon. The machine-readable
+    # reasons stay in ``missing`` for the store team.
     gateway_hint = (
-        "Mercado Pago configurado y checkout productivo habilitado"
+        "Pago online seguro con Mercado Pago."
         if production_ready
-        else "Plan Full requerido para cobrar desde WhatsApp o widget"
-        if not access.get("enabled")
-        else "Mercado Pago pendiente de configurar para este tenant"
-        if not mercadopago_ready
-        else "Mercado Pago pendiente de configurar para este tenant"
+        else "El pago online todavía no está disponible. Confirmamos tu pedido y te contamos cómo pagar."
     )
     return {
         "payment_ready": production_ready,
