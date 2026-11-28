@@ -1739,6 +1739,9 @@ def test_store_opens_adds_finishes_and_tracks_without_storing_the_number(environ
     order = MarketOrder.query.one()
     assert order.status == "pending" and order.contact_key == "wa_flow:pseudo-1" and buttons == ()
     assert f"pedido #{order.id}" in body and "1 x Árbol nativo · Donación" in body and "portal ciudadano" in body
+    # The redemption gets its own code with a page; the donation does not.
+    assert "🎟️ Tus códigos" in body and "• Kit escolar solidario: " in body and "https://www.chatboc.ar/v/" in body
+    assert "• Árbol nativo: " not in body
     assert CONTACT not in json.dumps(order.metadata_payload or {})
     status, _, _, _ = store.answer(SimpleNamespace(content_type="text", text="Pedido"), {}, "pseudo-1", clear)
     assert "lo están revisando" in status
