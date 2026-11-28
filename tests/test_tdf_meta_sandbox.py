@@ -1554,3 +1554,26 @@ def test_the_opening_menu_tells_how_to_get_news_only_when_enabled(environment):
         assert "NOVEDADES" not in menu("requisitos")
     finally:
         current_app.config[pilot.NEWS_FLAG] = False
+
+
+@pytest.mark.parametrize("text,code", [
+    ("estado de mi reclamo", None), ("como va mi reclamo?", None), ("Reclamo 123456", "123456"),
+    ("quiero ver el seguimiento del reclamo M-0045871", "0045871"), ("cómo sigue el reclamo 98765", "98765")])
+def test_a_filed_complaint_is_followed_on_its_page_never_in_the_chat(text, code):
+    reply = pilot._claim_tracking(text)
+    assert reply is not None and "PIN" in reply and "no se muestra en este chat" in reply
+    assert (pilot.CLAIM_TRACKING_URL + ("/" + code if code else "") + "\n") in reply
+    assert len(reply) <= 1024
+
+
+@pytest.mark.parametrize("text", [
+    "cómo hago un reclamo", "quiero iniciar un reclamo", "dónde presento un reclamo", "estado de mi CUD",
+    "seguimiento del trámite 123456", "reclamo", "mi teléfono es 2901407413", None, "reclamo " + "x" * 200])
+def test_other_questions_are_not_taken_for_complaint_tracking(text):
+    assert pilot._claim_tracking(text) is None
+
+
+def test_complaint_tracking_answers_before_the_knowledge(environment):
+    publish_presentation_fixture(environment, public_presentation_fixture())
+    body, context, revision, buttons = pilot._answer(SimpleNamespace(content_type="text", text="estado del reclamo 123456"), {})
+    assert pilot.CLAIM_TRACKING_URL + "/123456" in body and revision is None and buttons == ()
