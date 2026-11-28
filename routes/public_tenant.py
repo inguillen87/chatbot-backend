@@ -76,6 +76,21 @@ def public_voucher(code):
     return response
 
 
+@public_tenant_bp.route('/api/public/vouchers/<code>/qr.svg', methods=['GET'])
+@limiter.limit('30 per minute')
+def public_voucher_qr(code):
+    from flask import Response
+    from services import market_vouchers as vouchers
+
+    svg = vouchers.qr_svg(code)
+    if svg is None:
+        return jsonify({"error": "voucher_not_found"}), 404
+    response = Response(svg, mimetype="image/svg+xml")
+    response.headers["Cache-Control"] = "private, max-age=300"
+    response.headers["X-Robots-Tag"] = "noindex"
+    return response
+
+
 @public_tenant_bp.route('/api/public/host-resolution', methods=['GET'])
 def public_host_resolution():
     """Resolve one exact verified hostname, independent of ambient tenant/session hints."""

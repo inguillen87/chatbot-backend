@@ -26,7 +26,7 @@ def _order(tenant, owner):
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("k7mq-4xpz-2r", "K7MQ4XPZ2R"), ("K7MQ 4XPZ 2R", "K7MQ4XPZ2R"), ("K7MQ4XPZ2", None), ("O7MQ4XPZ2R", None),
+    ("k7mq-4xpz-2r", "K7MQ4XPZ2R"), ("https://www.chatboc.ar/v/K7MQ4XPZ2R?x=1", "K7MQ4XPZ2R"), ("K7MQ 4XPZ 2R", "K7MQ4XPZ2R"), ("K7MQ4XPZ2", None), ("O7MQ4XPZ2R", None),
 ])
 def test_codes_are_normalized_and_unambiguous(raw, expected):
     assert vouchers.normalize(raw) == expected
@@ -45,6 +45,9 @@ def test_vouchers_are_issued_shown_and_used_once(client):  # noqa: F811
     page = client.get(f"/api/public/vouchers/{issued[0]['display'].lower()}").get_json()
     assert page["status"] == "valid" and page["name"] == "Kit escolar completo" and page["points"] == 1500
     assert client.get("/api/public/vouchers/K7MQ4XPZ2R").status_code == 404
+    qr = client.get(f"/api/public/vouchers/{code}/qr.svg")
+    assert qr.status_code == 200 and qr.mimetype == "image/svg+xml" and b"<svg" in qr.data
+    assert client.get("/api/public/vouchers/K7MQ4XPZ2R/qr.svg").status_code == 404
 
     first = client.post(f"/api/admin/tenants/{tenant.slug}/vouchers/redeem", json={"code": code}, headers=headers)
     assert first.status_code == 200 and first.get_json()["result"] == "redeemed"

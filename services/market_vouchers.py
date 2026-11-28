@@ -34,8 +34,15 @@ def display(code: str) -> str:
     return f"{code[:4]}-{code[4:8]}-{code[8:]}"
 
 
+VOUCHER_PAGE = "https://www.chatboc.ar/v/"
+
+
 def normalize(raw: Any) -> str | None:
-    text = re.sub(r"[\s\-_.]", "", str(raw or "")).upper()
+    """Accepts the code as typed or the scanned page link (…/v/K7MQ4XPZ2R)."""
+    text = str(raw or "").strip()
+    if "/v/" in text:
+        text = text.rsplit("/v/", 1)[1].split("?", 1)[0].split("#", 1)[0]
+    text = re.sub(r"[\s\-_.]", "", text).upper()
     return text if _CODE.fullmatch(text) else None
 
 
@@ -124,3 +131,19 @@ def redeem(tenant: Any, raw_code: Any, *, staff_user_id: int | None) -> tuple[st
     row.event_type = "voucher_redeemed"
     db.session.commit()
     return "redeemed", _view(row, code)
+
+
+def qr_svg(raw_code: Any) -> bytes | None:
+    """SVG QR of the voucher page, so a phone camera or the panel can read it."""
+    code = normalize(raw_code)
+    if code is None or _find(code) is None:
+        return None
+    import io
+
+    import qrcode
+    from qrcode.image.svg import SvgPathImage
+
+    image = qrcode.make(VOUCHER_PAGE + code, image_factory=SvgPathImage, box_size=10, border=2)
+    buffer = io.BytesIO()
+    image.save(buffer)
+    return buffer.getvalue()
